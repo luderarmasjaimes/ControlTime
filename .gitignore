@@ -1,0 +1,13 @@
+﻿data/
+tmp/
+
+*.ecw
+*.mbtiles
+*.tif
+*.msi
+*.zip
+
+node_modules/
+dist/
+build/
+.env

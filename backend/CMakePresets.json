@@ -1,0 +1,41 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-vs",
+      "displayName": "Windows (Visual Studio CMake)",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/out/build/windows-vs",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "Boost_ROOT": "C:/boost_1_90_0",
+        "OpenCV_DIR": "C:/opencv/build"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/linux-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-windows-vs",
+      "configurePreset": "windows-vs",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-linux-release",
+      "configurePreset": "linux-release"
+    }
+  ]
+}

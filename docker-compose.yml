@@ -1,0 +1,54 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mapas-backend
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./data:/data
+      - ./ecw-plugin:/opt/ecw:ro
+    environment:
+      - MAPAS_DATA_ROOT=/data
+      - MAPAS_BIND_ADDRESS=0.0.0.0
+      - MAPAS_PORT=8081
+
+  tileserver:
+    image: ghcr.io/consbio/mbtileserver:latest
+    container_name: mapas-tileserver
+    command: [ "--dir", "/data/incoming", "--port", "8000" ]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mapas-frontend
+    ports:
+      - "5173:80"
+    volumes:
+      - ./data:/data
+    depends_on:
+      - backend
+      - tileserver
+      - db
+
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: mapas-db
+    environment:
+      - POSTGRES_USER=mining_user
+      - POSTGRES_PASSWORD=mining_pass
+      - POSTGRES_DB=mining_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db_scripts:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  postgres_data:

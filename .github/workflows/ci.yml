@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push: {}
+  pull_request: {}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+        working-directory: frontend
+
+      - name: Run unit tests (Vitest)
+        run: npm run test:run --if-present
+        working-directory: frontend
+
+      - name: Start preview server
+        run: npx vite preview --port 4173 &
+        working-directory: frontend
+
+      - name: Wait for preview
+        run: |
+          npx wait-on http://localhost:4173/ --timeout 30000
+        working-directory: frontend
+
+      - name: Run Playwright E2E
+        run: npx playwright test --reporter=list
+        working-directory: frontend
