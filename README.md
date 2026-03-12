@@ -223,3 +223,33 @@ Ver detalles de contrato del CLI y variables en:
 
 - `backend/DERMALOG_INTEGRATION.md`
 
+## Mejora opcional: DNN para validacion automatica facial
+
+El backend incluye una capa opcional de inferencia OpenCV DNN (ONNX) para reforzar la deteccion automatica de:
+
+- lentes
+- gorro/casco
+- accesorios/oclusiones faciales
+- maquillaje intenso
+- ojos cerrados / boca abierta / rostro no frontal (segun etiquetas del modelo)
+
+### Activacion
+
+1. Copia tu modelo ONNX en `./biometric-models/face_qc.onnx`.
+2. Activa la bandera antes de levantar contenedores:
+
+```powershell
+$env:BIOMETRIC_DNN_ENABLE = "true"
+docker-compose up -d --build web
+```
+
+Variables soportadas en `docker-compose.yml`:
+
+- `BIOMETRIC_DNN_ENABLE` (`true|false`)
+- `BIOMETRIC_DNN_MODEL` (ruta del ONNX dentro del contenedor)
+- `BIOMETRIC_DNN_LABELS` (CSV de clases en orden de salida del modelo)
+- `BIOMETRIC_DNN_THRESHOLD` (umbral de activacion por clase)
+- `BIOMETRIC_MODEL_HOST_DIR` (ruta local montada con el modelo)
+
+Si el modelo no esta disponible o falla la inferencia, el sistema usa automaticamente heuristicas OpenCV como fallback.
+

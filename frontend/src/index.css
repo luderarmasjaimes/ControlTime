@@ -304,24 +304,6 @@ h3,
     border-color: rgba(202, 138, 4, 0.35);
 }
 
-.manual-checks {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px 10px;
-    margin: 8px 0 8px;
-    font-size: 0.72rem;
-    color: #cfe6ff;
-}
-
-.manual-checks label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.manual-checks input {
-    accent-color: #f59e0b;
-}
 
 .face-guidance-panel ul {
     margin: 0;
@@ -347,12 +329,6 @@ h3,
 
 .face-guidance-panel .quality-ready.warn {
     color: #facc15;
-}
-
-@media (max-width: 640px) {
-    .manual-checks {
-        grid-template-columns: 1fr;
-    }
 }
 
 .status-dot {

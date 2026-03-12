@@ -18,6 +18,7 @@
 #include "vision_pipeline.hpp"
 #include "websocket_session.hpp"
 #include <opencv2/opencv.hpp>
+#include <opencv2/dnn.hpp>
 
 #include <atomic>
 #include <algorithm>
@@ -113,6 +114,10 @@ std::string gDatabaseUrl;
 BiometricProvider gBiometricProvider = BiometricProvider::Legacy;
 std::string gDermalogCliPath;
 bool gDermalogRequired = false;
+bool gBiometricDnnEnabled = false;
+std::string gBiometricDnnModelPath;
+std::string gBiometricDnnLabelsCsv;
+float gBiometricDnnThreshold = 0.72f;
 int gSessionTtlMinutes = 480;
 
 struct FaceAnalysis {
@@ -466,6 +471,143 @@ double faceSymmetryScore(const cv::Mat &faceGray) {
   return cv::mean(diff)[0];
 }
 
+void pushIssueUnique(std::vector<std::string> &issues,
+                     const std::string &issue) {
+  if (std::find(issues.begin(), issues.end(), issue) == issues.end()) {
+    issues.push_back(issue);
+  }
+}
+
+std::vector<float> flattenDnnOutput(const cv::Mat &out) {
+  std::vector<float> values;
+  if (out.empty()) {
+    return values;
+  }
+  cv::Mat flat = out.reshape(1, 1);
+  values.reserve(static_cast<size_t>(flat.total()));
+  for (int i = 0; i < flat.cols; ++i) {
+    values.push_back(flat.at<float>(0, i));
+  }
+  return values;
+}
+
+std::vector<float> softmax(const std::vector<float> &v) {
+  if (v.empty()) {
+    return {};
+  }
+  float maxV = *std::max_element(v.begin(), v.end());
+  std::vector<float> exps;
+  exps.reserve(v.size());
+  double sum = 0.0;
+  for (float x : v) {
+    const double e = std::exp(static_cast<double>(x - maxV));
+    exps.push_back(static_cast<float>(e));
+    sum += e;
+  }
+  if (sum <= 0.0) {
+    return std::vector<float>(v.size(), 0.0f);
+  }
+  for (auto &x : exps) {
+    x = static_cast<float>(x / sum);
+  }
+  return exps;
+}
+
+struct AccessoryDnnContext {
+  bool initialized = false;
+  bool loaded = false;
+  cv::dnn::Net net;
+  std::vector<std::string> labels;
+  int inputSize = 224;
+};
+
+AccessoryDnnContext &getAccessoryDnnContext() {
+  static AccessoryDnnContext ctx;
+  if (ctx.initialized) {
+    return ctx;
+  }
+  ctx.initialized = true;
+
+  if (!gBiometricDnnEnabled || gBiometricDnnModelPath.empty()) {
+    return ctx;
+  }
+
+  if (!fs::exists(gBiometricDnnModelPath)) {
+    return ctx;
+  }
+
+  try {
+    ctx.net = cv::dnn::readNet(gBiometricDnnModelPath);
+    ctx.labels = splitCsvLower(gBiometricDnnLabelsCsv);
+    if (ctx.labels.empty()) {
+      ctx.labels = {"glasses", "hat", "mask", "makeup", "eyes_closed",
+                    "mouth_open", "frontal"};
+    }
+    ctx.loaded = true;
+  } catch (...) {
+    ctx.loaded = false;
+  }
+  return ctx;
+}
+
+void applyDnnAccessoryChecks(const cv::Mat &faceBgr,
+                             std::vector<std::string> &issues) {
+  auto &ctx = getAccessoryDnnContext();
+  if (!ctx.loaded || faceBgr.empty()) {
+    return;
+  }
+
+  try {
+    cv::Mat blob = cv::dnn::blobFromImage(faceBgr, 1.0 / 255.0,
+                                          cv::Size(ctx.inputSize, ctx.inputSize),
+                                          cv::Scalar(), true, false);
+    ctx.net.setInput(blob);
+    cv::Mat out = ctx.net.forward();
+    auto probs = flattenDnnOutput(out);
+    if (probs.empty()) {
+      return;
+    }
+
+    const bool appearsNormalized =
+        std::all_of(probs.begin(), probs.end(), [](float x) {
+          return x >= 0.0f && x <= 1.0f;
+        });
+    if (!appearsNormalized) {
+      probs = softmax(probs);
+    }
+
+    const size_t n = std::min(probs.size(), ctx.labels.size());
+    for (size_t i = 0; i < n; ++i) {
+      const auto &label = ctx.labels[i];
+      const float score = probs[i];
+      if (score < gBiometricDnnThreshold) {
+        continue;
+      }
+
+      if (label == "glasses" || label == "eyeglasses" ||
+          label == "sunglasses") {
+        pushIssueUnique(issues, "suspected_glasses");
+      } else if (label == "hat" || label == "cap" || label == "helmet" ||
+                 label == "hood") {
+        pushIssueUnique(issues, "suspected_hat");
+      } else if (label == "mask" || label == "scarf" ||
+                 label == "accessory" || label == "occlusion") {
+        pushIssueUnique(issues, "suspected_face_accessory");
+      } else if (label == "makeup" || label == "cosmetic") {
+        pushIssueUnique(issues, "suspected_heavy_makeup");
+      } else if (label == "eyes_closed") {
+        pushIssueUnique(issues, "eyes_not_open_or_not_visible");
+      } else if (label == "mouth_open") {
+        pushIssueUnique(issues, "mouth_not_closed");
+      } else if (label == "non_frontal" || label == "profile") {
+        pushIssueUnique(issues, "face_not_frontal");
+      }
+    }
+  } catch (...) {
+    pushIssueUnique(issues, "dnn_inference_failed");
+  }
+}
+
 cv::Mat normalizeFaceGray(const cv::Mat &faceGray) {
   cv::Mat denoised;
   cv::bilateralFilter(faceGray, denoised, 5, 25.0, 25.0);
@@ -711,6 +853,8 @@ FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image,
     if (cheekSat > 120.0 && cheekSkin > 0.2) {
       result.issues.push_back("suspected_heavy_makeup");
     }
+
+    applyDnnAccessoryChecks(faceBgr, result.issues);
   }
 
   result.faceTemplate = extractLegacyTemplateFromMat(faceGray);
@@ -2469,6 +2613,19 @@ int main() {
     gDermalogCliPath = getenvOr("DERMALOG_CLI_PATH", "");
     gDermalogRequired =
       toLowerCopy(getenvOr("DERMALOG_REQUIRED", "false")) == "true";
+    gBiometricDnnModelPath = getenvOr("BIOMETRIC_DNN_MODEL", "");
+    gBiometricDnnLabelsCsv = getenvOr(
+        "BIOMETRIC_DNN_LABELS",
+        "glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal");
+    gBiometricDnnEnabled =
+        toLowerCopy(getenvOr("BIOMETRIC_DNN_ENABLE", "false")) == "true";
+    try {
+      gBiometricDnnThreshold = std::clamp(
+          std::stof(getenvOr("BIOMETRIC_DNN_THRESHOLD", "0.72")), 0.3f,
+          0.95f);
+    } catch (...) {
+      gBiometricDnnThreshold = 0.72f;
+    }
 
     if (!gDatabaseUrl.empty()) {
 #if HAS_LIBPQ
@@ -2497,6 +2654,12 @@ int main() {
               : "legacy")
             << ", dermalog required: "
             << (gDermalogRequired ? "true" : "false") << std::endl;
+    std::cout << "biometric dnn: "
+              << (gBiometricDnnEnabled ? "enabled" : "disabled")
+              << ", model path: "
+              << (gBiometricDnnModelPath.empty() ? "(none)"
+                                                 : gBiometricDnnModelPath)
+              << ", threshold: " << gBiometricDnnThreshold << std::endl;
 
     for (;;) {
       asio::ip::tcp::socket socket{ioc};

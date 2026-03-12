@@ -23,12 +23,17 @@ services:
       - DERMALOG_REQUIRED=false
       - DERMALOG_CLI_PATH=/opt/dermalog-sdk/bin/dermalog-face-cli
       - DERMALOG_SDK_DIR=/opt/dermalog-sdk
+      - BIOMETRIC_DNN_ENABLE=${BIOMETRIC_DNN_ENABLE:-false}
+      - BIOMETRIC_DNN_MODEL=/opt/biometric-models/face_qc.onnx
+      - BIOMETRIC_DNN_LABELS=${BIOMETRIC_DNN_LABELS:-glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal}
+      - BIOMETRIC_DNN_THRESHOLD=${BIOMETRIC_DNN_THRESHOLD:-0.72}
       - AUTH_ADMIN_USERS=admin
     depends_on:
       - db
     volumes:
       - ./data:/data
       - ${DERMALOG_SDK_HOST_DIR:-./dermalog-sdk}:/opt/dermalog-sdk:ro
+      - ${BIOMETRIC_MODEL_HOST_DIR:-./biometric-models}:/opt/biometric-models:ro
 
 volumes:
   db_data: {}
