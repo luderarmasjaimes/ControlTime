@@ -253,3 +253,17 @@ Variables soportadas en `docker-compose.yml`:
 
 Si el modelo no esta disponible o falla la inferencia, el sistema usa automaticamente heuristicas OpenCV como fallback.
 
+### Verificacion automatizada del estado DNN
+
+Puedes verificar activacion/carga del modelo y estado de runtime con:
+
+```powershell
+$securePwd = ConvertTo-SecureString "TU_PASSWORD" -AsPlainText -Force
+$adminCred = New-Object System.Management.Automation.PSCredential("admin", $securePwd)
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-biometric-dnn.ps1 -EnableDnn -AdminUser "admin" -AdminPassword $adminCred
+```
+
+El script consulta el endpoint protegido:
+
+- `GET /api/auth/biometric/status` (requiere token de usuario `admin`)
+

@@ -519,6 +519,7 @@ struct AccessoryDnnContext {
   cv::dnn::Net net;
   std::vector<std::string> labels;
   int inputSize = 224;
+  std::string initError;
 };
 
 AccessoryDnnContext &getAccessoryDnnContext() {
@@ -529,10 +530,16 @@ AccessoryDnnContext &getAccessoryDnnContext() {
   ctx.initialized = true;
 
   if (!gBiometricDnnEnabled || gBiometricDnnModelPath.empty()) {
+    if (!gBiometricDnnEnabled) {
+      ctx.initError = "dnn_disabled";
+    } else {
+      ctx.initError = "dnn_model_path_missing";
+    }
     return ctx;
   }
 
   if (!fs::exists(gBiometricDnnModelPath)) {
+    ctx.initError = "dnn_model_not_found";
     return ctx;
   }
 
@@ -544,10 +551,31 @@ AccessoryDnnContext &getAccessoryDnnContext() {
                     "mouth_open", "frontal"};
     }
     ctx.loaded = true;
+    ctx.initError.clear();
   } catch (...) {
     ctx.loaded = false;
+    ctx.initError = "dnn_model_load_failed";
   }
   return ctx;
+}
+
+json::object biometricDnnRuntimeStatusJson() {
+  auto &ctx = getAccessoryDnnContext();
+  json::array labels;
+  for (const auto &label : ctx.labels) {
+    labels.push_back(json::value(label));
+  }
+
+  json::object out{{"enabled", gBiometricDnnEnabled},
+                   {"model_path", gBiometricDnnModelPath},
+                   {"model_exists", fs::exists(gBiometricDnnModelPath)},
+                   {"loaded", ctx.loaded},
+                   {"threshold", gBiometricDnnThreshold},
+                   {"labels", labels}};
+  if (!ctx.initError.empty()) {
+    out["init_error"] = ctx.initError;
+  }
+  return out;
 }
 
 void applyDnnAccessoryChecks(const cv::Mat &faceBgr,
@@ -1922,6 +1950,23 @@ routeRequest(const http::request<http::string_body> &req,
                             json::object{{"companies", companies}});
   }
 
+  if (req.method() == http::verb::get &&
+      pathOnly == "/api/auth/biometric/status") {
+    const auto session = resolveAuthSession(req, query);
+    if (!session || session->role != "admin") {
+      return makeJsonResponse(http::status::forbidden,
+                              json::object{{"error", "admin access required"}});
+    }
+
+    return makeJsonResponse(
+        http::status::ok,
+        json::object{{"provider", gBiometricProvider == BiometricProvider::DermalogCli
+                                     ? "dermalog_cli"
+                                     : "legacy"},
+                     {"dermalog_required", gDermalogRequired},
+                     {"dnn", biometricDnnRuntimeStatusJson()}});
+  }
+
   if (req.method() == http::verb::post && pathOnly == "/api/auth/register") {
     try {
       auto val = json::parse(req.body());
@@ -2654,12 +2699,18 @@ int main() {
               : "legacy")
             << ", dermalog required: "
             << (gDermalogRequired ? "true" : "false") << std::endl;
+    auto &dnnCtx = getAccessoryDnnContext();
     std::cout << "biometric dnn: "
               << (gBiometricDnnEnabled ? "enabled" : "disabled")
               << ", model path: "
               << (gBiometricDnnModelPath.empty() ? "(none)"
                                                  : gBiometricDnnModelPath)
-              << ", threshold: " << gBiometricDnnThreshold << std::endl;
+              << ", threshold: " << gBiometricDnnThreshold
+              << ", loaded: " << (dnnCtx.loaded ? "true" : "false");
+    if (!dnnCtx.initError.empty()) {
+      std::cout << ", init_error: " << dnnCtx.initError;
+    }
+    std::cout << std::endl;
 
     for (;;) {
       asio::ip::tcp::socket socket{ioc};
