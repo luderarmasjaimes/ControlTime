@@ -189,12 +189,6 @@ const AuthGateway = ({ onAuthenticated }) => {
         qualityReady: false,
         notes: ['Activa modo Registro y alinea el rostro para iniciar analisis.'],
     })
-    const [manualChecks, setManualChecks] = useState({
-        noGlasses: false,
-        noHat: false,
-        noAccessories: false,
-        noMakeup: false,
-    })
     const videoRef = useRef(null)
     const streamRef = useRef(null)
     const detectorRef = useRef(null)
@@ -415,12 +409,6 @@ const AuthGateway = ({ onAuthenticated }) => {
                     const brightness = brightnessScore(video, bestFace)
                     const lighting = brightness > 75 && brightness < 190
 
-                    const manualOk =
-                        manualChecks.noGlasses &&
-                        manualChecks.noHat &&
-                        manualChecks.noAccessories &&
-                        manualChecks.noMakeup
-
                     const notes = []
                     if (!centered) notes.push('Centra tu rostro dentro del recuadro punteado.')
                     if (!frontal) notes.push('Coloca la cara recta, mirando de frente y sin giro lateral.')
@@ -428,12 +416,9 @@ const AuthGateway = ({ onAuthenticated }) => {
                     if (!mouthClosed) notes.push('Mantén la boca cerrada durante la captura.')
                     if (!stable) notes.push('Evita moverte: mantén la cabeza estable por unos segundos.')
                     if (!lighting) notes.push('Ajusta la iluminacion para evitar sombras o sobreexposicion.')
-                    if (!manualOk) {
-                        notes.push('Confirma condiciones: sin lentes, gorros, accesorios y sin maquillaje.')
-                    }
+                    notes.push('La revision automatica valida lentes, gorros, accesorios y calidad global.')
 
-                    const qualityReady =
-                        centered && frontal && eyesOpen && mouthClosed && stable && lighting && manualOk
+                    const qualityReady = centered && frontal && eyesOpen && mouthClosed && stable && lighting
                     setFaceGuide({
                         detected: true,
                         centered,
@@ -478,7 +463,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 window.clearTimeout(timerId)
             }
         }
-    }, [cameraReady, manualChecks, mode])
+    }, [cameraReady, mode])
 
     const handleFaceLogin = async () => {
         if (!videoRef.current || !cameraReady) {
@@ -559,7 +544,6 @@ const AuthGateway = ({ onAuthenticated }) => {
                 ...registerForm,
                 faceTemplate: capturedTemplate,
                 faceImageBase64: capturedImageBase64,
-                captureConditions: manualChecks,
             })
 
             const session = createSession(result.user)
@@ -634,49 +618,6 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     <span className={faceGuide.lighting ? 'ok' : 'warn'}>
                                         {faceGuide.lighting ? 'Iluminacion correcta' : 'Mejorar iluminacion'}
                                     </span>
-                                </div>
-
-                                <div className="manual-checks">
-                                    <label>
-                                        <input
-                                            type="checkbox"
-                                            checked={manualChecks.noGlasses}
-                                            onChange={(event) =>
-                                                setManualChecks((prev) => ({ ...prev, noGlasses: event.target.checked }))
-                                            }
-                                        />
-                                        Sin lentes
-                                    </label>
-                                    <label>
-                                        <input
-                                            type="checkbox"
-                                            checked={manualChecks.noHat}
-                                            onChange={(event) =>
-                                                setManualChecks((prev) => ({ ...prev, noHat: event.target.checked }))
-                                            }
-                                        />
-                                        Sin gorros
-                                    </label>
-                                    <label>
-                                        <input
-                                            type="checkbox"
-                                            checked={manualChecks.noAccessories}
-                                            onChange={(event) =>
-                                                setManualChecks((prev) => ({ ...prev, noAccessories: event.target.checked }))
-                                            }
-                                        />
-                                        Sin accesorios
-                                    </label>
-                                    <label>
-                                        <input
-                                            type="checkbox"
-                                            checked={manualChecks.noMakeup}
-                                            onChange={(event) =>
-                                                setManualChecks((prev) => ({ ...prev, noMakeup: event.target.checked }))
-                                            }
-                                        />
-                                        Sin maquillaje
-                                    </label>
                                 </div>
 
                                 <ul>

@@ -66,15 +66,6 @@ export async function registerUser(payload) {
         password: payload.password,
     }
 
-    if (payload.captureConditions) {
-        body.capture_conditions = {
-            no_glasses: !!payload.captureConditions.noGlasses,
-            no_hat: !!payload.captureConditions.noHat,
-            no_accessories: !!payload.captureConditions.noAccessories,
-            no_makeup: !!payload.captureConditions.noMakeup,
-        }
-    }
-
     if (payload.faceImageBase64) {
         body.face_image_base64 = payload.faceImageBase64
     } else {

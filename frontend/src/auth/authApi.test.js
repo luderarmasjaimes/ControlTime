@@ -74,24 +74,13 @@ describe('authApi', () => {
             username: 'luder',
             password: 'secret123',
             faceImageBase64: 'BASE64JPEG==',
-            captureConditions: {
-                noGlasses: true,
-                noHat: true,
-                noAccessories: true,
-                noMakeup: true,
-            },
         })
 
         const [, options] = fetchMock.mock.calls[0]
         const payload = JSON.parse(options.body)
         expect(payload.face_image_base64).toBe('BASE64JPEG==')
         expect(payload.face_template).toBeUndefined()
-        expect(payload.capture_conditions).toEqual({
-            no_glasses: true,
-            no_hat: true,
-            no_accessories: true,
-            no_makeup: true,
-        })
+        expect(payload.capture_conditions).toBeUndefined()
     })
 
     it('sends password login request', async () => {

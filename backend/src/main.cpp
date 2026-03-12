@@ -466,6 +466,73 @@ double faceSymmetryScore(const cv::Mat &faceGray) {
   return cv::mean(diff)[0];
 }
 
+cv::Mat normalizeFaceGray(const cv::Mat &faceGray) {
+  cv::Mat denoised;
+  cv::bilateralFilter(faceGray, denoised, 5, 25.0, 25.0);
+
+  auto clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+  cv::Mat equalized;
+  clahe->apply(denoised, equalized);
+  return equalized;
+}
+
+double edgeDensity(const cv::Mat &gray) {
+  if (gray.empty()) {
+    return 0.0;
+  }
+  cv::Mat edges;
+  cv::Canny(gray, edges, 70.0, 150.0);
+  return static_cast<double>(cv::countNonZero(edges)) /
+         static_cast<double>(std::max(1, gray.rows * gray.cols));
+}
+
+double darkPixelRatio(const cv::Mat &gray, int threshold) {
+  if (gray.empty()) {
+    return 0.0;
+  }
+  cv::Mat mask;
+  cv::threshold(gray, mask, threshold, 255, cv::THRESH_BINARY_INV);
+  return static_cast<double>(cv::countNonZero(mask)) /
+         static_cast<double>(std::max(1, gray.rows * gray.cols));
+}
+
+double brightPixelRatio(const cv::Mat &gray, int threshold) {
+  if (gray.empty()) {
+    return 0.0;
+  }
+  cv::Mat mask;
+  cv::threshold(gray, mask, threshold, 255, cv::THRESH_BINARY);
+  return static_cast<double>(cv::countNonZero(mask)) /
+         static_cast<double>(std::max(1, gray.rows * gray.cols));
+}
+
+double skinPixelRatio(const cv::Mat &bgr) {
+  if (bgr.empty()) {
+    return 0.0;
+  }
+  cv::Mat ycrcb;
+  cv::cvtColor(bgr, ycrcb, cv::COLOR_BGR2YCrCb);
+  cv::Mat skinMask;
+  cv::inRange(ycrcb, cv::Scalar(0, 133, 77), cv::Scalar(255, 173, 127),
+              skinMask);
+  return static_cast<double>(cv::countNonZero(skinMask)) /
+         static_cast<double>(std::max(1, bgr.rows * bgr.cols));
+}
+
+double meanSaturation(const cv::Mat &bgr) {
+  if (bgr.empty()) {
+    return 0.0;
+  }
+  cv::Mat hsv;
+  cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+  std::vector<cv::Mat> channels;
+  cv::split(hsv, channels);
+  if (channels.size() < 2) {
+    return 0.0;
+  }
+  return cv::mean(channels[1])[0];
+}
+
 FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image,
                                     const std::string &mode) {
   FaceAnalysis result;
@@ -535,7 +602,9 @@ FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image,
     result.issues.push_back("face_not_frontal");
   }
 
-  cv::Mat faceGray = gray(faceRect).clone();
+  cv::Mat faceGrayRaw = gray(faceRect).clone();
+  cv::Mat faceGray = normalizeFaceGray(faceGrayRaw);
+  cv::Mat faceBgr = img(faceRect).clone();
 
   cv::Scalar meanIntensity = cv::mean(faceGray);
   if (meanIntensity[0] < 70.0 || meanIntensity[0] > 195.0) {
@@ -586,6 +655,61 @@ FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image,
     });
     if (strongSmile) {
       result.issues.push_back("mouth_not_closed");
+    }
+  }
+
+  if (strictRegister && faceGray.rows > 20 && faceGray.cols > 20) {
+    const int eyeY = std::max(0, static_cast<int>(faceGray.rows * 0.18));
+    const int eyeH = std::max(1, static_cast<int>(faceGray.rows * 0.32));
+    cv::Rect eyeBandRect(0, eyeY, faceGray.cols,
+                         std::min(eyeH, faceGray.rows - eyeY));
+    cv::Mat eyeBandGray = faceGray(eyeBandRect);
+    const double eyeEdges = edgeDensity(eyeBandGray);
+    const double eyeDark = darkPixelRatio(eyeBandGray, 40);
+    const double eyeBright = brightPixelRatio(eyeBandGray, 225);
+    if ((eyeEdges > 0.24 && eyeBright > 0.015) || eyeDark > 0.62) {
+      result.issues.push_back("suspected_glasses");
+    }
+
+    const int topH = std::max(1, static_cast<int>(faceGray.rows * 0.2));
+    cv::Rect topRect(0, 0, faceGray.cols, topH);
+    cv::Mat topGray = faceGray(topRect);
+    cv::Mat topBgr = faceBgr(topRect);
+    const double topDark = darkPixelRatio(topGray, 55);
+    const double topSkin = skinPixelRatio(topBgr);
+    if (topDark > 0.58 && topSkin < 0.1) {
+      result.issues.push_back("suspected_hat");
+    }
+
+    const int sideY = std::max(0, static_cast<int>(faceGray.rows * 0.35));
+    const int sideH = std::max(1, static_cast<int>(faceGray.rows * 0.45));
+    const int sideW = std::max(1, static_cast<int>(faceGray.cols * 0.18));
+    cv::Rect leftRect(0, sideY, sideW,
+                      std::min(sideH, faceGray.rows - sideY));
+    cv::Rect rightRect(std::max(0, faceGray.cols - sideW), sideY, sideW,
+                       std::min(sideH, faceGray.rows - sideY));
+    const double sideEdges =
+        (edgeDensity(faceGray(leftRect)) + edgeDensity(faceGray(rightRect))) *
+        0.5;
+    const double sideDark =
+        (darkPixelRatio(faceGray(leftRect), 48) +
+         darkPixelRatio(faceGray(rightRect), 48)) *
+        0.5;
+    if (sideEdges > 0.27 && sideDark > 0.42) {
+      result.issues.push_back("suspected_face_accessory");
+    }
+
+    const int cheekY = std::max(0, static_cast<int>(faceBgr.rows * 0.28));
+    const int cheekH = std::max(1, static_cast<int>(faceBgr.rows * 0.34));
+    const int cheekX = std::max(0, static_cast<int>(faceBgr.cols * 0.2));
+    const int cheekW = std::max(1, static_cast<int>(faceBgr.cols * 0.6));
+    cv::Rect cheekRect(cheekX, cheekY, std::min(cheekW, faceBgr.cols - cheekX),
+                       std::min(cheekH, faceBgr.rows - cheekY));
+    cv::Mat cheekBgr = faceBgr(cheekRect);
+    const double cheekSat = meanSaturation(cheekBgr);
+    const double cheekSkin = skinPixelRatio(cheekBgr);
+    if (cheekSat > 120.0 && cheekSkin > 0.2) {
+      result.issues.push_back("suspected_heavy_makeup");
     }
   }
 
@@ -706,28 +830,6 @@ FaceAnalysis analyzeFaceImage(const std::string &base64Image,
     }
   }
   return analyzeFaceImageLegacy(base64Image, mode);
-}
-
-std::vector<std::string>
-validateCaptureConditions(const json::object *captureConditions) {
-  if (!captureConditions) {
-    return {"capture_conditions_missing"};
-  }
-
-  const auto ensureTrue = [&](const char *key, const char *issue,
-                              std::vector<std::string> &issues) {
-    const auto *v = captureConditions->if_contains(key);
-    if (!v || !v->is_bool() || !v->as_bool()) {
-      issues.push_back(issue);
-    }
-  };
-
-  std::vector<std::string> issues;
-  ensureTrue("no_glasses", "requires_no_glasses", issues);
-  ensureTrue("no_hat", "requires_no_hat", issues);
-  ensureTrue("no_accessories", "requires_no_accessories", issues);
-  ensureTrue("no_makeup", "requires_no_makeup", issues);
-  return issues;
 }
 
 std::string makeId() {
@@ -1724,11 +1826,6 @@ routeRequest(const http::request<http::string_body> &req,
       std::vector<double> faceTemplate;
       std::string biometricProvider = "legacy";
       double qualityScore = 0.0;
-      const json::object *captureConditions = nullptr;
-      if (obj.if_contains("capture_conditions") &&
-          obj.at("capture_conditions").is_object()) {
-        captureConditions = &obj.at("capture_conditions").as_object();
-      }
       if (hasTemplate) {
         for (const auto &v : obj.at("face_template").as_array()) {
           if (v.is_double()) {
@@ -1742,18 +1839,6 @@ routeRequest(const http::request<http::string_body> &req,
           }
         }
       } else {
-        const auto captureIssues = validateCaptureConditions(captureConditions);
-        if (!captureIssues.empty()) {
-          json::array issues;
-          for (const auto &issue : captureIssues) {
-            issues.push_back(json::value(issue));
-          }
-          return makeJsonResponse(
-              http::status::bad_request,
-              json::object{{"error", "capture conditions validation failed"},
-                           {"issues", issues}});
-        }
-
         const std::string base64Image =
             json::value_to<std::string>(obj.at("face_image_base64"));
         auto face = analyzeFaceImage(base64Image, "register");
