@@ -373,9 +373,104 @@ std::vector<double> extractLegacyTemplateFromMat(const cv::Mat &image) {
   return tpl;
 }
 
-FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image) {
+struct CascadeBundle {
+  bool faceLoaded = false;
+  bool eyeLoaded = false;
+  bool smileLoaded = false;
+  cv::CascadeClassifier face;
+  cv::CascadeClassifier eye;
+  cv::CascadeClassifier smile;
+};
+
+std::vector<fs::path> cascadeSearchDirs() {
+  std::vector<fs::path> dirs;
+  auto pushUnique = [&](const fs::path &p) {
+    if (p.empty()) {
+      return;
+    }
+    for (const auto &existing : dirs) {
+      if (existing == p) {
+        return;
+      }
+    }
+    dirs.push_back(p);
+  };
+
+  const char *haarDir = std::getenv("OPENCV_HAAR_DIR");
+  if (haarDir && *haarDir) {
+    pushUnique(fs::path(haarDir));
+  }
+
+  const char *openCvDir = std::getenv("OpenCV_DIR");
+  if (openCvDir && *openCvDir) {
+    pushUnique(fs::path(openCvDir) / "etc" / "haarcascades");
+  }
+
+  pushUnique(fs::path("/usr/share/opencv4/haarcascades"));
+  pushUnique(fs::path("/usr/share/opencv/haarcascades"));
+  pushUnique(fs::path("/usr/local/share/opencv4/haarcascades"));
+  pushUnique(fs::path("C:/opencv/build/etc/haarcascades"));
+
+  return dirs;
+}
+
+bool loadCascadeFile(cv::CascadeClassifier &classifier,
+                     const std::string &fileName) {
+  const auto dirs = cascadeSearchDirs();
+  for (const auto &dir : dirs) {
+    const auto full = dir / fileName;
+    if (!fs::exists(full)) {
+      continue;
+    }
+    if (classifier.load(full.string())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+CascadeBundle &getCascadeBundle() {
+  static CascadeBundle bundle;
+  static std::once_flag once;
+  std::call_once(once, [] {
+    bundle.faceLoaded = loadCascadeFile(bundle.face, "haarcascade_frontalface_default.xml");
+    bundle.eyeLoaded = loadCascadeFile(bundle.eye, "haarcascade_eye_tree_eyeglasses.xml") ||
+                      loadCascadeFile(bundle.eye, "haarcascade_eye.xml");
+    bundle.smileLoaded = loadCascadeFile(bundle.smile, "haarcascade_smile.xml");
+  });
+  return bundle;
+}
+
+cv::Rect largestRect(const std::vector<cv::Rect> &rects) {
+  if (rects.empty()) {
+    return cv::Rect();
+  }
+  return *std::max_element(rects.begin(), rects.end(), [](const cv::Rect &a,
+                                                           const cv::Rect &b) {
+    return a.area() < b.area();
+  });
+}
+
+double faceSymmetryScore(const cv::Mat &faceGray) {
+  if (faceGray.empty() || faceGray.cols < 8 || faceGray.rows < 8) {
+    return 100.0;
+  }
+
+  const int half = faceGray.cols / 2;
+  cv::Mat left = faceGray(cv::Rect(0, 0, half, faceGray.rows));
+  cv::Mat right = faceGray(cv::Rect(faceGray.cols - half, 0, half, faceGray.rows));
+  cv::Mat rightFlipped;
+  cv::flip(right, rightFlipped, 1);
+  cv::Mat diff;
+  cv::absdiff(left, rightFlipped, diff);
+  return cv::mean(diff)[0];
+}
+
+FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image,
+                                    const std::string &mode) {
   FaceAnalysis result;
   result.provider = "legacy";
+  const bool strictRegister = mode == "register";
 
   std::vector<unsigned char> raw;
   if (!decodeBase64(base64Image, raw)) {
@@ -391,22 +486,117 @@ FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image) {
 
   cv::Mat gray;
   cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
-  cv::Scalar meanIntensity = cv::mean(gray);
-  if (meanIntensity[0] < 60.0 || meanIntensity[0] > 210.0) {
+
+  auto &cascade = getCascadeBundle();
+  std::vector<cv::Rect> faces;
+  if (cascade.faceLoaded) {
+    cascade.face.detectMultiScale(gray, faces, 1.1, 4, 0, cv::Size(90, 90));
+  }
+
+  cv::Rect faceRect;
+  if (!faces.empty()) {
+    faceRect = largestRect(faces);
+  }
+
+  if (strictRegister) {
+    if (!cascade.faceLoaded) {
+      result.issues.push_back("face_detector_unavailable");
+    }
+    if (faces.empty()) {
+      result.issues.push_back("face_not_detected");
+    }
+  }
+
+  if (faceRect.area() <= 0) {
+    faceRect = cv::Rect(0, 0, gray.cols, gray.rows);
+  }
+
+  const double faceRatio =
+      static_cast<double>(faceRect.area()) /
+      static_cast<double>(std::max(1, gray.cols * gray.rows));
+  if (strictRegister && faceRatio < 0.1) {
+    result.issues.push_back("face_too_small");
+  }
+
+  const cv::Point2d frameCenter(gray.cols * 0.5, gray.rows * 0.5);
+  const cv::Point2d faceCenter(faceRect.x + faceRect.width * 0.5,
+                               faceRect.y + faceRect.height * 0.5);
+  const double offX = std::abs(faceCenter.x - frameCenter.x) /
+                      std::max(1.0, gray.cols * 0.5);
+  const double offY = std::abs(faceCenter.y - frameCenter.y) /
+                      std::max(1.0, gray.rows * 0.5);
+  if (strictRegister && (offX > 0.2 || offY > 0.2)) {
+    result.issues.push_back("face_off_center");
+  }
+
+  const double aspect =
+      static_cast<double>(faceRect.width) / std::max(1.0, static_cast<double>(faceRect.height));
+  if (strictRegister && (aspect < 0.62 || aspect > 1.08)) {
+    result.issues.push_back("face_not_frontal");
+  }
+
+  cv::Mat faceGray = gray(faceRect).clone();
+
+  cv::Scalar meanIntensity = cv::mean(faceGray);
+  if (meanIntensity[0] < 70.0 || meanIntensity[0] > 195.0) {
     result.issues.push_back("lighting_out_of_range");
   }
 
   cv::Mat lap;
-  cv::Laplacian(gray, lap, CV_64F);
+  cv::Laplacian(faceGray, lap, CV_64F);
   cv::Scalar mu, sigma;
   cv::meanStdDev(lap, mu, sigma);
   const double blurScore = sigma[0] * sigma[0];
-  if (blurScore < 80.0) {
+  const double minBlur = strictRegister ? 120.0 : 80.0;
+  if (blurScore < minBlur) {
     result.issues.push_back("image_not_sharp");
   }
 
-  result.faceTemplate = extractLegacyTemplateFromMat(img);
-  result.qualityScore = std::clamp((blurScore / 250.0), 0.0, 1.0);
+  cv::Scalar meanFace, stdFace;
+  cv::meanStdDev(faceGray, meanFace, stdFace);
+  if (strictRegister && stdFace[0] < 28.0) {
+    result.issues.push_back("low_dynamic_range");
+  }
+
+  const double symmetry = faceSymmetryScore(faceGray);
+  if (strictRegister && symmetry > 36.0) {
+    result.issues.push_back("head_pose_not_straight");
+  }
+
+  if (strictRegister && cascade.eyeLoaded) {
+    const int eyeRegionH = std::max(1, faceGray.rows / 2);
+    cv::Mat upperFace = faceGray(cv::Rect(0, 0, faceGray.cols, eyeRegionH));
+    std::vector<cv::Rect> eyes;
+    cascade.eye.detectMultiScale(upperFace, eyes, 1.08, 3, 0, cv::Size(18, 18));
+    if (eyes.size() < 2) {
+      result.issues.push_back("eyes_not_open_or_not_visible");
+    }
+  }
+
+  if (strictRegister && cascade.smileLoaded) {
+    const int mouthY = std::max(0, faceGray.rows / 2);
+    const int mouthH = std::max(1, faceGray.rows - mouthY);
+    cv::Mat lowerFace = faceGray(cv::Rect(0, mouthY, faceGray.cols, mouthH));
+    std::vector<cv::Rect> smiles;
+    cascade.smile.detectMultiScale(lowerFace, smiles, 1.7, 20, 0,
+                                   cv::Size(faceGray.cols / 6, faceGray.rows / 10));
+    const bool strongSmile = std::any_of(smiles.begin(), smiles.end(),
+                                         [&](const cv::Rect &r) {
+      return r.width > faceGray.cols * 0.35;
+    });
+    if (strongSmile) {
+      result.issues.push_back("mouth_not_closed");
+    }
+  }
+
+  result.faceTemplate = extractLegacyTemplateFromMat(faceGray);
+  const double blurNorm = std::clamp(blurScore / 260.0, 0.0, 1.0);
+  const double lightNorm =
+      1.0 - std::min(std::abs(meanIntensity[0] - 130.0) / 130.0, 1.0);
+  const double symNorm = std::clamp((44.0 - symmetry) / 44.0, 0.0, 1.0);
+  result.qualityScore = std::clamp((0.55 * blurNorm) + (0.25 * lightNorm) +
+                                       (0.20 * symNorm),
+                                   0.0, 1.0);
   result.ok = result.issues.empty() && result.faceTemplate.size() >= 100;
   return result;
 }
@@ -515,7 +705,29 @@ FaceAnalysis analyzeFaceImage(const std::string &base64Image,
       return fromSdk;
     }
   }
-  return analyzeFaceImageLegacy(base64Image);
+  return analyzeFaceImageLegacy(base64Image, mode);
+}
+
+std::vector<std::string>
+validateCaptureConditions(const json::object *captureConditions) {
+  if (!captureConditions) {
+    return {"capture_conditions_missing"};
+  }
+
+  const auto ensureTrue = [&](const char *key, const char *issue,
+                              std::vector<std::string> &issues) {
+    const auto *v = captureConditions->if_contains(key);
+    if (!v || !v->is_bool() || !v->as_bool()) {
+      issues.push_back(issue);
+    }
+  };
+
+  std::vector<std::string> issues;
+  ensureTrue("no_glasses", "requires_no_glasses", issues);
+  ensureTrue("no_hat", "requires_no_hat", issues);
+  ensureTrue("no_accessories", "requires_no_accessories", issues);
+  ensureTrue("no_makeup", "requires_no_makeup", issues);
+  return issues;
 }
 
 std::string makeId() {
@@ -1512,6 +1724,11 @@ routeRequest(const http::request<http::string_body> &req,
       std::vector<double> faceTemplate;
       std::string biometricProvider = "legacy";
       double qualityScore = 0.0;
+      const json::object *captureConditions = nullptr;
+      if (obj.if_contains("capture_conditions") &&
+          obj.at("capture_conditions").is_object()) {
+        captureConditions = &obj.at("capture_conditions").as_object();
+      }
       if (hasTemplate) {
         for (const auto &v : obj.at("face_template").as_array()) {
           if (v.is_double()) {
@@ -1525,6 +1742,18 @@ routeRequest(const http::request<http::string_body> &req,
           }
         }
       } else {
+        const auto captureIssues = validateCaptureConditions(captureConditions);
+        if (!captureIssues.empty()) {
+          json::array issues;
+          for (const auto &issue : captureIssues) {
+            issues.push_back(json::value(issue));
+          }
+          return makeJsonResponse(
+              http::status::bad_request,
+              json::object{{"error", "capture conditions validation failed"},
+                           {"issues", issues}});
+        }
+
         const std::string base64Image =
             json::value_to<std::string>(obj.at("face_image_base64"));
         auto face = analyzeFaceImage(base64Image, "register");

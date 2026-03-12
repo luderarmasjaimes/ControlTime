@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libboost-all-dev \
     libopencv-dev \
+    opencv-data \
     libpq-dev \
     gdal-bin \
     ca-certificates \

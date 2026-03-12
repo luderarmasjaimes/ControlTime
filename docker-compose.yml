@@ -20,7 +20,7 @@ services:
       - MAPAS_PORT=8081
       - MAPAS_DATA_ROOT=/data
       - BIOMETRIC_PROVIDER=dermalog_cli
-      - DERMALOG_REQUIRED=true
+      - DERMALOG_REQUIRED=false
       - DERMALOG_CLI_PATH=/opt/dermalog-sdk/bin/dermalog-face-cli
       - DERMALOG_SDK_DIR=/opt/dermalog-sdk
       - AUTH_ADMIN_USERS=admin

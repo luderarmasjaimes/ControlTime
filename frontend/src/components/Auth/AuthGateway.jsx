@@ -181,14 +181,24 @@ const AuthGateway = ({ onAuthenticated }) => {
     const [faceGuide, setFaceGuide] = useState({
         detected: false,
         centered: false,
-        straight: false,
+        frontal: false,
+        eyesOpen: false,
+        mouthClosed: false,
+        stable: false,
         lighting: false,
         qualityReady: false,
-        notes: ['Alinea el rostro dentro del recuadro para iniciar analisis.'],
+        notes: ['Activa modo Registro y alinea el rostro para iniciar analisis.'],
+    })
+    const [manualChecks, setManualChecks] = useState({
+        noGlasses: false,
+        noHat: false,
+        noAccessories: false,
+        noMakeup: false,
     })
     const videoRef = useRef(null)
     const streamRef = useRef(null)
     const detectorRef = useRef(null)
+    const motionRef = useRef({ cx: 0, cy: 0, t: 0 })
 
     const canRegister = useMemo(() => {
         const valuesOk =
@@ -280,6 +290,22 @@ const AuthGateway = ({ onAuthenticated }) => {
         let timerId = null
 
         async function detectFaceLoop() {
+            if (mode !== 'register') {
+                setLiveFaceBox(null)
+                setFaceGuide({
+                    detected: false,
+                    centered: false,
+                    frontal: false,
+                    eyesOpen: false,
+                    mouthClosed: false,
+                    stable: false,
+                    lighting: false,
+                    qualityReady: false,
+                    notes: ['La validacion biometrica avanzada se activa en modo Registro.'],
+                })
+                return
+            }
+
             const video = videoRef.current
             if (!video || !cameraReady || video.videoWidth < 32 || video.videoHeight < 32) {
                 timerId = window.setTimeout(detectFaceLoop, 500)
@@ -317,7 +343,10 @@ const AuthGateway = ({ onAuthenticated }) => {
                     setFaceGuide({
                         detected: false,
                         centered: false,
-                        straight: false,
+                        frontal: false,
+                        eyesOpen: false,
+                        mouthClosed: false,
+                        stable: false,
                         lighting: false,
                         qualityReady: false,
                         notes: [
@@ -333,34 +362,85 @@ const AuthGateway = ({ onAuthenticated }) => {
                         video.videoWidth,
                         video.videoHeight
                     )
-                    const centered = offsetX < 0.12 && offsetY < 0.12
+                    const centered = offsetX < 0.1 && offsetY < 0.1
 
                     const aspect = bestFace.width / Math.max(1, bestFace.height)
-                    const straightByAspect = aspect > 0.65 && aspect < 1.05
+                    const frontalByAspect = aspect > 0.65 && aspect < 1.02
 
                     const leftEye = bestFace.landmarks.find((l) => l.type === 'leftEye')
                     const rightEye = bestFace.landmarks.find((l) => l.type === 'rightEye')
-                    const straightByEyes =
+                    const eyesAligned =
                         leftEye && rightEye
                             ? Math.abs(leftEye.locations[0].y - rightEye.locations[0].y) < bestFace.height * 0.08
                             : false
 
-                    const straight = straightByAspect || straightByEyes
+                    const eyeOpenness = (eye) => {
+                        if (!eye || !Array.isArray(eye.locations) || eye.locations.length < 4) {
+                            return 0
+                        }
+                        const xs = eye.locations.map((p) => p.x)
+                        const ys = eye.locations.map((p) => p.y)
+                        const width = Math.max(...xs) - Math.min(...xs)
+                        const height = Math.max(...ys) - Math.min(...ys)
+                        return height / Math.max(1, width)
+                    }
+
+                    const mouth = bestFace.landmarks.find((l) => l.type === 'mouth')
+                    const mouthRatio = (() => {
+                        if (!mouth || !Array.isArray(mouth.locations) || mouth.locations.length < 4) {
+                            return 0
+                        }
+                        const xs = mouth.locations.map((p) => p.x)
+                        const ys = mouth.locations.map((p) => p.y)
+                        const width = Math.max(...xs) - Math.min(...xs)
+                        const height = Math.max(...ys) - Math.min(...ys)
+                        return height / Math.max(1, width)
+                    })()
+
+                    const eyesOpen =
+                        eyeOpenness(leftEye) > 0.12 && eyeOpenness(rightEye) > 0.12
+                    const mouthClosed = mouthRatio > 0 && mouthRatio < 0.25
+
+                    const frontal = frontalByAspect && eyesAligned
+
+                    const now = performance.now()
+                    const cx = bestFace.x + bestFace.width / 2
+                    const cy = bestFace.y + bestFace.height / 2
+                    const prev = motionRef.current
+                    const dt = Math.max(1, now - prev.t)
+                    const speed = Math.hypot(cx - prev.cx, cy - prev.cy) / dt
+                    const stable = prev.t === 0 ? false : speed < 0.07
+                    motionRef.current = { cx, cy, t: now }
 
                     const brightness = brightnessScore(video, bestFace)
-                    const lighting = brightness > 70 && brightness < 200
+                    const lighting = brightness > 75 && brightness < 190
+
+                    const manualOk =
+                        manualChecks.noGlasses &&
+                        manualChecks.noHat &&
+                        manualChecks.noAccessories &&
+                        manualChecks.noMakeup
 
                     const notes = []
                     if (!centered) notes.push('Centra tu rostro dentro del recuadro punteado.')
-                    if (!straight) notes.push('Coloca la cara recta, sin giro lateral o inclinacion.')
+                    if (!frontal) notes.push('Coloca la cara recta, mirando de frente y sin giro lateral.')
+                    if (!eyesOpen) notes.push('Mantén los ojos abiertos y visibles.')
+                    if (!mouthClosed) notes.push('Mantén la boca cerrada durante la captura.')
+                    if (!stable) notes.push('Evita moverte: mantén la cabeza estable por unos segundos.')
                     if (!lighting) notes.push('Ajusta la iluminacion para evitar sombras o sobreexposicion.')
-                    notes.push('Validacion visual manual: ojos abiertos, boca cerrada, sin lentes, gorra ni accesorios.')
+                    if (!manualOk) {
+                        notes.push('Confirma condiciones: sin lentes, gorros, accesorios y sin maquillaje.')
+                    }
 
-                    const qualityReady = centered && straight && lighting
+                    const qualityReady =
+                        centered && frontal && eyesOpen && mouthClosed && stable && lighting && manualOk
                     setFaceGuide({
                         detected: true,
                         centered,
-                        straight,
+                        frontal,
+                        eyesOpen,
+                        mouthClosed,
+                        stable,
                         lighting,
                         qualityReady,
                         notes,
@@ -370,7 +450,10 @@ const AuthGateway = ({ onAuthenticated }) => {
                 setFaceGuide({
                     detected: false,
                     centered: false,
-                    straight: false,
+                    frontal: false,
+                    eyesOpen: false,
+                    mouthClosed: false,
+                    stable: false,
                     lighting: false,
                     qualityReady: false,
                     notes: [
@@ -395,7 +478,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 window.clearTimeout(timerId)
             }
         }
-    }, [cameraReady])
+    }, [cameraReady, manualChecks, mode])
 
     const handleFaceLogin = async () => {
         if (!videoRef.current || !cameraReady) {
@@ -447,6 +530,11 @@ const AuthGateway = ({ onAuthenticated }) => {
             return
         }
 
+        if (!faceGuide.qualityReady) {
+            setError('La calidad facial aun no cumple criterios. Ajusta postura, estabilidad y condiciones de captura.')
+            return
+        }
+
         const template = frameToTemplate(videoRef.current, liveFaceBox)
         const imageBase64 = frameToJpegBase64(videoRef.current, liveFaceBox)
         setCapturedTemplate(template)
@@ -471,6 +559,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 ...registerForm,
                 faceTemplate: capturedTemplate,
                 faceImageBase64: capturedImageBase64,
+                captureConditions: manualChecks,
             })
 
             const session = createSession(result.user)
@@ -509,7 +598,6 @@ const AuthGateway = ({ onAuthenticated }) => {
                         </div>
                         <div className="camera-stage">
                             <video ref={videoRef} autoPlay muted playsInline className="camera-preview" />
-                            <div className="face-guide-default" />
                             {liveFaceBox && (
                                 <div
                                     className="face-guide-box"
@@ -522,32 +610,87 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 />
                             )}
                         </div>
-                        <div className="face-guidance-panel">
-                            <div className="face-guidance-grid">
-                                <span className={faceGuide.detected ? 'ok' : 'warn'}>
-                                    {faceGuide.detected ? 'Rostro detectado' : 'Sin rostro detectado'}
-                                </span>
-                                <span className={faceGuide.centered ? 'ok' : 'warn'}>
-                                    {faceGuide.centered ? 'Rostro centrado' : 'Ajustar centrado'}
-                                </span>
-                                <span className={faceGuide.straight ? 'ok' : 'warn'}>
-                                    {faceGuide.straight ? 'Postura frontal' : 'Cara girada/inclinada'}
-                                </span>
-                                <span className={faceGuide.lighting ? 'ok' : 'warn'}>
-                                    {faceGuide.lighting ? 'Iluminacion correcta' : 'Mejorar iluminacion'}
-                                </span>
+                        {mode === 'register' && (
+                            <div className="face-guidance-panel">
+                                <div className="face-guidance-grid">
+                                    <span className={faceGuide.detected ? 'ok' : 'warn'}>
+                                        {faceGuide.detected ? 'Rostro detectado' : 'Sin rostro detectado'}
+                                    </span>
+                                    <span className={faceGuide.centered ? 'ok' : 'warn'}>
+                                        {faceGuide.centered ? 'Rostro centrado' : 'Ajustar centrado'}
+                                    </span>
+                                    <span className={faceGuide.frontal ? 'ok' : 'warn'}>
+                                        {faceGuide.frontal ? 'Mirada frontal' : 'Cara girada/inclinada'}
+                                    </span>
+                                    <span className={faceGuide.eyesOpen ? 'ok' : 'warn'}>
+                                        {faceGuide.eyesOpen ? 'Ojos abiertos' : 'Abrir ojos'}
+                                    </span>
+                                    <span className={faceGuide.mouthClosed ? 'ok' : 'warn'}>
+                                        {faceGuide.mouthClosed ? 'Boca cerrada' : 'Cerrar boca'}
+                                    </span>
+                                    <span className={faceGuide.stable ? 'ok' : 'warn'}>
+                                        {faceGuide.stable ? 'Sin movimiento' : 'No moverse'}
+                                    </span>
+                                    <span className={faceGuide.lighting ? 'ok' : 'warn'}>
+                                        {faceGuide.lighting ? 'Iluminacion correcta' : 'Mejorar iluminacion'}
+                                    </span>
+                                </div>
+
+                                <div className="manual-checks">
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={manualChecks.noGlasses}
+                                            onChange={(event) =>
+                                                setManualChecks((prev) => ({ ...prev, noGlasses: event.target.checked }))
+                                            }
+                                        />
+                                        Sin lentes
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={manualChecks.noHat}
+                                            onChange={(event) =>
+                                                setManualChecks((prev) => ({ ...prev, noHat: event.target.checked }))
+                                            }
+                                        />
+                                        Sin gorros
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={manualChecks.noAccessories}
+                                            onChange={(event) =>
+                                                setManualChecks((prev) => ({ ...prev, noAccessories: event.target.checked }))
+                                            }
+                                        />
+                                        Sin accesorios
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={manualChecks.noMakeup}
+                                            onChange={(event) =>
+                                                setManualChecks((prev) => ({ ...prev, noMakeup: event.target.checked }))
+                                            }
+                                        />
+                                        Sin maquillaje
+                                    </label>
+                                </div>
+
+                                <ul>
+                                    {faceGuide.notes.map((note) => (
+                                        <li key={note}>{note}</li>
+                                    ))}
+                                </ul>
+                                <p className={faceGuide.qualityReady ? 'quality-ready ok' : 'quality-ready warn'}>
+                                    {faceGuide.qualityReady
+                                        ? 'Calidad sugerida: lista para captura biometrica de registro.'
+                                        : 'Calidad sugerida: ajusta postura, movimiento y condiciones antes de capturar.'}
+                                </p>
                             </div>
-                            <ul>
-                                {faceGuide.notes.map((note) => (
-                                    <li key={note}>{note}</li>
-                                ))}
-                            </ul>
-                            <p className={faceGuide.qualityReady ? 'quality-ready ok' : 'quality-ready warn'}>
-                                {faceGuide.qualityReady
-                                    ? 'Calidad sugerida: lista para captura biometrica.'
-                                    : 'Calidad sugerida: ajusta postura/iluminacion antes de capturar.'}
-                            </p>
-                        </div>
+                        )}
                     </div>
 
                     <div className="mode-switch">
