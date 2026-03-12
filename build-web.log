@@ -1,0 +1,63 @@
+time="2026-03-11T18:38:02-05:00" level=warning msg="Docker Compose requires buildx plugin to be installed"
+ Image informecliente-web Building 
+ Image informecliente-web Building 
+Sending build context to Docker daemon  14.65kB
+
+Step 1/11 : FROM ubuntu:24.04
+ ---> d1e2e92c075e
+Step 2/11 : ARG DEBIAN_FRONTEND=noninteractive
+ ---> Using cache
+ ---> 47c82444e598
+Step 3/11 : RUN apt-get update && apt-get install -y --no-install-recommends     build-essential     cmake     pkg-config     libboost-all-dev     libopencv-dev     libpq-dev     gdal-bin     && rm -rf /var/lib/apt/lists/*
+ ---> Using cache
+ ---> eb30975ef686
+Step 4/11 : WORKDIR /app
+ ---> Using cache
+ ---> 9dee5966eb8a
+Step 5/11 : COPY . /app
+ ---> b239833faa9b
+Step 6/11 : RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release     && cmake --build build --config Release -j2
+ ---> Running in 987869c95e05
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found Boost: /usr/lib/x86_64-linux-gnu/cmake/Boost-1.83.0/BoostConfig.cmake (found version "1.83.0") found components: system json 
+-- Found OpenCV: /usr (found version "4.6.0") 
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
+-- Configuring done (0.4s)
+-- Generating done (0.0s)
+-- Build files have been written to: /app/build
+[ 50%] Building CXX object CMakeFiles/mapas_backend.dir/src/main.cpp.o
+[100%] Linking CXX executable mapas_backend
+[100%] Built target mapas_backend
+ ---> Removed intermediate container 987869c95e05
+ ---> ffdf24848b3e
+Step 7/11 : RUN mkdir -p /data
+ ---> Running in af66b15bd39d
+ ---> Removed intermediate container af66b15bd39d
+ ---> 42d316b427af
+Step 8/11 : VOLUME ["/data"]
+ ---> Running in 33a0aec93b77
+ ---> Removed intermediate container 33a0aec93b77
+ ---> 21e5019b1997
+Step 9/11 : EXPOSE 8081
+ ---> Running in c5f8e6fa16ba
+ ---> Removed intermediate container c5f8e6fa16ba
+ ---> 44dbce2fdef2
+Step 10/11 : CMD ["/app/build/mapas_backend"]
+ ---> Running in 544a05f7c01b
+ ---> Removed intermediate container 544a05f7c01b
+ ---> 57ac22c6e0ff
+Step 11/11 : LABEL com.docker.compose.image.builder=classic
+ ---> Running in 83b6c5698bd7
+ ---> Removed intermediate container 83b6c5698bd7
+ ---> b873b3aa4431
+Successfully built b873b3aa4431
+Successfully tagged informecliente-web:latest
+ Image informecliente-web Built 
+ Image informecliente-web Built 

@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Plataforma de procesamiento satelital en tiempo real (ECW -> MBTiles)
 
 Solución base para baja latencia con:
@@ -195,5 +194,32 @@ powershell -ExecutionPolicy Bypass -File .\scripts\convert-ecw-host.ps1
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\regression-full.ps1
 ```
-=======
+
+## Autenticación y biometría (Dermalog)
+
+El sistema ahora incluye:
+
+- Login obligatorio con biometría facial o password.
+- Control de acceso por rol (`admin`/`operator`).
+- Centro de auditoría protegido por backend (solo `admin`).
+
+### Dermalog SDK en Docker (Debian)
+
+1. Define ruta del SDK en host Windows:
+
+```powershell
+$env:DERMALOG_SDK_HOST_DIR = 'C:/dermalog/dermalog-face-sdk-deb_6.11.0_amd64'
+```
+
+2. Levanta backend:
+
+```powershell
+docker-compose up -d --build web
+```
+
+3. El contenedor instalará automáticamente los `.deb` desde la carpeta montada y usará el proveedor biométrico `dermalog_cli`.
+
+Ver detalles de contrato del CLI y variables en:
+
+- `backend/DERMALOG_INTEGRATION.md`
 

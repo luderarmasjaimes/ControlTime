@@ -1,54 +1,38 @@
 services:
-  backend:
+  db:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_USER: sensors
+      POSTGRES_PASSWORD: sensors_pass
+      POSTGRES_DB: sensors_db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db_scripts/01_init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./db_scripts/02_seed_demo.sql:/docker-entrypoint-initdb.d/02_seed_demo.sql:ro
+      - ./db_scripts/03_auth_biometric.sql:/docker-entrypoint-initdb.d/03_auth_biometric.sql:ro
+  web:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    container_name: mapas-backend
     ports:
       - "8081:8081"
-    volumes:
-      - ./data:/data
-      - ./ecw-plugin:/opt/ecw:ro
     environment:
-      - MAPAS_DATA_ROOT=/data
-      - MAPAS_BIND_ADDRESS=0.0.0.0
+      - DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=sensors_pass
       - MAPAS_PORT=8081
-
-  tileserver:
-    image: ghcr.io/consbio/mbtileserver:latest
-    container_name: mapas-tileserver
-    command: [ "--dir", "/data/incoming", "--port", "8000" ]
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/data
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: mapas-frontend
-    ports:
-      - "5173:80"
-    volumes:
-      - ./data:/data
+      - MAPAS_DATA_ROOT=/data
+      - BIOMETRIC_PROVIDER=dermalog_cli
+      - DERMALOG_REQUIRED=true
+      - DERMALOG_CLI_PATH=/opt/dermalog-sdk/bin/dermalog-face-cli
+      - DERMALOG_SDK_DIR=/opt/dermalog-sdk
+      - AUTH_ADMIN_USERS=admin
     depends_on:
-      - backend
-      - tileserver
       - db
-
-  db:
-    image: postgis/postgis:15-3.3
-    container_name: mapas-db
-    environment:
-      - POSTGRES_USER=mining_user
-      - POSTGRES_PASSWORD=mining_pass
-      - POSTGRES_DB=mining_db
-    ports:
-      - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./db_scripts:/docker-entrypoint-initdb.d:ro
+      - ./data:/data
+      - ${DERMALOG_SDK_HOST_DIR:-./dermalog-sdk}:/opt/dermalog-sdk:ro
 
 volumes:
-  postgres_data:
+  db_data: {}
+
+networks:
+  default:
+    driver: bridge

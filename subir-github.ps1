@@ -1,95 +1,136 @@
-# ==========================================
-# CONFIGURACION
-# ==========================================
+param(
+    [string]$RepoPath = "C:\InformeCliente",
+    [string]$RepoUrl = "https://github.com/luderarmasjaimes/ControlTime.git",
+    [string]$Branch = "main",
+    [string]$CommitMessage,
+    [switch]$RunChecks,
+    [switch]$ForcePush,
+    [switch]$DryRun
+)
 
-$repoPath = "C:\InformeCliente"
-$repoURL  = "https://github.com/luderarmasjaimes/ControlTime.git"
-$branch   = "main"
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-Write-Host "====================================="
-Write-Host "SUBIDA AUTOMATICA A GITHUB"
-Write-Host "====================================="
+$GlobalGitName = "Luder Armas"
+$GlobalGitEmail = "luder.eder.armas.jaimes.leaj@gmail.com"
 
-# ==========================================
-# IR AL PROYECTO
-# ==========================================
-
-Set-Location $repoPath
-
-Write-Host "Directorio actual:"
-Get-Location
-
-# ==========================================
-# BORRAR HISTORIAL GIT
-# ==========================================
-
-if (Test-Path ".git") {
-    Write-Host "Eliminando historial Git antiguo..."
-    Remove-Item ".git" -Recurse -Force
+function Write-Section {
+    param([string]$Text)
+    Write-Host ""
+    Write-Host "====================================="
+    Write-Host $Text
+    Write-Host "====================================="
 }
 
-# ==========================================
-# CREAR .gitignore
-# ==========================================
+function Invoke-Git {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$GitArgs
+    )
 
-Write-Host "Creando .gitignore..."
+    if ($DryRun) {
+        Write-Host "[DRY-RUN] git $($GitArgs -join ' ')"
+        return ""
+    }
 
-@"
-data/
-tmp/
+    Write-Host "> git $($GitArgs -join ' ')"
+    $output = & git @GitArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fallo comando: git $($GitArgs -join ' ')"
+    }
+    return $output
+}
 
-*.ecw
-*.mbtiles
-*.tif
-*.msi
-*.zip
+Write-Section "SINCRONIZACION AUTOMATICA A GITHUB"
 
-node_modules/
-dist/
-build/
-.env
-"@ | Out-File ".gitignore" -Encoding UTF8
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    throw "Git no esta instalado o no esta en PATH."
+}
 
-# ==========================================
-# INICIALIZAR GIT
-# ==========================================
+if (-not (Test-Path $RepoPath)) {
+    throw "No existe la ruta del repositorio: $RepoPath"
+}
 
-Write-Host "Inicializando repositorio Git..."
+Set-Location $RepoPath
+Write-Host "Directorio actual: $(Get-Location)"
 
-git init
+Write-Section "CONFIGURANDO GIT (USUARIO Y EMAIL)"
+Invoke-Git @("config", "--global", "user.name", $GlobalGitName)
+Invoke-Git @("config", "--global", "user.email", $GlobalGitEmail)
 
-# ==========================================
-# AGREGAR ARCHIVOS
-# ==========================================
+if (-not (Test-Path ".git")) {
+    Write-Host "No se encontro .git, inicializando repositorio..."
+    Invoke-Git @("init")
+}
 
-Write-Host "Agregando archivos..."
+Write-Host "Asegurando rama: $Branch"
+$currentBranch = (& git rev-parse --abbrev-ref HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "No se pudo obtener la rama actual."
+}
 
-git add .
+if ($currentBranch -eq "HEAD") {
+    Invoke-Git @("checkout", "-B", $Branch)
+}
+elseif ($currentBranch -ne $Branch) {
+    & git checkout $Branch 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Git @("checkout", "-b", $Branch)
+    }
+}
 
-# ==========================================
-# COMMIT
-# ==========================================
+Write-Section "CONFIGURANDO REMOTO"
+$remoteUrl = (& git remote get-url origin 2>$null)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($remoteUrl)) {
+    Invoke-Git @("remote", "add", "origin", $RepoUrl)
+}
+elseif ($remoteUrl.Trim() -ne $RepoUrl) {
+    Invoke-Git @("remote", "set-url", "origin", $RepoUrl)
+}
 
-Write-Host "Creando commit..."
+if ($RunChecks) {
+    Write-Section "EJECUTANDO VALIDACIONES LOCALES"
+    if (Test-Path "frontend\package.json") {
+        if ($DryRun) {
+            Write-Host "[DRY-RUN] npm --prefix frontend run test:run --if-present"
+        }
+        else {
+            & npm --prefix frontend run test:run --if-present
+            if ($LASTEXITCODE -ne 0) {
+                throw "Las pruebas frontend fallaron. Se cancela el push."
+            }
+        }
+    }
+    else {
+        Write-Host "No se encontro frontend/package.json. Se omiten pruebas."
+    }
+}
 
-git commit -m "Initial clean repository upload"
+Write-Section "PREPARANDO CAMBIOS"
+Invoke-Git @("add", "-A")
 
-# ==========================================
-# CONECTAR GITHUB
-# ==========================================
+$status = (& git status --porcelain)
+if ($LASTEXITCODE -ne 0) {
+    throw "No se pudo obtener el estado de git."
+}
 
-Write-Host "Conectando repositorio remoto..."
+if ([string]::IsNullOrWhiteSpace(($status | Out-String))) {
+    Write-Host "No hay cambios para commit."
+}
+else {
+    if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $CommitMessage = "chore: sync automatica $timestamp"
+    }
 
-git remote add origin $repoURL
+    Invoke-Git @("commit", "-m", $CommitMessage)
+}
 
-# ==========================================
-# SUBIR
-# ==========================================
+Write-Section "SUBIENDO A GITHUB"
+$pushArgs = @("push", "-u", "origin", $Branch)
+if ($ForcePush) {
+    $pushArgs = @("push", "-u", "origin", $Branch, "--force-with-lease")
+}
+Invoke-Git $pushArgs
 
-Write-Host "Subiendo a GitHub..."
-
-git push -u origin $branch --force
-
-Write-Host "====================================="
-Write-Host "PROCESO TERMINADO"
-Write-Host "====================================="
+Write-Section "PROCESO TERMINADO OK"

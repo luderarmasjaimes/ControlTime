@@ -1,8 +1,12 @@
 name: CI
 
 on:
-  push: {}
+  push:
+    branches:
+      - main
+      - develop
   pull_request: {}
+  workflow_dispatch: {}
 
 jobs:
   build-and-test:
@@ -31,6 +35,10 @@ jobs:
         run: npm run test:run --if-present
         working-directory: frontend
 
+      - name: Run auth API contract tests
+        run: npm run test:api --if-present
+        working-directory: frontend
+
       - name: Start preview server
         run: npx vite preview --port 4173 &
         working-directory: frontend
@@ -43,3 +51,13 @@ jobs:
       - name: Run Playwright E2E
         run: npx playwright test --reporter=list
         working-directory: frontend
+
+  sync-script-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Smoke test PowerShell sync script (dry-run)
+        shell: pwsh
+        run: |
+          ./subir-github.ps1 -RepoPath "${{ github.workspace }}" -Branch "${{ github.ref_name }}" -DryRun

@@ -1,0 +1,20 @@
+name: Auth Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_url:
+        description: "Backend base URL (example: http://localhost:8081 or public env)"
+        required: true
+        default: "http://localhost:8081"
+
+jobs:
+  auth-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run auth smoke script
+        shell: pwsh
+        run: |
+          ./scripts/smoke-auth-e2e.ps1 -BackendUrl "${{ github.event.inputs.backend_url }}"
