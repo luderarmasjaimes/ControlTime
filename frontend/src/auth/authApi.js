@@ -18,7 +18,10 @@ async function parseJsonResponse(response) {
     }
 
     if (!response.ok) {
-        const message = payload.error || `Error HTTP ${response.status}`
+        let message = payload.error || `Error HTTP ${response.status}`
+        if (Array.isArray(payload.issues) && payload.issues.length > 0) {
+            message = `${message}: ${payload.issues.join(', ')}`
+        }
         throw new Error(message)
     }
 

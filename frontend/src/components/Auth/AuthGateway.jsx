@@ -22,6 +22,22 @@ import {
 } from '../../auth/authApi'
 
 const DEFAULT_COMPANIES = ['Minera Raura', 'Compania Minera Volcan', 'Minera Antamina', 'Minera Cerro Verde']
+const GUIDE_BOX_PADDING = 0.18
+
+function getCropFromFaceBox(videoWidth, videoHeight, faceBox) {
+    if (!faceBox) {
+        return { x: 0, y: 0, width: videoWidth, height: videoHeight }
+    }
+
+    const expandX = faceBox.width * GUIDE_BOX_PADDING
+    const expandY = faceBox.height * GUIDE_BOX_PADDING
+    const x = Math.max(0, Math.floor(faceBox.x - expandX))
+    const y = Math.max(0, Math.floor(faceBox.y - expandY))
+    const width = Math.min(videoWidth - x, Math.floor(faceBox.width + expandX * 2))
+    const height = Math.min(videoHeight - y, Math.floor(faceBox.height + expandY * 2))
+
+    return { x, y, width, height }
+}
 
 function normalizeVector(vector) {
     const max = Math.max(...vector, 1)
@@ -31,14 +47,34 @@ function normalizeVector(vector) {
     return vector.map((v) => Number((v / max).toFixed(6)))
 }
 
-function frameToTemplate(videoElement) {
+function frameToTemplate(videoElement, cropBox) {
+    const sourceWidth = videoElement.videoWidth || 960
+    const sourceHeight = videoElement.videoHeight || 540
+    const crop = getCropFromFaceBox(sourceWidth, sourceHeight, cropBox)
+
+    const sourceCanvas = document.createElement('canvas')
+    sourceCanvas.width = crop.width
+    sourceCanvas.height = crop.height
+    const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true })
+    sourceContext.drawImage(
+        videoElement,
+        crop.x,
+        crop.y,
+        crop.width,
+        crop.height,
+        0,
+        0,
+        crop.width,
+        crop.height
+    )
+
     const size = 24
     const canvas = document.createElement('canvas')
     canvas.width = size
     canvas.height = size
     const context = canvas.getContext('2d', { willReadFrequently: true })
 
-    context.drawImage(videoElement, 0, 0, size, size)
+    context.drawImage(sourceCanvas, 0, 0, size, size)
     const pixels = context.getImageData(0, 0, size, size).data
 
     const vector = []
@@ -53,15 +89,66 @@ function frameToTemplate(videoElement) {
     return normalizeVector(vector)
 }
 
-function frameToJpegBase64(videoElement) {
+function frameToJpegBase64(videoElement, cropBox) {
+    const sourceWidth = videoElement.videoWidth || 960
+    const sourceHeight = videoElement.videoHeight || 540
+    const crop = getCropFromFaceBox(sourceWidth, sourceHeight, cropBox)
+
     const canvas = document.createElement('canvas')
-    canvas.width = videoElement.videoWidth || 960
-    canvas.height = videoElement.videoHeight || 540
+    canvas.width = crop.width
+    canvas.height = crop.height
     const context = canvas.getContext('2d')
-    context.drawImage(videoElement, 0, 0, canvas.width, canvas.height)
+    context.drawImage(
+        videoElement,
+        crop.x,
+        crop.y,
+        crop.width,
+        crop.height,
+        0,
+        0,
+        crop.width,
+        crop.height
+    )
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
     const [, base64 = ''] = dataUrl.split(',')
     return base64
+}
+
+function centerOffsetRatio(box, width, height) {
+    const centerX = box.x + box.width / 2
+    const centerY = box.y + box.height / 2
+    const offsetX = Math.abs(centerX - width / 2) / width
+    const offsetY = Math.abs(centerY - height / 2) / height
+    return { offsetX, offsetY }
+}
+
+function brightnessScore(videoElement, box) {
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(64, Math.floor(box.width / 2))
+    canvas.height = Math.max(64, Math.floor(box.height / 2))
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    context.drawImage(
+        videoElement,
+        box.x,
+        box.y,
+        box.width,
+        box.height,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+    )
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+
+    let sum = 0
+    for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i]
+        const g = pixels[i + 1]
+        const b = pixels[i + 2]
+        sum += r * 0.299 + g * 0.587 + b * 0.114
+    }
+
+    return sum / (pixels.length / 4)
 }
 
 const AuthGateway = ({ onAuthenticated }) => {
@@ -89,8 +176,19 @@ const AuthGateway = ({ onAuthenticated }) => {
 
     const [capturedTemplate, setCapturedTemplate] = useState(null)
     const [capturedImageBase64, setCapturedImageBase64] = useState('')
+    const [liveFaceBox, setLiveFaceBox] = useState(null)
+    const [frameMetrics, setFrameMetrics] = useState({ width: 1, height: 1 })
+    const [faceGuide, setFaceGuide] = useState({
+        detected: false,
+        centered: false,
+        straight: false,
+        lighting: false,
+        qualityReady: false,
+        notes: ['Alinea el rostro dentro del recuadro para iniciar analisis.'],
+    })
     const videoRef = useRef(null)
     const streamRef = useRef(null)
+    const detectorRef = useRef(null)
 
     const canRegister = useMemo(() => {
         const valuesOk =
@@ -99,8 +197,8 @@ const AuthGateway = ({ onAuthenticated }) => {
             registerForm.dni.trim().length >= 8 &&
             registerForm.username.trim().length >= 4 &&
             registerForm.password.trim().length >= 6
-        return valuesOk && Array.isArray(capturedTemplate)
-    }, [registerForm, capturedTemplate])
+        return valuesOk && Array.isArray(capturedTemplate) && Boolean(capturedImageBase64)
+    }, [registerForm, capturedTemplate, capturedImageBase64])
 
     useEffect(() => {
         const session = getSession()
@@ -177,6 +275,128 @@ const AuthGateway = ({ onAuthenticated }) => {
         }
     }, [])
 
+    useEffect(() => {
+        let cancelled = false
+        let timerId = null
+
+        async function detectFaceLoop() {
+            const video = videoRef.current
+            if (!video || !cameraReady || video.videoWidth < 32 || video.videoHeight < 32) {
+                timerId = window.setTimeout(detectFaceLoop, 500)
+                return
+            }
+
+            setFrameMetrics({ width: video.videoWidth, height: video.videoHeight })
+
+            try {
+                let bestFace = null
+
+                if ('FaceDetector' in window) {
+                    if (!detectorRef.current) {
+                        detectorRef.current = new window.FaceDetector({
+                            maxDetectedFaces: 1,
+                            fastMode: true,
+                        })
+                    }
+
+                    const detections = await detectorRef.current.detect(video)
+                    if (detections.length > 0) {
+                        const box = detections[0].boundingBox
+                        bestFace = {
+                            x: box.x,
+                            y: box.y,
+                            width: box.width,
+                            height: box.height,
+                            landmarks: detections[0].landmarks || [],
+                        }
+                    }
+                }
+
+                if (!bestFace) {
+                    setLiveFaceBox(null)
+                    setFaceGuide({
+                        detected: false,
+                        centered: false,
+                        straight: false,
+                        lighting: false,
+                        qualityReady: false,
+                        notes: [
+                            'No se detecta rostro. Acercate y mira al frente.',
+                            'Evita lentes oscuros, gorra y accesorios al capturar.',
+                        ],
+                    })
+                } else {
+                    setLiveFaceBox(bestFace)
+
+                    const { offsetX, offsetY } = centerOffsetRatio(
+                        bestFace,
+                        video.videoWidth,
+                        video.videoHeight
+                    )
+                    const centered = offsetX < 0.12 && offsetY < 0.12
+
+                    const aspect = bestFace.width / Math.max(1, bestFace.height)
+                    const straightByAspect = aspect > 0.65 && aspect < 1.05
+
+                    const leftEye = bestFace.landmarks.find((l) => l.type === 'leftEye')
+                    const rightEye = bestFace.landmarks.find((l) => l.type === 'rightEye')
+                    const straightByEyes =
+                        leftEye && rightEye
+                            ? Math.abs(leftEye.locations[0].y - rightEye.locations[0].y) < bestFace.height * 0.08
+                            : false
+
+                    const straight = straightByAspect || straightByEyes
+
+                    const brightness = brightnessScore(video, bestFace)
+                    const lighting = brightness > 70 && brightness < 200
+
+                    const notes = []
+                    if (!centered) notes.push('Centra tu rostro dentro del recuadro punteado.')
+                    if (!straight) notes.push('Coloca la cara recta, sin giro lateral o inclinacion.')
+                    if (!lighting) notes.push('Ajusta la iluminacion para evitar sombras o sobreexposicion.')
+                    notes.push('Validacion visual manual: ojos abiertos, boca cerrada, sin lentes, gorra ni accesorios.')
+
+                    const qualityReady = centered && straight && lighting
+                    setFaceGuide({
+                        detected: true,
+                        centered,
+                        straight,
+                        lighting,
+                        qualityReady,
+                        notes,
+                    })
+                }
+            } catch {
+                setFaceGuide({
+                    detected: false,
+                    centered: false,
+                    straight: false,
+                    lighting: false,
+                    qualityReady: false,
+                    notes: [
+                        'El navegador no soporta deteccion facial avanzada en tiempo real.',
+                        'Alinea manualmente el rostro en el recuadro y evita accesorios.',
+                    ],
+                })
+            }
+
+            if (!cancelled) {
+                timerId = window.setTimeout(detectFaceLoop, 500)
+            }
+        }
+
+        if (cameraReady) {
+            detectFaceLoop()
+        }
+
+        return () => {
+            cancelled = true
+            if (timerId) {
+                window.clearTimeout(timerId)
+            }
+        }
+    }, [cameraReady])
+
     const handleFaceLogin = async () => {
         if (!videoRef.current || !cameraReady) {
             setError('La camara no esta lista.')
@@ -188,8 +408,8 @@ const AuthGateway = ({ onAuthenticated }) => {
         setMessage('')
 
         try {
-            const template = frameToTemplate(videoRef.current)
-            const imageBase64 = frameToJpegBase64(videoRef.current)
+            const template = frameToTemplate(videoRef.current, liveFaceBox)
+            const imageBase64 = frameToJpegBase64(videoRef.current, liveFaceBox)
             const result = await loginWithFace({ company: loginForm.company, template, imageBase64 })
             const user = result.user
             const score = result.score || 0
@@ -227,8 +447,8 @@ const AuthGateway = ({ onAuthenticated }) => {
             return
         }
 
-        const template = frameToTemplate(videoRef.current)
-        const imageBase64 = frameToJpegBase64(videoRef.current)
+        const template = frameToTemplate(videoRef.current, liveFaceBox)
+        const imageBase64 = frameToJpegBase64(videoRef.current, liveFaceBox)
         setCapturedTemplate(template)
         setCapturedImageBase64(imageBase64)
         setMessage('Registro facial capturado correctamente.')
@@ -287,7 +507,47 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 {cameraReady ? 'Activa' : 'Sin acceso'}
                             </span>
                         </div>
-                        <video ref={videoRef} autoPlay muted playsInline className="camera-preview" />
+                        <div className="camera-stage">
+                            <video ref={videoRef} autoPlay muted playsInline className="camera-preview" />
+                            <div className="face-guide-default" />
+                            {liveFaceBox && (
+                                <div
+                                    className="face-guide-box"
+                                    style={{
+                                        left: `${(liveFaceBox.x / frameMetrics.width) * 100}%`,
+                                        top: `${(liveFaceBox.y / frameMetrics.height) * 100}%`,
+                                        width: `${(liveFaceBox.width / frameMetrics.width) * 100}%`,
+                                        height: `${(liveFaceBox.height / frameMetrics.height) * 100}%`,
+                                    }}
+                                />
+                            )}
+                        </div>
+                        <div className="face-guidance-panel">
+                            <div className="face-guidance-grid">
+                                <span className={faceGuide.detected ? 'ok' : 'warn'}>
+                                    {faceGuide.detected ? 'Rostro detectado' : 'Sin rostro detectado'}
+                                </span>
+                                <span className={faceGuide.centered ? 'ok' : 'warn'}>
+                                    {faceGuide.centered ? 'Rostro centrado' : 'Ajustar centrado'}
+                                </span>
+                                <span className={faceGuide.straight ? 'ok' : 'warn'}>
+                                    {faceGuide.straight ? 'Postura frontal' : 'Cara girada/inclinada'}
+                                </span>
+                                <span className={faceGuide.lighting ? 'ok' : 'warn'}>
+                                    {faceGuide.lighting ? 'Iluminacion correcta' : 'Mejorar iluminacion'}
+                                </span>
+                            </div>
+                            <ul>
+                                {faceGuide.notes.map((note) => (
+                                    <li key={note}>{note}</li>
+                                ))}
+                            </ul>
+                            <p className={faceGuide.qualityReady ? 'quality-ready ok' : 'quality-ready warn'}>
+                                {faceGuide.qualityReady
+                                    ? 'Calidad sugerida: lista para captura biometrica.'
+                                    : 'Calidad sugerida: ajusta postura/iluminacion antes de capturar.'}
+                            </p>
+                        </div>
                     </div>
 
                     <div className="mode-switch">
