@@ -10,30 +10,139 @@ services:
       - ./db_scripts/01_init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
       - ./db_scripts/02_seed_demo.sql:/docker-entrypoint-initdb.d/02_seed_demo.sql:ro
       - ./db_scripts/03_auth_biometric.sql:/docker-entrypoint-initdb.d/03_auth_biometric.sql:ro
+      - ./db_scripts/04_telemetry_schema_v2.sql:/docker-entrypoint-initdb.d/04_telemetry_schema_v2.sql:ro
+      - ./db_scripts/06_seed_users_raura.sql:/docker-entrypoint-initdb.d/06_seed_users_raura.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
   web:
     build:
       context: ./backend
     ports:
-      - "8081:8081"
+      - "8082:8081"
+      - "8443:8443"
     environment:
       - DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=sensors_pass
       - MAPAS_PORT=8081
       - MAPAS_DATA_ROOT=/data
       - BIOMETRIC_PROVIDER=dermalog_cli
       - DERMALOG_REQUIRED=false
-      - DERMALOG_CLI_PATH=/opt/dermalog-sdk/bin/dermalog-face-cli
-      - DERMALOG_SDK_DIR=/opt/dermalog-sdk
+      - DERMALOG_CLI_PATH=/opt/dermalog/bin/dermalog-face-cli
+      - DERMALOG_SDK_DIR=/opt/dermalog
       - BIOMETRIC_DNN_ENABLE=${BIOMETRIC_DNN_ENABLE:-false}
       - BIOMETRIC_DNN_MODEL=/opt/biometric-models/face_qc.onnx
       - BIOMETRIC_DNN_LABELS=${BIOMETRIC_DNN_LABELS:-glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal}
       - BIOMETRIC_DNN_THRESHOLD=${BIOMETRIC_DNN_THRESHOLD:-0.72}
+      - AI_ENGINE_URL=http://ai_engine:5000
+      - AI_ENGINE_TIMEOUT_MS=120
+      - AI_ENGINE_MAX_IMAGE_BYTES=450000
+      - BIOMETRIC_IMAGE_OPTIMIZER_ENABLE=false
+      - BIOMETRIC_MAX_PIXELS=921600
       - AUTH_ADMIN_USERS=admin
+      - MINING_GATEWAY_PORT=8443
+      - TLS_CERT_PATH=/etc/mining-gateway/certs/server.crt
+      - TLS_KEY_PATH=/etc/mining-gateway/certs/server.key
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      ai_engine:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - backend
     volumes:
       - ./data:/data
-      - ${DERMALOG_SDK_HOST_DIR:-./dermalog-sdk}:/opt/dermalog-sdk:ro
+      - ${DERMALOG_SDK_HOST_DIR:-./dermalog-sdk}:/opt/dermalog:ro
       - ${BIOMETRIC_MODEL_HOST_DIR:-./biometric-models}:/opt/biometric-models:ro
+      - ./certs:/etc/mining-gateway/certs:ro
+      
+
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8081/health', timeout=3); print('ok')\" >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 1g
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  tileserver:
+    image: ghcr.io/consbio/mbtileserver:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/tilesets:ro
+    healthcheck:
+      # mbtileserver returns 404 on /; use JSON catalog endpoint
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8000/services || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  ai_engine:
+    build:
+      context: ./ai_engine
+      dockerfile: Dockerfile.ai
+    image: informe-ai-engine:latest
+    restart: unless-stopped
+    networks:
+      - default
+    expose:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      web:
+        condition: service_healthy
+      tileserver:
+        condition: service_started
+    volumes:
+      - ./data:/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.2'
+          memory: 128M
 
 volumes:
   db_data: {}

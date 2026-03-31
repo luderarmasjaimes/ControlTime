@@ -43,3 +43,6 @@ CREATE INDEX IF NOT EXISTS idx_auth_face_templates_user_id ON auth_face_template
 CREATE TRIGGER update_auth_users_modtime
 BEFORE UPDATE ON auth_users
 FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+
+-- Backend login/register expect face_template on auth_users (see ensureAuthSchemaPg in main.cpp).
+ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS face_template JSONB NOT NULL DEFAULT '[]'::jsonb;
