@@ -1,9 +1,17 @@
 param(
-  [string]$ComposeFile = "c:\mapas\docker-compose.yml",
-  [string]$WorkspaceRoot = "c:\mapas"
+  [string]$ComposeFile = "",
+  [string]$WorkspaceRoot = ""
 )
 
 $ErrorActionPreference = "Continue"
+
+$ScriptDir = Split-Path -Parent $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+  $WorkspaceRoot = Split-Path -Parent $ScriptDir
+}
+if ([string]::IsNullOrWhiteSpace($ComposeFile)) {
+  $ComposeFile = Join-Path $WorkspaceRoot "docker-compose.yml"
+}
 
 function Assert-DockerAvailable {
   try {
@@ -33,7 +41,12 @@ function Invoke-CheckedDocker {
 Assert-DockerAvailable
 
 Write-Host "[1/8] Backend en ejecución..."
-Invoke-CheckedDocker -Command { docker compose -f $ComposeFile up -d backend | Out-Host } -ErrorMessage "No se pudo levantar el backend con docker compose."
+Invoke-CheckedDocker -Command { docker-compose -f $ComposeFile up -d web | Out-Host } -ErrorMessage "No se pudo levantar el servicio web con docker-compose."
+
+$webContainerId = (docker-compose -f $ComposeFile ps -q web 2>$null | Select-Object -First 1)
+if ([string]::IsNullOrWhiteSpace($webContainerId)) {
+  throw "No se pudo resolver el contenedor del servicio web."
+}
 
 Write-Host "[2/8] Verificando carpeta plugin host..."
 $pluginHost = Join-Path $WorkspaceRoot "ecw-plugin"
@@ -50,10 +63,10 @@ if (-not (Test-Path $pluginHost)) {
 }
 
 Write-Host "[3/8] Verificando mount /opt/ecw en contenedor..."
-docker exec mapas-backend sh -lc "ls -la /opt/ecw || true" | Out-Host
+docker exec $webContainerId sh -lc "ls -la /opt/ecw || true" | Out-Host
 
 Write-Host "[4/8] Listando binarios .so del plugin..."
-$soList = docker exec mapas-backend sh -lc "find /opt/ecw -type f \( -name '*.so' -o -name '*.so.*' \) 2>/dev/null"
+$soList = docker exec $webContainerId sh -lc "find /opt/ecw -type f \( -name '*.so' -o -name '*.so.*' \) 2>/dev/null"
 if (-not $soList) {
   Write-Host "❌ No hay librerías .so en /opt/ecw"
 } else {
@@ -66,15 +79,15 @@ if ($soList) {
   $firstSo = ($soList -split "`n" | Where-Object { $_.Trim() -ne "" } | Select-Object -First 1).Trim()
   if ($firstSo) {
     Write-Host "Analizando: $firstSo"
-    docker exec mapas-backend sh -lc "ldd '$firstSo' 2>/dev/null || true" | Out-Host
+    docker exec $webContainerId sh -lc "ldd '$firstSo' 2>/dev/null || true" | Out-Host
   }
 }
 
 Write-Host "[6/8] Verificando drivers GDAL..."
-docker exec mapas-backend sh -lc "echo GDAL_DRIVER_PATH=\$GDAL_DRIVER_PATH; gdalinfo --formats | grep -Ei 'ECW|JP2|MrSID|NITF' || true" | Out-Host
+docker exec $webContainerId sh -lc "echo GDAL_DRIVER_PATH=\$GDAL_DRIVER_PATH; gdalinfo --formats | grep -Ei 'ECW|JP2|MrSID|NITF' || true" | Out-Host
 
 Write-Host "[7/8] Probando apertura de input.ecw..."
-docker exec mapas-backend sh -lc "gdalinfo /data/incoming/input.ecw 2>&1 | sed -n '1,60p'" | Out-Host
+docker exec $webContainerId sh -lc "gdalinfo /data/incoming/input.ecw 2>&1 | sed -n '1,60p'" | Out-Host
 
 Write-Host "[8/8] Consultando capacidades de API..."
 try {

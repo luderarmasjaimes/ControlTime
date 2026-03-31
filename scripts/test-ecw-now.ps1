@@ -1,8 +1,14 @@
 param(
-  [string]$ComposeFile = "c:\mapas\docker-compose.yml"
+  [string]$ComposeFile = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $PSCommandPath
+$WorkspaceRoot = Split-Path -Parent $ScriptDir
+if ([string]::IsNullOrWhiteSpace($ComposeFile)) {
+  $ComposeFile = Join-Path $WorkspaceRoot "docker-compose.yml"
+}
 
 function Assert-DockerAvailable {
   try {
@@ -31,7 +37,7 @@ function Invoke-CheckedDocker {
 
 Write-Host "[1/6] Levantando servicios..."
 Assert-DockerAvailable
-Invoke-CheckedDocker -Command { docker compose -f $ComposeFile up -d backend tileserver frontend | Out-Host } -ErrorMessage "No se pudieron levantar los servicios con docker compose."
+Invoke-CheckedDocker -Command { docker-compose -f $ComposeFile up -d web tileserver frontend | Out-Host } -ErrorMessage "No se pudieron levantar los servicios con docker-compose."
 
 Write-Host "[2/6] Verificando capacidad ECW..."
 $cap = Invoke-RestMethod -Uri "http://localhost:8081/api/capabilities" -Method Get
@@ -72,7 +78,7 @@ if ($job.status -ne "completed") {
 }
 
 Write-Host "[5/6] Reiniciando tileserver y verificando catálogo..."
-Invoke-CheckedDocker -Command { docker compose -f $ComposeFile restart tileserver | Out-Host } -ErrorMessage "No se pudo reiniciar tileserver."
+Invoke-CheckedDocker -Command { docker-compose -f $ComposeFile restart tileserver | Out-Host } -ErrorMessage "No se pudo reiniciar tileserver."
 Start-Sleep -Seconds 3
 $services = Invoke-RestMethod -Uri "http://localhost:8000/services" -Method Get
 $services | ConvertTo-Json -Depth 8 | Out-Host
@@ -84,5 +90,5 @@ $front = Invoke-WebRequest -Uri "http://localhost:5173" -UseBasicParsing
 if ($front.StatusCode -ne 200) { throw "Frontend no devolvió 200" }
 
 Write-Host "✅ ECW end-to-end OK"
-Write-Host "- MBTiles: c:\mapas\data\incoming\raura_mbtiles3.mbtiles"
+Write-Host "- MBTiles: $(Join-Path $WorkspaceRoot 'data\incoming\raura_mbtiles3.mbtiles')"
 Write-Host "- Servicio: http://localhost:8000/services/raura_mbtiles3"

@@ -1,0 +1,40 @@
+
+> mining-report-system-frontend@1.0.0 test:e2e
+> playwright test
+
+
+Running 3 tests using 3 workers
+
+  Ô£ô  2 [chromium] ÔÇ║ e2e\editor.spec.ts:3:1 ÔÇ║ Editor carga y muestra el encabezado del informe (5.5s)
+  Ô£ô  3 [chromium] ÔÇ║ e2e\editor-save.spec.ts:3:1 ÔÇ║ Navegar a Report y pulsar Guardar Cambios (6.0s)
+  Ô£ÿ  1 [chromium] ÔÇ║ e2e\dashboard.spec.ts:3:1 ÔÇ║ Dashboard shows KPIs and Map occupies full area on Map tab (10.0s)
+
+
+  1) [chromium] ÔÇ║ e2e\dashboard.spec.ts:3:1 ÔÇ║ Dashboard shows KPIs and Map occupies full area on Map tab 
+
+    Error: [2mexpect([22m[31mlocator[39m[2m).[22mtoBeVisible[2m([22m[2m)[22m failed
+
+    Locator: getByText(/Producci├│n \(kt\)/i)
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+    [2m  - Expect "toBeVisible" with timeout 5000ms[22m
+    [2m  - waiting for getByText(/Producci├│n \(kt\)/i)[22m
+
+
+      20 |
+      21 |   // Dashboard by default
+    > 22 |   await expect(page.getByText(/Producci├│n \(kt\)/i)).toBeVisible()
+         |                                                      ^
+      23 |
+      24 |   // Switch to Map and verify container occupies the main content area
+      25 |   await page.getByText('Map', { exact: true }).click()
+        at C:\InformeCliente\frontend\e2e\dashboard.spec.ts:22:54
+
+    Error Context: test-results\dashboard-Dashboard-shows--d5e4f-cupies-full-area-on-Map-tab-chromium\error-context.md
+
+  1 failed
+    [chromium] ÔÇ║ e2e\dashboard.spec.ts:3:1 ÔÇ║ Dashboard shows KPIs and Map occupies full area on Map tab 
+  2 passed (29.2s)

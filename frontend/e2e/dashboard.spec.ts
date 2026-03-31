@@ -19,14 +19,13 @@ test('Dashboard shows KPIs and Map occupies full area on Map tab', async ({ page
   await page.setViewportSize({ width: 1280, height: 800 })
 
   // Dashboard by default
-  await expect(page.getByText(/Producción \(kt\)/i)).toBeVisible()
+    await expect(page.getByText(/Prod\. Mensual/i)).toBeVisible()
 
-  // Switch to Map and verify container occupies the main content area
-  await page.getByText('Map', { exact: true }).click()
-  // wait for the map overlay UI to appear
-  await expect(page.getByText(/Visor Satelital/i)).toBeVisible({ timeout: 10000 })
-  // measure main content area where map should render
-  const mainContent = page.locator('main .flex-1').first()
+  // Switch to Map tab and verify map viewer area is rendered
+  await page.getByRole('button', { name: 'Abrir Map', exact: true }).click()
+  await expect(page.getByText(/Unidad Minera Toquepala/i)).toBeVisible({ timeout: 10000 })
+
+  const mainContent = page.locator('.map-full').first()
   await expect(mainContent).toBeVisible({ timeout: 5000 })
   const box = await mainContent.boundingBox()
   expect(box.width).toBeGreaterThan(400)
