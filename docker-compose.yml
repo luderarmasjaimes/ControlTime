@@ -13,6 +13,7 @@ services:
       - ./db_scripts/04_telemetry_schema_v2.sql:/docker-entrypoint-initdb.d/04_telemetry_schema_v2.sql:ro
       - ./db_scripts/06_seed_users_raura.sql:/docker-entrypoint-initdb.d/06_seed_users_raura.sql:ro
       - ./db_scripts/07_auth_login_operacion.sql:/docker-entrypoint-initdb.d/07_auth_login_operacion.sql:ro
+      - ./db_scripts/08_formula_dictionary_seed.sql:/docker-entrypoint-initdb.d/08_formula_dictionary_seed.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
       interval: 10s
@@ -40,6 +41,7 @@ services:
       - AI_ENGINE_URL=http://ai_engine:5000
       - AI_ENGINE_TIMEOUT_MS=120
       - AI_ENGINE_MAX_IMAGE_BYTES=450000
+      - BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN=95
       - BIOMETRIC_IMAGE_OPTIMIZER_ENABLE=false
       - BIOMETRIC_MAX_PIXELS=921600
       - AUTH_ADMIN_USERS=admin

@@ -2595,7 +2595,9 @@ http::response<http::string_body> makeJsonResponse(http::status status,
   res.set(http::field::access_control_allow_origin, "*");
     res.set(http::field::access_control_allow_headers,
       "content-type,authorization");
-  res.set(http::field::access_control_allow_methods, "GET,POST,OPTIONS");
+  // Informes usan PUT/DELETE; el preflight CORS fallaba si solo se permitían GET/POST.
+  res.set(http::field::access_control_allow_methods,
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.body() = json::serialize(value);
   res.prepare_payload();
   return res;
@@ -2608,7 +2610,8 @@ http::response<http::string_body> makeCsvResponse(const std::string &filename,
   res.set(http::field::access_control_allow_origin, "*");
     res.set(http::field::access_control_allow_headers,
       "content-type,authorization");
-  res.set(http::field::access_control_allow_methods, "GET,OPTIONS");
+  res.set(http::field::access_control_allow_methods,
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.set(http::field::content_disposition,
           "attachment; filename=\"" + filename + "\"");
   res.body() = csv;

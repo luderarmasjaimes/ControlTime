@@ -10,6 +10,7 @@ import ShareReportModal from './components/modals/ShareReportModal';
 import DeleteReportConfirm from './components/modals/DeleteReportConfirm';
 import MapCaptureModal from './components/modals/MapCaptureModal';
 import { saveReportAsync } from './lib/reportsStorage';
+import { fetchReportById } from './lib/api';
 import { getSession } from '../../auth/authStorage';
 import './styles.css';
 
@@ -131,9 +132,17 @@ export default function App() {
     }
   };
 
-  const handleOpenEdit = (report) => {
+  const handleOpenEdit = async (report) => {
     setShowReportsAdmin(false);
-    loadDocument(report.contentJson, report.id, report.title);
+    try {
+      const full = await fetchReportById(report.id);
+      const docPayload = full.content_json ?? full.contentJson;
+      loadDocument(docPayload, full.id, full.title);
+    } catch (err) {
+      console.error('handleOpenEdit', err);
+      setAiStatus('No se pudo cargar el informe para editar.');
+      alert('No se pudo cargar el informe desde el servidor. Revisa la sesión o la red.');
+    }
   };
 
   const handleExportVideo = async () => {

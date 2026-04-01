@@ -80,7 +80,19 @@ export default function SensorWidget({ sensorId, type = 'temperature', title = '
   };
 
   return (
-    <div className="sensor-widget-container" style={{ width, height, background: '#fff', borderRadius: 8, padding: 8, display: 'flex', flexDirection: 'column' }}>
+    <div
+      className="sensor-widget-container"
+      style={{
+        width,
+        height,
+        background: '#fff',
+        borderRadius: 8,
+        padding: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        pointerEvents: 'none',
+      }}
+    >
       <div className="sensor-widget-header" style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
         <div style={{ color: '#6366f1' }}>{SENSOR_ICONS[type] || <Activity size={14} />}</div>
         <span style={{ fontSize: 11, fontWeight: 700, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>

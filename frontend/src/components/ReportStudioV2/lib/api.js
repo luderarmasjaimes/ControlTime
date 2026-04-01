@@ -1,7 +1,16 @@
 import axios from 'axios';
 
+function apiBaseUrl() {
+  const env = import.meta.env.VITE_BACKEND_URL;
+  if (env) {
+    return `${String(env).replace(/\/$/, '')}/api`;
+  }
+  // Mismo origen: Vite (dev/preview con proxy) y Nginx en Docker proxifican /api al backend.
+  return '/api';
+}
+
 export const api = axios.create({
-  baseURL: '/api',
+  baseURL: apiBaseUrl(),
   timeout: 15000,
 });
 
@@ -29,13 +38,21 @@ export async function fetchReports() {
   return response.data?.reports ?? [];
 }
 
+/** Carga un informe completo (incl. content_json) para edición. */
+export async function fetchReportById(id) {
+  const response = await api.get(`/reports/${encodeURIComponent(id)}`);
+  return response.data;
+}
+
+const REPORT_SAVE_TIMEOUT_MS = 120000;
+
 export async function createReport(data) {
-  const response = await api.post('/reports', data);
+  const response = await api.post('/reports', data, { timeout: REPORT_SAVE_TIMEOUT_MS });
   return response.data;
 }
 
 export async function updateReport(id, data) {
-  const response = await api.put(`/reports/${id}`, data);
+  const response = await api.put(`/reports/${id}`, data, { timeout: REPORT_SAVE_TIMEOUT_MS });
   return response.data;
 }
 

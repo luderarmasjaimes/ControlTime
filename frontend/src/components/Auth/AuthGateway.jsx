@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
     Camera,
     Building2,
@@ -27,48 +27,119 @@ import {
     mapVerifyIssuesToIcaoFour,
     formatIcaoCell,
 } from '../../auth/biometricFiveHelpers'
+import {
+    preprocessCanvasForFaceDetection,
+    medianFaceBoundingBox,
+    faceCenterJumpRatio,
+} from '../../auth/faceTrackingUtils'
 
 const DEFAULT_COMPANIES = ['Minera Raura', 'Compania Minera Volcan', 'Minera Antamina', 'Minera Cerro Verde']
 
-// Recorte enviado al motor IA (coherente con óvalo UI en pantalla)
+// Recorte enviado al motor IA (rectángulo del detector; independiente de la forma del óvalo UI)
 const BIOMETRIC_OVAL_W_FACTOR = 0.98
 const BIOMETRIC_OVAL_H_FACTOR = 1.02
 const BIOMETRIC_OVAL_X_OFFSET = 0.12
 const BIOMETRIC_OVAL_Y_OFFSET = -0.05
 
+/** Óvalo facial en pantalla: siempre más alto que ancho (proporción humana), no hereda el aspecto del bbox. */
+const OVAL_HEIGHT_OVER_WIDTH = 1.38
+const OVAL_MAX_W_FRAC = 0.86
+const OVAL_MAX_H_FRAC = 0.92
+
+function clampPortraitOvalPx(ow, oh, vw, vh, hr = OVAL_HEIGHT_OVER_WIDTH) {
+    let w = Math.max(ow, 24)
+    let h = w * hr
+    const maxW = vw * OVAL_MAX_W_FRAC
+    const maxH = vh * OVAL_MAX_H_FRAC
+    if (w > maxW) {
+        const s = maxW / w
+        w *= s
+        h *= s
+    }
+    if (h > maxH) {
+        const s = maxH / h
+        w *= s
+        h *= s
+    }
+    if (h < w * hr) {
+        h = w * hr
+        if (h > maxH) {
+            h = maxH
+            w = h / hr
+        }
+    }
+    return { ow: w, oh: h }
+}
+
 /**
- * Óvalo centrado en el rostro; escala con la distancia a la cámara vía tamaño aparente del box.
- * Rostro pequeño en frame (lejos) → óvalo más amplio respecto al box; grande (cerca) → menos margen.
+ * Óvalo centrado en el rostro. El tamaño sigue la distancia (tamaño del rostro en frame);
+ * la forma es fija vertical (alto/ancho = OVAL_HEIGHT_OVER_WIDTH), no la del bbox del detector.
  */
 function computeBiometricOvalLayout(box, vw, vh) {
+    const hr = OVAL_HEIGHT_OVER_WIDTH
     if (!box || vw < 32 || vh < 32) {
+        const baseW = vw * 0.36
+        const { ow, oh } = clampPortraitOvalPx(baseW, baseW * hr, vw, vh, hr)
         return {
             leftPct: 50,
-            topPct: 44,
-            wPct: 46,
-            hPct: 84,
+            topPct: 42,
+            wPct: (ow / vw) * 100,
+            hPct: (oh / vh) * 100,
             transform: 'translate(-50%, -50%)',
-            gradWPct: 48,
-            gradHPct: 80,
         }
     }
     const cx = box.x + box.width / 2
     const cy = box.y + box.height / 2
     const rel = Math.sqrt((box.width / vw) * (box.height / vh))
     const t = Math.min(Math.max((rel - 0.08) / 0.38, 0), 1)
-    const proximityScale = 1.42 - t * 0.34
-    let ow = box.width * BIOMETRIC_OVAL_W_FACTOR * proximityScale
-    let oh = box.height * BIOMETRIC_OVAL_H_FACTOR * proximityScale
-    const wPct = Math.min((ow / vw) * 100, 90)
-    const hPct = Math.min((oh / vh) * 100, 90)
+    const proximityScale = 1.4 - t * 0.34
+    const faceSpan = Math.hypot(box.width, box.height) * 0.5 * proximityScale
+    const ow0 = faceSpan
+    const oh0 = faceSpan * hr
+    const { ow, oh } = clampPortraitOvalPx(ow0, oh0, vw, vh, hr)
+    const wPct = (ow / vw) * 100
+    const hPct = (oh / vh) * 100
     return {
         leftPct: (cx / vw) * 100,
         topPct: (cy / vh) * 100,
         wPct,
         hPct,
         transform: 'translate(-50%, -50%)',
-        gradWPct: Math.min(wPct * 0.55, 48),
-        gradHPct: Math.min(hPct * 0.5, 78),
+    }
+}
+
+/**
+ * Mapea el óvalo (coords del frame de vídeo) al contenedor del <video>.
+ * Misma lógica que object-fit: contain (como C:\\FACIAL\\www\\style.css #video-stream).
+ */
+function mapOvalLayoutVideoToStage(layout, vw, vh, stageW, stageH) {
+    if (stageW < 8 || stageH < 8 || vw < 32 || vh < 32) {
+        return layout
+    }
+    const cx = (layout.leftPct / 100) * vw
+    const cy = (layout.topPct / 100) * vh
+    const ow = (layout.wPct / 100) * vw
+    const oh = (layout.hPct / 100) * vh
+
+    const scale = Math.min(stageW / vw, stageH / vh)
+    const dispW = vw * scale
+    const dispH = vh * scale
+    const offX = (stageW - dispW) / 2
+    const offY = (stageH - dispH) / 2
+
+    const scx = offX + cx * scale
+    const scy = offY + cy * scale
+    const sow = ow * scale
+    const soh = oh * scale
+
+    const wS = (sow / stageW) * 100
+    const hS = (soh / stageH) * 100
+    return {
+        leftPct: (scx / stageW) * 100,
+        topPct: (scy / stageH) * 100,
+        wPct: wS,
+        hPct: hS,
+        transform: layout.transform,
     }
 }
 
@@ -271,10 +342,26 @@ const AuthGateway = ({ onAuthenticated }) => {
     const livenessFallbackRef = useRef(0)
     const lastAutoTriggerRef = useRef(0)
     const cameraRetryTimerRef = useRef(null)
+    const cameraStageRef = useRef(null)
+    const faceBoxHistoryRef = useRef([])
+
+    const [cameraStageSize, setCameraStageSize] = useState({ width: 0, height: 0 })
 
     const ovalLayout = useMemo(
         () => computeBiometricOvalLayout(liveFaceBox, frameMetrics.width, frameMetrics.height),
         [liveFaceBox, frameMetrics.width, frameMetrics.height]
+    )
+
+    const ovalForStage = useMemo(
+        () =>
+            mapOvalLayoutVideoToStage(
+                ovalLayout,
+                frameMetrics.width,
+                frameMetrics.height,
+                cameraStageSize.width,
+                cameraStageSize.height
+            ),
+        [ovalLayout, frameMetrics.width, frameMetrics.height, cameraStageSize.width, cameraStageSize.height]
     )
 
     const canRegister = useMemo(() => {
@@ -332,6 +419,27 @@ const AuthGateway = ({ onAuthenticated }) => {
         return () => {
             active = false
         }
+    }, [])
+
+    useLayoutEffect(() => {
+        const el = cameraStageRef.current
+        if (!el || typeof ResizeObserver === 'undefined') {
+            return undefined
+        }
+        const apply = (w, h) => {
+            if (w > 0 && h > 0) {
+                setCameraStageSize({ width: w, height: h })
+            }
+        }
+        const ro = new ResizeObserver((entries) => {
+            const cr = entries[0]?.contentRect
+            if (cr) {
+                apply(cr.width, cr.height)
+            }
+        })
+        ro.observe(el)
+        apply(el.clientWidth, el.clientHeight)
+        return () => ro.disconnect()
     }, [])
 
     // Real-time RUC validation
@@ -475,20 +583,27 @@ const AuthGateway = ({ onAuthenticated }) => {
             try {
                 let bestFace = null
 
-                // --- Low-Light Adaptive ROI Preprocessing (Frontend) ---
-                // Focus detection ONLY on the central region to avoid background noise
-                const roiW = video.videoWidth * 0.6;
-                const roiH = video.videoHeight * 0.8;
-                const roiX = (video.videoWidth - roiW) / 2;
-                const roiY = (video.videoHeight - roiH) / 2;
+                const roiW = video.videoWidth * 0.6
+                const roiH = video.videoHeight * 0.8
+                const roiX = (video.videoWidth - roiW) / 2
+                const roiY = (video.videoHeight - roiH) / 2
 
-                const trackingCanvas = document.createElement('canvas');
-                trackingCanvas.width = roiW / 2; 
-                trackingCanvas.height = roiH / 2;
-                const trackingCtx = trackingCanvas.getContext('2d');
-                // Apply Gamma-like correction and contrast boost
-                trackingCtx.filter = 'contrast(1.4) brightness(1.2) saturate(1.1)';
-                trackingCtx.drawImage(video, roiX, roiY, roiW, roiH, 0, 0, trackingCanvas.width, trackingCanvas.height);
+                const tcScale = FACIAL_ICAO.TRACKING_CANVAS_SCALE
+                const tcW = Math.max(48, Math.round(roiW * tcScale))
+                const tcH = Math.max(48, Math.round(roiH * tcScale))
+                const sx = roiW / tcW
+                const sy = roiH / tcH
+
+                const trackingCanvas = document.createElement('canvas')
+                trackingCanvas.width = tcW
+                trackingCanvas.height = tcH
+                const trackingCtx = trackingCanvas.getContext('2d', { willReadFrequently: true })
+                trackingCtx.filter = 'none'
+                trackingCtx.drawImage(video, roiX, roiY, roiW, roiH, 0, 0, tcW, tcH)
+                preprocessCanvasForFaceDetection(trackingCtx, tcW, tcH, {
+                    lowLumEqBelow: FACIAL_ICAO.TRACKING_LOW_LUM_EQ_BELOW,
+                    highlightCompressAbove: FACIAL_ICAO.TRACKING_HIGH_LUM_COMPRESS_ABOVE,
+                })
 
                 if ('FaceDetector' in window) {
                     if (!detectorRef.current) {
@@ -497,25 +612,25 @@ const AuthGateway = ({ onAuthenticated }) => {
                         })
                     }
 
-                    // Detect on the enhanced ROI image
                     const detections = await detectorRef.current.detect(trackingCanvas)
                     if (detections.length > 0) {
                         const box = detections[0].boundingBox
-                        // Rescale back to original video dimensions relative to ROI
                         bestFace = {
-                            x: roiX + box.x * 2,
-                            y: roiY + box.y * 2,
-                            width: box.width * 2,
-                            height: box.height * 2,
-                            landmarks: (detections[0].landmarks || []).map(l => ({
+                            x: roiX + box.x * sx,
+                            y: roiY + box.y * sy,
+                            width: box.width * sx,
+                            height: box.height * sy,
+                            landmarks: (detections[0].landmarks || []).map((l) => ({
                                 ...l,
-                                locations: l.locations.map(loc => ({ x: roiX + loc.x * 2, y: roiY + loc.y * 2 }))
+                                locations: l.locations.map((loc) => ({
+                                    x: roiX + loc.x * sx,
+                                    y: roiY + loc.y * sy,
+                                })),
                             })),
                         }
                     }
                 }
 
-                // --- Dynamic Face Oval Fallback (Centroid Tracking) ---
                 if (!bestFace) {
                     const canvas = document.createElement('canvas');
                     canvas.width = 160; canvas.height = 120;
@@ -534,6 +649,35 @@ const AuthGateway = ({ onAuthenticated }) => {
                             isFallback: true
                         }
                     }
+                }
+
+                if (bestFace) {
+                    const hist = faceBoxHistoryRef.current
+                    hist.push({
+                        x: bestFace.x,
+                        y: bestFace.y,
+                        width: bestFace.width,
+                        height: bestFace.height,
+                        landmarks: bestFace.landmarks,
+                        isFallback: bestFace.isFallback,
+                    })
+                    while (hist.length > FACIAL_ICAO.FACE_BOX_HISTORY_LEN) {
+                        hist.shift()
+                    }
+                    const rawLm = bestFace.landmarks
+                    const rawFb = bestFace.isFallback
+                    if (hist.length >= FACIAL_ICAO.FACE_BOX_MEDIAN_MIN_SAMPLES) {
+                        const med = medianFaceBoundingBox(hist)
+                        if (med) {
+                            bestFace = {
+                                ...med,
+                                landmarks: rawLm,
+                                isFallback: rawFb,
+                            }
+                        }
+                    }
+                } else {
+                    faceBoxHistoryRef.current = []
                 }
 
                 let frontal = false
@@ -572,7 +716,14 @@ const AuthGateway = ({ onAuthenticated }) => {
                     }))
                 } else {
                     if (smoothedFaceRef.current) {
-                        const alpha = FACIAL_ICAO.FACE_BOX_EMA_ALPHA
+                        let alpha = FACIAL_ICAO.FACE_BOX_EMA_ALPHA
+                        const jump = faceCenterJumpRatio(
+                            bestFace,
+                            smoothedFaceRef.current
+                        )
+                        if (jump > FACIAL_ICAO.FACE_BOX_OUTLIER_JUMP_RATIO) {
+                            alpha = FACIAL_ICAO.FACE_BOX_EMA_ALPHA_OUTLIER
+                        }
                         const prev = smoothedFaceRef.current
                         bestFace = {
                             x: prev.x + alpha * (bestFace.x - prev.x),
@@ -933,6 +1084,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                             </span>
                         </div>
                         <div
+                            ref={cameraStageRef}
                             className="camera-stage relative overflow-hidden camera-stage-tall"
                             style={{ background: '#000' }}
                         >
@@ -941,7 +1093,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 autoPlay
                                 muted
                                 playsInline
-                                className="camera-preview camera-preview-tall w-full h-full object-cover"
+                                className="camera-preview camera-preview-tall w-full h-full object-contain"
                                 style={{ display: cameraReady ? 'block' : 'none' }}
                             />
                             
@@ -949,37 +1101,32 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 className="absolute pointer-events-none transition-all duration-100 ease-out biometric-oval"
                                 style={{
                                     borderRadius: '50%',
-                                    left: `${ovalLayout.leftPct}%`,
-                                    top: `${ovalLayout.topPct}%`,
-                                    width: `${ovalLayout.wPct}%`,
-                                    height: `${ovalLayout.hPct}%`,
-                                    transform: ovalLayout.transform,
+                                    left: `${ovalForStage.leftPct}%`,
+                                    top: `${ovalForStage.topPct}%`,
+                                    width: `${ovalForStage.wPct}%`,
+                                    height: `${ovalForStage.hPct}%`,
+                                    transform: ovalForStage.transform,
                                     zIndex: 15,
                                     border: faceGuide.qualityReady
-                                        ? '4px solid #22c55e'
-                                        : '3px dashed #38bdf8',
-                                    boxShadow: faceGuide.qualityReady
-                                        ? '0 0 35px rgba(34, 197, 94, 0.8)'
-                                        : '0 0 18px rgba(56, 189, 248, 0.45)',
+                                        ? '3px solid #22c55e'
+                                        : '2px dashed rgba(56, 189, 248, 0.95)',
+                                    boxShadow: 'none',
                                 }}
                             >
                                 {!faceGuide.qualityReady && (
                                     <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-sky-400 text-[10px] font-bold bg-black/40 px-2 py-1 rounded animate-pulse">
+                                        <span
+                                            className="text-sky-300 text-[10px] font-semibold px-1"
+                                            style={{
+                                                textShadow:
+                                                    '0 0 6px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.95)',
+                                            }}
+                                        >
                                             BUSCANDO ROSTRO...
                                         </span>
                                     </div>
                                 )}
                             </div>
-
-                            {/* Persistent Dark Overlay Mask */}
-                            <div
-                                className="absolute inset-0 pointer-events-none"
-                                style={{
-                                    background: `radial-gradient(ellipse ${ovalLayout.gradWPct}% ${ovalLayout.gradHPct}% at ${ovalLayout.leftPct}% ${ovalLayout.topPct}%, transparent 42%, rgba(0, 0, 0, 0.76) 72%)`,
-                                    zIndex: 5,
-                                }}
-                            />
 
                             {!cameraReady && (
                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 text-white gap-3" style={{ zIndex: 20 }}>
@@ -1003,41 +1150,43 @@ const AuthGateway = ({ onAuthenticated }) => {
                         <div className="bio-icao-panel">
                             <div className="bio-icao-section">
                                 <div className="bio-icao-title">CALIDAD ICAO</div>
-                                <div className="bio-icao-row">
-                                    <span>OJOS ABIERTOS</span>
-                                    <span className="bio-icao-val">
-                                        {formatIcaoCell(
-                                            faceGuide.icaoEyes === null ? null : faceGuide.icaoEyes
-                                        )}
-                                    </span>
-                                </div>
-                                <div className="bio-icao-row">
-                                    <span>BOCA CERRADA</span>
-                                    <span className="bio-icao-val">
-                                        {formatIcaoCell(
-                                            faceGuide.icaoMouth === null ? null : faceGuide.icaoMouth
-                                        )}
-                                    </span>
-                                </div>
-                                <div className="bio-icao-row">
-                                    <span>FRONTALIDAD</span>
-                                    <span className="bio-icao-val">
-                                        {formatIcaoCell(
-                                            faceGuide.icaoFrontal === null
-                                                ? null
-                                                : faceGuide.icaoFrontal
-                                        )}
-                                    </span>
-                                </div>
-                                <div className="bio-icao-row">
-                                    <span>SIN LENTES</span>
-                                    <span className="bio-icao-val">
-                                        {formatIcaoCell(
-                                            faceGuide.icaoNoGlasses === null
-                                                ? null
-                                                : faceGuide.icaoNoGlasses
-                                        )}
-                                    </span>
+                                <div className="bio-icao-grid-2">
+                                    <div className="bio-icao-row">
+                                        <span>OJOS ABIERTOS</span>
+                                        <span className="bio-icao-val">
+                                            {formatIcaoCell(
+                                                faceGuide.icaoEyes === null ? null : faceGuide.icaoEyes
+                                            )}
+                                        </span>
+                                    </div>
+                                    <div className="bio-icao-row">
+                                        <span>BOCA CERRADA</span>
+                                        <span className="bio-icao-val">
+                                            {formatIcaoCell(
+                                                faceGuide.icaoMouth === null ? null : faceGuide.icaoMouth
+                                            )}
+                                        </span>
+                                    </div>
+                                    <div className="bio-icao-row">
+                                        <span>FRONTALIDAD</span>
+                                        <span className="bio-icao-val">
+                                            {formatIcaoCell(
+                                                faceGuide.icaoFrontal === null
+                                                    ? null
+                                                    : faceGuide.icaoFrontal
+                                            )}
+                                        </span>
+                                    </div>
+                                    <div className="bio-icao-row">
+                                        <span>SIN LENTES</span>
+                                        <span className="bio-icao-val">
+                                            {formatIcaoCell(
+                                                faceGuide.icaoNoGlasses === null
+                                                    ? null
+                                                    : faceGuide.icaoNoGlasses
+                                            )}
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                             <div className="bio-icao-section">

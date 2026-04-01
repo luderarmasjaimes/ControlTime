@@ -27,7 +27,8 @@ export default function TableBlock({
         overflow: 'auto',
         background: '#fff',
         borderRadius: '4px',
-        border: `1px solid ${borderColor}`
+        border: `1px solid ${borderColor}`,
+        pointerEvents: 'none',
       }}
     >
       <table 
@@ -60,7 +61,8 @@ export default function TableBlock({
                       onBlur={(e) => handleCellChange(ri, ci, e.target.innerText)}
                       style={{
                         outline: 'none',
-                        minHeight: '1.2em'
+                        minHeight: '1.2em',
+                        pointerEvents: 'auto',
                       }}
                     >
                       {cell}

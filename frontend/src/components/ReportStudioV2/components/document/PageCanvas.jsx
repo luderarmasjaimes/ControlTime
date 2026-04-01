@@ -348,10 +348,12 @@ function snap(value, enabled) {
   return Math.round(value / GRID) * GRID;
 }
 
-export default function PageCanvas({ page }) {
+export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
   const transformerRef = useRef(null);
   const layerRef = useRef(null);
+  const stageRef = useRef(null);
   const dragInProgressRef = useRef(false);
+  const scale = Math.min(1.8, Math.max(0.5, Number(viewportScale) || 1));
   const recognitionRef = useRef(null);
   const dictationTargetRef = useRef(null);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
@@ -472,6 +474,28 @@ export default function PageCanvas({ page }) {
   }, []);
 
   useEffect(() => {
+    const clearDrag = () => {
+      dragInProgressRef.current = false;
+      try {
+        const stage = stageRef.current;
+        if (stage && typeof stage.stopDrag === 'function') {
+          stage.stopDrag();
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener('pointerup', clearDrag);
+    window.addEventListener('pointercancel', clearDrag);
+    window.addEventListener('blur', clearDrag);
+    return () => {
+      window.removeEventListener('pointerup', clearDrag);
+      window.removeEventListener('pointercancel', clearDrag);
+      window.removeEventListener('blur', clearDrag);
+    };
+  }, []);
+
+  useEffect(() => {
     const selectedElement = page.elements.find((element) => element.id === selectedElementId);
     const canMoveWithKeyboard =
       selectedElement && selectedElement.type === 'text' && !selectedElement.locked && openTextEditorId !== selectedElement.id;
@@ -521,20 +545,32 @@ export default function PageCanvas({ page }) {
     };
   }, [openTextEditorId, page.elements, page.page_number, selectedElementId, snapEnabled, updateElement]);
 
+  const pageLabel =
+    totalPages != null && totalPages > 1
+      ? `Página ${page.page_number} de ${totalPages}`
+      : `Página ${page.page_number}`;
+
   return (
-    <div className="page-wrapper">
-      <div className="page-meta">Página {page.page_number}</div>
+    <div className="page-wrapper" style={{ width: PAGE_WIDTH * scale, maxWidth: '100%' }}>
+      <div className="page-meta">{pageLabel}</div>
       <Stage
-        width={PAGE_WIDTH}
-        height={PAGE_HEIGHT}
+        ref={stageRef}
+        width={PAGE_WIDTH * scale}
+        height={PAGE_HEIGHT * scale}
         onMouseDown={(event) => {
           selectPage(page.page_number);
           if (event.target === event.target.getStage()) {
             selectElement(undefined);
           }
         }}
+        onMouseUp={() => {
+          dragInProgressRef.current = false;
+        }}
+        onMouseLeave={() => {
+          dragInProgressRef.current = false;
+        }}
       >
-        <Layer ref={layerRef}>
+        <Layer ref={layerRef} scaleX={scale} scaleY={scale}>
           <Rect x={0} y={0} width={PAGE_WIDTH} height={PAGE_HEIGHT} fill="#fff" stroke="#dbe3f1" strokeWidth={1} />
           <Rect x={0} y={0} width={PAGE_WIDTH} height={HEADER_HEIGHT} fill="#f8fbff" stroke="#dbe3f1" strokeWidth={1} />
           <Rect
@@ -763,7 +799,15 @@ export default function PageCanvas({ page }) {
             .filter((element) => element.type === 'image')
             .map((element) => (
               <Html key={`${element.id}-image`} groupProps={{ x: element.x + 4, y: element.y + 4 }}>
-                <div style={{ width: element.width - 8, height: element.height - 8, overflow: 'hidden', borderRadius: '4px' }}>
+                <div
+                  style={{
+                    width: element.width - 8,
+                    height: element.height - 8,
+                    overflow: 'hidden',
+                    borderRadius: '4px',
+                    pointerEvents: 'none',
+                  }}
+                >
                   <img 
                     src={element.src} 
                     alt={element.id}
@@ -771,7 +815,8 @@ export default function PageCanvas({ page }) {
                       width: '100%', 
                       height: '100%', 
                       objectFit: element.objectFit || 'cover',
-                      display: 'block'
+                      display: 'block',
+                      pointerEvents: 'none',
                     }}
                   />
                 </div>

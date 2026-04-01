@@ -9,13 +9,12 @@ export default function MultipageView({ zoomPercent = 100 }) {
     <section className="multipage-engine">
       <div className="page-scroll">
         {pages.map((page) => (
-          <div
-            key={page.page_number}
-            className="page-wrapper"
-            style={{ zoom: `${zoomPercent}%` }}
-          >
-             <span className="page-meta">Página {page.page_number} de {pages.length}</span>
-             <PageCanvas page={page} />
+          <div key={page.page_number} className="multipage-page-shell">
+            <PageCanvas
+              page={page}
+              totalPages={pages.length}
+              viewportScale={Math.min(1.8, Math.max(0.6, (Number(zoomPercent) || 100) / 100))}
+            />
           </div>
         ))}
       </div>

@@ -507,8 +507,8 @@ h3,
     flex: 0 1 auto;
     position: relative;
     width: 100%;
-    min-height: 168px;
-    max-height: min(34vh, 320px);
+    min-height: 200px;
+    max-height: min(48vh, 480px);
     overflow: hidden;
 }
 
@@ -517,9 +517,12 @@ h3,
     display: block;
     width: 100% !important;
     height: 100% !important;
-    min-height: 168px !important;
-    max-height: min(34vh, 320px) !important;
-    object-fit: cover;
+    min-height: 200px !important;
+    max-height: min(48vh, 480px) !important;
+    /* contain: misma lógica que C:\FACIAL\www (sin recorte ni viñeta sobre el rostro) */
+    object-fit: contain;
+    object-position: center;
+    background: #000;
 }
 
 .camera-header {
@@ -656,16 +659,26 @@ h3,
     margin-bottom: 4px;
 }
 
+.bio-icao-grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 10px;
+    align-items: stretch;
+    width: 100%;
+}
+
 .bio-icao-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 0.65rem;
+    gap: 6px;
+    font-size: 0.62rem;
     color: #e2e8f0;
     padding: 3px 5px;
-    margin: 1px 0;
+    margin: 0;
     border-radius: 6px;
     background: rgba(30, 41, 59, 0.45);
+    min-width: 0;
 }
 
 .bio-icao-val {

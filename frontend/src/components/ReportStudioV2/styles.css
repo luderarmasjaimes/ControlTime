@@ -636,6 +636,11 @@ button:active {
   border-top: 2px solid #dbe4ef;
 }
 
+.multipage-page-shell + .multipage-page-shell {
+  margin-top: 0;
+  border-top: 2px solid #dbe4ef;
+}
+
 .page-break-separator {
   display: none;
 }
