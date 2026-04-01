@@ -1,12 +1,13 @@
 import { getSession } from './authStorage'
 
 function backendBaseUrl() {
-    if (import.meta.env.VITE_BACKEND_URL) {
-        return import.meta.env.VITE_BACKEND_URL
+    const env = import.meta.env.VITE_BACKEND_URL
+    if (env) {
+        return String(env).replace(/\/$/, '')
     }
-
-    const { protocol, hostname } = window.location
-    return `${protocol}//${hostname}:8081`
+    // Mismo origen: Vite (dev) y Nginx (Docker) proxifican /api -> backend (p. ej. :8082 en el host).
+    // Antes se usaba :8081 y el login fallaba con "Failed to fetch".
+    return ''
 }
 
 async function parseJsonResponse(response) {
@@ -20,7 +21,26 @@ async function parseJsonResponse(response) {
     if (!response.ok) {
         let message = payload.error || `Error HTTP ${response.status}`
         if (Array.isArray(payload.issues) && payload.issues.length > 0) {
-            message = `${message}: ${payload.issues.join(', ')}`
+            const translations = {
+                'suspected_glasses': 'Lentes detectados (Retirar lentes)',
+                'suspected_hat': 'Gorra o casco detectado (Retirar accesorio)',
+                'suspected_face_accessory': 'Accesorio/Mascarilla cubriendo rostro',
+                'suspected_heavy_makeup': 'Maquillaje excesivo detectado',
+                'eyes_not_open_or_not_visible': 'Los ojos deben estar abiertos y visibles',
+                'eye_open_confidence_low': 'Apertura ocular insuficiente (ICAO): abra bien los ojos',
+                'mouth_not_closed': 'Mantener la boca cerrada',
+                'face_not_frontal': 'Debe mirar fijamente de frente al lente',
+                'head_pose_not_straight': 'La cabeza debe estar recta',
+                'face_too_small': 'Acérquese más a la cámara',
+                'face_off_center': 'Rostro descentrado',
+                'lighting_out_of_range': 'Mejore la iluminación del ambiente',
+                'lighting_insufficient_icao': 'Iluminación insuficiente (norma ICAO / FACIAL)',
+                'ai_face_not_detected': 'No se detectó rostro en el análisis biométrico',
+                'image_not_sharp': 'Imagen borrosa, manténgase quieto',
+                'low_dynamic_range': 'Baja calidad de imagen/contraste'
+            };
+            const translatedIssues = payload.issues.map(issue => translations[issue] || issue);
+            message = `Validación Biométrica Fallida: ${translatedIssues.join(' | ')}`
         }
         throw new Error(message)
     }
@@ -65,6 +85,12 @@ export async function registerUser(payload) {
         username: payload.username,
         password: payload.password,
     }
+
+    if (payload.role) body.role = payload.role
+    if (payload.ruc) body.ruc = payload.ruc
+    if (payload.phone) body.phone = payload.phone
+    if (payload.mobile) body.mobile = payload.mobile
+    if (payload.email) body.email = payload.email
 
     if (payload.faceImageBase64) {
         body.face_image_base64 = payload.faceImageBase64
@@ -130,4 +156,59 @@ export function getAuthAuditCsvUrl({ company, username, action, success } = {}) 
         query.set('auth_token', token)
     }
     return `${backendBaseUrl()}/api/auth/audit/export.csv?${query.toString()}`
+}
+export async function verifyBiometricFrame(imageBase64) {
+    const response = await fetch(`${backendBaseUrl()}/api/auth/biometric/verify-frame`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders(),
+        },
+        body: JSON.stringify({ face_image_base64: imageBase64 }),
+    })
+    return parseJsonResponse(response)
+}
+
+export async function fetchCompanyUsers(company) {
+    const query = new URLSearchParams()
+    if (company) query.set('company', company)
+
+    const response = await fetch(`${backendBaseUrl()}/api/auth/users?${query.toString()}`, {
+        headers: {
+            ...authHeaders(),
+        },
+    })
+
+    return parseJsonResponse(response)
+}
+
+export async function executeUserMaintenance(payload) {
+    return postJson('/api/auth/users/maintenance', {
+        ...payload,
+    })
+}
+
+export async function fetchUserMaintenanceAudit({ company, page = 1, pageSize = 20 } = {}) {
+    const query = new URLSearchParams()
+    query.set('page', String(page))
+    query.set('page_size', String(pageSize))
+    if (company) query.set('company', company)
+
+    const response = await fetch(`${backendBaseUrl()}/api/auth/users/maintenance/audit?${query.toString()}`, {
+        headers: {
+            ...authHeaders(),
+        },
+    })
+
+    return parseJsonResponse(response)
+}
+
+export async function validateCompany(company, ruc) {
+    const query = new URLSearchParams()
+    if (company) query.set('company', company)
+    if (ruc) query.set('ruc', ruc)
+
+    const response = await fetch(`${backendBaseUrl()}/api/auth/validate-company?${query.toString()}`)
+    const payload = await parseJsonResponse(response)
+    return payload.valid === true
 }

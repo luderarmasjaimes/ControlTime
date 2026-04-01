@@ -8,8 +8,8 @@ import MiningDashboard from './MiningDashboard'
 
 test('Muestra KPI cards en el dashboard', () => {
   render(<MiningDashboard />)
-  expect(screen.getByText(/Producción \(kt\)/i)).toBeInTheDocument()
-  expect(screen.getByText(/Tasa de recuperación/i)).toBeInTheDocument()
-  // check presence of KPI value instead of generic 'Rendimiento' to avoid duplicate matches
-  expect(screen.getByText(/\+15%/i)).toBeInTheDocument()
+  expect(screen.getByText(/Prod\. Mensual/i)).toBeInTheDocument()
+  expect(screen.getByText(/Ley de Cu Prom\./i)).toBeInTheDocument()
+  // Use a unique KPI delta token rendered in the first card.
+  expect(screen.getByText(/\+4\.2%/i)).toBeInTheDocument()
 })

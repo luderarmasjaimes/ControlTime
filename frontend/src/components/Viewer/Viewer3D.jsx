@@ -68,14 +68,14 @@ const Trajectories = ({ azimuthAngle = 0, installationAngle = 0 }) => {
             const anchorX = tempPoints[40].x;
             const anchorZ = tempPoints[40].z;
 
-            // X Scale: 80mm -> 10 units (factor 0.125)
-            // Y Scale: 40m -> 5 units (factor 0.125)
-            // Z Scale: 40mm -> 10 units (factor 0.25)
+            // X Scale: 80mm -> 30 units (factor 0.375)
+            // Y Scale: 40m -> 15 units (factor 0.375)
+            // Z Scale: 40mm -> 30 units (factor 0.75)
             // Visual mapping: [X, Vertical_Depth, Z_displacement]
             return tempPoints.map(p => new THREE.Vector3(
-                (p.x - anchorX) * 0.125,
-                -(p.d) * 0.125,
-                (p.z - anchorZ) * 0.25
+                (p.x - anchorX) * 0.375,
+                -(p.d) * 0.375,
+                (p.z - anchorZ) * 0.75
             ));
         });
     }, [baseSteps, azimuthAngle, installationAngle]);
@@ -97,29 +97,30 @@ const Trajectories = ({ azimuthAngle = 0, installationAngle = 0 }) => {
 }
 
 const TechnicalCage = () => {
+    // 3X Scale factor applied
     return (
         <group>
-            {/* Prism Frame - size 10x10x5 (from -5 to 5 horizontally, 0 to -5 vertically) */}
-            {[[-5, 5], [5, 5], [5, -5], [-5, -5]].map(([x, z], i) => (
+            {/* Prism Frame - size 30x30x15 (from -15 to 15 horizontally, 0 to -15 vertically) */}
+            {[[-15, 15], [15, 15], [15, -15], [-15, -15]].map(([x, z], i) => (
                 <Line
                     key={`vert-${i}`}
-                    points={[[x, 0, z], [x, -5, z]]} // Height is 5 units (40m * 0.125)
+                    points={[[x, 0, z], [x, -15, z]]} // 3x depth
                     color="#cbd5e1"
                     lineWidth={1}
                 />
             ))}
 
-            {/* Horizontal Planes (every 5m = 0.625 units) */}
-            {[0, -0.625, -1.25, -1.875, -2.5, -3.125, -3.75, -4.375, -5].map((y) => (
+            {/* Horizontal Planes (multiplied by 3: 0, -1.875, -3.75, ...) */}
+            {[0, -1.875, -3.75, -5.625, -7.5, -9.375, -11.25, -13.125, -15].map((y) => (
                 <group key={`h-${y}`} position={[0, y, 0]}>
                     <Line
-                        points={[[-5, 0, 5], [5, 0, 5], [5, 0, -5], [-5, 0, -5], [-5, 0, 5]]}
+                        points={[[-15, 0, 15], [15, 0, 15], [15, 0, -15], [-15, 0, -15], [-15, 0, 15]]}
                         color="#cbd5e1"
                         lineWidth={0.5}
                         transparent
                         opacity={0.5}
                     />
-                    <gridHelper args={[10, 8, 0xe2e8f0, 0xf8fafc]} />
+                    <gridHelper args={[30, 8, 0xe2e8f0, 0xf8fafc]} />
                 </group>
             ))}
 
@@ -127,8 +128,8 @@ const TechnicalCage = () => {
             {DEPTH_LABELS.map(({ d, l }) => (
                 <Text
                     key={l}
-                    position={[-5.5, -d * 0.125, 5]}
-                    fontSize={0.4}
+                    position={[-16.5, -d * 0.375, 15]} // multiplied by 3
+                    fontSize={1.2}
                     color="#64748b"
                     anchorX="right"
                 >
@@ -140,8 +141,8 @@ const TechnicalCage = () => {
             {GRID_VALUES_X.map((val) => (
                 <Text
                     key={`x-v-${val}`}
-                    position={[val * 0.125, 0.5, 5]}
-                    fontSize={0.3}
+                    position={[val * 0.375, 1.5, 15]} // multiplied by 3
+                    fontSize={0.9}
                     color="#94a3b8"
                 >
                     {val === 0 ? "0.00" : val.toFixed(2)}
@@ -152,8 +153,8 @@ const TechnicalCage = () => {
             {GRID_VALUES_Y.map((val) => (
                 <Text
                     key={`y-v-${val}`}
-                    position={[5.5, 0.5, (val - 20) * 0.25]} // Offset val to center it (0 to 40 -> -5 to 5)
-                    fontSize={0.3}
+                    position={[16.5, 1.5, (val - 20) * 0.75]} // multiplied by 3
+                    fontSize={0.9}
                     color="#94a3b8"
                     rotation={[-Math.PI / 2, 0, Math.PI / 2]}
                 >
@@ -174,12 +175,12 @@ const Viewer3D = ({ azimuthAngle = 0, installationAngle = 0 }) => {
                 <pointLight position={[20, 20, 20]} intensity={1} />
 
                 <Suspense fallback={null}>
-                    <group position={[0, 3, 0]}> {/* Centered for 6-unit height prism */}
+                    <group position={[0, 9, 0]}> {/* Centered for 15-unit height prism */}
                         <Trajectories azimuthAngle={azimuthAngle} />
                         <TechnicalCage />
                         {/* Ideal Center Reference */}
                         <Line
-                            points={[[0, 0, 0], [0, -6, 0]]}
+                            points={[[0, 0, 0], [0, -15, 0]]}
                             color="#fcd34d"
                             lineWidth={1}
                             transparent

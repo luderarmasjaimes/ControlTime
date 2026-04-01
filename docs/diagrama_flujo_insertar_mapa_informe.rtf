@@ -1,0 +1,94 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Consolas;}}
+\fs24
+\b UML PLANTUML - SINCRONIZACION BEEMETRY Y NUEVA PLATAFORMA\b0\par
+\par
+Proceso teorico para copiar en formato PlantUML.\par
+\par
+{\f1\fs20
+@startuml\par
+title Sincronizacion teorica entre BEEMETRY y plataforma de informes tecnicos con IA\par
+\par
+start\par
+:1. Identificar bases de datos en servidores distintos;\par
+:2. Habilitar capa de integracion y servicio de sincronizacion;\par
+note right\par
+- Conectores seguros\par
+- Autenticacion y cifrado\par
+- Bitacora de eventos\par
+end note\par
+\par
+fork\par
+    :3A. Ejecutar sincronizacion en linea;\par
+    :4A. Detectar cambios en origen;\par
+    note right\par
+    - Inserts\par
+    - Updates\par
+    - Deletes\par
+    - Triggers o CDC\par
+    end note\par
+    :5A. Encolar evento de cambio;\par
+    :6A. Transformar y mapear datos;\par
+    :7A. Aplicar actualizacion filtrada o puntual;\par
+fork again\par
+    :3B. Ejecutar actualizacion total diaria;\par
+    :4B. Lanzar scheduler a hora programada;\par
+    :5B. Extraer dataset completo o incremental;\par
+    :6B. Depurar, homologar y validar estructura;\par
+    :7B. Cargar informacion masiva hacia nueva plataforma;\par
+end fork\par
+\par
+:8. Validar resultados de sincronizacion;\par
+note right\par
+- Conteo de registros\par
+- Integridad referencial\par
+- Hash/checksum\par
+- Control de duplicados\par
+end note\par
+\par
+if (Sincronizacion correcta?) then (Si)\par
+    :9B. Confirmar actualizacion;\par
+    :Actualizar estado de control;\par
+else (No)\par
+    :9A. Registrar error o inconsistencia;\par
+    :Reintento automatico;\par
+    :Rollback parcial si aplica;\par
+endif\par
+\par
+:10. Registrar bitacora, auditoria y monitoreo;\par
+note right\par
+- Fecha y hora\par
+- Origen y destino\par
+- Registros insertados/actualizados/rechazados\par
+- Alertas y conflictos\par
+end note\par
+\par
+:11. Mantener base nueva sincronizada con BEEMETRY;\par
+\par
+floating note right\par
+PROCESOS COMPLEMENTARIOS REQUERIDOS\par
+\par
+A. Triggers / CDC en BD origen\par
+- Detectan altas, bajas y cambios\par
+- Publican eventos a cola o tabla sync\par
+\par
+B. Actualizacion masiva o filtrada\par
+- Masiva por tablas o periodos\par
+- Filtrada por empresa, usuario, proyecto, fecha o sede\par
+\par
+C. Resolucion de conflictos\par
+- Fuente maestra prioritaria\par
+- Reglas por timestamp o version\par
+- Revision manual en casos criticos\par
+\par
+D. Seguridad y continuidad\par
+- VPN o canal cifrado\par
+- Credenciales rotadas\par
+- Backups antes de carga total\par
+- Recuperacion ante fallas\par
+end note\par
+\par
+stop\par
+@enduml\par
+}\par
+}

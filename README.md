@@ -34,7 +34,7 @@ Solución base para baja latencia con:
 ## Levantar en Docker
 
 ```bash
-docker compose up --build
+docker-compose up --build
 ```
 
 Servicios:
@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 
 Este script:
 
-- Levanta contenedores con `docker compose up -d --no-build`.
+- Levanta contenedores con `docker-compose up -d --no-build`.
 - Genera imagen de prueba y la georreferencia.
 - Ejecuta conversión vía API.
 - Verifica publicación de tiles y disponibilidad del frontend.
@@ -133,7 +133,7 @@ La lectura ECW en GDAL depende del driver/plugin y licenciamiento. Si el contene
 2. Reinicia backend:
 
 ```bash
-docker compose up -d --build backend
+docker-compose up -d --build web
 ```
 
 3. Verifica capacidades:

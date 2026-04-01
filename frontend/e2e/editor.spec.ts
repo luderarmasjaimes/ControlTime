@@ -14,6 +14,6 @@ test('Editor carga y muestra el encabezado del informe', async ({ page }) => {
     )
   })
   await page.goto('/')
-  await page.getByRole('button', { name: 'Report' }).click()
+  await page.getByRole('button', { name: 'Abrir Report', exact: true }).click()
   await expect(page.getByText(/Informe Geomecánico/i)).toBeVisible()
 })

@@ -1,0 +1,240 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Consolas;}}
+\paperw11906\paperh16838\margl1134\margr1134\margt1134\margb1134
+\fs24
+\b DIAGRAMA DETALLADO DE REGISTRO DE EMPRESA EN LA PLATAFORMA\b0\par
+\par
+\b Objetivo\b0\par
+Presentar de forma clara y editable el flujo funcional y lógico del registro de una empresa en la plataforma, considerando los datos adicionales solicitados: logotipo, teléfono, email, celular y datos del representante legal o responsable principal de la empresa.\par
+\par
+\b Alcance funcional propuesto\b0\par
+Este diagrama describe el registro de la empresa como entidad organizacional y su vinculación con un usuario inicial, preferentemente el representante legal o administrador principal.\par
+\par
+\b Datos considerados en el registro de empresa\b0\par
+- Nombre de la empresa\par
+- RUC\par
+- Logotipo o imagen institucional\par
+- Teléfono de contacto\par
+- Celular corporativo\par
+- Email corporativo\par
+- Dirección o referencia organizacional (opcional si aplica)\par
+- Representante legal o usuario administrador inicial\par
+- Nombre del representante\par
+- Apellidos del representante\par
+- DNI del representante\par
+- Usuario de acceso\par
+- Contraseña\par
+- Biometría facial del usuario inicial\par
+- Rol inicial asignado: admin u operator\par
+\par
+\b Diagrama funcional para usuarios no técnicos\b0\par
+\par
+{\f1\fs20
++----------------------+\line
+| 1. Inicio de registro|\line
+|    de empresa        |\line
++----------+-----------+\line
+           |\line
+           v\line
++-------------------------------+\line
+| 2. Ingreso de datos de empresa|\line
+| - Nombre de empresa           |\line
+| - RUC                         |\line
+| - Logotipo / imagen           |\line
+| - Telefono                    |\line
+| - Celular                     |\line
+| - Email corporativo           |\line
++---------------+---------------+\line
+                |\line
+                v\line
++---------------------------------------------+\line
+| 3. Ingreso de datos del responsable inicial |\line
+|    (preferentemente representante legal)    |\line
+| - Nombres                                   |\line
+| - Apellidos                                 |\line
+| - DNI                                       |\line
+| - Usuario                                   |\line
+| - Contrasena                                |\line
++----------------+----------------------------+\line
+                 |\line
+                 v\line
++---------------------------------------------+\line
+| 4. Captura de biometria facial del usuario  |\line
+|    inicial                                  |\line
++----------------+----------------------------+\line
+                 |\line
+                 v\line
++---------------------------------------------+\line
+| 5. Validaciones del sistema                 |\line
+| - RUC valido / no duplicado                 |\line
+| - Usuario valido / no duplicado             |\line
+| - DNI valido / no duplicado                 |\line
+| - Biometria registrada correctamente        |\line
+| - Datos obligatorios completos              |\line
++----------------+----------------------------+\line
+                 |\line
+        +--------+---------+\line
+        |                  |\line
+        v                  v\line
++---------------+   +-------------------------+\line
+| 6A. Error     |   | 6B. Registro exitoso    |\line
+| Mostrar causa |   | Crear empresa + usuario |\line
+| y corregir    |   | administrador inicial   |\line
++---------------+   +-----------+-------------+\line
+                                |\line
+                                v\line
++---------------------------------------------+\line
+| 7. Generar sesion inicial y habilitar acceso|\line
+|    a la plataforma                          |\line
++----------------+----------------------------+\line
+                 |\line
+                 v\line
++---------------------------------------------+\line
+| 8. Empresa operativa con usuario admin      |\line
+|    listo para crear mas usuarios            |\line
++---------------------------------------------+\line
+}\par
+\par
+\b Diagrama lógico TI por bloques\b0\par
+\par
+{\f1\fs20
++--------------------------+\line
+| Frontend - Formulario    |\line
+| Registro Empresa         |\line
++------------+-------------+\line
+             |\line
+             | Datos empresa\line
+             | Datos responsable\line
+             | Imagen logo\line
+             | Biometria facial\line
+             v\line
++--------------------------+\line
+| API Backend              |\line
+| POST /api/auth/register  |\line
++------------+-------------+\line
+             |\line
+             v\line
++-------------------------------+\line
+| Capa de validacion            |\line
+| - Campos requeridos           |\line
+| - DNI                         |\line
+| - Usuario / password          |\line
+| - Face template o imagen      |\line
+| - Rol inicial                 |\line
++------------+------------------+\line
+             |\line
+             v\line
++-------------------------------+\line
+| Servicio biometrico           |\line
+| analyzeFaceImage(register)    |\line
+| Legacy / Dermalog / DNN       |\line
++------------+------------------+\line
+             |\line
+             v\line
++-------------------------------+\line
+| Resolucion de perfil inicial  |\line
+| resolveRoleForUsername()      |\line
+| admin / operator              |\line
++------------+------------------+\line
+             |\line
+             v\line
++-------------------------------+\line
+| Persistencia                  |\line
+| - auth_users                  |\line
+| - auth_audit_logs             |\line
+| - modo archivo o Postgres     |\line
++------------+------------------+\line
+             |\line
+             v\line
++-------------------------------+\line
+| Session Manager               |\line
+| issueAuthSession()            |\line
+| token + rol + empresa         |\line
++------------+------------------+\line
+             |\line
+             v\line
++-------------------------------+\line
+| Respuesta al frontend         |\line
+| usuario + empresa + token     |\line
++-------------------------------+\line
+}\par
+\par
+\b Descripción de bloques\b0\par
+\b 1. Frontend - Formulario de Registro Empresa\b0\par
+Pantalla donde se captura la información institucional y del usuario inicial. En una evolución funcional, aquí debe existir una sección específica para cargar el logotipo o imagen institucional de la empresa.\par
+\par
+\b 2. Datos institucionales sugeridos\b0\par
+- Nombre de empresa\par
+- RUC\par
+- Logotipo\par
+- Teléfono\par
+- Celular\par
+- Email corporativo\par
+- Representante legal o responsable principal\par
+\par
+\b 3. Datos del usuario administrador inicial\b0\par
+La solución actual registra usuario, DNI, contraseña, empresa, rol y biometría. Para el caso solicitado, este usuario debe interpretarse como el representante legal o administrador principal de la empresa.\par
+\par
+\b 4. Validación biométrica\b0\par
+El backend exige un `face_template` o `face_image_base64`. Si se envía imagen facial, el backend procesa la imagen con `analyzeFaceImage(register)` y extrae plantilla biométrica.\par
+\par
+\b 5. Persistencia actual\b0\par
+La implementación actual guarda principalmente en la estructura de usuarios autenticados. No existe todavía una tabla independiente de empresa con logotipo, teléfono corporativo o email corporativo desacoplados del usuario.\par
+\par
+\b Importante sobre el estado actual de implementación\b0\par
+Actualmente, según la implementación real, el endpoint de registro disponible es:\par
+- POST /api/auth/register\par
+\par
+Campos actualmente soportados por backend:\par
+- company\par
+- first_name\par
+- last_name\par
+- dni\par
+- username\par
+- password\par
+- role\par
+- ruc\par
+- phone\par
+- mobile\par
+- email\par
+- face_template o face_image_base64\par
+\par
+\b Brecha funcional identificada\b0\par
+Para un registro formal de empresa como entidad completa, faltaria modelar explicitamente:\par
+- logo_url o logo_binary\par
+- company_phone\par
+- company_mobile\par
+- company_email\par
+- legal_representative_name\par
+- legal_representative_last_name\par
+- legal_representative_dni\par
+- tabla propia de empresas, separada de auth_users\par
+\par
+\b Propuesta de modelo objetivo\b0\par
+Se recomienda separar el registro en dos entidades:\par
+\par
+{\f1\fs20
++---------------------------+      +----------------------------+\line
+| Empresa                   |      | Usuario inicial            |\line
+| - nombre                  |      | - first_name               |\line
+| - ruc                     |      | - last_name                |\line
+| - logo                    |      | - dni                      |\line
+| - telefono                |      | - username                 |\line
+| - celular                 |      | - password_hash            |\line
+| - email corporativo       |      | - role = admin             |\line
+| - representante legal     |----->| - biometria                |\line
++---------------------------+      +----------------------------+\line
+}\par
+\par
+\b Mensaje ejecutivo para presentar a usuarios no técnicos\b0\par
+El registro de empresa debe entenderse como el alta formal de una organización en la plataforma, junto con la creación de su usuario principal. Este usuario principal, idealmente el representante legal o administrador designado, queda habilitado para ingresar al sistema, gestionar información institucional y posteriormente crear otros usuarios internos con perfiles controlados.\par
+\par
+\b Referencia técnica real de la implementación actual\b0\par
+- Backend: `POST /api/auth/register`\par
+- Frontend: módulo de registro dentro de AuthGateway / authApi\par
+- Persistencia: `auth_users`, auditoría y sesión\par
+\par
+\b Texto breve para pegar en presentación\b0\par
+El proceso de registro de empresa contempla el ingreso de información institucional, datos del responsable principal y biometría facial del usuario inicial. Una vez validados los campos obligatorios, el sistema registra al usuario principal, genera trazabilidad en auditoría y habilita una sesión para operar la plataforma. En una evolución empresarial completa, este flujo debe separar formalmente la entidad Empresa de la entidad Usuario, incorporando logotipo, canales corporativos y datos del representante legal como parte del maestro institucional.\par
+\par
+}

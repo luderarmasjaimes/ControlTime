@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>InformeCliente PoC Frontend</title>
+  <style>body{font-family:Arial;margin:20px;} input,textarea,button{margin:4px 0;display:block;width:100%;max-width:720px}</style>
+</head>
+<body>
+  <h1>InformeCliente PoC - Frontend mínimo</h1>
+  <section>
+    <h2>Conexión WebSocket</h2>
+    <label>API base: <input id="apiBase" value="http://localhost:8080"/></label>
+    <label>WS URL: <input id="wsUrl" value="ws://localhost:8080/ws/sensors"/></label>
+    <button id="connectWs">Conectar WS</button>
+    <label>Sensor ID: <input id="sensorId" value="21"/></label>
+    <button id="subscribeBtn">Subscribe</button>
+    <pre id="wsLog" style="height:160px;overflow:auto;border:1px solid #ddd;padding:6px"></pre>
+  </section>
+
+  <section>
+    <h2>Auth (obtener token)</h2>
+    <label>User: <input id="authUser" value="sensors"/></label>
+    <label>Password: <input id="authPass" value="sensors_pass"/></label>
+    <button id="getToken">Obtener token</button>
+    <pre id="tokenOut" style="height:80px;overflow:auto;border:1px solid #eee;padding:6px"></pre>
+  </section>
+
+  <section>
+    <h2>Templates</h2>
+    <label>Name: <input id="tplName" value="PoC Template"/></label>
+    <label>Layout HTML: <textarea id="tplLayout" rows="6">&lt;html&gt;&lt;body&gt;&lt;h1&gt;Reporte PoC&lt;/h1&gt;&lt;p&gt;Valor dinámico: {{value}}&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</textarea></label>
+    <button id="createTpl">Crear Template</button>
+    <pre id="tplOut" style="height:80px;overflow:auto;border:1px solid #eee;padding:6px"></pre>
+  </section>
+
+  <section>
+    <h2>Instancias</h2>
+    <label>Template ID: <input id="instTplId"/></label>
+    <label>Params JSON: <textarea id="instParams">{"value": 42}</textarea></label>
+    <button id="createInst">Crear Instancia (queue)</button>
+    <pre id="instOut" style="height:140px;overflow:auto;border:1px solid #eee;padding:6px"></pre>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
