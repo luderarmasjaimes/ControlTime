@@ -148,6 +148,8 @@ float gBiometricDnnThreshold = 0.72f;
 std::string gAiEngineUrl;
 int gAiEngineTimeoutMs = 120;
 std::size_t gAiEngineMaxImageBytes = 450000;
+float gBiometricIcaoEyeConfidenceMin = 95.0f;
+float gBiometricIcaoIlluminationMin = 40.0f;
 bool gImageOptimizerEnabled = false;
 int gBiometricMaxPixels = 1280 * 720;
 int gSessionTtlMinutes = 480;
@@ -527,8 +529,33 @@ struct AiEngineFrameResult {
   bool mouthClosed = true;
   bool noGlasses = true;
   double glassesScore = 0.0;
+  double leftEar = 0.0;
+  double rightEar = 0.0;
+  bool hasEarMetrics = false;
   std::string error;
 };
+
+static float icaoFullFrameIlluminationPercent(const cv::Mat &bgr) {
+  if (bgr.empty()) {
+    return 0.0f;
+  }
+  cv::Mat gray;
+  if (bgr.channels() == 3) {
+    cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+  } else if (bgr.channels() == 4) {
+    cv::cvtColor(bgr, gray, cv::COLOR_BGRA2GRAY);
+  } else {
+    gray = bgr;
+  }
+  cv::Mat mask = gray > 0;
+  double avg = 0.0;
+  if (cv::countNonZero(mask) > 0) {
+    avg = cv::mean(gray, mask)[0];
+  } else {
+    avg = cv::mean(gray)[0];
+  }
+  return static_cast<float>((avg / 255.0) * 100.0);
+}
 
 std::optional<AiEngineFrameResult>
 analyzeFrameWithAiEngine(const std::vector<unsigned char> &imageBytes) {
@@ -640,6 +667,23 @@ analyzeFrameWithAiEngine(const std::vector<unsigned char> &imageBytes) {
                              ? obj.at("glasses_score").as_double()
                              : static_cast<double>(obj.at("glasses_score").as_int64());
     }
+    bool hasLeftEar = false;
+    bool hasRightEar = false;
+    if (obj.if_contains("left_ear") &&
+        (obj.at("left_ear").is_double() || obj.at("left_ear").is_int64())) {
+      out.leftEar = obj.at("left_ear").is_double()
+                        ? obj.at("left_ear").as_double()
+                        : static_cast<double>(obj.at("left_ear").as_int64());
+      hasLeftEar = true;
+    }
+    if (obj.if_contains("right_ear") &&
+        (obj.at("right_ear").is_double() || obj.at("right_ear").is_int64())) {
+      out.rightEar = obj.at("right_ear").is_double()
+                         ? obj.at("right_ear").as_double()
+                         : static_cast<double>(obj.at("right_ear").as_int64());
+      hasRightEar = true;
+    }
+    out.hasEarMetrics = hasLeftEar && hasRightEar;
     return out;
   } catch (...) {
     AiEngineFrameResult fail;
@@ -2488,12 +2532,22 @@ routeRequest(const http::request<http::string_body> &req,
       auto face = analyzeFaceImage(base64, "verify");
 
       std::vector<unsigned char> frameRaw;
-      auto aiEval = [&]() -> std::optional<AiEngineFrameResult> {
-        if (!decodeBase64(base64, frameRaw)) {
-          return std::nullopt;
+      const bool decoded = decodeBase64(base64, frameRaw);
+      if (decoded && !frameRaw.empty()) {
+        cv::Mat bgr = cv::imdecode(frameRaw, cv::IMREAD_COLOR);
+        if (!bgr.empty()) {
+          const float illumPct = icaoFullFrameIlluminationPercent(bgr);
+          if (illumPct < gBiometricIcaoIlluminationMin) {
+            pushIssueUnique(face.issues, "lighting_insufficient_icao");
+            face.ok = false;
+          }
         }
-        return analyzeFrameWithAiEngine(frameRaw);
-      }();
+      }
+
+      std::optional<AiEngineFrameResult> aiEval;
+      if (decoded && !frameRaw.empty()) {
+        aiEval = analyzeFrameWithAiEngine(frameRaw);
+      }
 
       if (aiEval.has_value()) {
         if (!aiEval->error.empty()) {
@@ -2510,6 +2564,15 @@ routeRequest(const http::request<http::string_body> &req,
           }
           if (!aiEval->noGlasses) {
             pushIssueUnique(face.issues, "suspected_glasses");
+          }
+          if (aiEval->detected && aiEval->hasEarMetrics) {
+            const double earSum = aiEval->leftEar + aiEval->rightEar;
+            const float eyeConf = static_cast<float>(
+                std::clamp((earSum / 0.6) * 100.0, 0.0, 100.0));
+            if (eyeConf < gBiometricIcaoEyeConfidenceMin) {
+              pushIssueUnique(face.issues, "eye_open_confidence_low");
+              face.ok = false;
+            }
           }
           face.ok = face.ok && aiEval->detected && aiEval->bothOpen &&
                     aiEval->mouthClosed && aiEval->noGlasses;
@@ -3523,6 +3586,20 @@ int main() {
           2000000));
     } catch (...) {
       gAiEngineMaxImageBytes = 450000;
+    }
+    try {
+      gBiometricIcaoEyeConfidenceMin = static_cast<float>(std::clamp(
+          std::stod(getenvOr("BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN", "95")), 50.0,
+          100.0));
+    } catch (...) {
+      gBiometricIcaoEyeConfidenceMin = 95.0f;
+    }
+    try {
+      gBiometricIcaoIlluminationMin = static_cast<float>(std::clamp(
+          std::stod(getenvOr("BIOMETRIC_ICAO_ILLUMINATION_MIN", "40")), 5.0,
+          80.0));
+    } catch (...) {
+      gBiometricIcaoIlluminationMin = 40.0f;
     }
     gImageOptimizerEnabled =
         toLowerCopy(getenvOr("BIOMETRIC_IMAGE_OPTIMIZER_ENABLE", "false")) ==

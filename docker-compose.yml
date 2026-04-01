@@ -12,6 +12,7 @@ services:
       - ./db_scripts/03_auth_biometric.sql:/docker-entrypoint-initdb.d/03_auth_biometric.sql:ro
       - ./db_scripts/04_telemetry_schema_v2.sql:/docker-entrypoint-initdb.d/04_telemetry_schema_v2.sql:ro
       - ./db_scripts/06_seed_users_raura.sql:/docker-entrypoint-initdb.d/06_seed_users_raura.sql:ro
+      - ./db_scripts/07_auth_login_operacion.sql:/docker-entrypoint-initdb.d/07_auth_login_operacion.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
       interval: 10s
@@ -116,6 +117,8 @@ services:
       timeout: 5s
       retries: 5
 
+  # Si el login no refleja cambios de UI: .\scripts\rebuild-frontend-docker.ps1
+  # (o: docker compose build --no-cache frontend && docker compose up -d frontend)
   frontend:
     build:
       context: ./frontend

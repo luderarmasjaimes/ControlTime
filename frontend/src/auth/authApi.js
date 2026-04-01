@@ -27,12 +27,15 @@ async function parseJsonResponse(response) {
                 'suspected_face_accessory': 'Accesorio/Mascarilla cubriendo rostro',
                 'suspected_heavy_makeup': 'Maquillaje excesivo detectado',
                 'eyes_not_open_or_not_visible': 'Los ojos deben estar abiertos y visibles',
+                'eye_open_confidence_low': 'Apertura ocular insuficiente (ICAO): abra bien los ojos',
                 'mouth_not_closed': 'Mantener la boca cerrada',
                 'face_not_frontal': 'Debe mirar fijamente de frente al lente',
                 'head_pose_not_straight': 'La cabeza debe estar recta',
                 'face_too_small': 'Acérquese más a la cámara',
                 'face_off_center': 'Rostro descentrado',
                 'lighting_out_of_range': 'Mejore la iluminación del ambiente',
+                'lighting_insufficient_icao': 'Iluminación insuficiente (norma ICAO / FACIAL)',
+                'ai_face_not_detected': 'No se detectó rostro en el análisis biométrico',
                 'image_not_sharp': 'Imagen borrosa, manténgase quieto',
                 'low_dynamic_range': 'Baja calidad de imagen/contraste'
             };

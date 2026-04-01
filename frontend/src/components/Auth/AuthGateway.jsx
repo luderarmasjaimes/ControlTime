@@ -22,15 +22,55 @@ import {
     verifyBiometricFrame,
     validateCompany,
 } from '../../auth/authApi'
+import { FACIAL_ICAO } from '../../config/facialIcaoConfig'
+import {
+    mapVerifyIssuesToIcaoFour,
+    formatIcaoCell,
+} from '../../auth/biometricFiveHelpers'
 
 const DEFAULT_COMPANIES = ['Minera Raura', 'Compania Minera Volcan', 'Minera Antamina', 'Minera Cerro Verde']
-const GUIDE_BOX_PADDING = 0.18
 
-// Biometric Oval Configuration (snug ROI-based fit)
-const BIOMETRIC_OVAL_W_FACTOR = 0.76;
-const BIOMETRIC_OVAL_H_FACTOR = 0.85; 
-const BIOMETRIC_OVAL_X_OFFSET = 0.12; 
-const BIOMETRIC_OVAL_Y_OFFSET = -0.05; // Moved up as requested
+// Recorte enviado al motor IA (coherente con óvalo UI en pantalla)
+const BIOMETRIC_OVAL_W_FACTOR = 0.98
+const BIOMETRIC_OVAL_H_FACTOR = 1.02
+const BIOMETRIC_OVAL_X_OFFSET = 0.12
+const BIOMETRIC_OVAL_Y_OFFSET = -0.05
+
+/**
+ * Óvalo centrado en el rostro; escala con la distancia a la cámara vía tamaño aparente del box.
+ * Rostro pequeño en frame (lejos) → óvalo más amplio respecto al box; grande (cerca) → menos margen.
+ */
+function computeBiometricOvalLayout(box, vw, vh) {
+    if (!box || vw < 32 || vh < 32) {
+        return {
+            leftPct: 50,
+            topPct: 44,
+            wPct: 46,
+            hPct: 84,
+            transform: 'translate(-50%, -50%)',
+            gradWPct: 48,
+            gradHPct: 80,
+        }
+    }
+    const cx = box.x + box.width / 2
+    const cy = box.y + box.height / 2
+    const rel = Math.sqrt((box.width / vw) * (box.height / vh))
+    const t = Math.min(Math.max((rel - 0.08) / 0.38, 0), 1)
+    const proximityScale = 1.42 - t * 0.34
+    let ow = box.width * BIOMETRIC_OVAL_W_FACTOR * proximityScale
+    let oh = box.height * BIOMETRIC_OVAL_H_FACTOR * proximityScale
+    const wPct = Math.min((ow / vw) * 100, 90)
+    const hPct = Math.min((oh / vh) * 100, 90)
+    return {
+        leftPct: (cx / vw) * 100,
+        topPct: (cy / vh) * 100,
+        wPct,
+        hPct,
+        transform: 'translate(-50%, -50%)',
+        gradWPct: Math.min(wPct * 0.55, 48),
+        gradHPct: Math.min(hPct * 0.5, 78),
+    }
+}
 
 function getCropFromFaceBox(videoWidth, videoHeight, faceBox) {
     if (!faceBox) {
@@ -127,14 +167,6 @@ function frameToJpegBase64(videoElement, cropBox) {
     return base64
 }
 
-function centerOffsetRatio(box, width, height) {
-    const centerX = box.x + box.width / 2
-    const centerY = box.y + box.height / 2
-    const offsetX = Math.abs(centerX - width / 2) / width
-    const offsetY = Math.abs(centerY - height / 2) / height
-    return { offsetX, offsetY }
-}
-
 const getSkinCentroid = (ctx, w, h) => {
     try {
         const data = ctx.getImageData(0, 0, w, h).data;
@@ -166,35 +198,6 @@ const skinPixelRatio = (ctx, x, y, w, h) => {
         return skinPixels / (w * h);
     } catch { return 0; }
 };
-
-function brightnessScore(videoElement, box) {
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(64, Math.floor(box.width / 2))
-    canvas.height = Math.max(64, Math.floor(box.height / 2))
-    const context = canvas.getContext('2d', { willReadFrequently: true })
-    context.drawImage(
-        videoElement,
-        box.x,
-        box.y,
-        box.width,
-        box.height,
-        0,
-        0,
-        canvas.width,
-        canvas.height
-    )
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
-
-    let sum = 0
-    for (let i = 0; i < pixels.length; i += 4) {
-        const r = pixels[i]
-        const g = pixels[i + 1]
-        const b = pixels[i + 2]
-        sum += r * 0.299 + g * 0.587 + b * 0.114
-    }
-
-    return sum / (pixels.length / 4)
-}
 
 const AuthGateway = ({ onAuthenticated }) => {
     const [mode, setMode] = useState('login')
@@ -234,25 +237,45 @@ const AuthGateway = ({ onAuthenticated }) => {
     const [frameMetrics, setFrameMetrics] = useState({ width: 1, height: 1 })
     const [faceGuide, setFaceGuide] = useState({
         detected: false,
-        centered: false,
         frontal: false,
-        eyesOpen: true, // Optimistic initial state
-        mouthClosed: true, // Optimistic initial state
-        stable: false,
-        lighting: false,
+        eyesOpen: false,
+        mouthClosed: false,
         qualityReady: false,
-        localReady: false,
-        localNotes: [],
-        notes: ['Iniciando cámara...'],
+        lastServerOk: false,
+        icaoEyes: null,
+        icaoMouth: null,
+        icaoFrontal: null,
+        icaoNoGlasses: null,
+        livenessScore: 0,
     })
-    const [autoTriggerTimer, setAutoTriggerTimer] = useState(0)
     const videoRef = useRef(null)
     const streamRef = useRef(null)
     const detectorRef = useRef(null)
-    const motionRef = useRef({ cx: 0, cy: 0, t: 0 })
+    const prevMouthClosedLandmarkRef = useRef(null)
     const lastSyncRef = useRef(0)
     const syncingRef = useRef(false)
-    const smoothedFaceRef = useRef(null) // Added for EMA smoothing
+    const smoothedFaceRef = useRef(null)
+    const lastVerifyOkRef = useRef(false)
+    const lastIcaoFourRef = useRef({
+        eyes: false,
+        mouth: false,
+        frontal: false,
+        noGlasses: false,
+    })
+    const livenessBlinkRef = useRef(0)
+    const livenessMouthEventsRef = useRef(0)
+    const prevEyesOpenLandmarkRef = useRef(null)
+    const blinkCloseStartedAtRef = useRef(null)
+    const mouthWasOpenPhaseRef = useRef(false)
+    const livenessScoreRef = useRef(0)
+    const livenessFallbackRef = useRef(0)
+    const lastAutoTriggerRef = useRef(0)
+    const cameraRetryTimerRef = useRef(null)
+
+    const ovalLayout = useMemo(
+        () => computeBiometricOvalLayout(liveFaceBox, frameMetrics.width, frameMetrics.height),
+        [liveFaceBox, frameMetrics.width, frameMetrics.height]
+    )
 
     const canRegister = useMemo(() => {
         let valuesOk = false;
@@ -335,16 +358,44 @@ const AuthGateway = ({ onAuthenticated }) => {
     useEffect(() => {
         let cancelled = false
 
+        const stopCurrentStream = () => {
+            const cur = streamRef.current
+            if (cur && typeof cur.getTracks === 'function') {
+                cur.getTracks().forEach((track) => track.stop())
+            }
+            streamRef.current = null
+            if (videoRef.current) {
+                videoRef.current.srcObject = null
+            }
+        }
+
         async function startCamera() {
+            if (!navigator.mediaDevices?.getUserMedia) {
+                setError('API de cámara no disponible en este navegador.')
+                setCameraReady(false)
+                return
+            }
+            stopCurrentStream()
+            if (cameraRetryTimerRef.current) {
+                clearTimeout(cameraRetryTimerRef.current)
+                cameraRetryTimerRef.current = null
+            }
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'user',
-                        width: { ideal: 960 },
-                        height: { ideal: 540 },
-                    },
-                    audio: false,
-                })
+                let stream
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            facingMode: 'user',
+                            ...FACIAL_ICAO.CAMERA,
+                        },
+                        audio: false,
+                    })
+                } catch {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'user' },
+                        audio: false,
+                    })
+                }
 
                 if (cancelled) {
                     stream.getTracks().forEach((track) => track.stop())
@@ -354,21 +405,36 @@ const AuthGateway = ({ onAuthenticated }) => {
                 streamRef.current = stream
                 if (videoRef.current) {
                     videoRef.current.srcObject = stream
-                    await videoRef.current.play()
+                    videoRef.current.muted = true
+                    videoRef.current.setAttribute('playsinline', '')
+                    await videoRef.current.play().catch(() => {})
                 }
 
                 setCameraReady(true)
                 setError('')
-
-                // Force video play and wait a tick for metadata
                 if (videoRef.current) {
                     videoRef.current.onloadedmetadata = () => {
-                        videoRef.current.play().catch(e => console.error("Auto-play prevented", e))
+                        videoRef.current?.play().catch((e) =>
+                            console.warn('Reproducción automática:', e)
+                        )
                     }
                 }
-            } catch {
-                setError('No se pudo abrir la camara de la laptop. Verifica permisos del navegador.')
+            } catch (err) {
+                const name = err?.name || ''
+                if (name === 'NotReadableError' || name === 'TrackStartError') {
+                    setError('Cámara en uso. Cierre otras aplicaciones; reintentando…')
+                } else if (name === 'NotAllowedError') {
+                    setError('Permiso de cámara denegado.')
+                } else {
+                    setError('No se pudo abrir la cámara. Verifique permisos del navegador.')
+                }
                 setCameraReady(false)
+                if (!cancelled && !cameraRetryTimerRef.current) {
+                    cameraRetryTimerRef.current = setTimeout(() => {
+                        cameraRetryTimerRef.current = null
+                        startCamera()
+                    }, FACIAL_ICAO.CAMERA_RETRY_MS)
+                }
             }
         }
 
@@ -376,10 +442,11 @@ const AuthGateway = ({ onAuthenticated }) => {
 
         return () => {
             cancelled = true
-            if (streamRef.current) {
-                streamRef.current.getTracks().forEach((track) => track.stop())
-                streamRef.current = null
+            if (cameraRetryTimerRef.current) {
+                clearTimeout(cameraRetryTimerRef.current)
+                cameraRetryTimerRef.current = null
             }
+            stopCurrentStream()
         }
     }, [])
 
@@ -390,8 +457,7 @@ const AuthGateway = ({ onAuthenticated }) => {
         async function detectFaceLoop(timestamp) {
             const video = videoRef.current
             
-            // Limit loop frequency to ~15fps to balance performance and latency
-            if (timestamp - lastTimestamp < 66) {
+            if (timestamp - lastTimestamp < FACIAL_ICAO.DETECT_FRAME_MIN_MS) {
                 requestID = requestAnimationFrame(detectFaceLoop)
                 return
             }
@@ -470,154 +536,255 @@ const AuthGateway = ({ onAuthenticated }) => {
                     }
                 }
 
-                let centered = false, frontal = false, stable = false, lighting = false;
-                let localReady = false, localNotes = [];
-                let hasLandmarks = false, eyesOpen = true, mouthClosed = true;
+                let frontal = false
+                let hasLandmarks = false
+                let eyesOpen = false
+                let mouthClosed = false
 
                 if (!bestFace) {
                     setLiveFaceBox(null)
                     smoothedFaceRef.current = null
+                    lastVerifyOkRef.current = false
+                    livenessBlinkRef.current = 0
+                    livenessMouthEventsRef.current = 0
+                    prevEyesOpenLandmarkRef.current = null
+                    blinkCloseStartedAtRef.current = null
+                    mouthWasOpenPhaseRef.current = false
+                    livenessScoreRef.current = 0
+                    livenessFallbackRef.current = 0
+                    prevMouthClosedLandmarkRef.current = null
+                    lastIcaoFourRef.current = {
+                        eyes: false,
+                        mouth: false,
+                        frontal: false,
+                        noGlasses: false,
+                    }
+                    setFaceGuide((prev) => ({
+                        ...prev,
+                        detected: false,
+                        qualityReady: false,
+                        lastServerOk: false,
+                        icaoEyes: null,
+                        icaoMouth: null,
+                        icaoFrontal: null,
+                        icaoNoGlasses: null,
+                        livenessScore: 0,
+                    }))
                 } else {
-                    // --- Exponential Moving Average (EMA) Smoothing ---
                     if (smoothedFaceRef.current) {
-                        const alpha = 0.25; // Smoothing factor (0.1 = very slow/smooth, 0.9 = fast/jittery)
-                        const prev = smoothedFaceRef.current;
+                        const alpha = FACIAL_ICAO.FACE_BOX_EMA_ALPHA
+                        const prev = smoothedFaceRef.current
                         bestFace = {
                             x: prev.x + alpha * (bestFace.x - prev.x),
                             y: prev.y + alpha * (bestFace.y - prev.y),
                             width: prev.width + alpha * (bestFace.width - prev.width),
                             height: prev.height + alpha * (bestFace.height - prev.height),
-                            landmarks: bestFace.landmarks, // Keep raw landmarks for accuracy check
-                            isFallback: bestFace.isFallback
-                        };
+                            landmarks: bestFace.landmarks,
+                            isFallback: bestFace.isFallback,
+                        }
                     }
-                    smoothedFaceRef.current = bestFace;
+                    smoothedFaceRef.current = bestFace
                     setLiveFaceBox(bestFace)
 
-                    const { offsetX, offsetY } = centerOffsetRatio(bestFace, video.videoWidth, video.videoHeight)
-                    centered = offsetX < 0.20 && offsetY < 0.20 
                     const aspect = bestFace.width / Math.max(1, bestFace.height)
-                    const frontalByAspect = aspect > 0.4 && aspect < 1.3 // Relaxed from 0.5-1.2
+                    const frontalByAspect =
+                        aspect > FACIAL_ICAO.FRONTAL_ASPECT_MIN &&
+                        aspect < FACIAL_ICAO.FRONTAL_ASPECT_MAX
 
                     hasLandmarks = bestFace.landmarks.length > 0
-                    const leftEye = bestFace.landmarks.find((l) => l.type === 'leftEye' || l.type === 'eye')
+                    const leftEye = bestFace.landmarks.find(
+                        (l) => l.type === 'leftEye' || l.type === 'eye'
+                    )
                     const rightEye = bestFace.landmarks.find((l) => l.type === 'rightEye')
-                    const eyesAligned = hasLandmarks ? (
-                        leftEye && rightEye 
-                            ? Math.abs(leftEye.locations[0].y - rightEye.locations[0].y) < bestFace.height * 0.15
+                    const eyeYRatio = FACIAL_ICAO.MAX_EYE_Y_DELTA_RATIO
+                    const eyesAligned = hasLandmarks
+                        ? leftEye && rightEye
+                            ? Math.abs(leftEye.locations[0].y - rightEye.locations[0].y) <
+                              bestFace.height * eyeYRatio
                             : true
-                    ) : true
-                    
+                        : true
+
                     const eyeOpenness = (eye) => {
-                        if (!eye || !Array.isArray(eye.locations) || eye.locations.length < 2) return 0.5
+                        if (!eye || !Array.isArray(eye.locations) || eye.locations.length < 2)
+                            return 0.5
                         const ys = eye.locations.map((p) => p.y)
                         const xs = eye.locations.map((p) => p.x)
-                        return (Math.max(...ys) - Math.min(...ys)) / Math.max(1, Math.max(...xs) - Math.min(...xs))
+                        return (
+                            (Math.max(...ys) - Math.min(...ys)) /
+                            Math.max(1, Math.max(...xs) - Math.min(...xs))
+                        )
                     }
                     const mouth = bestFace.landmarks.find((l) => l.type === 'mouth')
                     const mouthRatio = (() => {
-                        if (!mouth || !Array.isArray(mouth.locations) || mouth.locations.length < 2) return 0.1
+                        if (!mouth || !Array.isArray(mouth.locations) || mouth.locations.length < 2)
+                            return 0.08
                         const ys = mouth.locations.map((p) => p.y)
                         const xs = mouth.locations.map((p) => p.x)
-                        return (Math.max(...ys) - Math.min(...ys)) / Math.max(1, Math.max(...xs) - Math.min(...xs))
+                        return (
+                            (Math.max(...ys) - Math.min(...ys)) /
+                            Math.max(1, Math.max(...xs) - Math.min(...xs))
+                        )
                     })()
 
-                    eyesOpen = hasLandmarks ? (eyeOpenness(leftEye) > 0.15) : true
-                    // Adjusted mouth threshold: even MORE permissive and robust
-                    const isMouthOpen = hasLandmarks ? (mouthRatio > 0.22) : false;
-                    mouthClosed = !isMouthOpen;
+                    const earHint = FACIAL_ICAO.EAR_OPEN_HINT
+                    eyesOpen = hasLandmarks
+                        ? eyeOpenness(leftEye) > earHint && eyeOpenness(rightEye) > earHint
+                        : false
+                    const isMouthOpen = hasLandmarks
+                        ? mouthRatio > FACIAL_ICAO.MOUTH_OPEN_LANDMARK_RATIO
+                        : false
+                    mouthClosed = hasLandmarks ? !isMouthOpen : false
                     frontal = frontalByAspect && eyesAligned
 
                     const now = performance.now()
-                    const cx = bestFace.x + bestFace.width / 2
-                    const cy = bestFace.y + bestFace.height / 2
-                    const prevMot = motionRef.current
-                    const dt = Math.max(1, now - prevMot.t)
-                    const speed = Math.hypot(cx - prevMot.cx, cy - prevMot.cy) / dt
-                    stable = prevMot.t === 0 ? false : speed < 0.15
-                    motionRef.current = { cx, cy, t: now }
 
-                    const brightness = brightnessScore(video, bestFace)
-                    lighting = brightness > 30 && brightness < 250 // Extremely permissive
-                    
-                    // NEW: Simplified 'Three Validations' strategy as requested
-                    // 1. Face Presence (localReady)
-                    // 2. Eyes (eyesOpen)
-                    // 3. Mouth (mouthClosed)
-                    // 1. Face Presence (localReady)
-                    // 2. Eyes (eyesOpen)
-                    // 3. Mouth (mouthClosed)
-                    const hasFaceNow = bestFace !== null;
+                    if (hasLandmarks) {
+                        const prevO = prevEyesOpenLandmarkRef.current
+                        if (prevO === true && !eyesOpen) {
+                            blinkCloseStartedAtRef.current = now
+                        }
+                        if (
+                            prevO === false &&
+                            eyesOpen &&
+                            blinkCloseStartedAtRef.current != null
+                        ) {
+                            const dtBlink = now - blinkCloseStartedAtRef.current
+                            if (dtBlink > 80 && dtBlink < 700) {
+                                livenessBlinkRef.current += 1
+                            }
+                            blinkCloseStartedAtRef.current = null
+                        }
+                        if (
+                            !eyesOpen &&
+                            blinkCloseStartedAtRef.current != null &&
+                            now - blinkCloseStartedAtRef.current > 900
+                        ) {
+                            blinkCloseStartedAtRef.current = null
+                        }
+                        prevEyesOpenLandmarkRef.current = eyesOpen
 
-                    localReady = (hasFaceNow || (syncingRef.current))
-                    if (hasFaceNow) {
-                        if (!localReady) localNotes.push('Posicione su rostro dentro del recuadro central.')
-                        if (!eyesOpen) localNotes.push('Abra los ojos.')
-                        if (!mouthClosed) localNotes.push('Cierre la boca.')
+                        const prevM = prevMouthClosedLandmarkRef.current
+                        if (prevM === true && !mouthClosed) {
+                            mouthWasOpenPhaseRef.current = true
+                        }
+                        if (mouthWasOpenPhaseRef.current && mouthClosed) {
+                            livenessMouthEventsRef.current += 1
+                            mouthWasOpenPhaseRef.current = false
+                        }
+                        prevMouthClosedLandmarkRef.current = mouthClosed
                     }
 
-                    // --- Server-Side Biometric Validation Sync with CROPPING ---
+                    const lvPts =
+                        livenessBlinkRef.current * FACIAL_ICAO.LIVENESS_POINTS_PER_BLINK +
+                        livenessMouthEventsRef.current *
+                            FACIAL_ICAO.LIVENESS_POINTS_PER_MOUTH_EVENT
+                    livenessScoreRef.current = Math.min(
+                        FACIAL_ICAO.LIVENESS_MAX_SCORE,
+                        lvPts
+                    )
+
+                    const hasFaceNow = true
+
                     const nowSync = performance.now()
-                    const isFirstSync = lastSyncRef.current === 0;
-                    if (hasFaceNow && !syncingRef.current && (isFirstSync || nowSync - lastSyncRef.current > 800)) {
+                    const isFirstSync = lastSyncRef.current === 0
+                    if (
+                        hasFaceNow &&
+                        !syncingRef.current &&
+                        (isFirstSync ||
+                            nowSync - lastSyncRef.current > FACIAL_ICAO.VERIFY_SYNC_MS)
+                    ) {
                         syncingRef.current = true
                         lastSyncRef.current = nowSync
 
-                        const cropX = Math.max(0, bestFace.x + bestFace.width * BIOMETRIC_OVAL_X_OFFSET);
-                        const cropY = Math.max(0, bestFace.y + bestFace.height * BIOMETRIC_OVAL_Y_OFFSET);
-                        const cropW = Math.min(video.videoWidth - cropX, bestFace.width * BIOMETRIC_OVAL_W_FACTOR);
-                        const cropH = Math.min(video.videoHeight - cropY, bestFace.height * BIOMETRIC_OVAL_H_FACTOR);
+                        const cropX = Math.max(0, bestFace.x + bestFace.width * BIOMETRIC_OVAL_X_OFFSET)
+                        const cropY = Math.max(0, bestFace.y + bestFace.height * BIOMETRIC_OVAL_Y_OFFSET)
+                        const cropW = Math.min(
+                            video.videoWidth - cropX,
+                            bestFace.width * BIOMETRIC_OVAL_W_FACTOR
+                        )
+                        const cropH = Math.min(
+                            video.videoHeight - cropY,
+                            bestFace.height * BIOMETRIC_OVAL_H_FACTOR
+                        )
 
                         const canvas = document.createElement('canvas')
-                        canvas.width = cropW; canvas.height = cropH;
+                        canvas.width = cropW
+                        canvas.height = cropH
                         const ctx = canvas.getContext('2d')
-                        ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-                        const base64 = canvas.toDataURL('image/jpeg', 0.90).split(',')[1]
+                        ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH)
+                        const base64 = canvas
+                            .toDataURL('image/jpeg', FACIAL_ICAO.VERIFY_JPEG_QUALITY)
+                            .split(',')[1]
 
                         verifyBiometricFrame(base64)
                             .then((res) => {
                                 syncingRef.current = false
-                                setFaceGuide(prev => {
-                                    const serverNotes = (res.issues || []).map(i => i.replace(/_/g, ' '));
-                                    const detectedByServer = res.ok || (res.issues && !res.issues.includes('face_not_detected'));
-                                    const mergedNotes = [...new Set([...prev.localNotes, ...serverNotes])];
-                                    return {
-                                        ...prev,
-                                        detected: prev.detected || detectedByServer || hasFaceNow,
-                                        eyesOpen: res.issues ? !res.issues.includes('eyes_not_open_or_not_visible') : prev.eyesOpen,
-                                        mouthClosed: res.issues ? !res.issues.includes('mouth_not_closed') : prev.mouthClosed,
-                                        serverOk: res.ok, 
-                                        qualityReady: (prev.localReady || detectedByServer) && (res.ok || (!res.issues?.includes('eyes_not_open_or_not_visible') && !res.issues?.includes('mouth_not_closed'))),
-                                        notes: mergedNotes
-                                    };
-                                });
+                                lastVerifyOkRef.current = Boolean(res.ok)
+                                const four = mapVerifyIssuesToIcaoFour(
+                                    res.issues || [],
+                                    frontal
+                                )
+                                lastIcaoFourRef.current = four
+                                if (hasLandmarks) {
+                                    if (!res.ok) {
+                                        livenessFallbackRef.current = 0
+                                    }
+                                } else if (res.ok) {
+                                    livenessFallbackRef.current = Math.min(
+                                        FACIAL_ICAO.LIVENESS_MAX_SCORE,
+                                        livenessFallbackRef.current +
+                                            FACIAL_ICAO.LIVENESS_POINTS_PER_BLINK
+                                    )
+                                } else {
+                                    livenessFallbackRef.current = 0
+                                }
+                                setFaceGuide((prev) => ({
+                                    ...prev,
+                                    lastServerOk: res.ok,
+                                    icaoEyes: four.eyes,
+                                    icaoMouth: four.mouth,
+                                    icaoFrontal: four.frontal,
+                                    icaoNoGlasses: four.noGlasses,
+                                }))
                             })
-                            .catch(() => { syncingRef.current = false })
+                            .catch(() => {
+                                syncingRef.current = false
+                                lastVerifyOkRef.current = false
+                            })
                     }
 
                     setFaceGuide((prev) => {
+                        const I = lastIcaoFourRef.current
+                        const lv = hasLandmarks
+                            ? livenessScoreRef.current
+                            : livenessFallbackRef.current
+                        const livenessPass =
+                            lv >= FACIAL_ICAO.LIVENESS_SCORE_PASS
+                        const qualityReady =
+                            lastVerifyOkRef.current &&
+                            livenessPass &&
+                            I.eyes &&
+                            I.mouth &&
+                            I.frontal &&
+                            I.noGlasses
+
                         const updated = {
                             ...prev,
-                            detected: hasFaceNow || prev.detected, 
-                            centered: hasFaceNow ? centered : prev.centered,
-                            frontal: hasFaceNow ? frontal : prev.frontal,
-                            eyesOpen: hasFaceNow && hasLandmarks ? eyesOpen : prev.eyesOpen,
-                            mouthClosed: hasFaceNow && hasLandmarks ? mouthClosed : prev.mouthClosed,
-                            stable: hasFaceNow ? stable : prev.stable,
-                            lighting: hasFaceNow ? lighting : prev.lighting,
-                            localReady: hasFaceNow ? localReady : false,
-                            localNotes,
-                            qualityReady: (hasFaceNow && prev.eyesOpen && prev.mouthClosed) || (prev.serverOk && hasFaceNow), 
-                            notes: [...new Set([...localNotes, ...prev.notes.filter(n => !localNotes.includes(n))])]
-                        };
+                            detected: true,
+                            frontal,
+                            eyesOpen,
+                            mouthClosed,
+                            livenessScore: lv,
+                            qualityReady,
+                        }
 
                         if (updated.qualityReady && hasFaceNow && !capturedImageBase64) {
-                             const template = frameToTemplate(video, bestFace);
-                             const imageBase64 = frameToJpegBase64(video, bestFace);
-                             setCapturedTemplate(template);
-                             setCapturedImageBase64(imageBase64);
+                            const template = frameToTemplate(video, bestFace)
+                            const imageBase64 = frameToJpegBase64(video, bestFace)
+                            setCapturedTemplate(template)
+                            setCapturedImageBase64(imageBase64)
                         }
-                        return updated;
+                        return updated
                     })
                 }
             } catch (err) { console.error("Tracking Error:", err) }
@@ -636,20 +803,20 @@ const AuthGateway = ({ onAuthenticated }) => {
     }, [cameraReady])
 
 
-    // Effect for Automatic Biometric Login / Capture
     useEffect(() => {
         let timer = null
         if (faceGuide.qualityReady && !isProcessing) {
-            console.log("Face quality ready, triggering instant capture...");
-            timer = setTimeout(() => {
-                if (mode === 'login' && !message.includes('Ingreso autorizado')) {
-                    console.log("Auto-trigger: Face Login");
-                    handleFaceLogin()
-                } else if (mode === 'register' && !capturedTemplate) {
-                    console.log("Auto-trigger: Face Capture for Registration");
-                    handleCaptureForRegistration()
-                }
-            }, 300) // Reduced to 300ms for near-instant capture while ensuring stability
+            const now = performance.now()
+            if (now - lastAutoTriggerRef.current >= FACIAL_ICAO.CAPTURE_COOLDOWN_MS) {
+                timer = setTimeout(() => {
+                    lastAutoTriggerRef.current = performance.now()
+                    if (mode === 'login' && !message.includes('Ingreso autorizado')) {
+                        handleFaceLogin()
+                    } else if (mode === 'register' && !capturedTemplate) {
+                        handleCaptureForRegistration()
+                    }
+                }, FACIAL_ICAO.AUTO_CAPTURE_DELAY_MS)
+            }
         }
         return () => {
             if (timer) clearTimeout(timer)
@@ -706,9 +873,10 @@ const AuthGateway = ({ onAuthenticated }) => {
             return
         }
 
-        // Quality check removed as requested by user
-        if (!faceGuide.detected) {
-            setError('Rostro no detectado.')
+        if (!faceGuide.detected || !faceGuide.qualityReady) {
+            setError(
+                'Complete los 5 parámetros ICAO + liveness (FACIAL): ojos, boca, frontalidad, sin lentes y anti-spoofing ≥ 70%.'
+            )
             return
         }
 
@@ -749,52 +917,50 @@ const AuthGateway = ({ onAuthenticated }) => {
     }
 
     return (
-        <div className="auth-screen">
+        <div className="auth-screen" data-auth-ui="icao-login-v2">
             <div className="auth-background" />
             <div className="auth-shell">
                 <section className="auth-panel auth-panel-main">
-                    <div className="auth-brand">
-                        <span className="auth-pill">Control de Acceso Minero</span>
-                        <h1>Ingreso Seguro Prioritario por Reconocimiento Facial</h1>
-                        <p>
-                            La autenticacion facial es el metodo principal. El acceso por usuario y contrasena
-                            queda como opcion de respaldo.
-                        </p>
-                    </div>
-
-                    <div className="camera-card">
+                    <div className="camera-card camera-card-tall">
                         <div className="camera-header">
-                            <div className="camera-title">
+                            <div className="camera-title camera-title-with-pill">
+                                <span className="auth-pill auth-pill-inline">Control de acceso</span>
                                 <Camera size={16} />
-                                <span>Camara de laptop</span>
+                                <span>Cámara</span>
                             </div>
                             <span className={cameraReady ? 'status-dot online' : 'status-dot offline'}>
                                 {cameraReady ? 'Activa' : 'Sin acceso'}
                             </span>
                         </div>
-                        <div className="camera-stage relative overflow-hidden" style={{ minHeight: '300px', background: '#000' }}>
-                            <video ref={videoRef} autoPlay muted playsInline className="camera-preview w-full h-full object-cover" style={{ display: cameraReady ? 'block' : 'none' }} />
+                        <div
+                            className="camera-stage relative overflow-hidden camera-stage-tall"
+                            style={{ background: '#000' }}
+                        >
+                            <video
+                                ref={videoRef}
+                                autoPlay
+                                muted
+                                playsInline
+                                className="camera-preview camera-preview-tall w-full h-full object-cover"
+                                style={{ display: cameraReady ? 'block' : 'none' }}
+                            />
                             
-                            {/* Dynamic Face Oval Tracking - NEW (10% Smaller) */}
-                            <div 
-                                className="absolute pointer-events-none transition-all duration-75"
+                            <div
+                                className="absolute pointer-events-none transition-all duration-100 ease-out biometric-oval"
                                 style={{
-                                    borderRadius: '50%', 
-                                    left: liveFaceBox 
-                                        ? `${(liveFaceBox.x + (liveFaceBox.width * 0.24) / 2) / frameMetrics.width * 100}%` 
-                                        : '37.5%',
-                                    top: liveFaceBox 
-                                        ? `${(liveFaceBox.y + (liveFaceBox.height * BIOMETRIC_OVAL_Y_OFFSET)) / frameMetrics.height * 100}%` 
-                                        : '10%',
-                                    width: liveFaceBox 
-                                        ? `${(liveFaceBox.width * 0.76 / frameMetrics.width) * 100}%` 
-                                        : '25%',
-                                    height: liveFaceBox 
-                                        ? `${(liveFaceBox.height * 0.85 / frameMetrics.height) * 100}%` 
-                                        : '80%',
+                                    borderRadius: '50%',
+                                    left: `${ovalLayout.leftPct}%`,
+                                    top: `${ovalLayout.topPct}%`,
+                                    width: `${ovalLayout.wPct}%`,
+                                    height: `${ovalLayout.hPct}%`,
+                                    transform: ovalLayout.transform,
                                     zIndex: 15,
-                                    border: faceGuide.qualityReady ? '4px solid #22c55e' : '3px dashed #38bdf8', // Sky blue dashed
-                                    boxShadow: faceGuide.qualityReady ? '0 0 35px rgba(34, 197, 94, 0.8)' : '0 0 15px rgba(56, 189, 248, 0.4)'
+                                    border: faceGuide.qualityReady
+                                        ? '4px solid #22c55e'
+                                        : '3px dashed #38bdf8',
+                                    boxShadow: faceGuide.qualityReady
+                                        ? '0 0 35px rgba(34, 197, 94, 0.8)'
+                                        : '0 0 18px rgba(56, 189, 248, 0.45)',
                                 }}
                             >
                                 {!faceGuide.qualityReady && (
@@ -807,34 +973,14 @@ const AuthGateway = ({ onAuthenticated }) => {
                             </div>
 
                             {/* Persistent Dark Overlay Mask */}
-                            <div className="absolute inset-0 pointer-events-none" style={{
-                                background: `radial-gradient(circle 180px at ${
-                                    liveFaceBox 
-                                        ? ((liveFaceBox.x + liveFaceBox.width / 2) / frameMetrics.width * 100)
-                                        : 50
-                                }% ${
-                                    liveFaceBox
-                                        ? ((liveFaceBox.y + liveFaceBox.height / 2) / frameMetrics.height * 100)
-                                        : 50
-                                }%, transparent 50%, rgba(0, 0, 0, 0.75) 100%)`,
-                                zIndex: 5
-                            }}></div>
-
-                            {/* Persistent Guide Box (Target) */}
                             <div
-                                className={`face-guide-box fixed-face-box absolute pointer-events-none border-2 transition-all duration-75 ${
-                                    faceGuide.qualityReady ? 'border-green-500' : 'border-sky-400 border-dashed'
-                                }`}
+                                className="absolute inset-0 pointer-events-none"
                                 style={{
-                                    left: 'calc(50% - 125px)',
-                                    top: 'calc(50% - 125px)',
-                                    width: '250px',
-                                    height: '250px',
-                                    borderRadius: '20px',
-                                    zIndex: 10,
-                                    boxShadow: faceGuide.qualityReady ? '0 0 30px rgba(34, 197, 94, 0.6)' : '0 0 15px rgba(56, 189, 248, 0.3)',
+                                    background: `radial-gradient(ellipse ${ovalLayout.gradWPct}% ${ovalLayout.gradHPct}% at ${ovalLayout.leftPct}% ${ovalLayout.topPct}%, transparent 42%, rgba(0, 0, 0, 0.76) 72%)`,
+                                    zIndex: 5,
                                 }}
                             />
+
                             {!cameraReady && (
                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 text-white gap-3" style={{ zIndex: 20 }}>
                                     <ScanFace size={48} className="animate-pulse opacity-50" />
@@ -854,45 +1000,67 @@ const AuthGateway = ({ onAuthenticated }) => {
                             )}
                         </div>
 
-                        <div className="face-guidance-panel">
-                            <div className="face-guidance-grid">
-                                    <span className={faceGuide.detected ? 'ok' : 'warn'}>
-                                        {faceGuide.detected ? 'Rostro detectado' : 'Sin rostro detectado'}
-                                    </span>
-                                    <span className={faceGuide.centered ? 'ok' : 'warn'}>
-                                        {faceGuide.centered ? 'Rostro centrado' : 'Ajustar centrado'}
-                                    </span>
-                                    <span className={faceGuide.frontal ? 'ok' : 'warn'}>
-                                        {faceGuide.frontal ? 'Mirada frontal' : 'Cara girada/inclinada'}
-                                    </span>
-                                    <span className={faceGuide.eyesOpen ? 'ok' : 'warn'}>
-                                        {faceGuide.eyesOpen ? 'Ojos abiertos' : 'Abrir ojos'}
-                                    </span>
-                                    <span className={faceGuide.mouthClosed ? 'ok' : 'warn'}>
-                                        {faceGuide.mouthClosed ? 'Boca cerrada' : 'Cerrar boca'}
-                                    </span>
-                                    <span className={faceGuide.stable ? 'ok' : 'warn'}>
-                                        {faceGuide.stable ? 'Sin movimiento' : 'No moverse'}
-                                    </span>
-                                    <span className={faceGuide.lighting ? 'ok' : 'warn'}>
-                                        {faceGuide.lighting ? 'Iluminacion correcta' : 'Mejorar iluminacion'}
+                        <div className="bio-icao-panel">
+                            <div className="bio-icao-section">
+                                <div className="bio-icao-title">CALIDAD ICAO</div>
+                                <div className="bio-icao-row">
+                                    <span>OJOS ABIERTOS</span>
+                                    <span className="bio-icao-val">
+                                        {formatIcaoCell(
+                                            faceGuide.icaoEyes === null ? null : faceGuide.icaoEyes
+                                        )}
                                     </span>
                                 </div>
-
-                                <ul>
-                                    {faceGuide.notes && faceGuide.notes.map((note) => (
-                                        <li key={note}>{note}</li>
-                                    ))}
-                                </ul>
-                                <p className={faceGuide.qualityReady ? 'quality-ready ok' : 'quality-ready warn'}>
-                                    {faceGuide.qualityReady
-                                        ? 'Calidad sugerida: rostro posicionado correctamente.'
-                                        : 'Calidad sugerida: ajusta postura, movimiento y condiciones del entorno.'}
-                                </p>
+                                <div className="bio-icao-row">
+                                    <span>BOCA CERRADA</span>
+                                    <span className="bio-icao-val">
+                                        {formatIcaoCell(
+                                            faceGuide.icaoMouth === null ? null : faceGuide.icaoMouth
+                                        )}
+                                    </span>
+                                </div>
+                                <div className="bio-icao-row">
+                                    <span>FRONTALIDAD</span>
+                                    <span className="bio-icao-val">
+                                        {formatIcaoCell(
+                                            faceGuide.icaoFrontal === null
+                                                ? null
+                                                : faceGuide.icaoFrontal
+                                        )}
+                                    </span>
+                                </div>
+                                <div className="bio-icao-row">
+                                    <span>SIN LENTES</span>
+                                    <span className="bio-icao-val">
+                                        {formatIcaoCell(
+                                            faceGuide.icaoNoGlasses === null
+                                                ? null
+                                                : faceGuide.icaoNoGlasses
+                                        )}
+                                    </span>
+                                </div>
                             </div>
+                            <div className="bio-icao-section">
+                                <div className="bio-icao-title">ANTI-SPOOFING (LIVENESS)</div>
+                                <div className="bio-icao-bar-track">
+                                    <div
+                                        className="bio-icao-bar-fill"
+                                        style={{
+                                            width: `${Math.min(100, faceGuide.livenessScore)}%`,
+                                        }}
+                                    />
+                                </div>
+                                <div className="bio-icao-liveness-meta">
+                                    <span>Umbral {FACIAL_ICAO.LIVENESS_SCORE_PASS}%</span>
+                                    <span className="bio-icao-pct">
+                                        {Number(faceGuide.livenessScore || 0).toFixed(1)}%
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
-                    <div className="mode-switch" style={{marginTop: '24px'}}>
+                    <div className="mode-switch mode-switch-below-bio">
                         <button
                             type="button"
                             className={mode === 'login' ? 'active' : ''}
