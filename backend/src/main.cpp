@@ -126,6 +126,59 @@ struct AuthSession {
 std::mutex gAuthSessionMutex;
 std::unordered_map<std::string, AuthSession> gAuthSessions;
 
+/** EMA + histéresis lentes (ICAO/FACIAL) por sesión — no compartido entre usuarios. */
+struct GlassesEmaState {
+  double emaLikelihood = 0.0;
+  bool emaInit = false;
+  bool lastNoGlassesState = true;
+  bool lastNoGlassesInit = false;
+};
+
+std::mutex gGlassesEmaMutex;
+std::unordered_map<std::string, GlassesEmaState> gGlassesEmaBySession;
+
+static void resetGlassesEmaState(GlassesEmaState &s) {
+  s.emaLikelihood = 0.0;
+  s.emaInit = false;
+  s.lastNoGlassesState = true;
+  s.lastNoGlassesInit = false;
+}
+
+/** Retorna noGlasses (sin lentes). outEma = señal suavizada 0–100. */
+static bool applyIcaoGlassesEma(GlassesEmaState &s, double rawLikelihood,
+                                bool faceDetected, double &outEma) {
+  constexpr double kAlpha = 0.30;
+  constexpr double kDetect = 66.0;
+  constexpr double kClear = 52.0;
+  if (!faceDetected) {
+    resetGlassesEmaState(s);
+    outEma = 0.0;
+    return true;
+  }
+  if (!s.emaInit) {
+    s.emaLikelihood = rawLikelihood;
+    s.emaInit = true;
+  } else {
+    s.emaLikelihood =
+        kAlpha * rawLikelihood + (1.0 - kAlpha) * s.emaLikelihood;
+  }
+  outEma = s.emaLikelihood;
+  const double ema = s.emaLikelihood;
+  if (!s.lastNoGlassesInit) {
+    s.lastNoGlassesState = ema < 50.0;
+    s.lastNoGlassesInit = true;
+  } else {
+    if (s.lastNoGlassesState) {
+      if (ema > kDetect)
+        s.lastNoGlassesState = false;
+    } else {
+      if (ema < kClear)
+        s.lastNoGlassesState = true;
+    }
+  }
+  return s.lastNoGlassesState;
+}
+
 const std::vector<std::string> kMiningCompanies = {
     "Minera Raura", "Compania Minera Volcan", "Minera Antamina",
     "Minera Cerro Verde"};
@@ -421,13 +474,23 @@ AuthSession issueAuthSession(const AuthUser &user) {
 }
 
 void pruneExpiredAuthSessions() {
-  std::scoped_lock lk(gAuthSessionMutex);
-  const auto now = std::chrono::system_clock::now();
-  for (auto it = gAuthSessions.begin(); it != gAuthSessions.end();) {
-    if (it->second.expiresAt <= now) {
-      it = gAuthSessions.erase(it);
-    } else {
-      ++it;
+  std::vector<std::string> expiredTokens;
+  {
+    std::scoped_lock lk(gAuthSessionMutex);
+    const auto now = std::chrono::system_clock::now();
+    for (auto it = gAuthSessions.begin(); it != gAuthSessions.end();) {
+      if (it->second.expiresAt <= now) {
+        expiredTokens.push_back(it->first);
+        it = gAuthSessions.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  if (!expiredTokens.empty()) {
+    std::scoped_lock g(gGlassesEmaMutex);
+    for (const auto &t : expiredTokens) {
+      gGlassesEmaBySession.erase(t);
     }
   }
 }
@@ -528,6 +591,9 @@ struct AiEngineFrameResult {
   bool bothOpen = true;
   bool mouthClosed = true;
   bool noGlasses = true;
+  /** Señal CV cruda 0–100 desde ai_engine (sin EMA). */
+  double glassesCvScore = 0.0;
+  /** Tras EMA en C++ (o cruda si sin sesión). */
   double glassesScore = 0.0;
   double leftEar = 0.0;
   double rightEar = 0.0;
@@ -558,7 +624,9 @@ static float icaoFullFrameIlluminationPercent(const cv::Mat &bgr) {
 }
 
 std::optional<AiEngineFrameResult>
-analyzeFrameWithAiEngine(const std::vector<unsigned char> &imageBytes) {
+analyzeFrameWithAiEngine(
+    const std::vector<unsigned char> &imageBytes,
+    const std::optional<std::string> &glassesSessionKey = std::nullopt) {
   if (gAiEngineUrl.empty()) {
     return std::nullopt;
   }
@@ -657,15 +725,34 @@ analyzeFrameWithAiEngine(const std::vector<unsigned char> &imageBytes) {
         obj.if_contains("mouth_closed") && obj.at("mouth_closed").is_bool()
             ? obj.at("mouth_closed").as_bool()
             : true;
-    out.noGlasses = obj.if_contains("no_glasses") && obj.at("no_glasses").is_bool()
-                        ? obj.at("no_glasses").as_bool()
-                        : true;
-    if (obj.if_contains("glasses_score") &&
-        (obj.at("glasses_score").is_double() ||
-         obj.at("glasses_score").is_int64())) {
-      out.glassesScore = obj.at("glasses_score").is_double()
-                             ? obj.at("glasses_score").as_double()
-                             : static_cast<double>(obj.at("glasses_score").as_int64());
+
+    double rawGlasses = 0.0;
+    if (obj.if_contains("glasses_cv_score") &&
+        (obj.at("glasses_cv_score").is_double() ||
+         obj.at("glasses_cv_score").is_int64())) {
+      rawGlasses = obj.at("glasses_cv_score").is_double()
+                       ? obj.at("glasses_cv_score").as_double()
+                       : static_cast<double>(obj.at("glasses_cv_score").as_int64());
+    } else if (obj.if_contains("glasses_score") &&
+               (obj.at("glasses_score").is_double() ||
+                obj.at("glasses_score").is_int64())) {
+      rawGlasses = obj.at("glasses_score").is_double()
+                       ? obj.at("glasses_score").as_double()
+                       : static_cast<double>(obj.at("glasses_score").as_int64());
+    }
+    out.glassesCvScore = rawGlasses;
+
+    if (glassesSessionKey.has_value() && !glassesSessionKey->empty()) {
+      std::scoped_lock lk(gGlassesEmaMutex);
+      GlassesEmaState &st = gGlassesEmaBySession[*glassesSessionKey];
+      double emaOut = 0.0;
+      out.noGlasses =
+          applyIcaoGlassesEma(st, rawGlasses, out.detected, emaOut);
+      out.glassesScore = emaOut;
+    } else {
+      out.glassesScore = rawGlasses;
+      // Sin token: decisión de un solo frame (banda entre 52 y 66).
+      out.noGlasses = rawGlasses < 59.0;
     }
     bool hasLeftEar = false;
     bool hasRightEar = false;
@@ -1111,15 +1198,16 @@ FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image,
   cv::Mat gray;
   cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
 
-  // PRE-PROCESSING: Apply CLAHE to improve contrast/detection (Premium approach)
-  cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.5, cv::Size(8, 8));
-  clahe->apply(gray, gray);
+  // Reduce ruido especular / bordes falsos (pared, luces) antes del detector
+  cv::Mat grayDenoised;
+  cv::bilateralFilter(gray, grayDenoised, 5, 35.0, 35.0);
+  cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.2, cv::Size(8, 8));
+  clahe->apply(grayDenoised, gray);
 
   auto &cascade = getCascadeBundle();
   std::vector<cv::Rect> faces;
   if (cascade.faceLoaded) {
-    // Increased scale sensitivity (1.06) and adjusted neighbors
-    cascade.face.detectMultiScale(gray, faces, 1.06, 4, 0, cv::Size(80, 80));
+    cascade.face.detectMultiScale(gray, faces, 1.08, 5, 0, cv::Size(70, 70));
   }
 
   cv::Rect faceRect;
@@ -1882,23 +1970,75 @@ std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::str
   return reports;
 }
 
-bool createReportPg(const std::string &databaseUrl, const Report &r, std::string &error) {
+bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, Report &out,
+                     std::string &error) {
   PGconn *conn = PQconnectdb(databaseUrl.c_str());
   if (PQstatus(conn) != CONNECTION_OK) {
-      error = PQerrorMessage(conn);
-      PQfinish(conn);
-      return false;
+    error = PQerrorMessage(conn);
+    PQfinish(conn);
+    return false;
+  }
+  std::string sql =
+      "SELECT id, project_id::text, title, content_json::text, status, "
+      "created_at::text, updated_at::text FROM reports WHERE id = " +
+      pqEscapeLiteral(conn, id);
+  PGresult *res = PQexec(conn, sql.c_str());
+  if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) < 1) {
+    error = "report_not_found";
+    if (res)
+      PQclear(res);
+    PQfinish(conn);
+    return false;
+  }
+  out.id = PQgetvalue(res, 0, 0);
+  out.projectId =
+      PQgetisnull(res, 0, 1) ? "" : std::string(PQgetvalue(res, 0, 1));
+  out.title = PQgetvalue(res, 0, 2);
+  const char *cj = PQgetvalue(res, 0, 3);
+  try {
+    out.contentJson =
+        (cj && cj[0]) ? json::parse(std::string(cj)) : json::object{};
+  } catch (...) {
+    out.contentJson = json::object{};
+  }
+  out.status = PQgetvalue(res, 0, 4);
+  out.createdAt = PQgetvalue(res, 0, 5);
+  out.updatedAt = PQgetvalue(res, 0, 6);
+  PQclear(res);
+  PQfinish(conn);
+  return true;
+}
+
+bool createReportPg(const std::string &databaseUrl, const Report &r,
+                    std::string &outNewId, std::string &error) {
+  PGconn *conn = PQconnectdb(databaseUrl.c_str());
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    PQfinish(conn);
+    return false;
   }
   std::string contentStr = json::serialize(r.contentJson);
   std::string sql = "INSERT INTO reports (project_id, title, content_json, status) VALUES (" +
       (r.projectId.empty() ? "NULL" : pqEscapeLiteral(conn, r.projectId)) + "," +
       pqEscapeLiteral(conn, r.title) + "," +
       pqEscapeLiteral(conn, contentStr) + "," +
-      pqEscapeLiteral(conn, r.status) + ")";
-  bool ok = pgExecOk(conn, sql);
-  if (!ok) error = PQerrorMessage(conn);
+      pqEscapeLiteral(conn, r.status) + ") RETURNING id::text";
+  PGresult *res = PQexec(conn, sql.c_str());
+  if (!res) {
+    error = PQerrorMessage(conn);
+    PQfinish(conn);
+    return false;
+  }
+  if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) < 1) {
+    error = PQerrorMessage(conn);
+    PQclear(res);
+    PQfinish(conn);
+    return false;
+  }
+  outNewId = PQgetvalue(res, 0, 0);
+  PQclear(res);
   PQfinish(conn);
-  return ok;
+  return true;
 }
 
 bool updateReportPg(const std::string &databaseUrl, const std::string &id, const Report &r, std::string &error) {
@@ -2546,7 +2686,12 @@ routeRequest(const http::request<http::string_body> &req,
 
       std::optional<AiEngineFrameResult> aiEval;
       if (decoded && !frameRaw.empty()) {
-        aiEval = analyzeFrameWithAiEngine(frameRaw);
+        const auto sessionBiometric = resolveAuthSession(req, query);
+        std::optional<std::string> glassesEmaKey;
+        if (sessionBiometric.has_value()) {
+          glassesEmaKey = sessionBiometric->token;
+        }
+        aiEval = analyzeFrameWithAiEngine(frameRaw, glassesEmaKey);
       }
 
       if (aiEval.has_value()) {
@@ -3334,6 +3479,33 @@ routeRequest(const http::request<http::string_body> &req,
     return makeJsonResponse(http::status::ok, json::object{{"reports", arr}});
   }
 
+  if (req.method() == http::verb::get && pathOnly.starts_with("/api/reports/")) {
+    const auto session = resolveAuthSession(req, query);
+    if (!session)
+      return makeJsonResponse(http::status::unauthorized,
+                              json::object{{"error", "unauthorized"}});
+    std::string rest = pathOnly.substr(std::string("/api/reports/").size());
+    if (!rest.empty() && rest.find('/') == std::string::npos) {
+      std::string error;
+      Report r;
+      if (getReportByIdPg(gDatabaseUrl, rest, r, error)) {
+        return makeJsonResponse(
+            http::status::ok,
+            json::object{{"id", r.id},
+                         {"project_id",
+                          r.projectId.empty() ? json::value(nullptr)
+                                              : json::value(r.projectId)},
+                         {"title", r.title},
+                         {"content_json", r.contentJson},
+                         {"status", r.status},
+                         {"created_at", r.createdAt},
+                         {"updated_at", r.updatedAt}});
+      }
+      return makeJsonResponse(http::status::not_found,
+                              json::object{{"error", error}});
+    }
+  }
+
   if (req.method() == http::verb::post && pathOnly == "/api/reports") {
     const auto session = resolveAuthSession(req, query);
     if (!session) return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
@@ -3350,8 +3522,10 @@ routeRequest(const http::request<http::string_body> &req,
         r.company = session->company;
 
         std::string error;
-        if (createReportPg(gDatabaseUrl, r, error)) {
-            return makeJsonResponse(http::status::created, json::object{{"status", "created"}});
+        std::string newId;
+        if (createReportPg(gDatabaseUrl, r, newId, error)) {
+          return makeJsonResponse(http::status::created,
+                                  json::object{{"status", "created"}, {"id", newId}});
         }
         return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
     } catch (const std::exception &ex) {

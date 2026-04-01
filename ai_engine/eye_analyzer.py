@@ -1,7 +1,5 @@
 import cv2
 import numpy as np
-from collections import deque
-
 import os
 import requests
 from flask import Flask, request, jsonify
@@ -52,9 +50,29 @@ LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
 mouth_closed_prev = True
-glasses_score_hist = deque(maxlen=7)
-glasses_state_prev = False
 last_glasses_debug = {}
+
+# EMA + histéresis de lentes: backend C++ (por token de sesión), ver main.cpp applyIcaoGlassesEma
+
+def preprocess_for_landmarks(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Mejora condiciones difíciles (baja luz / reflejos) solo para el landmarker;
+    no altera la imagen que ve el usuario en el navegador.
+    """
+    if img_bgr is None or img_bgr.size == 0:
+        return img_bgr
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    mean = float(np.mean(gray))
+    out = img_bgr
+    if mean < 76.0:
+        b = cv2.bilateralFilter(img_bgr, 5, 40, 40)
+        g = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(2.0, (8, 8))
+        g2 = clahe.apply(g)
+        out = cv2.cvtColor(g2, cv2.COLOR_GRAY2BGR)
+    elif mean > 198.0:
+        out = cv2.convertScaleAbs(img_bgr, alpha=0.92, beta=-6)
+    return out
 
 
 def calculate_ear(landmarks, eye_indices):
@@ -62,6 +80,11 @@ def calculate_ear(landmarks, eye_indices):
     v2 = np.linalg.norm(landmarks[eye_indices[2]] - landmarks[eye_indices[4]])
     h = np.linalg.norm(landmarks[eye_indices[0]] - landmarks[eye_indices[3]])
     return (v1 + v2) / (2.0 * h + 1e-6)
+
+
+# C:\FACIAL\ICAOValidator.cpp líneas 63–65: ojo abierto si EAR > 0.18f
+# (AIEngineClient.cpp: si falta both_open en JSON, usa ambos > 0.22f; aquí enviamos both_open explícito)
+EAR_OPEN_ICAO = 0.18
 
 
 def blendshape_map(detection_result):
@@ -119,13 +142,14 @@ def update_mouth_closed(bs, mar_ratio):
     return mouth_closed_prev
 
 
-def glasses_from_frame(img_bgr, points):
+def compute_glasses_cv_score(img_bgr, points):
+    """Score 0–100 tipo señal de lentes (reflejos, montura, puente). Sin estado temporal."""
     h, w = img_bgr.shape[:2]
     le = np.mean(points[LEFT_EYE], axis=0)
     re = np.mean(points[RIGHT_EYE], axis=0)
     dist = float(np.linalg.norm(le - re))
     if dist < 12.0:
-        return 0.0, False, {"reason": "eye_distance_too_small", "eye_dist": float(dist)}
+        return 0.0, {"reason": "eye_distance_too_small", "eye_dist": float(dist)}
 
     cx, cy = (le + re) / 2.0
     x1 = int(max(0, cx - dist * 0.68))
@@ -133,7 +157,7 @@ def glasses_from_frame(img_bgr, points):
     y1 = int(max(0, cy - dist * 0.34))
     y2 = int(min(h - 1, cy + dist * 0.20))
     if x2 <= x1 or y2 <= y1:
-        return 0.0, False, {"reason": "invalid_roi"}
+        return 0.0, {"reason": "invalid_roi"}
 
     crop = img_bgr[y1:y2, x1:x2]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -242,35 +266,11 @@ def glasses_from_frame(img_bgr, points):
         score = min(score, 34.0)
 
     bilateral_glare = left_hits > 0 and right_hits > 0
-    strong_glare = spec_density > 0.0023 and comp_count >= 2 and bilateral_glare
-    medium_glare = spec_density > 0.0014 and comp_count >= 2 and bilateral_glare and horiz_ratio > 0.98
-    frame_presence = rim_density > 0.060 and bridge_dark > 0.020
-    weak_frame_presence = rim_density > 0.045 and bridge_dark > 0.015
+    strong_glare = spec_density > 0.0032 and comp_count >= 2 and bilateral_glare
+    medium_glare = spec_density > 0.0020 and comp_count >= 2 and bilateral_glare and horiz_ratio > 0.98
+    frame_presence = rim_density > 0.068 and bridge_dark > 0.024
     if frame_presence:
         score = min(100.0, score + 18.0)
-
-    glasses_score_hist.append(score)
-    stable = float(np.median(list(glasses_score_hist)))
-
-    global glasses_state_prev
-    if not glasses_state_prev:
-        glasses_state_prev = (
-            (stable > 52.0 and strong_glare)
-            or (stable > 56.0 and medium_glare)
-            or (stable > 46.0 and frame_presence)
-        )
-    else:
-        glasses_state_prev = not (
-            stable < 34.0
-            and (not weak_frame_presence)
-            and spec_density < 0.0008
-        )
-
-    glasses_likelihood = stable
-    if glasses_state_prev:
-        glasses_likelihood = max(62.0, stable)
-    else:
-        glasses_likelihood = min(38.0, stable)
 
     debug = {
         "roi": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
@@ -285,15 +285,14 @@ def glasses_from_frame(img_bgr, points):
         "rim_density": float(rim_density),
         "bridge_dark": float(bridge_dark),
         "frame_presence": bool(frame_presence),
-        "stable_score": float(stable),
-        "glasses_likelihood": float(glasses_likelihood),
+        "raw_cv_score": float(score),
     }
-    return float(glasses_likelihood), bool(glasses_state_prev), debug
+    return float(score), debug
 
 
 @app.route("/analyze_eyes", methods=["POST"])
 def analyze_eyes():
-    global mouth_closed_prev, glasses_state_prev, last_glasses_debug
+    global mouth_closed_prev, last_glasses_debug
     if "image" not in request.files:
         return jsonify({"error": "No image provided"}), 400
 
@@ -303,10 +302,12 @@ def analyze_eyes():
         return jsonify({"error": "Empty image buffer"}), 400
 
     nparr = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
+    img_orig = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img_orig is None:
         return jsonify({"error": "Invalid image"}), 400
 
+    # Landmarks sobre versión estabilizada; lentes sobre BGR original (coherente con C:\FACIAL heurística ROI)
+    img = preprocess_for_landmarks(img_orig.copy())
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
 
@@ -314,7 +315,6 @@ def analyze_eyes():
 
     if not detection_result.face_landmarks:
         mouth_closed_prev = True
-        glasses_state_prev = False
         last_glasses_debug = {"reason": "no_face"}
         return jsonify(
             {
@@ -325,7 +325,7 @@ def analyze_eyes():
                 "mouth_open": False,
                 "mouth_mar": 0.0,
                 "mouth_closed": False,
-                "no_glasses": True,
+                "glasses_cv_score": 0.0,
                 "glasses_score": 0.0,
             }
         )
@@ -336,24 +336,24 @@ def analyze_eyes():
 
     left_ear = calculate_ear(points, LEFT_EYE)
     right_ear = calculate_ear(points, RIGHT_EYE)
-    left_open = left_ear > 0.20
-    right_open = right_ear > 0.20
 
     bs = blendshape_map(detection_result)
+    left_open = left_ear > EAR_OPEN_ICAO
+    right_open = right_ear > EAR_OPEN_ICAO
     jaw = bs_get(bs, "jawOpen", "JAW_OPEN")
     mar_ratio = mar_inner_ratio(points)
 
     mouth_closed_bool = update_mouth_closed(bs, mar_ratio)
     mouth_open_bool = not mouth_closed_bool
 
-    gscore, glasses_hit, gdebug = glasses_from_frame(img, points)
-    no_glasses = not glasses_hit
+    raw_glass_score, gdebug = compute_glasses_cv_score(img_orig, points)
+    gdebug["glasses_cv_score"] = float(raw_glass_score)
     last_glasses_debug = gdebug
 
     print(
         f"[EYE_AI] EAR L:{left_ear:.3f} R:{right_ear:.3f} jaw:{jaw:.3f} "
         f"MARi:{mar_ratio:.3f} mouth_closed:{mouth_closed_bool} "
-        f"glasses:{glasses_hit}({gscore:.1f}) no_glasses:{no_glasses}",
+        f"glasses_cv:{raw_glass_score:.1f} (EMA en backend C++)",
         flush=True,
     )
 
@@ -368,8 +368,8 @@ def analyze_eyes():
             "mouth_open": bool(mouth_open_bool),
             "mouth_mar": float(jaw),
             "mouth_closed": bool(mouth_closed_bool),
-            "no_glasses": bool(no_glasses),
-            "glasses_score": float(gscore),
+            "glasses_cv_score": float(raw_glass_score),
+            "glasses_score": float(raw_glass_score),
             "glasses_debug": gdebug,
             "confidence": 1.0,
         }

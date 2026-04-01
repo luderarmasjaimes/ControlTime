@@ -158,9 +158,15 @@ export function getAuthAuditCsvUrl({ company, username, action, success } = {}) 
     return `${backendBaseUrl()}/api/auth/audit/export.csv?${query.toString()}`
 }
 export async function verifyBiometricFrame(imageBase64) {
-    return postJson('/api/auth/biometric/verify-frame', {
-        face_image_base64: imageBase64,
+    const response = await fetch(`${backendBaseUrl()}/api/auth/biometric/verify-frame`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders(),
+        },
+        body: JSON.stringify({ face_image_base64: imageBase64 }),
     })
+    return parseJsonResponse(response)
 }
 
 export async function fetchCompanyUsers(company) {
