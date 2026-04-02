@@ -742,17 +742,29 @@ analyzeFrameWithAiEngine(
     }
     out.glassesCvScore = rawGlasses;
 
+    const bool aiNoGlassesHint =
+        obj.if_contains("no_glasses") && obj.at("no_glasses").is_bool();
+
     if (glassesSessionKey.has_value() && !glassesSessionKey->empty()) {
       std::scoped_lock lk(gGlassesEmaMutex);
       GlassesEmaState &st = gGlassesEmaBySession[*glassesSessionKey];
       double emaOut = 0.0;
+      // Una sola pasada de EMA; si el motor Python (FACIAL) envía no_glasses con cara
+      // detectada, esa histéresis manda sobre el umbral fijo del EMA.
       out.noGlasses =
           applyIcaoGlassesEma(st, rawGlasses, out.detected, emaOut);
       out.glassesScore = emaOut;
+      if (aiNoGlassesHint && out.detected) {
+        out.noGlasses = obj.at("no_glasses").as_bool();
+      }
     } else {
       out.glassesScore = rawGlasses;
-      // Sin token: decisión de un solo frame (banda entre 52 y 66).
-      out.noGlasses = rawGlasses < 59.0;
+      if (aiNoGlassesHint && out.detected) {
+        out.noGlasses = obj.at("no_glasses").as_bool();
+      } else {
+        // Sin token: decisión de un solo frame (banda entre 52 y 66).
+        out.noGlasses = rawGlasses < 59.0;
+      }
     }
     bool hasLeftEar = false;
     bool hasRightEar = false;

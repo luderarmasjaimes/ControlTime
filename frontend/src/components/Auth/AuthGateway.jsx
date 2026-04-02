@@ -847,22 +847,15 @@ const AuthGateway = ({ onAuthenticated }) => {
                         syncingRef.current = true
                         lastSyncRef.current = nowSync
 
-                        const cropX = Math.max(0, bestFace.x + bestFace.width * BIOMETRIC_OVAL_X_OFFSET)
-                        const cropY = Math.max(0, bestFace.y + bestFace.height * BIOMETRIC_OVAL_Y_OFFSET)
-                        const cropW = Math.min(
-                            video.videoWidth - cropX,
-                            bestFace.width * BIOMETRIC_OVAL_W_FACTOR
-                        )
-                        const cropH = Math.min(
-                            video.videoHeight - cropY,
-                            bestFace.height * BIOMETRIC_OVAL_H_FACTOR
-                        )
-
+                        // Mismo encuadre que C:\FACIAL\www\main.js: frame completo a 640×480
+                        // para MediaPipe (EAR adaptativo, blendshapes, ROI de lentes).
+                        const tw = FACIAL_ICAO.CAMERA.width.ideal
+                        const th = FACIAL_ICAO.CAMERA.height.ideal
                         const canvas = document.createElement('canvas')
-                        canvas.width = cropW
-                        canvas.height = cropH
+                        canvas.width = tw
+                        canvas.height = th
                         const ctx = canvas.getContext('2d')
-                        ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH)
+                        ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, tw, th)
                         const base64 = canvas
                             .toDataURL('image/jpeg', FACIAL_ICAO.VERIFY_JPEG_QUALITY)
                             .split(',')[1]

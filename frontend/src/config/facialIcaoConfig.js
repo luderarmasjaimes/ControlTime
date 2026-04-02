@@ -32,7 +32,7 @@ export const FACIAL_ICAO = {
     DETECT_FRAME_MIN_MS: 78,
     /** Intervalo entre envíos al backend verify-frame (ms) */
     VERIFY_SYNC_MS: 450,
-    /** Calidad JPEG para verify-frame (FACIAL process_frame usa ~0.6) */
+    /** Calidad JPEG para verify-frame (~0.6 FACIAL). El frame enviado es video completo 640×480 como FACIAL main.js */
     VERIFY_JPEG_QUALITY: 0.62,
     /** getUserMedia video ideal (FACIAL www/main.js) */
     CAMERA: {
