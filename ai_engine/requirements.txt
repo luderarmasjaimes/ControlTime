@@ -3,3 +3,4 @@ mediapipe
 flask
 numpy
 requests
+onnxruntime>=1.16.0
