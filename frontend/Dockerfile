@@ -1,6 +1,8 @@
 # Build stage
 FROM node:20-alpine as build-stage
 WORKDIR /app
+ARG BUILD_STAMP=dev
+ENV VITE_BUILD_STAMP=$BUILD_STAMP
 COPY package*.json ./
 # use npm ci for reproducible, faster installs
 RUN npm ci --legacy-peer-deps --prefer-offline --no-audit

@@ -21,7 +21,7 @@ WORKDIR /app
 COPY . /app
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release -j$(nproc) \
-    && find build -type f -executable -exec strip --strip-all {} + || true
+    && (find build -type f -executable -exec strip --strip-all {} + || true)
 
 # Runtime image must match builder distro/version so that
 # Boost and other shared libraries are compatible with the
