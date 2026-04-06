@@ -1,6 +1,14 @@
 /**
- * Utilidades para tracking facial estable (baja luz, reflejos, ruido de fondo).
- * El preprocesado solo afecta al canvas enviado a FaceDetector, no al vídeo mostrado.
+ * Preprocesado del canvas SOLO para FaceDetector (Chromium); el vídeo mostrado no se altera.
+ *
+ * --- Pila biométrica (dónde corre cada cosa) ---
+ * - Este módulo (JS en navegador): luminancia BT.601, estadística de brillo/ruido, ecualización
+ *   de histograma en gris, compresión de highlights, gamma, desenfoque caja 3×3 (estabilizar ruido).
+ * - FaceDetector: API nativa del navegador (Chromium → modelos internos, no es OpenCV en cliente).
+ * - Respaldo sin landmarks: heurística de píxeles tipo piel en canvas reducido (AuthGateway).
+ * - Backend C++ (Beast/Boost): /api/auth/biometric/verify-frame, iluminación global JPEG, EMA lentes.
+ * - ai_engine Python: MediaPipe Tasks Face Landmarker + OpenCV/NumPy (EAR, lentes, boca).
+ * - Dermalog (opcional): CLI/SDK en backend si BIOMETRIC_PROVIDER=dermalog_cli; no participa en el canvas.
  */
 
 /** Luminancia media 0–255 (ITU-R BT.601) sobre ImageData RGBA. */
@@ -12,6 +20,36 @@ export function meanLuminanceImageData(imageData) {
         sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
     }
     return n > 0 ? sum / n : 128
+}
+
+/** Desviación típica de luminancia Y (misma ponderación BT.601). */
+export function luminanceStdDevImageData(imageData, mean) {
+    const d = imageData.data
+    let sumSq = 0
+    const n = d.length / 4
+    for (let i = 0; i < d.length; i += 4) {
+        const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+        const t = y - mean
+        sumSq += t * t
+    }
+    return n > 0 ? Math.sqrt(sumSq / n) : 0
+}
+
+/**
+ * Condiciones “difíciles” (noche + artificial, reflejos en paredes): activa filtros extra solo entonces.
+ * Zona intermedia (día nublado / oficina uniforme) → false para no suavizar de más.
+ */
+export function classifyRawDifficultLighting(mean, stdDev) {
+    if (mean < 88) {
+        return true
+    }
+    if (mean > 128 && stdDev > 40) {
+        return true
+    }
+    if (mean < 145 && stdDev / (mean + 18) > 0.31) {
+        return true
+    }
+    return false
 }
 
 /** Ecualización de histograma en escala de grises; escribe RGB con el mismo valor (mejor contraste en sombras). */
@@ -55,14 +93,31 @@ export function histogramEqualizeGrayInPlace(imageData) {
     }
 }
 
-/** Suaviza reflejos fuertes (pared/luz artificial) sin tocar sombras. */
-export function compressHighlightsInPlace(imageData, meanLum) {
-    if (meanLum < 165) {
+/** Suaviza reflejos fuertes (pared / luz artificial). aggressive: también con brillo medio-elevado y ruido. */
+export function compressHighlightsInPlace(imageData, meanLum, aggressive = false) {
+    if (!aggressive && meanLum < 165) {
+        return
+    }
+    if (aggressive && meanLum < 72) {
         return
     }
     const d = imageData.data
-    const gain = meanLum > 210 ? 0.88 : 0.94
-    const bias = meanLum > 210 ? -8 : -4
+    const gain = aggressive
+        ? meanLum > 200
+            ? 0.82
+            : meanLum > 155
+              ? 0.88
+              : 0.92
+        : meanLum > 210
+          ? 0.88
+          : 0.94
+    const bias = aggressive
+        ? meanLum > 200
+            ? -10
+            : -6
+        : meanLum > 210
+          ? -8
+          : -4
     for (let i = 0; i < d.length; i += 4) {
         d[i] = Math.min(255, Math.max(0, d[i] * gain + bias))
         d[i + 1] = Math.min(255, Math.max(0, d[i + 1] * gain + bias))
@@ -70,21 +125,122 @@ export function compressHighlightsInPlace(imageData, meanLum) {
     }
 }
 
+/** Eleva sombras ligeramente (gamma > 1 atenúa curva → más luz en medios tonos). */
+export function applyGammaInPlace(imageData, gamma) {
+    if (gamma <= 1.001) {
+        return
+    }
+    const inv = 1 / gamma
+    const d = imageData.data
+    for (let i = 0; i < d.length; i += 4) {
+        d[i] = Math.min(255, Math.round(255 * Math.pow(d[i] / 255, inv)))
+        d[i + 1] = Math.min(255, Math.round(255 * Math.pow(d[i + 1] / 255, inv)))
+        d[i + 2] = Math.min(255, Math.round(255 * Math.pow(d[i + 2] / 255, inv)))
+    }
+}
+
+/** Desenfoque caja 3×3 por canal (reduce saltos del detector por ruido puntual / brillos). */
+export function boxBlur3x3RGBAInPlace(imageData) {
+    const w = imageData.width
+    const h = imageData.height
+    const src = new Uint8ClampedArray(imageData.data)
+    const out = new Uint8ClampedArray(imageData.data.length)
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            let r = 0
+            let g = 0
+            let b = 0
+            let cnt = 0
+            for (let dy = -1; dy <= 1; dy++) {
+                const yy = y + dy
+                if (yy < 0 || yy >= h) {
+                    continue
+                }
+                for (let dx = -1; dx <= 1; dx++) {
+                    const xx = x + dx
+                    if (xx < 0 || xx >= w) {
+                        continue
+                    }
+                    const i = (yy * w + xx) * 4
+                    r += src[i]
+                    g += src[i + 1]
+                    b += src[i + 2]
+                    cnt++
+                }
+            }
+            const i = (y * w + x) * 4
+            out[i] = Math.round(r / cnt)
+            out[i + 1] = Math.round(g / cnt)
+            out[i + 2] = Math.round(b / cnt)
+            out[i + 3] = src[i + 3]
+        }
+    }
+    imageData.data.set(out)
+}
+
 /**
- * @param {CanvasRenderingContext2D} ctx
- * @param {{ lowLumEqBelow: number, highlightCompressAbove: number }} opts
+ * Preprocesa ImageData ya capturada del ROI de tracking.
+ * @param {boolean} opts.difficultNightMode — noche / artificial / reflejos (filtros extra).
+ */
+export function preprocessImageDataForFaceDetection(imageData, opts) {
+    const {
+        difficultNightMode,
+        lowLumEqBelow,
+        highlightCompressAbove,
+        nightLowLumEqBelow,
+        nightHighlightCompressAbove,
+        nightGamma,
+        nightUseBlur,
+    } = opts
+
+    let mean = meanLuminanceImageData(imageData)
+
+    if (difficultNightMode) {
+        if (mean < nightLowLumEqBelow) {
+            histogramEqualizeGrayInPlace(imageData)
+            mean = meanLuminanceImageData(imageData)
+        }
+        if (mean < 118) {
+            applyGammaInPlace(imageData, nightGamma)
+            mean = meanLuminanceImageData(imageData)
+        }
+        compressHighlightsInPlace(imageData, mean, true)
+        mean = meanLuminanceImageData(imageData)
+        if (mean > nightHighlightCompressAbove) {
+            compressHighlightsInPlace(imageData, mean, true)
+        }
+        if (nightUseBlur) {
+            boxBlur3x3RGBAInPlace(imageData)
+        }
+    } else {
+        if (mean < lowLumEqBelow) {
+            histogramEqualizeGrayInPlace(imageData)
+            mean = meanLuminanceImageData(imageData)
+        } else if (mean > highlightCompressAbove) {
+            compressHighlightsInPlace(imageData, mean, false)
+        }
+    }
+
+    return meanLuminanceImageData(imageData)
+}
+
+/**
+ * @deprecated Usar preprocessImageDataForFaceDetection tras getImageData para control fino.
+ * Mantiene compatibilidad: solo modo “día” interno.
  */
 export function preprocessCanvasForFaceDetection(ctx, width, height, opts) {
-    const { lowLumEqBelow, highlightCompressAbove } = opts
     const img = ctx.getImageData(0, 0, width, height)
-    const mean = meanLuminanceImageData(img)
-    if (mean < lowLumEqBelow) {
-        histogramEqualizeGrayInPlace(img)
-    } else if (mean > highlightCompressAbove) {
-        compressHighlightsInPlace(img, mean)
-    }
+    preprocessImageDataForFaceDetection(img, {
+        difficultNightMode: false,
+        lowLumEqBelow: opts.lowLumEqBelow,
+        highlightCompressAbove: opts.highlightCompressAbove,
+        nightLowLumEqBelow: 100,
+        nightHighlightCompressAbove: 140,
+        nightGamma: 1.12,
+        nightUseBlur: false,
+    })
     ctx.putImageData(img, 0, 0)
-    return mean
+    return meanLuminanceImageData(img)
 }
 
 function medianSorted(arr) {

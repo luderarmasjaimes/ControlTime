@@ -185,6 +185,8 @@ const std::vector<std::string> kMiningCompanies = {
 
 std::string getenvOr(const char *key, const std::string &fallback);
 std::string makeId();
+void pushIssueUnique(std::vector<std::string> &issues,
+                     const std::string &issue);
 
 enum class AuthStorageMode { Postgres, File };
 enum class BiometricProvider { Legacy, DermalogCli };
@@ -199,9 +201,9 @@ std::string gBiometricDnnModelPath;
 std::string gBiometricDnnLabelsCsv;
 float gBiometricDnnThreshold = 0.72f;
 std::string gAiEngineUrl;
-int gAiEngineTimeoutMs = 120;
+int gAiEngineTimeoutMs = 500;
 std::size_t gAiEngineMaxImageBytes = 450000;
-float gBiometricIcaoEyeConfidenceMin = 95.0f;
+float gBiometricIcaoEyeConfidenceMin = 70.0f;
 float gBiometricIcaoIlluminationMin = 40.0f;
 bool gImageOptimizerEnabled = false;
 int gBiometricMaxPixels = 1280 * 720;
@@ -214,6 +216,9 @@ struct FaceAnalysis {
   double qualityScore = 0.0;
   std::string provider = "legacy";
 };
+
+FaceAnalysis analyzeFaceImage(const std::string &base64Image,
+                              const std::string &mode);
 
 struct AuditFilter {
   size_t limit = 50;
@@ -561,6 +566,61 @@ bool decodeBase64(const std::string &input, std::vector<unsigned char> &out) {
   return !out.empty();
 }
 
+std::string encodeBase64(const std::vector<unsigned char> &input) {
+  static const char table[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve(((input.size() + 2) / 3) * 4);
+  for (size_t i = 0; i < input.size(); i += 3) {
+    const unsigned int b0 = input[i];
+    const unsigned int b1 = (i + 1 < input.size()) ? input[i + 1] : 0;
+    const unsigned int b2 = (i + 2 < input.size()) ? input[i + 2] : 0;
+    const unsigned int tri = (b0 << 16) | (b1 << 8) | b2;
+    out.push_back(table[(tri >> 18) & 0x3F]);
+    out.push_back(table[(tri >> 12) & 0x3F]);
+    out.push_back((i + 1 < input.size()) ? table[(tri >> 6) & 0x3F] : '=');
+    out.push_back((i + 2 < input.size()) ? table[tri & 0x3F] : '=');
+  }
+  return out;
+}
+
+struct BiometricCaptureRuntimeState {
+  int state = 1; // 1=starting, 4=liveness, 7=captured
+  int captureCount = 0;
+  bool eyesOpen = false;
+  bool mouthClosed = false;
+  bool faceStraight = false;
+  bool noGlasses = false;
+  bool detected = false;
+  double livenessScore = 0.0;
+  std::string stateName = "Estado actual: INICIANDO";
+  std::chrono::steady_clock::time_point updatedAt = std::chrono::steady_clock::now();
+};
+
+std::mutex gBiometricCaptureMutex;
+BiometricCaptureRuntimeState gBiometricCaptureState;
+std::vector<std::string> gBiometricCapturedImages; // data:image/jpeg;base64,...
+
+struct LegacyFacialUserRecord {
+  std::string id;
+  std::string name;
+  std::int64_t timestamp = 0;
+  double confidence = 0.0;
+};
+
+static std::string captureStateLabel(int state) {
+  switch (state) {
+  case 7:
+    return "Estado actual: CAPTURADO";
+  case 4:
+    return "Estado actual: EVALUANDO LIVENESS";
+  case 2:
+    return "Estado actual: ROSTRO DETECTADO";
+  default:
+    return "Estado actual: INICIANDO";
+  }
+}
+
 struct ParsedHttpEndpoint {
   std::string host;
   std::string port = "80";
@@ -598,6 +658,9 @@ struct AiEngineFrameResult {
   double leftEar = 0.0;
   double rightEar = 0.0;
   bool hasEarMetrics = false;
+  /** ai_engine eye_analyzer: confidence 0..1 (MediaPipe EAR + blink). */
+  bool hasAiEyeConfidence = false;
+  double aiEyeConfidence01 = 0.0;
   std::string error;
 };
 
@@ -783,12 +846,80 @@ analyzeFrameWithAiEngine(
       hasRightEar = true;
     }
     out.hasEarMetrics = hasLeftEar && hasRightEar;
+    if (obj.if_contains("confidence") &&
+        (obj.at("confidence").is_double() || obj.at("confidence").is_int64())) {
+      out.hasAiEyeConfidence = true;
+      out.aiEyeConfidence01 =
+          obj.at("confidence").is_double()
+              ? obj.at("confidence").as_double()
+              : static_cast<double>(obj.at("confidence").as_int64());
+    }
     return out;
   } catch (...) {
     AiEngineFrameResult fail;
     fail.error = "ai_engine_parse_failed";
     return fail;
   }
+}
+
+struct BiometricVerifyEval {
+  bool ok = false;
+  FaceAnalysis face;
+  std::optional<AiEngineFrameResult> aiEval;
+};
+
+static BiometricVerifyEval runBiometricVerifyForImageBase64(
+    const std::string &base64,
+    const std::optional<std::string> &glassesEmaKey = std::nullopt) {
+  BiometricVerifyEval eval;
+  eval.face = analyzeFaceImage(base64, "verify");
+  eval.ok = eval.face.ok;
+
+  std::vector<unsigned char> frameRaw;
+  const bool decoded = decodeBase64(base64, frameRaw);
+  if (decoded && !frameRaw.empty()) {
+    cv::Mat bgr = cv::imdecode(frameRaw, cv::IMREAD_COLOR);
+    if (!bgr.empty()) {
+      const float illumPct = icaoFullFrameIlluminationPercent(bgr);
+      if (illumPct < gBiometricIcaoIlluminationMin) {
+        pushIssueUnique(eval.face.issues, "lighting_insufficient_icao");
+        eval.ok = false;
+      }
+    }
+    eval.aiEval = analyzeFrameWithAiEngine(frameRaw, glassesEmaKey);
+  }
+
+  if (eval.aiEval.has_value()) {
+    if (!eval.aiEval->error.empty()) {
+      pushIssueUnique(eval.face.issues, eval.aiEval->error);
+    } else if (eval.aiEval->available) {
+      if (!eval.aiEval->detected) {
+        pushIssueUnique(eval.face.issues, "ai_face_not_detected");
+      }
+      if (!eval.aiEval->bothOpen) {
+        pushIssueUnique(eval.face.issues, "eyes_not_open_or_not_visible");
+      }
+      if (!eval.aiEval->mouthClosed) {
+        pushIssueUnique(eval.face.issues, "mouth_not_closed");
+      }
+      if (!eval.aiEval->noGlasses) {
+        pushIssueUnique(eval.face.issues, "suspected_glasses");
+      }
+      if (eval.aiEval->detected && eval.aiEval->bothOpen &&
+          eval.aiEval->hasAiEyeConfidence) {
+        const float eyeConfPct = static_cast<float>(
+            std::clamp(eval.aiEval->aiEyeConfidence01 * 100.0, 0.0, 100.0));
+        if (eyeConfPct < gBiometricIcaoEyeConfidenceMin) {
+          pushIssueUnique(eval.face.issues, "eye_open_confidence_low");
+          eval.ok = false;
+        }
+      }
+      eval.ok = eval.ok && eval.aiEval->detected && eval.aiEval->bothOpen &&
+                eval.aiEval->mouthClosed && eval.aiEval->noGlasses;
+    }
+  }
+  eval.face.ok = eval.ok;
+  return eval;
 }
 
 std::vector<double> extractLegacyTemplateFromMat(const cv::Mat &image) {
@@ -1560,6 +1691,10 @@ fs::path authAuditFile(const std::string &dataRoot) {
   return authDirPath(dataRoot) / "auth_audit.log";
 }
 
+fs::path legacyFacialUsersFile(const std::string &dataRoot) {
+  return authDirPath(dataRoot) / "facial_legacy_users.json";
+}
+
 json::object authUserToJson(const AuthUser &u) {
   json::array tpl;
   for (double v : u.faceTemplate) {
@@ -1673,6 +1808,78 @@ void saveAuthUsers(const std::string &dataRoot,
   }
 
   std::ofstream ofs(authUsersFile(dataRoot), std::ios::trunc);
+  ofs << json::serialize(arr);
+}
+
+std::vector<LegacyFacialUserRecord>
+loadLegacyFacialUsers(const std::string &dataRoot) {
+  fs::create_directories(authDirPath(dataRoot));
+  const auto path = legacyFacialUsersFile(dataRoot);
+  if (!fs::exists(path)) {
+    return {};
+  }
+  std::ifstream ifs(path);
+  if (!ifs.is_open()) {
+    return {};
+  }
+  std::stringstream buffer;
+  buffer << ifs.rdbuf();
+  const auto raw = buffer.str();
+  if (raw.empty()) {
+    return {};
+  }
+  try {
+    auto parsed = json::parse(raw);
+    if (!parsed.is_array()) {
+      return {};
+    }
+    std::vector<LegacyFacialUserRecord> out;
+    for (const auto &it : parsed.as_array()) {
+      if (!it.is_object()) {
+        continue;
+      }
+      const auto &obj = it.as_object();
+      if (!obj.if_contains("id") || !obj.if_contains("name") ||
+          !obj.if_contains("timestamp")) {
+        continue;
+      }
+      if (!obj.at("id").is_string() || !obj.at("name").is_string()) {
+        continue;
+      }
+      LegacyFacialUserRecord u;
+      u.id = json::value_to<std::string>(obj.at("id"));
+      u.name = json::value_to<std::string>(obj.at("name"));
+      if (obj.at("timestamp").is_int64()) {
+        u.timestamp = obj.at("timestamp").as_int64();
+      } else if (obj.at("timestamp").is_double()) {
+        u.timestamp = static_cast<std::int64_t>(obj.at("timestamp").as_double());
+      }
+      if (obj.if_contains("confidence")) {
+        if (obj.at("confidence").is_double()) {
+          u.confidence = obj.at("confidence").as_double();
+        } else if (obj.at("confidence").is_int64()) {
+          u.confidence = static_cast<double>(obj.at("confidence").as_int64());
+        }
+      }
+      out.push_back(std::move(u));
+    }
+    return out;
+  } catch (...) {
+    return {};
+  }
+}
+
+void saveLegacyFacialUsers(const std::string &dataRoot,
+                          const std::vector<LegacyFacialUserRecord> &users) {
+  fs::create_directories(authDirPath(dataRoot));
+  json::array arr;
+  for (const auto &u : users) {
+    arr.push_back(json::object{{"id", u.id},
+                               {"name", u.name},
+                               {"timestamp", u.timestamp},
+                               {"confidence", u.confidence}});
+  }
+  std::ofstream ofs(legacyFacialUsersFile(dataRoot), std::ios::trunc);
   ofs << json::serialize(arr);
 }
 
@@ -2684,60 +2891,13 @@ routeRequest(const http::request<http::string_body> &req,
         return makeJsonResponse(http::status::bad_request, json::object{{"error", "face_image_base64 is required"}});
       }
       const std::string base64 = json::value_to<std::string>(val.as_object().at("face_image_base64"));
-      auto face = analyzeFaceImage(base64, "verify");
-
-      std::vector<unsigned char> frameRaw;
-      const bool decoded = decodeBase64(base64, frameRaw);
-      if (decoded && !frameRaw.empty()) {
-        cv::Mat bgr = cv::imdecode(frameRaw, cv::IMREAD_COLOR);
-        if (!bgr.empty()) {
-          const float illumPct = icaoFullFrameIlluminationPercent(bgr);
-          if (illumPct < gBiometricIcaoIlluminationMin) {
-            pushIssueUnique(face.issues, "lighting_insufficient_icao");
-            face.ok = false;
-          }
-        }
+      const auto sessionBiometric = resolveAuthSession(req, query);
+      std::optional<std::string> glassesEmaKey;
+      if (sessionBiometric.has_value()) {
+        glassesEmaKey = sessionBiometric->token;
       }
-
-      std::optional<AiEngineFrameResult> aiEval;
-      if (decoded && !frameRaw.empty()) {
-        const auto sessionBiometric = resolveAuthSession(req, query);
-        std::optional<std::string> glassesEmaKey;
-        if (sessionBiometric.has_value()) {
-          glassesEmaKey = sessionBiometric->token;
-        }
-        aiEval = analyzeFrameWithAiEngine(frameRaw, glassesEmaKey);
-      }
-
-      if (aiEval.has_value()) {
-        if (!aiEval->error.empty()) {
-          pushIssueUnique(face.issues, aiEval->error);
-        } else if (aiEval->available) {
-          if (!aiEval->detected) {
-            pushIssueUnique(face.issues, "ai_face_not_detected");
-          }
-          if (!aiEval->bothOpen) {
-            pushIssueUnique(face.issues, "eyes_not_open_or_not_visible");
-          }
-          if (!aiEval->mouthClosed) {
-            pushIssueUnique(face.issues, "mouth_not_closed");
-          }
-          if (!aiEval->noGlasses) {
-            pushIssueUnique(face.issues, "suspected_glasses");
-          }
-          if (aiEval->detected && aiEval->hasEarMetrics) {
-            const double earSum = aiEval->leftEar + aiEval->rightEar;
-            const float eyeConf = static_cast<float>(
-                std::clamp((earSum / 0.6) * 100.0, 0.0, 100.0));
-            if (eyeConf < gBiometricIcaoEyeConfidenceMin) {
-              pushIssueUnique(face.issues, "eye_open_confidence_low");
-              face.ok = false;
-            }
-          }
-          face.ok = face.ok && aiEval->detected && aiEval->bothOpen &&
-                    aiEval->mouthClosed && aiEval->noGlasses;
-        }
-      }
+      auto eval = runBiometricVerifyForImageBase64(base64, glassesEmaKey);
+      auto &face = eval.face;
       
       json::array issuesArr;
       for (const auto &issue : face.issues) {
@@ -2754,6 +2914,205 @@ routeRequest(const http::request<http::string_body> &req,
       });
     } catch (const std::exception &ex) {
       return makeJsonResponse(http::status::bad_request, json::object{{"error", ex.what()}});
+    }
+  }
+
+  if (req.method() == http::verb::post && pathOnly == "/api/process_frame") {
+    try {
+      if (req.body().empty()) {
+        return makeJsonResponse(http::status::bad_request,
+                                json::object{{"error", "image body is required"}});
+      }
+      std::vector<unsigned char> frameRaw(req.body().begin(), req.body().end());
+      cv::Mat frame = cv::imdecode(frameRaw, cv::IMREAD_COLOR);
+      if (frame.empty()) {
+        return makeJsonResponse(http::status::bad_request,
+                                json::object{{"error", "invalid image data"}});
+      }
+      std::vector<unsigned char> jpg;
+      cv::imencode(".jpg", frame, jpg, {cv::IMWRITE_JPEG_QUALITY, 60});
+      const std::string base64 = encodeBase64(jpg);
+      auto eval = runBiometricVerifyForImageBase64(base64, std::nullopt);
+
+      bool eyesOpen = true;
+      bool mouthClosed = true;
+      bool noGlasses = true;
+      bool detected = eval.ok;
+      if (eval.aiEval.has_value() && eval.aiEval->available) {
+        eyesOpen = eval.aiEval->bothOpen;
+        mouthClosed = eval.aiEval->mouthClosed;
+        noGlasses = eval.aiEval->noGlasses;
+        detected = eval.aiEval->detected;
+      }
+      bool frontal = true;
+      for (const auto &issue : eval.face.issues) {
+        if (issue == "face_not_frontal" || issue == "head_pose_not_straight") {
+          frontal = false;
+        }
+      }
+
+      int stateOut = 1;
+      {
+        std::scoped_lock lk(gBiometricCaptureMutex);
+        gBiometricCaptureState.detected = detected;
+        gBiometricCaptureState.eyesOpen = eyesOpen;
+        gBiometricCaptureState.mouthClosed = mouthClosed;
+        gBiometricCaptureState.noGlasses = noGlasses;
+        gBiometricCaptureState.faceStraight = frontal;
+        const bool frameValid = eval.ok && eyesOpen && mouthClosed && noGlasses && frontal;
+        if (frameValid) {
+          if (gBiometricCaptureState.captureCount < 3) {
+            gBiometricCapturedImages.push_back("data:image/jpeg;base64," + base64);
+            if (gBiometricCapturedImages.size() > 3) {
+              gBiometricCapturedImages.erase(gBiometricCapturedImages.begin());
+            }
+          }
+          gBiometricCaptureState.captureCount =
+              std::min(3, gBiometricCaptureState.captureCount + 1);
+        } else {
+          gBiometricCaptureState.captureCount = 0;
+          gBiometricCapturedImages.clear();
+        }
+        const double livenessScore =
+            std::min(100.0, static_cast<double>(gBiometricCaptureState.captureCount) * 35.0);
+        gBiometricCaptureState.livenessScore = livenessScore;
+        if (gBiometricCaptureState.captureCount >= 3) {
+          gBiometricCaptureState.state = 7;
+        } else if (detected) {
+          gBiometricCaptureState.state = 4;
+        } else {
+          gBiometricCaptureState.state = 1;
+        }
+        gBiometricCaptureState.stateName = captureStateLabel(gBiometricCaptureState.state);
+        gBiometricCaptureState.updatedAt = std::chrono::steady_clock::now();
+        stateOut = gBiometricCaptureState.state;
+      }
+
+      return makeJsonResponse(http::status::ok, json::object{
+                                               {"ok", true},
+                                               {"state", stateOut},
+                                           });
+    } catch (const std::exception &ex) {
+      return makeJsonResponse(http::status::bad_request,
+                              json::object{{"error", ex.what()}});
+    }
+  }
+
+  if (req.method() == http::verb::get && pathOnly == "/api/status") {
+    BiometricCaptureRuntimeState s;
+    {
+      std::scoped_lock lk(gBiometricCaptureMutex);
+      s = gBiometricCaptureState;
+    }
+    return makeJsonResponse(http::status::ok,
+                            json::object{
+                                {"state", s.state},
+                                {"state_name", s.stateName},
+                                {"capture_count", s.captureCount},
+                                {"active_engine",
+                                 !gAiEngineUrl.empty() ? "MEDIAPIPE_IA" : "OPENCV_LEGACY"},
+                                {"icao",
+                                 json::object{{"eyes_open", s.eyesOpen},
+                                              {"mouth_closed", s.mouthClosed},
+                                              {"face_straight", s.faceStraight},
+                                              {"no_glasses", s.noGlasses}}},
+                                {"liveness_score", s.livenessScore},
+                            });
+  }
+
+  if (req.method() == http::verb::get && pathOnly == "/api/reset_capture") {
+    std::scoped_lock lk(gBiometricCaptureMutex);
+    gBiometricCaptureState = BiometricCaptureRuntimeState{};
+    gBiometricCapturedImages.clear();
+    return makeJsonResponse(http::status::ok, json::object{{"status", "reset"}});
+  }
+
+  if (req.method() == http::verb::get && pathOnly == "/api/captured_images") {
+    json::array arr;
+    {
+      std::scoped_lock lk(gBiometricCaptureMutex);
+      for (const auto &img : gBiometricCapturedImages) {
+        arr.push_back(json::value(img));
+      }
+    }
+    return makeJsonResponse(http::status::ok, arr);
+  }
+
+  if (req.method() == http::verb::get && pathOnly == "/api/users") {
+    const auto users = loadLegacyFacialUsers(dataRoot);
+    json::array arr;
+    for (const auto &u : users) {
+      arr.push_back(json::object{{"id", u.id},
+                                 {"name", u.name},
+                                 {"timestamp", u.timestamp},
+                                 {"confidence", u.confidence}});
+    }
+    return makeJsonResponse(http::status::ok, arr);
+  }
+
+  if (req.method() == http::verb::post && pathOnly == "/api/enroll") {
+    try {
+      auto val = json::parse(req.body());
+      if (!val.is_object()) {
+        return makeJsonResponse(http::status::bad_request,
+                                json::object{{"error", "invalid JSON body"}});
+      }
+      const auto &obj = val.as_object();
+      const std::string empresa =
+          obj.if_contains("empresa") && obj.at("empresa").is_string()
+              ? json::value_to<std::string>(obj.at("empresa"))
+              : "EMPRESA";
+      const std::string paterno =
+          obj.if_contains("paterno") && obj.at("paterno").is_string()
+              ? json::value_to<std::string>(obj.at("paterno"))
+              : "";
+      const std::string materno =
+          obj.if_contains("materno") && obj.at("materno").is_string()
+              ? json::value_to<std::string>(obj.at("materno"))
+              : "";
+      const std::string nombre =
+          obj.if_contains("nombre") && obj.at("nombre").is_string()
+              ? json::value_to<std::string>(obj.at("nombre"))
+              : "";
+
+      if (paterno.empty() || nombre.empty()) {
+        return makeJsonResponse(http::status::bad_request,
+                                json::object{{"error", "paterno and nombre are required"}});
+      }
+
+      double confidence = 0.0;
+      {
+        std::scoped_lock lk(gBiometricCaptureMutex);
+        if (gBiometricCaptureState.captureCount < 3 ||
+            gBiometricCaptureState.state != 7) {
+          return makeJsonResponse(http::status::bad_request,
+                                  json::object{{"error", "Capture process not complete"}});
+        }
+        confidence = gBiometricCaptureState.livenessScore;
+        gBiometricCaptureState = BiometricCaptureRuntimeState{};
+        gBiometricCapturedImages.clear();
+      }
+
+      const std::string userId =
+          empresa + "_" + paterno + "_" + materno + "_" + nombre;
+      const std::string fullName =
+          nombre + (paterno.empty() ? "" : " " + paterno) +
+          (materno.empty() ? "" : " " + materno);
+      auto users = loadLegacyFacialUsers(dataRoot);
+      users.push_back(LegacyFacialUserRecord{
+          userId,
+          fullName,
+          static_cast<std::int64_t>(std::chrono::system_clock::to_time_t(
+              std::chrono::system_clock::now())),
+          confidence});
+      saveLegacyFacialUsers(dataRoot, users);
+
+      return makeJsonResponse(http::status::ok,
+                              json::object{{"status", "success"},
+                                           {"userId", userId}});
+    } catch (const std::exception &ex) {
+      return makeJsonResponse(http::status::bad_request,
+                              json::object{{"error", ex.what()}});
     }
   }
 
@@ -3765,9 +4124,9 @@ int main() {
     gAiEngineUrl = getenvOr("AI_ENGINE_URL", "");
     try {
       gAiEngineTimeoutMs = std::clamp(
-          std::stoi(getenvOr("AI_ENGINE_TIMEOUT_MS", "120")), 50, 500);
+          std::stoi(getenvOr("AI_ENGINE_TIMEOUT_MS", "500")), 50, 5000);
     } catch (...) {
-      gAiEngineTimeoutMs = 120;
+      gAiEngineTimeoutMs = 500;
     }
     try {
       gAiEngineMaxImageBytes = static_cast<std::size_t>(std::clamp(
@@ -3778,10 +4137,10 @@ int main() {
     }
     try {
       gBiometricIcaoEyeConfidenceMin = static_cast<float>(std::clamp(
-          std::stod(getenvOr("BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN", "95")), 50.0,
+          std::stod(getenvOr("BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN", "70")), 50.0,
           100.0));
     } catch (...) {
-      gBiometricIcaoEyeConfidenceMin = 95.0f;
+      gBiometricIcaoEyeConfidenceMin = 70.0f;
     }
     try {
       gBiometricIcaoIlluminationMin = static_cast<float>(std::clamp(

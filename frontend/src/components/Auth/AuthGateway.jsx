@@ -18,17 +18,21 @@ import {
     fetchCompanies,
     loginWithFace,
     loginWithPassword,
+    processBiometricFrame,
+    fetchBiometricStatus,
     registerUser,
-    verifyBiometricFrame,
+    resetBiometricCapture,
     validateCompany,
 } from '../../auth/authApi'
 import { FACIAL_ICAO } from '../../config/facialIcaoConfig'
 import {
-    mapVerifyIssuesToIcaoFour,
     formatIcaoCell,
 } from '../../auth/biometricFiveHelpers'
 import {
-    preprocessCanvasForFaceDetection,
+    preprocessImageDataForFaceDetection,
+    meanLuminanceImageData,
+    luminanceStdDevImageData,
+    classifyRawDifficultLighting,
     medianFaceBoundingBox,
     faceCenterJumpRatio,
 } from '../../auth/faceTrackingUtils'
@@ -42,9 +46,15 @@ const BIOMETRIC_OVAL_X_OFFSET = 0.12
 const BIOMETRIC_OVAL_Y_OFFSET = -0.05
 
 /** Óvalo facial en pantalla: siempre más alto que ancho (proporción humana), no hereda el aspecto del bbox. */
-const OVAL_HEIGHT_OVER_WIDTH = 1.38
+const OVAL_HEIGHT_OVER_WIDTH = 1.36
 const OVAL_MAX_W_FRAC = 0.86
 const OVAL_MAX_H_FRAC = 0.92
+const OVAL_MIN_W_FRAC = 0.4
+const OVAL_MIN_H_FRAC = 0.74
+const FACIAL_STRICT_OVAL_MODE = true
+const FACIAL_STRICT_OVAL_W_PCT = (280 / 640) * 100
+const FACIAL_STRICT_OVAL_H_PCT = (380 / 480) * 100
+const BUILD_STAMP = import.meta.env.VITE_BUILD_STAMP || 'dev'
 
 function clampPortraitOvalPx(ow, oh, vw, vh, hr = OVAL_HEIGHT_OVER_WIDTH) {
     let w = Math.max(ow, 24)
@@ -76,9 +86,18 @@ function clampPortraitOvalPx(ow, oh, vw, vh, hr = OVAL_HEIGHT_OVER_WIDTH) {
  * la forma es fija vertical (alto/ancho = OVAL_HEIGHT_OVER_WIDTH), no la del bbox del detector.
  */
 function computeBiometricOvalLayout(box, vw, vh) {
+    if (FACIAL_STRICT_OVAL_MODE) {
+        return {
+            leftPct: 50,
+            topPct: 50,
+            wPct: FACIAL_STRICT_OVAL_W_PCT,
+            hPct: FACIAL_STRICT_OVAL_H_PCT,
+            transform: 'translate(-50%, -50%)',
+        }
+    }
     const hr = OVAL_HEIGHT_OVER_WIDTH
     if (!box || vw < 32 || vh < 32) {
-        const baseW = vw * 0.36
+        const baseW = vw * 0.44
         const { ow, oh } = clampPortraitOvalPx(baseW, baseW * hr, vw, vh, hr)
         return {
             leftPct: 50,
@@ -90,13 +109,15 @@ function computeBiometricOvalLayout(box, vw, vh) {
     }
     const cx = box.x + box.width / 2
     const cy = box.y + box.height / 2
-    const rel = Math.sqrt((box.width / vw) * (box.height / vh))
-    const t = Math.min(Math.max((rel - 0.08) / 0.38, 0), 1)
-    const proximityScale = 1.4 - t * 0.34
-    const faceSpan = Math.hypot(box.width, box.height) * 0.5 * proximityScale
-    const ow0 = faceSpan
-    const oh0 = faceSpan * hr
-    const { ow, oh } = clampPortraitOvalPx(ow0, oh0, vw, vh, hr)
+    const ow0 = Math.max(vw * OVAL_MIN_W_FRAC, box.width * 1.52)
+    const oh0 = ow0 * hr
+    const { ow, oh } = clampPortraitOvalPx(
+        ow0,
+        Math.max(vh * OVAL_MIN_H_FRAC, oh0),
+        vw,
+        vh,
+        hr
+    )
     const wPct = (ow / vw) * 100
     const hPct = (oh / vh) * 100
     return {
@@ -148,17 +169,20 @@ function getCropFromFaceBox(videoWidth, videoHeight, faceBox) {
         return { x: 0, y: 0, width: videoWidth, height: videoHeight }
     }
 
-    const cropSize = 350;
-    const cx = faceBox.x + faceBox.width / 2;
-    const cy = faceBox.y + faceBox.height / 2;
+    const minDim = Math.max(64, Math.min(videoWidth, videoHeight))
+    const maxSquare = Math.min(videoWidth, videoHeight)
+    // Recorte cuadrado centrado en el rostro; escala según tamaño detectado.
+    const adaptiveSize = Math.round(
+        Math.max(minDim * 0.35, Math.min(maxSquare, Math.max(faceBox.width, faceBox.height) * 1.55))
+    )
+    const cropSize = Math.max(64, Math.min(maxSquare, adaptiveSize))
+    const cx = faceBox.x + faceBox.width / 2
+    const cy = faceBox.y + faceBox.height / 2
 
-    let x = Math.max(0, Math.floor(cx - cropSize / 2));
-    let y = Math.max(0, Math.floor(cy - cropSize / 2));
-
-    if (x + cropSize > videoWidth) x = videoWidth - cropSize;
-    if (y + cropSize > videoHeight) y = videoHeight - cropSize;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
+    let x = Math.floor(cx - cropSize / 2)
+    let y = Math.floor(cy - cropSize / 2)
+    x = Math.max(0, Math.min(videoWidth - cropSize, x))
+    y = Math.max(0, Math.min(videoHeight - cropSize, y))
 
     return { x, y, width: cropSize, height: cropSize }
 }
@@ -255,20 +279,6 @@ const getSkinCentroid = (ctx, w, h) => {
         return { x: sumX / count, y: sumY / count, density: count / (w * h / 16) };
     } catch { return null; }
 };
-const skinPixelRatio = (ctx, x, y, w, h) => {
-    try {
-        const data = ctx.getImageData(x, y, w, h).data;
-        let skinPixels = 0;
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i], g = data[i+1], b = data[i+2];
-            // Simple skin tone heuristic: R > 95, G > 40, B > 20, R > G, R > B, |R-G| > 15
-            if (r > 95 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 15) {
-                skinPixels++;
-            }
-        }
-        return skinPixels / (w * h);
-    } catch { return 0; }
-};
 
 const AuthGateway = ({ onAuthenticated }) => {
     const [mode, setMode] = useState('login')
@@ -312,6 +322,8 @@ const AuthGateway = ({ onAuthenticated }) => {
         eyesOpen: false,
         mouthClosed: false,
         qualityReady: false,
+        validFrames: 0,
+        captureCount: 0,
         lastServerOk: false,
         icaoEyes: null,
         icaoMouth: null,
@@ -344,24 +356,41 @@ const AuthGateway = ({ onAuthenticated }) => {
     const cameraRetryTimerRef = useRef(null)
     const cameraStageRef = useRef(null)
     const faceBoxHistoryRef = useRef([])
+    const trackingCanvasRef = useRef(null)
+    const trackingFallbackCanvasRef = useRef(null)
+    const validFramesRef = useRef(0)
+    const missedDetectorFramesRef = useRef(0)
+    /** 0..1 con histéresis: modo noche/reflejos para filtros extra y borde más estable */
+    const difficultLightingScoreRef = useRef(0)
 
     const [cameraStageSize, setCameraStageSize] = useState({ width: 0, height: 0 })
 
-    const ovalLayout = useMemo(
-        () => computeBiometricOvalLayout(liveFaceBox, frameMetrics.width, frameMetrics.height),
-        [liveFaceBox, frameMetrics.width, frameMetrics.height]
-    )
-
     const ovalForStage = useMemo(
-        () =>
-            mapOvalLayoutVideoToStage(
-                ovalLayout,
+        () => {
+            if (FACIAL_STRICT_OVAL_MODE) {
+                // Modo FACIAL: óvalo fijo, centrado y estable (sin jitter por bbox/frame).
+                return {
+                    leftPct: 50,
+                    topPct: 50,
+                    wPct: FACIAL_STRICT_OVAL_W_PCT,
+                    hPct: FACIAL_STRICT_OVAL_H_PCT,
+                    transform: 'translate(-50%, -50%)',
+                }
+            }
+            const layout = computeBiometricOvalLayout(
+                liveFaceBox,
+                frameMetrics.width,
+                frameMetrics.height
+            )
+            return mapOvalLayoutVideoToStage(
+                layout,
                 frameMetrics.width,
                 frameMetrics.height,
                 cameraStageSize.width,
                 cameraStageSize.height
-            ),
-        [ovalLayout, frameMetrics.width, frameMetrics.height, cameraStageSize.width, cameraStageSize.height]
+            )
+        },
+        [liveFaceBox, frameMetrics.width, frameMetrics.height, cameraStageSize.width, cameraStageSize.height]
     )
 
     const canRegister = useMemo(() => {
@@ -559,13 +588,31 @@ const AuthGateway = ({ onAuthenticated }) => {
     }, [])
 
     useEffect(() => {
+        setCapturedTemplate(null)
+        setCapturedImageBase64('')
+        validFramesRef.current = 0
+        resetBiometricCapture().catch(() => {})
+        setFaceGuide((prev) => ({
+            ...prev,
+            qualityReady: false,
+            validFrames: 0,
+            captureCount: 0,
+        }))
+    }, [mode, registerTab, loginTab])
+
+    useEffect(() => {
         let requestID = null
         let lastTimestamp = 0
 
         async function detectFaceLoop(timestamp) {
             const video = videoRef.current
             
-            if (timestamp - lastTimestamp < FACIAL_ICAO.DETECT_FRAME_MIN_MS) {
+            const difficultPrev =
+                difficultLightingScoreRef.current >= FACIAL_ICAO.DIFFICULT_LIGHTING_ON_THRESHOLD
+            const frameMinMs = difficultPrev
+                ? FACIAL_ICAO.NIGHT_DETECT_FRAME_MIN_MS
+                : FACIAL_ICAO.DETECT_FRAME_MIN_MS
+            if (timestamp - lastTimestamp < frameMinMs) {
                 requestID = requestAnimationFrame(detectFaceLoop)
                 return
             }
@@ -583,8 +630,8 @@ const AuthGateway = ({ onAuthenticated }) => {
             try {
                 let bestFace = null
 
-                const roiW = video.videoWidth * 0.6
-                const roiH = video.videoHeight * 0.8
+                const roiW = video.videoWidth * 0.78
+                const roiH = video.videoHeight * 0.94
                 const roiX = (video.videoWidth - roiW) / 2
                 const roiY = (video.videoHeight - roiH) / 2
 
@@ -594,18 +641,39 @@ const AuthGateway = ({ onAuthenticated }) => {
                 const sx = roiW / tcW
                 const sy = roiH / tcH
 
-                const trackingCanvas = document.createElement('canvas')
+                const trackingCanvas = trackingCanvasRef.current || document.createElement('canvas')
+                trackingCanvasRef.current = trackingCanvas
                 trackingCanvas.width = tcW
                 trackingCanvas.height = tcH
                 const trackingCtx = trackingCanvas.getContext('2d', { willReadFrequently: true })
                 trackingCtx.filter = 'none'
                 trackingCtx.drawImage(video, roiX, roiY, roiW, roiH, 0, 0, tcW, tcH)
-                preprocessCanvasForFaceDetection(trackingCtx, tcW, tcH, {
+                const trackImg = trackingCtx.getImageData(0, 0, tcW, tcH)
+                const rawMean = meanLuminanceImageData(trackImg)
+                const rawStd = luminanceStdDevImageData(trackImg, rawMean)
+                const rawHard = classifyRawDifficultLighting(rawMean, rawStd)
+                let dlScore =
+                    difficultLightingScoreRef.current +
+                    (rawHard
+                        ? FACIAL_ICAO.DIFFICULT_LIGHTING_RISE_PER_FRAME
+                        : -FACIAL_ICAO.DIFFICULT_LIGHTING_FALL_PER_FRAME)
+                dlScore = Math.max(0, Math.min(1, dlScore))
+                difficultLightingScoreRef.current = dlScore
+                const difficultActive = dlScore >= FACIAL_ICAO.DIFFICULT_LIGHTING_ON_THRESHOLD
+
+                preprocessImageDataForFaceDetection(trackImg, {
+                    difficultNightMode: difficultActive,
                     lowLumEqBelow: FACIAL_ICAO.TRACKING_LOW_LUM_EQ_BELOW,
                     highlightCompressAbove: FACIAL_ICAO.TRACKING_HIGH_LUM_COMPRESS_ABOVE,
+                    nightLowLumEqBelow: FACIAL_ICAO.NIGHT_TRACKING_LOW_LUM_EQ_BELOW,
+                    nightHighlightCompressAbove: FACIAL_ICAO.NIGHT_TRACKING_HIGH_LUM_COMPRESS_ABOVE,
+                    nightGamma: FACIAL_ICAO.NIGHT_TRACKING_GAMMA,
+                    nightUseBlur: difficultActive && FACIAL_ICAO.NIGHT_TRACKING_USE_BLUR,
                 })
+                trackingCtx.putImageData(trackImg, 0, 0)
 
-                if ('FaceDetector' in window) {
+                const hasNativeFaceDetector = 'FaceDetector' in window
+                if (hasNativeFaceDetector) {
                     if (!detectorRef.current) {
                         detectorRef.current = new window.FaceDetector({
                             maxDetectedFaces: 1,
@@ -614,6 +682,7 @@ const AuthGateway = ({ onAuthenticated }) => {
 
                     const detections = await detectorRef.current.detect(trackingCanvas)
                     if (detections.length > 0) {
+                        missedDetectorFramesRef.current = 0
                         const box = detections[0].boundingBox
                         bestFace = {
                             x: roiX + box.x * sx,
@@ -628,21 +697,40 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 })),
                             })),
                         }
+                    } else {
+                        missedDetectorFramesRef.current += 1
                     }
                 }
 
-                if (!bestFace) {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = 160; canvas.height = 120;
-                    const ctx = canvas.getContext('2d');
+                if (!bestFace && !hasNativeFaceDetector) {
+                    const canvas =
+                        trackingFallbackCanvasRef.current || document.createElement('canvas')
+                    trackingFallbackCanvasRef.current = canvas
+                    canvas.width = 160
+                    canvas.height = 120
+                    const ctx = canvas.getContext('2d', { willReadFrequently: true })
                     ctx.drawImage(video, 0, 0, 160, 120);
                     const centroid = getSkinCentroid(ctx, 160, 120);
                     if (centroid && centroid.density > 0.05) {
                         const targetWidth = video.videoWidth * 0.45;
                         const targetHeight = video.videoHeight * 0.75;
+                        const x = Math.max(
+                            0,
+                            Math.min(
+                                video.videoWidth - targetWidth,
+                                (centroid.x / 160) * video.videoWidth - targetWidth / 2
+                            )
+                        )
+                        const y = Math.max(
+                            0,
+                            Math.min(
+                                video.videoHeight - targetHeight,
+                                (centroid.y / 120) * video.videoHeight - targetHeight / 2
+                            )
+                        )
                         bestFace = {
-                            x: (centroid.x / 160) * video.videoWidth - targetWidth / 2,
-                            y: (centroid.y / 120) * video.videoHeight - targetHeight / 2,
+                            x,
+                            y,
                             width: targetWidth,
                             height: targetHeight,
                             landmarks: [],
@@ -651,8 +739,22 @@ const AuthGateway = ({ onAuthenticated }) => {
                     }
                 }
 
+                if (!bestFace && smoothedFaceRef.current && missedDetectorFramesRef.current <= 6) {
+                    bestFace = {
+                        ...smoothedFaceRef.current,
+                        landmarks: [],
+                        isFallback: false,
+                    }
+                }
+
                 if (bestFace) {
                     const hist = faceBoxHistoryRef.current
+                    const histMax = difficultActive
+                        ? FACIAL_ICAO.NIGHT_FACE_BOX_HISTORY_LEN
+                        : FACIAL_ICAO.FACE_BOX_HISTORY_LEN
+                    const medianMin = difficultActive
+                        ? FACIAL_ICAO.NIGHT_FACE_BOX_MEDIAN_MIN_SAMPLES
+                        : FACIAL_ICAO.FACE_BOX_MEDIAN_MIN_SAMPLES
                     hist.push({
                         x: bestFace.x,
                         y: bestFace.y,
@@ -661,12 +763,12 @@ const AuthGateway = ({ onAuthenticated }) => {
                         landmarks: bestFace.landmarks,
                         isFallback: bestFace.isFallback,
                     })
-                    while (hist.length > FACIAL_ICAO.FACE_BOX_HISTORY_LEN) {
+                    while (hist.length > histMax) {
                         hist.shift()
                     }
                     const rawLm = bestFace.landmarks
                     const rawFb = bestFace.isFallback
-                    if (hist.length >= FACIAL_ICAO.FACE_BOX_MEDIAN_MIN_SAMPLES) {
+                    if (hist.length >= medianMin) {
                         const med = medianFaceBoundingBox(hist)
                         if (med) {
                             bestFace = {
@@ -687,6 +789,9 @@ const AuthGateway = ({ onAuthenticated }) => {
 
                 if (!bestFace) {
                     setLiveFaceBox(null)
+                    setCapturedTemplate(null)
+                    setCapturedImageBase64('')
+                    validFramesRef.current = 0
                     smoothedFaceRef.current = null
                     lastVerifyOkRef.current = false
                     livenessBlinkRef.current = 0
@@ -707,6 +812,8 @@ const AuthGateway = ({ onAuthenticated }) => {
                         ...prev,
                         detected: false,
                         qualityReady: false,
+                        validFrames: 0,
+                        captureCount: 0,
                         lastServerOk: false,
                         icaoEyes: null,
                         icaoMouth: null,
@@ -716,13 +823,22 @@ const AuthGateway = ({ onAuthenticated }) => {
                     }))
                 } else {
                     if (smoothedFaceRef.current) {
-                        let alpha = FACIAL_ICAO.FACE_BOX_EMA_ALPHA
+                        let alpha = difficultActive
+                            ? FACIAL_ICAO.NIGHT_FACE_BOX_EMA_ALPHA
+                            : FACIAL_ICAO.FACE_BOX_EMA_ALPHA
                         const jump = faceCenterJumpRatio(
                             bestFace,
                             smoothedFaceRef.current
                         )
-                        if (jump > FACIAL_ICAO.FACE_BOX_OUTLIER_JUMP_RATIO) {
-                            alpha = FACIAL_ICAO.FACE_BOX_EMA_ALPHA_OUTLIER
+                        const jumpTh = difficultActive
+                            ? FACIAL_ICAO.NIGHT_FACE_BOX_OUTLIER_JUMP_RATIO
+                            : FACIAL_ICAO.FACE_BOX_OUTLIER_JUMP_RATIO
+                        if (jump > jumpTh) {
+                            alpha = difficultActive
+                                ? FACIAL_ICAO.NIGHT_FACE_BOX_EMA_ALPHA_OUTLIER
+                                : FACIAL_ICAO.FACE_BOX_EMA_ALPHA_OUTLIER
+                        } else if (jump < 0.04) {
+                            alpha = Math.min(alpha, 0.07)
                         }
                         const prev = smoothedFaceRef.current
                         bestFace = {
@@ -860,20 +976,30 @@ const AuthGateway = ({ onAuthenticated }) => {
                             .toDataURL('image/jpeg', FACIAL_ICAO.VERIFY_JPEG_QUALITY)
                             .split(',')[1]
 
-                        verifyBiometricFrame(base64)
-                            .then((res) => {
+                        processBiometricFrame(base64)
+                            .then(() => fetchBiometricStatus())
+                            .then((status) => {
                                 syncingRef.current = false
-                                lastVerifyOkRef.current = Boolean(res.ok)
-                                const four = mapVerifyIssuesToIcaoFour(
-                                    res.issues || [],
-                                    frontal
+                                const icao = status?.icao || {}
+                                const four = {
+                                    eyes: Boolean(icao.eyes_open),
+                                    mouth: Boolean(icao.mouth_closed),
+                                    frontal: Boolean(icao.face_straight),
+                                    noGlasses: Boolean(icao.no_glasses),
+                                }
+                                lastVerifyOkRef.current = Boolean(
+                                    status?.capture_count >= 1 &&
+                                        four.eyes &&
+                                        four.mouth &&
+                                        four.frontal &&
+                                        four.noGlasses
                                 )
                                 lastIcaoFourRef.current = four
                                 if (hasLandmarks) {
-                                    if (!res.ok) {
+                                    if (!lastVerifyOkRef.current) {
                                         livenessFallbackRef.current = 0
                                     }
-                                } else if (res.ok) {
+                                } else if (lastVerifyOkRef.current) {
                                     livenessFallbackRef.current = Math.min(
                                         FACIAL_ICAO.LIVENESS_MAX_SCORE,
                                         livenessFallbackRef.current +
@@ -884,7 +1010,8 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 }
                                 setFaceGuide((prev) => ({
                                     ...prev,
-                                    lastServerOk: res.ok,
+                                    lastServerOk: lastVerifyOkRef.current,
+                                    captureCount: Number(status?.capture_count || 0),
                                     icaoEyes: four.eyes,
                                     icaoMouth: four.mouth,
                                     icaoFrontal: four.frontal,
@@ -904,13 +1031,23 @@ const AuthGateway = ({ onAuthenticated }) => {
                             : livenessFallbackRef.current
                         const livenessPass =
                             lv >= FACIAL_ICAO.LIVENESS_SCORE_PASS
-                        const qualityReady =
+                        const baseChecksOk =
                             lastVerifyOkRef.current &&
                             livenessPass &&
                             I.eyes &&
                             I.mouth &&
                             I.frontal &&
                             I.noGlasses
+                        if (baseChecksOk) {
+                            validFramesRef.current = Math.min(
+                                FACIAL_ICAO.REQUIRED_VALID_FRAMES,
+                                validFramesRef.current + 1
+                            )
+                        } else {
+                            validFramesRef.current = 0
+                        }
+                        const qualityReady =
+                            validFramesRef.current >= FACIAL_ICAO.REQUIRED_VALID_FRAMES
 
                         const updated = {
                             ...prev,
@@ -919,6 +1056,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                             eyesOpen,
                             mouthClosed,
                             livenessScore: lv,
+                            validFrames: validFramesRef.current,
                             qualityReady,
                         }
 
@@ -1071,6 +1209,12 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 <span className="auth-pill auth-pill-inline">Control de acceso</span>
                                 <Camera size={16} />
                                 <span>Cámara</span>
+                                <span
+                                    className="auth-pill auth-pill-inline"
+                                    style={{ opacity: 0.8, fontSize: '10px' }}
+                                >
+                                    build {BUILD_STAMP}
+                                </span>
                             </div>
                             <span className={cameraReady ? 'status-dot online' : 'status-dot offline'}>
                                 {cameraReady ? 'Activa' : 'Sin acceso'}
@@ -1102,7 +1246,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     zIndex: 15,
                                     border: faceGuide.qualityReady
                                         ? '3px solid #22c55e'
-                                        : '2px dashed rgba(56, 189, 248, 0.95)',
+                                        : '3px solid rgba(239, 68, 68, 0.95)',
                                     boxShadow: 'none',
                                 }}
                             >
@@ -1115,7 +1259,9 @@ const AuthGateway = ({ onAuthenticated }) => {
                                                     '0 0 6px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.95)',
                                             }}
                                         >
-                                            BUSCANDO ROSTRO...
+                                            {faceGuide.detected
+                                                ? 'RASTREANDO ROSTRO...'
+                                                : 'BUSCANDO ROSTRO...'}
                                         </span>
                                     </div>
                                 )}
@@ -1125,6 +1271,24 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 text-white gap-3" style={{ zIndex: 20 }}>
                                     <ScanFace size={48} className="animate-pulse opacity-50" />
                                     <span className="text-sm font-medium">Iniciando Biometría Facial...</span>
+                                </div>
+                            )}
+
+                            {cameraReady && (
+                                <div
+                                    className="absolute top-4 left-1/2 -translate-x-1/2 rounded-xl border px-4 py-2 bg-slate-900/80 text-cyan-200"
+                                    style={{
+                                        zIndex: 21,
+                                        borderColor: 'rgba(34,211,238,0.65)',
+                                        boxShadow: '0 0 14px rgba(34,211,238,0.22)',
+                                    }}
+                                >
+                                    <div className="text-[10px] tracking-wider uppercase opacity-80">
+                                        Muestras
+                                    </div>
+                                    <div className="text-lg font-bold leading-tight text-center">
+                                        {Math.min(3, Number(faceGuide.captureCount || 0))}/3
+                                    </div>
                                 </div>
                             )}
 
