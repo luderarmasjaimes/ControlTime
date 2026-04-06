@@ -169,6 +169,41 @@ export async function verifyBiometricFrame(imageBase64) {
     return parseJsonResponse(response)
 }
 
+export async function processBiometricFrame(imageBase64) {
+    const raw = atob(imageBase64)
+    const bytes = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i += 1) {
+        bytes[i] = raw.charCodeAt(i)
+    }
+    const response = await fetch(`${backendBaseUrl()}/api/process_frame`, {
+        method: 'POST',
+        headers: {
+            ...authHeaders(),
+            'Content-Type': 'image/jpeg',
+        },
+        body: bytes,
+    })
+    return parseJsonResponse(response)
+}
+
+export async function fetchBiometricStatus() {
+    const response = await fetch(`${backendBaseUrl()}/api/status`, {
+        headers: {
+            ...authHeaders(),
+        },
+    })
+    return parseJsonResponse(response)
+}
+
+export async function resetBiometricCapture() {
+    const response = await fetch(`${backendBaseUrl()}/api/reset_capture`, {
+        headers: {
+            ...authHeaders(),
+        },
+    })
+    return parseJsonResponse(response)
+}
+
 export async function fetchCompanyUsers(company) {
     const query = new URLSearchParams()
     if (company) query.set('company', company)
