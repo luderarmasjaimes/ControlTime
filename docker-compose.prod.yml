@@ -53,6 +53,10 @@ services:
   ai_engine:
     image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-yourorg}/informe-ai-engine:latest
     restart: unless-stopped
+    environment:
+      - GLASSES_ONNX_PATH=/app/models/glasses_classifier.onnx
+      - GLASSES_FUSION_WEIGHT_AI=${GLASSES_FUSION_WEIGHT_AI:-0.35}
+      - GLASSES_ONNX_DECISION_MODE=${GLASSES_ONNX_DECISION_MODE:-cv_primary}
     expose:
       - "5000"
 

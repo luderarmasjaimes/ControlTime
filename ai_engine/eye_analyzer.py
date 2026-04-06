@@ -35,6 +35,13 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
+from glasses_fusion import (
+    fuse_scores,
+    infer_glasses_prob_onnx,
+    onnx_load_error,
+    warmup_glasses_onnx,
+)
+
 # =============================================================================
 # TUNING — confianza del landmarker (más bajo = más tolerante a caras pequeñas/luz difícil)
 # =============================================================================
@@ -95,6 +102,9 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 mouth_closed_prev = True
 glasses_score_hist = deque(maxlen=9)
 glasses_state_prev = False
+# Fusión CV + ONNX (GLASSES_ONNX_PATH): histéresis sobre señal fusionada 0–100
+glasses_fusion_hist = deque(maxlen=9)
+glasses_fusion_state_prev = False
 # Exclusión mutua + reset por petición: el backend llama /analyze_eyes en HTTP stateless
 # (un JPEG por request). Sin esto, el deque y la histéresis mezclan frames y queda
 # pegado en "lentes" — distinto de C:\\FACIAL (navegador, secuencia un solo flujo).
@@ -469,6 +479,16 @@ def _glasses_from_frame_impl(img_bgr, points):
         )
     )
 
+    # Salida (histéresis "lentes → sin lentes"): antes stable<32 y NOT weak_frame_presence.
+    # Sin lentes, nariz/cejas suelen dejar weak_frame_presence=True y stable~40–48 → nunca salía.
+    no_spec_for_exit = spec_density < 0.00075 and comp_count == 0
+    exit_glasses = (
+        no_spec_for_exit
+        and stable < 49.0
+        and not strong_glare
+        and not medium_glare
+    )
+
     if not glasses_state_prev:
         # frame_presence + rim/bridge sin spec puede ser nariz: el cap deja stable~48, no pasa stable>51.
         # Con gafas suele haber spec débil (>=0.00045) o al menos un blob; glare relajado cubre el resto.
@@ -484,11 +504,7 @@ def _glasses_from_frame_impl(img_bgr, points):
             or (stable > 51.0 and matte_frame_signal)
         )
     else:
-        glasses_state_prev = not (
-            stable < 32.0
-            and (not weak_frame_presence)
-            and spec_density < 0.00075
-        )
+        glasses_state_prev = not exit_glasses
 
     entry_strong = (stable > 50.0) and strong_glare
     entry_medium = (stable > 54.0) and medium_glare
@@ -498,11 +514,6 @@ def _glasses_from_frame_impl(img_bgr, points):
         and (spec_density >= 0.00045 or comp_count >= 1)
     )
     entry_matte = (stable > 51.0) and matte_frame_signal
-    exit_glasses = (
-        stable < 32.0
-        and (not weak_frame_presence)
-        and spec_density < 0.00075
-    )
 
     glasses_likelihood = stable
     if glasses_state_prev:
@@ -572,10 +583,55 @@ def estimate_confidence(left_ear, right_ear, blink_l, blink_r, detected: bool) -
     return float(np.clip(0.35 + 0.35 * ear_part + 0.30 * blink_part, 0.0, 1.0))
 
 
+def apply_glasses_fusion_pipeline(
+    img_bgr: np.ndarray, cv_gscore: float, cv_glasses_hit: bool, gdebug: dict
+):
+    """
+    Mezcla CV + ONNX sobre el mismo ROI que glasses_debug['roi'].
+
+    GLASSES_ONNX_DECISION_MODE:
+      - cv_primary (default): ONNX solo ajusta glasses_score fusionado; el booleano glasses_hit
+        sigue la histéresis CV. Evita falsos "hay lentes" cuando el ONNX se desvía del dominio
+        (webcam, iluminación distinta al dataset de entrenamiento).
+      - fuse: histéresis sobre mediana(fusion_hist) como antes (ONNX puede mandar el booleano).
+    """
+    global glasses_fusion_state_prev
+    crop = None
+    roi = gdebug.get("roi")
+    if roi and len(roi) == 4:
+        x, y, rw, rh = int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3])
+        h0, w0 = img_bgr.shape[:2]
+        if rw > 0 and rh > 0 and x >= 0 and y >= 0 and x + rw <= w0 and y + rh <= h0:
+            crop = img_bgr[y : y + rh, x : x + rw]
+    onnx_p = infer_glasses_prob_onnx(crop) if crop is not None else None
+    fused, fusion_mode = fuse_scores(cv_gscore, onnx_p)
+    glasses_fusion_hist.append(fused)
+    sf = float(np.median(list(glasses_fusion_hist)))
+
+    decision_mode = os.environ.get("GLASSES_ONNX_DECISION_MODE", "cv_primary").strip().lower()
+
+    if onnx_p is not None:
+        if decision_mode == "fuse":
+            if not glasses_fusion_state_prev:
+                glasses_fusion_state_prev = sf > 56.0
+            else:
+                glasses_fusion_state_prev = not (sf < 44.0)
+            hit = glasses_fusion_state_prev
+            mode_out = fusion_mode
+        else:
+            # cv_primary: no usar histéresis ONNX para el booleano ICAO
+            hit = bool(cv_glasses_hit)
+            mode_out = f"{fusion_mode}+cv_primary_bool"
+        return fused, hit, mode_out, onnx_p, sf, float(cv_gscore)
+
+    return float(cv_gscore), bool(cv_glasses_hit), fusion_mode, None, sf, float(cv_gscore)
+
+
 @app.route("/analyze_eyes", methods=["POST"])
 def analyze_eyes():
     global mouth_closed_prev, glasses_state_prev, last_glasses_debug
     global left_ear_hist, right_ear_hist
+    global glasses_fusion_state_prev
 
     if "image" not in request.files:
         return jsonify({"error": "No image provided"}), 400
@@ -601,6 +657,8 @@ def analyze_eyes():
     if not detection_result.face_landmarks:
         mouth_closed_prev = True
         glasses_state_prev = False
+        glasses_fusion_hist.clear()
+        glasses_fusion_state_prev = False
         left_ear_hist.clear()
         right_ear_hist.clear()
         last_glasses_debug = {"reason": "no_face"}
@@ -635,6 +693,9 @@ def analyze_eyes():
                 "face_frontal": False,
                 "glasses_score": 0.0,
                 "glasses_cv_score": 0.0,
+                "glasses_fusion_score": None,
+                "glasses_onnx_prob": None,
+                "glasses_fusion_mode": None,
                 "confidence": 0.0,
             }
         )
@@ -668,8 +729,21 @@ def analyze_eyes():
     mouth_closed_bool = update_mouth_closed(bs, mar_ratio)
     mouth_open_bool = not mouth_closed_bool
 
-    gscore, glasses_hit, gdebug = glasses_from_frame(img, points)
+    cv_gscore, cv_hit, gdebug = glasses_from_frame(img, points)
+    fused_score, glasses_hit, fusion_mode, onnx_p, stable_fusion, cv_only = (
+        apply_glasses_fusion_pipeline(img, float(cv_gscore), bool(cv_hit), gdebug)
+    )
     no_glasses = not glasses_hit
+    gdebug["glasses_fusion"] = {
+        "fused_score": float(fused_score),
+        "cv_score": float(cv_only),
+        "stable_fusion": float(stable_fusion),
+        "onnx_prob": onnx_p,
+        "mode": fusion_mode,
+        "decision_mode": os.environ.get("GLASSES_ONNX_DECISION_MODE", "cv_primary").strip().lower(),
+        "cv_glasses_hit": bool(cv_hit),
+        "final_glasses_hit": bool(glasses_hit),
+    }
     last_glasses_debug = gdebug
 
     _probe_row = {
@@ -680,7 +754,7 @@ def analyze_eyes():
         "inter_eye_px": float(inter_eye),
         "glasses_hit": bool(glasses_hit),
         "no_glasses": bool(no_glasses),
-        "glasses_likelihood_out": float(gscore),
+        "glasses_likelihood_out": float(fused_score),
         "glasses_debug": gdebug,
     }
     if _glasses_probe_path():
@@ -695,7 +769,9 @@ def analyze_eyes():
     print(
         f"[EYE_AI] IED:{inter_eye:.1f} thr:{ear_t:.3f} EAR L:{left_ear:.3f} R:{right_ear:.3f} "
         f"blink L/R:{blink_l:.2f}/{blink_r:.2f} jaw:{jaw:.3f} MARi:{mar_ratio:.3f} "
-        f"mouth_closed:{mouth_closed_bool} glasses:{glasses_hit}({gscore:.1f}) "
+        f"mouth_closed:{mouth_closed_bool} glasses:{glasses_hit}({fused_score:.1f}) "
+        f"cv:{cv_gscore:.1f} fusion:{fusion_mode} onnx:"
+        f"{(f'{float(onnx_p):.3f}' if onnx_p is not None else '-')} "
         f"frontal:{face_frontal} conf:{conf:.2f}",
         flush=True,
     )
@@ -714,8 +790,11 @@ def analyze_eyes():
             "mouth_closed": bool(mouth_closed_bool),
             "no_glasses": bool(no_glasses),
             "face_frontal": bool(face_frontal),
-            "glasses_score": float(gscore),
-            "glasses_cv_score": float(gscore),
+            "glasses_score": float(fused_score),
+            "glasses_cv_score": float(cv_gscore),
+            "glasses_fusion_score": float(fused_score),
+            "glasses_onnx_prob": onnx_p,
+            "glasses_fusion_mode": fusion_mode,
             "glasses_debug": gdebug,
             "confidence": float(conf),
         }
@@ -732,6 +811,8 @@ def health():
             "mp_det": MIN_FACE_DET_CONF,
             "glasses_probe_log": _glasses_probe_path(),
             "glasses_probe_sin_gafas_log": _glasses_probe_sin_gafas_path(),
+            "glasses_onnx_path": os.environ.get("GLASSES_ONNX_PATH", "").strip() or None,
+            "glasses_onnx_error": onnx_load_error(),
         }
     )
 
@@ -743,4 +824,6 @@ def glasses_debug():
 
 if __name__ == "__main__":
     print("[EYE_AI] Motor IA puerto 5000", flush=True)
+    if os.environ.get("GLASSES_ONNX_PATH", "").strip():
+        warmup_glasses_onnx()
     app.run(host="0.0.0.0", port=5000, threaded=True)

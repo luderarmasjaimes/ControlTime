@@ -113,6 +113,11 @@ services:
       # Pruebas JSONL: con gafas → glasses_probe.jsonl | sin gafas → glasses_probe_sin_gafas.jsonl (activar solo uno)
       - GLASSES_PROBE_LOG=${GLASSES_PROBE_LOG:-}
       - GLASSES_PROBE_SIN_GAFAS_LOG=${GLASSES_PROBE_SIN_GAFAS_LOG:-}
+      # ONNX embebido en la imagen (Dockerfile). Sobrescribir solo si usa otro modelo.
+      - GLASSES_ONNX_PATH=${GLASSES_ONNX_PATH:-/app/models/glasses_classifier.onnx}
+      - GLASSES_FUSION_WEIGHT_AI=${GLASSES_FUSION_WEIGHT_AI:-0.35}
+      # cv_primary = boolean "sin lentes" solo CV (recomendado; ONNX a veces falla fuera del dataset)
+      - GLASSES_ONNX_DECISION_MODE=${GLASSES_ONNX_DECISION_MODE:-cv_primary}
     volumes:
       - ./ai_engine_probe_logs:/app/logs
     networks:
