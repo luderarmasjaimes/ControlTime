@@ -1,6 +1,13 @@
 data/
 tmp/
 ai_engine_probe_logs/
+ai_engine/models/*.onnx
+ai_engine/models/*_meta.json
+data/glasses_dataset/**/*.jpg
+data/glasses_dataset/**/*.jpeg
+data/glasses_dataset/**/*.png
+data/glasses_dataset/**/*.webp
+data/glasses_dataset/**/*.bmp
 
 *.ecw
 *.mbtiles

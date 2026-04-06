@@ -793,20 +793,34 @@ analyzeFrameWithAiEngine(
             : true;
 
     double rawGlasses = 0.0;
-    if (obj.if_contains("glasses_cv_score") &&
-        (obj.at("glasses_cv_score").is_double() ||
-         obj.at("glasses_cv_score").is_int64())) {
-      rawGlasses = obj.at("glasses_cv_score").is_double()
-                       ? obj.at("glasses_cv_score").as_double()
-                       : static_cast<double>(obj.at("glasses_cv_score").as_int64());
+    // Prioridad EMA: fusión CV+ONNX → glasses_score (alias de fusión) → CV
+    if (obj.if_contains("glasses_fusion_score") &&
+        (obj.at("glasses_fusion_score").is_double() ||
+         obj.at("glasses_fusion_score").is_int64())) {
+      rawGlasses = obj.at("glasses_fusion_score").is_double()
+                       ? obj.at("glasses_fusion_score").as_double()
+                       : static_cast<double>(obj.at("glasses_fusion_score").as_int64());
     } else if (obj.if_contains("glasses_score") &&
                (obj.at("glasses_score").is_double() ||
                 obj.at("glasses_score").is_int64())) {
       rawGlasses = obj.at("glasses_score").is_double()
                        ? obj.at("glasses_score").as_double()
                        : static_cast<double>(obj.at("glasses_score").as_int64());
+    } else if (obj.if_contains("glasses_cv_score") &&
+               (obj.at("glasses_cv_score").is_double() ||
+                obj.at("glasses_cv_score").is_int64())) {
+      rawGlasses = obj.at("glasses_cv_score").is_double()
+                       ? obj.at("glasses_cv_score").as_double()
+                       : static_cast<double>(obj.at("glasses_cv_score").as_int64());
     }
     out.glassesCvScore = rawGlasses;
+    if (obj.if_contains("glasses_cv_score") &&
+        (obj.at("glasses_cv_score").is_double() ||
+         obj.at("glasses_cv_score").is_int64())) {
+      out.glassesCvScore = obj.at("glasses_cv_score").is_double()
+                               ? obj.at("glasses_cv_score").as_double()
+                               : static_cast<double>(obj.at("glasses_cv_score").as_int64());
+    }
 
     const bool aiNoGlassesHint =
         obj.if_contains("no_glasses") && obj.at("no_glasses").is_bool();
