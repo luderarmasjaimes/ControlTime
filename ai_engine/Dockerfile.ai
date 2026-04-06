@@ -15,6 +15,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Modelo entrenado incluido en la imagen (entrenar antes del build si faltan archivos).
+# Desactivar comprobación: docker build --build-arg VERIFY_GLASSES_ONNX=0 ...
+ARG VERIFY_GLASSES_ONNX=1
+RUN if [ "$VERIFY_GLASSES_ONNX" = "1" ]; then \
+      test -f /app/models/glasses_classifier.onnx \
+      && test -f /app/models/glasses_classifier_meta.json \
+      || (echo "ERROR: Falta ONNX en ai_engine/models/. Ejecute: python ai_engine/scripts/train_glasses_onnx.py" >&2 && exit 1); \
+    fi
+
+ENV GLASSES_ONNX_PATH=/app/models/glasses_classifier.onnx
+
 EXPOSE 5000
 
 CMD ["python", "eye_analyzer.py"]
