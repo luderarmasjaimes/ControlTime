@@ -51,7 +51,8 @@ const OVAL_MAX_W_FRAC = 0.86
 const OVAL_MAX_H_FRAC = 0.92
 const OVAL_MIN_W_FRAC = 0.4
 const OVAL_MIN_H_FRAC = 0.74
-const FACIAL_STRICT_OVAL_MODE = true
+/** false = óvalo sigue el bbox suavizado del rostro (como C:\\FACIAL); true = óvalo fijo al centro (sin tracking). */
+const FACIAL_STRICT_OVAL_MODE = false
 const FACIAL_STRICT_OVAL_W_PCT = (280 / 640) * 100
 const FACIAL_STRICT_OVAL_H_PCT = (380 / 480) * 100
 const BUILD_STAMP = import.meta.env.VITE_BUILD_STAMP || 'dev'
@@ -97,15 +98,7 @@ function computeBiometricOvalLayout(box, vw, vh) {
     }
     const hr = OVAL_HEIGHT_OVER_WIDTH
     if (!box || vw < 32 || vh < 32) {
-        const baseW = vw * 0.44
-        const { ow, oh } = clampPortraitOvalPx(baseW, baseW * hr, vw, vh, hr)
-        return {
-            leftPct: 50,
-            topPct: 42,
-            wPct: (ow / vw) * 100,
-            hPct: (oh / vh) * 100,
-            transform: 'translate(-50%, -50%)',
-        }
+        return null
     }
     const cx = box.x + box.width / 2
     const cy = box.y + box.height / 2
@@ -382,6 +375,9 @@ const AuthGateway = ({ onAuthenticated }) => {
                 frameMetrics.width,
                 frameMetrics.height
             )
+            if (!layout) {
+                return null
+            }
             return mapOvalLayoutVideoToStage(
                 layout,
                 frameMetrics.width,
@@ -1234,38 +1230,40 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 style={{ display: cameraReady ? 'block' : 'none' }}
                             />
                             
-                            <div
-                                className="absolute pointer-events-none transition-all duration-100 ease-out biometric-oval"
-                                style={{
-                                    borderRadius: '50%',
-                                    left: `${ovalForStage.leftPct}%`,
-                                    top: `${ovalForStage.topPct}%`,
-                                    width: `${ovalForStage.wPct}%`,
-                                    height: `${ovalForStage.hPct}%`,
-                                    transform: ovalForStage.transform,
-                                    zIndex: 15,
-                                    border: faceGuide.qualityReady
-                                        ? '3px solid #22c55e'
-                                        : '3px solid rgba(239, 68, 68, 0.95)',
-                                    boxShadow: 'none',
-                                }}
-                            >
-                                {!faceGuide.qualityReady && (
-                                    <div className="absolute inset-0 flex items-center justify-center">
-                                        <span
-                                            className="text-sky-300 text-[10px] font-semibold px-1"
-                                            style={{
-                                                textShadow:
-                                                    '0 0 6px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.95)',
-                                            }}
-                                        >
-                                            {faceGuide.detected
-                                                ? 'RASTREANDO ROSTRO...'
-                                                : 'BUSCANDO ROSTRO...'}
-                                        </span>
-                                    </div>
-                                )}
-                            </div>
+                            {ovalForStage && (
+                                <div
+                                    className="absolute pointer-events-none transition-all duration-100 ease-out biometric-oval"
+                                    style={{
+                                        borderRadius: '50%',
+                                        left: `${ovalForStage.leftPct}%`,
+                                        top: `${ovalForStage.topPct}%`,
+                                        width: `${ovalForStage.wPct}%`,
+                                        height: `${ovalForStage.hPct}%`,
+                                        transform: ovalForStage.transform,
+                                        zIndex: 15,
+                                        border: faceGuide.qualityReady
+                                            ? '3px solid #22c55e'
+                                            : '3px solid rgba(239, 68, 68, 0.95)',
+                                        boxShadow: 'none',
+                                    }}
+                                >
+                                    {!faceGuide.qualityReady && (
+                                        <div className="absolute inset-0 flex items-center justify-center">
+                                            <span
+                                                className="text-sky-300 text-[10px] font-semibold px-1"
+                                                style={{
+                                                    textShadow:
+                                                        '0 0 6px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.95)',
+                                                }}
+                                            >
+                                                {faceGuide.detected
+                                                    ? 'RASTREANDO ROSTRO...'
+                                                    : 'BUSCANDO ROSTRO...'}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
 
                             {!cameraReady && (
                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 text-white gap-3" style={{ zIndex: 20 }}>

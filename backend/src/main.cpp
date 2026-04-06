@@ -651,6 +651,9 @@ struct AiEngineFrameResult {
   bool bothOpen = true;
   bool mouthClosed = true;
   bool noGlasses = true;
+  /** MediaPipe / analyze_eyes: nariz vs eje interocular (sustituye Haar+simetría para ICAO). */
+  bool hasFaceFrontal = false;
+  bool faceFrontal = true;
   /** Señal CV cruda 0–100 desde ai_engine (sin EMA). */
   double glassesCvScore = 0.0;
   /** Tras EMA en C++ (o cruda si sin sesión). */
@@ -854,6 +857,10 @@ analyzeFrameWithAiEngine(
               ? obj.at("confidence").as_double()
               : static_cast<double>(obj.at("confidence").as_int64());
     }
+    if (obj.if_contains("face_frontal") && obj.at("face_frontal").is_bool()) {
+      out.hasFaceFrontal = true;
+      out.faceFrontal = obj.at("face_frontal").as_bool();
+    }
     return out;
   } catch (...) {
     AiEngineFrameResult fail;
@@ -867,6 +874,21 @@ struct BiometricVerifyEval {
   FaceAnalysis face;
   std::optional<AiEngineFrameResult> aiEval;
 };
+
+static void applyAiFrontalToFaceIssues(FaceAnalysis &face,
+                                       const AiEngineFrameResult &ai) {
+  if (!ai.available || !ai.detected || !ai.hasFaceFrontal) {
+    return;
+  }
+  auto &iss = face.issues;
+  iss.erase(std::remove(iss.begin(), iss.end(), "face_not_frontal"),
+            iss.end());
+  iss.erase(std::remove(iss.begin(), iss.end(), "head_pose_not_straight"),
+            iss.end());
+  if (!ai.faceFrontal) {
+    pushIssueUnique(iss, "face_not_frontal");
+  }
+}
 
 static BiometricVerifyEval runBiometricVerifyForImageBase64(
     const std::string &base64,
@@ -916,8 +938,14 @@ static BiometricVerifyEval runBiometricVerifyForImageBase64(
       }
       eval.ok = eval.ok && eval.aiEval->detected && eval.aiEval->bothOpen &&
                 eval.aiEval->mouthClosed && eval.aiEval->noGlasses;
+      if (eval.aiEval->hasFaceFrontal && eval.aiEval->detected) {
+        eval.ok = eval.ok && eval.aiEval->faceFrontal;
+      }
+      applyAiFrontalToFaceIssues(eval.face, *eval.aiEval);
     }
   }
+  // Fuente única de verdad final: issues consolidados (legacy + IA).
+  eval.ok = eval.face.issues.empty();
   eval.face.ok = eval.ok;
   return eval;
 }
@@ -2945,9 +2973,14 @@ routeRequest(const http::request<http::string_body> &req,
         detected = eval.aiEval->detected;
       }
       bool frontal = true;
-      for (const auto &issue : eval.face.issues) {
-        if (issue == "face_not_frontal" || issue == "head_pose_not_straight") {
-          frontal = false;
+      if (eval.aiEval.has_value() && eval.aiEval->available &&
+          eval.aiEval->detected && eval.aiEval->hasFaceFrontal) {
+        frontal = eval.aiEval->faceFrontal;
+      } else {
+        for (const auto &issue : eval.face.issues) {
+          if (issue == "face_not_frontal" || issue == "head_pose_not_straight") {
+            frontal = false;
+          }
         }
       }
 

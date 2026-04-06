@@ -19,7 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY . /app
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+RUN rm -rf /app/build \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release -j$(nproc) \
     && (find build -type f -executable -exec strip --strip-all {} + || true)
 

@@ -109,6 +109,12 @@ services:
       dockerfile: Dockerfile.ai
     image: informe-ai-engine:latest
     restart: unless-stopped
+    environment:
+      # Pruebas JSONL: con gafas → glasses_probe.jsonl | sin gafas → glasses_probe_sin_gafas.jsonl (activar solo uno)
+      - GLASSES_PROBE_LOG=${GLASSES_PROBE_LOG:-}
+      - GLASSES_PROBE_SIN_GAFAS_LOG=${GLASSES_PROBE_SIN_GAFAS_LOG:-}
+    volumes:
+      - ./ai_engine_probe_logs:/app/logs
     networks:
       - default
     expose:

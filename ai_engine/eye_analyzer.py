@@ -9,9 +9,12 @@ para el backend C++ / métricas.
 import cv2
 import numpy as np
 from collections import deque
+import threading
 
+import json
 import os
 import requests
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -52,6 +55,10 @@ BLINK_SOFT = float(os.environ.get("BLINK_SOFT", "0.38"))
 # Suavizado temporal entre frames HTTP consecutivos (misma sesión de cámara)
 EAR_SMOOTH_WIN = max(1, int(os.environ.get("EAR_SMOOTH_WIN", "5")))
 
+# Máscara HSV de brillo (V alto, S baja). V=242 dejó spec_density=0 en 451/451 frames con gafas mate/AR (glasses_probe).
+GLASSES_SPEC_V_MIN = float(os.environ.get("GLASSES_SPEC_V_MIN", "237"))
+GLASSES_SPEC_S_MAX = float(os.environ.get("GLASSES_SPEC_S_MAX", "40"))
+
 MODEL_PATH = os.environ.get("FACE_LANDMARKER_MODEL", "face_landmarker.task")
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
@@ -88,7 +95,81 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 mouth_closed_prev = True
 glasses_score_hist = deque(maxlen=9)
 glasses_state_prev = False
+# Exclusión mutua + reset por petición: el backend llama /analyze_eyes en HTTP stateless
+# (un JPEG por request). Sin esto, el deque y la histéresis mezclan frames y queda
+# pegado en "lentes" — distinto de C:\\FACIAL (navegador, secuencia un solo flujo).
+_glasses_lock = threading.Lock()
 last_glasses_debug = {}
+
+# Logs de prueba (JSONL, mismo esquema): con gafas vs sin gafas — activar solo uno por sesión de prueba.
+# GLASSES_PROBE_LOG=1 → glasses_probe.jsonl | GLASSES_PROBE_SIN_GAFAS_LOG=1 → glasses_probe_sin_gafas.jsonl
+_glasses_probe_lock = threading.Lock()
+_glasses_probe_seq = 0
+_glasses_probe_sin_gafas_seq = 0
+
+
+def _probe_logs_dir():
+    return os.environ.get("GLASSES_PROBE_DIR", "/app/logs")
+
+
+def _glasses_probe_path():
+    raw = os.environ.get("GLASSES_PROBE_LOG", "").strip()
+    if not raw or raw.lower() in ("0", "false", "no"):
+        return None
+    if raw in ("1", "true", "yes"):
+        return os.path.join(_probe_logs_dir(), "glasses_probe.jsonl")
+    return raw
+
+
+def _glasses_probe_sin_gafas_path():
+    raw = os.environ.get("GLASSES_PROBE_SIN_GAFAS_LOG", "").strip()
+    if not raw or raw.lower() in ("0", "false", "no"):
+        return None
+    if raw in ("1", "true", "yes"):
+        return os.path.join(_probe_logs_dir(), "glasses_probe_sin_gafas.jsonl")
+    return raw
+
+
+def _append_glasses_probe_record(record: dict) -> None:
+    path = _glasses_probe_path()
+    if not path:
+        return
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with _glasses_probe_lock:
+            global _glasses_probe_seq
+            _glasses_probe_seq += 1
+            out = dict(record)
+            out["seq"] = int(_glasses_probe_seq)
+            out["probe_session"] = "con_gafas"
+            line = json.dumps(out, ensure_ascii=False) + "\n"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except OSError as e:
+        print(f"[EYE_AI] glasses_probe log failed: {e}", flush=True)
+
+
+def _append_sin_gafas_probe_record(record: dict) -> None:
+    path = _glasses_probe_sin_gafas_path()
+    if not path:
+        return
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with _glasses_probe_lock:
+            global _glasses_probe_sin_gafas_seq
+            _glasses_probe_sin_gafas_seq += 1
+            out = dict(record)
+            out["seq"] = int(_glasses_probe_sin_gafas_seq)
+            out["probe_session"] = "sin_gafas"
+            line = json.dumps(out, ensure_ascii=False) + "\n"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except OSError as e:
+        print(f"[EYE_AI] glasses_probe_sin_gafas log failed: {e}", flush=True)
 
 left_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
 right_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
@@ -129,6 +210,32 @@ def bs_get(bs, *aliases):
             if kl == a.lower().replace("_", ""):
                 return float(bs[key])
     return 0.0
+
+
+def face_frontal_from_points(points: np.ndarray) -> bool:
+    """
+    Frontalidad desde geometría 2D (nariz vs eje interocular + roll + pitch aprox.).
+    Sustituye la señal OpenCV (aspecto/simetría) cuando el motor IA está activo.
+    """
+    if points.shape[0] < 400:
+        return True
+    nose = points[1]
+    le = np.mean(points[LEFT_EYE], axis=0)
+    re = np.mean(points[RIGHT_EYE], axis=0)
+    mid = (le + re) * 0.5
+    ied = float(np.linalg.norm(le - re))
+    if ied < 12.0:
+        return True
+    horiz = abs(nose[0] - mid[0]) / ied
+    roll = abs(le[1] - re[1]) / ied
+    pitch_ratio = (nose[1] - mid[1]) / ied
+    if horiz > 0.42:
+        return False
+    if roll > 0.38:
+        return False
+    if pitch_ratio < -0.12 or pitch_ratio > 0.95:
+        return False
+    return True
 
 
 def mar_inner_ratio(points):
@@ -181,6 +288,20 @@ def glasses_from_frame(img_bgr, points):
     """
     ROI rectangular que encierra ambos ojos.
     Reflejo especular + montura (black-hat) + puente nasal.
+
+    Solo lock (sin resetear histéresis cada frame): si se pone a False en cada petición,
+    la decisión queda siempre en "sin lentes" y no reacciona al ponerse gafas.
+    El histórico corto sigue siendo global (como C:\\FACIAL); el lock evita condiciones de carrera.
+    """
+    with _glasses_lock:
+        return _glasses_from_frame_impl(img_bgr, points)
+
+
+def _glasses_from_frame_impl(img_bgr, points):
+    """
+    ROI rectangular que encierra ambos ojos.
+    Reflejo especular + montura (black-hat) + puente nasal.
+    Umbrales alineados con C:\\FACIAL\\ai_engine\\eye_analyzer.py.
     """
     h, w = img_bgr.shape[:2]
     le = np.mean(points[LEFT_EYE], axis=0)
@@ -203,7 +324,7 @@ def glasses_from_frame(img_bgr, points):
 
     v = hsv[:, :, 2]
     s = hsv[:, :, 1]
-    spec_mask = ((v > 242) & (s < 38)).astype(np.uint8) * 255
+    spec_mask = ((v > GLASSES_SPEC_V_MIN) & (s < GLASSES_SPEC_S_MAX)).astype(np.uint8) * 255
     spec_mask = cv2.morphologyEx(
         spec_mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     )
@@ -299,26 +420,68 @@ def glasses_from_frame(img_bgr, points):
     rim_term = min(34.0, rim_density * 230.0)
     bridge_term = min(20.0, bridge_dark * 270.0)
     score = float(np.clip(glare_term + blob_term + frame_term + rim_term + bridge_term, 0.0, 100.0))
+    score_terms = float(score)
     if spec_density < 0.0008 and comp_count == 0 and rim_density < 0.075 and bridge_dark < 0.028:
         score = min(score, 32.0)
+    score_after_tight = float(score)
 
     bilateral_glare = left_hits > 0 and right_hits > 0
-    strong_glare = spec_density > 0.0022 and comp_count >= 2 and bilateral_glare
-    medium_glare = spec_density > 0.00135 and comp_count >= 2 and bilateral_glare and horiz_ratio > 0.97
+    # comp_count>=2 era demasiado estricto: muchas gafas dan un solo punto especular por ROI.
+    strong_glare = spec_density > 0.0016 and comp_count >= 1 and bilateral_glare
+    medium_glare = (
+        spec_density > 0.00105
+        and comp_count >= 1
+        and bilateral_glare
+        and horiz_ratio > 0.97
+    )
+    # Misma definición que C:\FACIAL (evita falsos positivos por nariz/cejas sin tocar la sensibilidad a gafas reales).
     frame_presence = rim_density > 0.055 and bridge_dark > 0.018
     weak_frame_presence = rim_density > 0.042 and bridge_dark > 0.014
     if frame_presence:
         score = min(100.0, score + 19.0)
+    score_after_boost = float(score)
+
+    # Sin spec ni blobs: limitar score (nariz/cejas). Si hay señal de montura+puente, un tope algo
+    # mayor permite que la histéresis vea stable>51 con gafas mate (sin reabrir FP de nariz solo).
+    cap_applied = None
+    if spec_density < 0.0008 and comp_count == 0:
+        if frame_presence and rim_density >= 0.10 and bridge_dark >= 0.04:
+            score = min(score, 54.0)
+            cap_applied = 54
+        else:
+            score = min(score, 48.0)
+            cap_applied = 48
+    score_final = float(score)
 
     glasses_score_hist.append(score)
     stable = float(np.median(list(glasses_score_hist)))
 
     global glasses_state_prev
+    prev_glasses_state = glasses_state_prev
+    # Sin brillo medible (gafas mate/AR): montura+puente altos y stable>51 por cap 54; probe real: 451/451 con spec=0.
+    matte_no_spec = spec_density < 0.0008 and comp_count == 0
+    matte_frame_signal = (
+        matte_no_spec
+        and frame_presence
+        and (
+            (rim_density >= 0.10 and bridge_dark >= 0.14)
+            or (rim_density >= 0.055 and bridge_dark >= 0.20)
+        )
+    )
+
     if not glasses_state_prev:
+        # frame_presence + rim/bridge sin spec puede ser nariz: el cap deja stable~48, no pasa stable>51.
+        # Con gafas suele haber spec débil (>=0.00045) o al menos un blob; glare relajado cubre el resto.
+        # matte_frame_signal: entrada sin spec (calibrado con glasses_probe.jsonl con lentes puestos).
         glasses_state_prev = (
             (stable > 50.0 and strong_glare)
             or (stable > 54.0 and medium_glare)
-            or (stable > 44.0 and frame_presence)
+            or (
+                stable > 51.0
+                and frame_presence
+                and (spec_density >= 0.00045 or comp_count >= 1)
+            )
+            or (stable > 51.0 and matte_frame_signal)
         )
     else:
         glasses_state_prev = not (
@@ -326,6 +489,20 @@ def glasses_from_frame(img_bgr, points):
             and (not weak_frame_presence)
             and spec_density < 0.00075
         )
+
+    entry_strong = (stable > 50.0) and strong_glare
+    entry_medium = (stable > 54.0) and medium_glare
+    entry_frame_branch = (
+        (stable > 51.0)
+        and frame_presence
+        and (spec_density >= 0.00045 or comp_count >= 1)
+    )
+    entry_matte = (stable > 51.0) and matte_frame_signal
+    exit_glasses = (
+        stable < 32.0
+        and (not weak_frame_presence)
+        and spec_density < 0.00075
+    )
 
     glasses_likelihood = stable
     if glasses_state_prev:
@@ -341,13 +518,36 @@ def glasses_from_frame(img_bgr, points):
         "right_hits": int(right_hits),
         "horiz_ratio": float(horiz_ratio),
         "horiz_energy": float(horiz_energy),
+        "glare_term": float(glare_term),
+        "blob_term": float(blob_term),
+        "frame_term": float(frame_term),
+        "rim_term": float(rim_term),
+        "bridge_term": float(bridge_term),
+        "score_terms": float(score_terms),
+        "score_after_tight": float(score_after_tight),
+        "score_after_boost": float(score_after_boost),
+        "score_final": float(score_final),
+        "cap_applied": cap_applied,
+        "hist_len": len(glasses_score_hist),
         "strong_glare": bool(strong_glare),
         "medium_glare": bool(medium_glare),
+        "bilateral_glare": bool(bilateral_glare),
         "rim_density": float(rim_density),
         "bridge_dark": float(bridge_dark),
         "frame_presence": bool(frame_presence),
+        "weak_frame_presence": bool(weak_frame_presence),
         "stable_score": float(stable),
         "glasses_likelihood": float(glasses_likelihood),
+        "prev_glasses_state": bool(prev_glasses_state),
+        "glasses_state": bool(glasses_state_prev),
+        "entry_strong": bool(entry_strong),
+        "entry_medium": bool(entry_medium),
+        "entry_frame_branch": bool(entry_frame_branch),
+        "entry_matte": bool(entry_matte),
+        "matte_frame_signal": bool(matte_frame_signal),
+        "glasses_spec_v_min": float(GLASSES_SPEC_V_MIN),
+        "glasses_spec_s_max": float(GLASSES_SPEC_S_MAX),
+        "exit_glasses_condition": bool(exit_glasses),
     }
     return float(glasses_likelihood), bool(glasses_state_prev), debug
 
@@ -404,6 +604,24 @@ def analyze_eyes():
         left_ear_hist.clear()
         right_ear_hist.clear()
         last_glasses_debug = {"reason": "no_face"}
+        if _glasses_probe_sin_gafas_path():
+            _append_sin_gafas_probe_record(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "detected": False,
+                    "reason": "no_face",
+                    "glasses_debug": {"reason": "no_face"},
+                }
+            )
+        if _glasses_probe_path():
+            _append_glasses_probe_record(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "detected": False,
+                    "reason": "no_face",
+                    "glasses_debug": {"reason": "no_face"},
+                }
+            )
         return jsonify(
             {
                 "detected": False,
@@ -414,6 +632,7 @@ def analyze_eyes():
                 "mouth_mar": 0.0,
                 "mouth_closed": False,
                 "no_glasses": True,
+                "face_frontal": False,
                 "glasses_score": 0.0,
                 "glasses_cv_score": 0.0,
                 "confidence": 0.0,
@@ -453,12 +672,31 @@ def analyze_eyes():
     no_glasses = not glasses_hit
     last_glasses_debug = gdebug
 
+    _probe_row = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "detected": True,
+        "image_w": int(w),
+        "image_h": int(h),
+        "inter_eye_px": float(inter_eye),
+        "glasses_hit": bool(glasses_hit),
+        "no_glasses": bool(no_glasses),
+        "glasses_likelihood_out": float(gscore),
+        "glasses_debug": gdebug,
+    }
+    if _glasses_probe_path():
+        _append_glasses_probe_record(dict(_probe_row))
+    if _glasses_probe_sin_gafas_path():
+        _append_sin_gafas_probe_record(dict(_probe_row))
+
+    face_frontal = face_frontal_from_points(points)
+
     conf = estimate_confidence(left_ear, right_ear, blink_l, blink_r, True)
 
     print(
         f"[EYE_AI] IED:{inter_eye:.1f} thr:{ear_t:.3f} EAR L:{left_ear:.3f} R:{right_ear:.3f} "
         f"blink L/R:{blink_l:.2f}/{blink_r:.2f} jaw:{jaw:.3f} MARi:{mar_ratio:.3f} "
-        f"mouth_closed:{mouth_closed_bool} glasses:{glasses_hit}({gscore:.1f}) conf:{conf:.2f}",
+        f"mouth_closed:{mouth_closed_bool} glasses:{glasses_hit}({gscore:.1f}) "
+        f"frontal:{face_frontal} conf:{conf:.2f}",
         flush=True,
     )
 
@@ -475,6 +713,7 @@ def analyze_eyes():
             "mouth_mar": float(jaw),
             "mouth_closed": bool(mouth_closed_bool),
             "no_glasses": bool(no_glasses),
+            "face_frontal": bool(face_frontal),
             "glasses_score": float(gscore),
             "glasses_cv_score": float(gscore),
             "glasses_debug": gdebug,
@@ -491,6 +730,8 @@ def health():
             "engine": "MediaPipe Tasks FaceLandmarker",
             "model": MODEL_PATH,
             "mp_det": MIN_FACE_DET_CONF,
+            "glasses_probe_log": _glasses_probe_path(),
+            "glasses_probe_sin_gafas_log": _glasses_probe_sin_gafas_path(),
         }
     )
 
