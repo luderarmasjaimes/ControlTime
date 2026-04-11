@@ -127,6 +127,23 @@ struct AuthSession {
   std::chrono::system_clock::time_point expiresAt;
 };
 
+/** Token Bearer o query auth_token (mismo criterio que resolveAuthSession). */
+static std::string extractAuthTokenFromRequest(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  if (auto it = query.find("auth_token"); it != query.end()) {
+    return it->second;
+  }
+  if (auto auth = req.find(http::field::authorization); auth != req.end()) {
+    const std::string value(auth->value());
+    static const std::string kBearer = "Bearer ";
+    if (value.rfind(kBearer, 0) == 0) {
+      return value.substr(kBearer.size());
+    }
+  }
+  return {};
+}
+
 std::mutex gAuthSessionMutex;
 std::unordered_map<std::string, AuthSession> gAuthSessions;
 
@@ -2786,6 +2803,21 @@ bool pgExecOk(PGconn *conn, const std::string &sql) {
   return ok;
 }
 
+/** GUC transaccional para triggers → platform_audit_log (mig. 20–21). */
+static bool pgExecAuditContextFromLogin(PGconn *conn, const std::string &username,
+                                        const std::string &companyName,
+                                        const std::string &sessionToken) {
+  if (username.empty()) {
+    return true;
+  }
+  const std::string tok =
+      sessionToken.empty() ? "NULL::TEXT" : pqEscapeLiteral(conn, sessionToken);
+  const std::string sql = "SELECT fn_audit_context_from_login(" +
+                           pqEscapeLiteral(conn, username) + ", " +
+                           pqEscapeLiteral(conn, companyName) + ", " + tok + ")";
+  return pgExecOk(conn, sql);
+}
+
 bool ensureAuthSchemaPg(PGconn *conn) {
   if (gAuthSchemaReady.load(std::memory_order_acquire)) {
     return true;
@@ -3211,7 +3243,9 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, cons
 }
 
 bool createReportPg(const std::string &databaseUrl, const Report &r,
-                    std::string &outNewId, std::string &error) {
+                    std::string &outNewId, std::string &error,
+                    const std::string &auditUsername, const std::string &auditCompany,
+                    const std::string &auditToken) {
   PGconn *conn = PQconnectdb(databaseUrl.c_str());
   if (PQstatus(conn) != CONNECTION_OK) {
     error = PQerrorMessage(conn);
@@ -3223,6 +3257,20 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
     PQfinish(conn);
     return false;
   }
+  const bool useAudit = !auditUsername.empty();
+  if (useAudit) {
+    if (!pgExecOk(conn, "BEGIN")) {
+      error = PQerrorMessage(conn);
+      PQfinish(conn);
+      return false;
+    }
+    if (!pgExecAuditContextFromLogin(conn, auditUsername, auditCompany, auditToken)) {
+      pgExecOk(conn, "ROLLBACK");
+      error = "audit_context_failed";
+      PQfinish(conn);
+      return false;
+    }
+  }
   std::string contentStr = json::serialize(r.contentJson);
   std::string sql = "INSERT INTO reports (project_id, title, content_json, status, company_name) VALUES (" +
       (r.projectId.empty() ? "NULL" : pqEscapeLiteral(conn, r.projectId)) + "," +
@@ -3233,64 +3281,136 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
   PGresult *res = PQexec(conn, sql.c_str());
   if (!res) {
     error = PQerrorMessage(conn);
+    if (useAudit) {
+      pgExecOk(conn, "ROLLBACK");
+    }
     PQfinish(conn);
     return false;
   }
   if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) < 1) {
     error = PQerrorMessage(conn);
     PQclear(res);
+    if (useAudit) {
+      pgExecOk(conn, "ROLLBACK");
+    }
     PQfinish(conn);
     return false;
   }
   outNewId = PQgetvalue(res, 0, 0);
   PQclear(res);
+  if (useAudit) {
+    if (!pgExecOk(conn, "COMMIT")) {
+      error = PQerrorMessage(conn);
+      PQfinish(conn);
+      return false;
+    }
+  }
   PQfinish(conn);
   return true;
 }
 
-bool updateReportPg(const std::string &databaseUrl, const std::string &id, const std::string &company, const Report &r, std::string &error) {
-    PGconn *conn = PQconnectdb(databaseUrl.c_str());
-    if (PQstatus(conn) != CONNECTION_OK) {
-        error = PQerrorMessage(conn);
-        PQfinish(conn);
-        return false;
-    }
-    if (!ensureAuthSchemaPg(conn)) {
-        error = "failed to ensure auth schema";
-        PQfinish(conn);
-        return false;
-    }
-    std::string contentStr = json::serialize(r.contentJson);
-    std::string sql = "UPDATE reports SET title = " + pqEscapeLiteral(conn, r.title) +
-        ", content_json = " + pqEscapeLiteral(conn, contentStr) +
-        ", status = " + pqEscapeLiteral(conn, r.status) +
-        ", company_name = " + pqEscapeLiteral(conn, company) +
-        " WHERE id = " + pqEscapeLiteral(conn, id) + " AND company_name = " + pqEscapeLiteral(conn, company) +
-        " AND deleted_at IS NULL";
-    bool ok = pgExecOk(conn, sql);
-    if (!ok) error = PQerrorMessage(conn);
+bool updateReportPg(const std::string &databaseUrl, const std::string &id,
+                    const std::string &company, const Report &r, std::string &error,
+                    const std::string &auditUsername, const std::string &auditCompany,
+                    const std::string &auditToken) {
+  PGconn *conn = PQconnectdb(databaseUrl.c_str());
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
     PQfinish(conn);
-    return ok;
+    return false;
+  }
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    PQfinish(conn);
+    return false;
+  }
+  const bool useAudit = !auditUsername.empty();
+  if (useAudit) {
+    if (!pgExecOk(conn, "BEGIN")) {
+      error = PQerrorMessage(conn);
+      PQfinish(conn);
+      return false;
+    }
+    if (!pgExecAuditContextFromLogin(conn, auditUsername, auditCompany, auditToken)) {
+      pgExecOk(conn, "ROLLBACK");
+      error = "audit_context_failed";
+      PQfinish(conn);
+      return false;
+    }
+  }
+  std::string contentStr = json::serialize(r.contentJson);
+  std::string sql = "UPDATE reports SET title = " + pqEscapeLiteral(conn, r.title) +
+      ", content_json = " + pqEscapeLiteral(conn, contentStr) +
+      ", status = " + pqEscapeLiteral(conn, r.status) +
+      ", company_name = " + pqEscapeLiteral(conn, company) +
+      " WHERE id = " + pqEscapeLiteral(conn, id) + " AND company_name = " +
+      pqEscapeLiteral(conn, company) + " AND deleted_at IS NULL";
+  bool ok = pgExecOk(conn, sql);
+  if (!ok) {
+    error = PQerrorMessage(conn);
+  }
+  if (useAudit) {
+    if (ok) {
+      if (!pgExecOk(conn, "COMMIT")) {
+        error = PQerrorMessage(conn);
+        ok = false;
+      }
+    } else {
+      pgExecOk(conn, "ROLLBACK");
+    }
+  }
+  PQfinish(conn);
+  return ok;
 }
 
-bool deleteReportPg(const std::string &databaseUrl, const std::string &id, const std::string &company, std::string &error) {
-    PGconn *conn = PQconnectdb(databaseUrl.c_str());
-    if (PQstatus(conn) != CONNECTION_OK) {
-        error = PQerrorMessage(conn);
-        PQfinish(conn);
-        return false;
-    }
-    if (!ensureAuthSchemaPg(conn)) {
-        error = "failed to ensure auth schema";
-        PQfinish(conn);
-        return false;
-    }
-    std::string sql = "UPDATE reports SET deleted_at = NOW() WHERE id = " + pqEscapeLiteral(conn, id) +
-                      " AND company_name = " + pqEscapeLiteral(conn, company) + " AND deleted_at IS NULL";
-    bool ok = pgExecOk(conn, sql);
-    if (!ok) error = PQerrorMessage(conn);
+bool deleteReportPg(const std::string &databaseUrl, const std::string &id,
+                    const std::string &company, std::string &error,
+                    const std::string &auditUsername, const std::string &auditCompany,
+                    const std::string &auditToken) {
+  PGconn *conn = PQconnectdb(databaseUrl.c_str());
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
     PQfinish(conn);
-    return ok;
+    return false;
+  }
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    PQfinish(conn);
+    return false;
+  }
+  const bool useAudit = !auditUsername.empty();
+  if (useAudit) {
+    if (!pgExecOk(conn, "BEGIN")) {
+      error = PQerrorMessage(conn);
+      PQfinish(conn);
+      return false;
+    }
+    if (!pgExecAuditContextFromLogin(conn, auditUsername, auditCompany, auditToken)) {
+      pgExecOk(conn, "ROLLBACK");
+      error = "audit_context_failed";
+      PQfinish(conn);
+      return false;
+    }
+  }
+  std::string sql = "UPDATE reports SET deleted_at = NOW() WHERE id = " +
+                    pqEscapeLiteral(conn, id) + " AND company_name = " +
+                    pqEscapeLiteral(conn, company) + " AND deleted_at IS NULL";
+  bool ok = pgExecOk(conn, sql);
+  if (!ok) {
+    error = PQerrorMessage(conn);
+  }
+  if (useAudit) {
+    if (ok) {
+      if (!pgExecOk(conn, "COMMIT")) {
+        error = PQerrorMessage(conn);
+        ok = false;
+      }
+    } else {
+      pgExecOk(conn, "ROLLBACK");
+    }
+  }
+  PQfinish(conn);
+  return ok;
 }
 
 bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
@@ -3371,6 +3491,9 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
 static bool updateUserAvatarCartoonPg(const std::string &databaseUrl,
                                       const std::string &userId,
                                       const std::string &avatarBase64,
+                                      const std::string &actorUsername,
+                                      const std::string &actorCompany,
+                                      const std::string &sessionToken,
                                       std::string &error) {
   PGconn *conn = PQconnectdb(databaseUrl.c_str());
   if (PQstatus(conn) != CONNECTION_OK) {
@@ -3383,16 +3506,40 @@ static bool updateUserAvatarCartoonPg(const std::string &databaseUrl,
     PQfinish(conn);
     return false;
   }
+  const bool useAudit = !actorUsername.empty();
+  if (useAudit) {
+    if (!pgExecOk(conn, "BEGIN")) {
+      error = PQerrorMessage(conn);
+      PQfinish(conn);
+      return false;
+    }
+    if (!pgExecAuditContextFromLogin(conn, actorUsername, actorCompany, sessionToken)) {
+      pgExecOk(conn, "ROLLBACK");
+      error = "audit_context_failed";
+      PQfinish(conn);
+      return false;
+    }
+  }
   const std::string sql = "UPDATE auth_users SET avatar_cartoon_base64=" +
                           pqEscapeLiteral(conn, avatarBase64) + " WHERE id=" +
                           pqEscapeLiteral(conn, userId);
-  if (!pgExecOk(conn, sql)) {
+  const bool ok = pgExecOk(conn, sql);
+  if (!ok) {
     error = PQerrorMessage(conn);
-    PQfinish(conn);
-    return false;
+  }
+  if (useAudit) {
+    if (ok) {
+      if (!pgExecOk(conn, "COMMIT")) {
+        error = PQerrorMessage(conn);
+        PQfinish(conn);
+        return false;
+      }
+    } else {
+      pgExecOk(conn, "ROLLBACK");
+    }
   }
   PQfinish(conn);
-  return true;
+  return ok;
 }
 #endif
 
@@ -4618,7 +4765,7 @@ routeRequest(const http::request<http::string_body> &req,
             [bgCartoonOpt = std::move(bgCartoonOpt),
              bgRawReg = std::move(bgRawReg), bgPortrait = std::move(bgPortrait),
              userId = created.id, regDni = dni, regUser = username,
-             dataRoot]() mutable {
+             regCompany = company, dataRoot]() mutable {
               const auto t0 = std::chrono::steady_clock::now();
               auto bgLog = [&](const char *tag) {
                 const auto ms =
@@ -4668,7 +4815,8 @@ routeRequest(const http::request<http::string_body> &req,
               if (gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
                 std::string err;
-                if (!updateUserAvatarCartoonPg(gDatabaseUrl, userId, b64, err)) {
+                if (!updateUserAvatarCartoonPg(gDatabaseUrl, userId, b64, regUser,
+                                               regCompany, "", err)) {
                   std::cerr << "[AUTH_REGISTER_CARTOON_BG] pg: " << err
                             << std::endl;
                 } else {
@@ -5411,6 +5559,7 @@ routeRequest(const http::request<http::string_body> &req,
   if (req.method() == http::verb::post && pathOnly == "/api/reports") {
     const auto session = resolveAuthSession(req, query);
     if (!session) return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+    const std::string authTokReports = extractAuthTokenFromRequest(req, query);
 
     try {
         auto val = json::parse(req.body());
@@ -5425,7 +5574,8 @@ routeRequest(const http::request<http::string_body> &req,
 
         std::string error;
         std::string newId;
-        if (createReportPg(gDatabaseUrl, r, newId, error)) {
+        if (createReportPg(gDatabaseUrl, r, newId, error, session->username, session->company,
+                           authTokReports)) {
           return makeJsonResponse(http::status::created,
                                   json::object{{"status", "created"}, {"id", newId}});
         }
@@ -5438,6 +5588,7 @@ routeRequest(const http::request<http::string_body> &req,
   if (req.method() == http::verb::put && pathOnly.starts_with("/api/reports/")) {
     const auto session = resolveAuthSession(req, query);
     if (!session) return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+    const std::string authTokReportPut = extractAuthTokenFromRequest(req, query);
 
     std::string id = pathOnly.substr(std::string("/api/reports/").size());
     try {
@@ -5449,7 +5600,8 @@ routeRequest(const http::request<http::string_body> &req,
         r.status = obj.contains("status") ? json::value_to<std::string>(obj.at("status")) : "draft";
 
         std::string error;
-        if (updateReportPg(gDatabaseUrl, id, session->company, r, error)) {
+        if (updateReportPg(gDatabaseUrl, id, session->company, r, error, session->username,
+                           session->company, authTokReportPut)) {
             return makeJsonResponse(http::status::ok, json::object{{"status", "updated"}});
         }
         return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
@@ -5461,10 +5613,12 @@ routeRequest(const http::request<http::string_body> &req,
   if (req.method() == http::verb::delete_ && pathOnly.starts_with("/api/reports/")) {
     const auto session = resolveAuthSession(req, query);
     if (!session) return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+    const std::string authTokReportDel = extractAuthTokenFromRequest(req, query);
 
     std::string id = pathOnly.substr(std::string("/api/reports/").size());
     std::string error;
-    if (deleteReportPg(gDatabaseUrl, id, session->company, error)) {
+    if (deleteReportPg(gDatabaseUrl, id, session->company, error, session->username, session->company,
+                       authTokReportDel)) {
         return makeJsonResponse(http::status::ok, json::object{{"status", "deleted"}});
     }
     return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});

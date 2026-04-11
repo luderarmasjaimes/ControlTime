@@ -456,7 +456,7 @@ FE --> U : gráficos / tablas
 
 ---
 
-## 7. Extensiones de plataforma (migraciones `16_*` … `20_*`)
+## 7. Extensiones de plataforma (migraciones `16_*` … `21_*`)
 
 Scripts nuevos en el repositorio:
 
@@ -467,6 +467,7 @@ Scripts nuevos en el repositorio:
 | `db_scripts/18_tb_sensor_model_notify_etl_triggers.sql` | Perfil TB-like (`sensor_profile`), atributos con scope (`sensor_attribute_kv`), credenciales de ingesta (`sensor_ingest_credential`), columnas de identificación en `sensors`, `alarm_category` / `alarm_type` en `alerts`, notificaciones org (`org_notify_*`, `org_notification_outbox`), sincronización externa (`etl_sync_peer`, `etl_sync_state`, `etl_sync_run`), cola `sensor_process_alarm_queue`, triggers en `alerts` / `auth_audit_logs` / cola de proceso (ver §10). |
 | `db_scripts/19_report_technical_mining_enterprise.sql` | Informe técnico minero: columnas extra en `reports` (clasificación, `risk_policy`, `ai_assist_prefs`, visibilidad), `report_document_settings` (cabeceras, carátula, marcas de agua), `report_content_revision`, `report_embedded_asset`, grupos `report_share_group` / `report_acl`, flujo `report_submission` + destinatarios, `report_export_job` (docx/pdf/pptx/mp4), `report_ai_run`, `report_sensitive_action_log` (biométrico + `authz_case`), permisos `reports.*` adicionales. |
 | `db_scripts/20_audit_traceability_enforcement.sql` | `fn_audit_context_set` / `fn_audit_context_clear`, índices `(entity_type, entity_id)` y `session_id` en `platform_audit_log`, triggers: `reports` → auditoría, `auth_users` (campos sensibles) → auditoría, `formula_sessions` INSERT → auditoría. |
+| `db_scripts/21_audit_context_from_login.sql` | `fn_audit_context_from_login(username, company, session)` → resuelve `user_id` UUID y `tenant_id` y llama `fn_audit_context_set`; usada desde el backend C++ en transacciones de informes y avatar. |
 | `formula_engine/02_multitenant_scope_registry.sql` | En **formula_db**: `formula_diagram_scope` para alinear `diagram_id` con `sensors_tenant_id` / `empresa_id` / `mina_id` **sin FK entre BDs**. |
 
 **Alineación con ideas de ThingsBoard** (`C:\thingsboard-master`, p. ej. `schema-entities.sql`): tenant explícito, entidades con `tenant_id`, `alarm` + comentarios, `audit_log` con acción y payload serializado. Aquí se adopta el **espíritu** del modelo (multitenant, trazabilidad, enrutamiento de alarmas) en tipos PostgreSQL modernos (`JSONB`, `TIMESTAMPTZ`, partición vía Timescale donde aplique), sin copiar el esquema TB literal (usa `bigint` epoch y varchar masivos pensados para su capa Java).

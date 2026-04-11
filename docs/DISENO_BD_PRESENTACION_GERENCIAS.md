@@ -66,6 +66,7 @@ En resumen: la trazabilidad de **personas, documentos y configuración crítica*
 | **18** | `18_tb_sensor_model_notify_etl_triggers.sql` | Perfil sensor, notificaciones org, sync externo, triggers alarmas |
 | **19** | `19_report_technical_mining_enterprise.sql` | Informe enterprise: ACL, revisiones, export, IA, **report_sensitive_action_log** |
 | **20** | `20_audit_traceability_enforcement.sql` | **fn_audit_context_set**, índices, triggers → **platform_audit_log** |
+| **21** | `21_audit_context_from_login.sql` | **fn_audit_context_from_login** (UUID + tenant desde username/empresa) para API sin exponer formato de id interno |
 
 **formula_db:** `formula_engine/init.sql` + `02_multitenant_scope_registry.sql` (y migraciones que aplique el `formula_engine` en C++).
 
@@ -76,6 +77,7 @@ En resumen: la trazabilidad de **personas, documentos y configuración crítica*
 | Autenticación | `auth_audit_logs` | Insert por backend (login/register/biometría) |
 | Plataforma (API, acciones genéricas) | `platform_audit_log` + `fn_platform_audit_insert` | Insert por aplicación |
 | Contexto por request | `fn_audit_context_set` / `fn_audit_context_clear` | GUC transaccional (`app.audit_*`) |
+| Resolución usuario/tenant desde sesión | `fn_audit_context_from_login(username, company, session)` (migración **21**) | El **backend C++** la invoca dentro de `BEGIN` antes de modificar `reports` o `auth_users` (avatar), usando el token Bearer/query |
 | Informes | Trigger `trg_audit_reports_row` → `platform_audit_log` | Automático BD |
 | Usuarios (campos sensibles) | Trigger `trg_audit_auth_users_sensitive` | Automático BD |
 | Análisis FORMULA | Trigger `trg_audit_formula_sessions_insert` | Automático BD |
