@@ -30,6 +30,13 @@ export function createSession(user, loginType = 'user') {
         token: typeof user.token === 'string' ? user.token : '',
         loggedAt: new Date().toISOString(),
     }
+    const avRaw = user.avatar_cartoon_base64 ?? user.avatarCartoonBase64
+    if (typeof avRaw === 'string') {
+        const av = avRaw.replace(/\s/g, '').trim()
+        if (av.length > 0) {
+            session.avatarCartoonBase64 = av
+        }
+    }
     localStorage.setItem(SESSION_KEY, JSON.stringify(session))
     return session
 }

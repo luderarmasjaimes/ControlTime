@@ -16,6 +16,7 @@
 #define HAS_LIBPQ 0
 #endif
 
+#include "onnx_cartoon.hpp"
 #include "vision_pipeline.hpp"
 #include "websocket_session.hpp"
 #include <opencv2/opencv.hpp>
@@ -28,6 +29,7 @@
 #include <cctype>
 #include <cmath>
 #include <chrono>
+#include <future>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -88,6 +90,8 @@ struct AuthUser {
   std::string phone;
   std::string mobile;
   std::string email;
+  /** PNG/JPEG en base64 (sin prefijo data:), generado en registro desde recorte óvalo. */
+  std::string avatarCartoonBase64;
 };
 
 struct Project {
@@ -180,8 +184,51 @@ static bool applyIcaoGlassesEma(GlassesEmaState &s, double rawLikelihood,
 }
 
 const std::vector<std::string> kMiningCompanies = {
-    "Minera Raura", "Compania Minera Volcan", "Minera Antamina",
-    "Minera Cerro Verde"};
+    "Activos Mineros",
+    "Alpayana",
+    "Anglo American Quellaveco",
+    "Ares",
+    "Bear Creek Mining",
+    "Buenaventura",
+    "Catalina Huanca",
+    "Chinalco Peru",
+    "Compania Minera Antamina",
+    "Compania Minera Ares",
+    "Compania Minera Poderosa",
+    "Compania Minera Raura",
+    "Compania Minera San Ignacio de Morococha",
+    "Compania Minera Volcan",
+    "Consorcio Minero Horizonte",
+    "DOE Run Peru",
+    "Dynacor",
+    "El Brocal",
+    "Gold Fields La Cima",
+    "Hochschild Mining Peru",
+    "Hudbay Peru",
+    "Jinzhao Mining Peru",
+    "Las Bambas",
+    "Marcobre",
+    "Minsur",
+    "Minera Antamina",
+    "Minera Antapaccay",
+    "Minera Bateas",
+    "Minera Boroo Misquichilca",
+    "Minera Caraveli",
+    "Minera Cerro Verde",
+    "Minera Condestable",
+    "Minera Corona",
+    "Minera IRL",
+    "Minera Los Quenuales",
+    "Minera Poderosa",
+    "Minera Raura",
+    "Nexa Resources Peru",
+    "Pan American Silver Peru",
+    "Sierra Metals Yauricocha",
+    "Shougang Hierro Peru",
+    "Sociedad Minera El Brocal",
+    "Southern Peru Copper Corporation",
+    "Summa Gold",
+    "Yanacocha"};
 
 std::string getenvOr(const char *key, const std::string &fallback);
 std::string makeId();
@@ -202,12 +249,25 @@ std::string gBiometricDnnLabelsCsv;
 float gBiometricDnnThreshold = 0.72f;
 std::string gAiEngineUrl;
 int gAiEngineTimeoutMs = 500;
+/** Timeout dedicado para /cartoon_avatar (OpenCV puede tardar más que analyze/embedding). */
+int gAiEngineCartoonTimeoutMs = 8000;
 std::size_t gAiEngineMaxImageBytes = 450000;
+/** Modelo ONNX local (AnimeGANv2, etc.); si existe y el binario enlazó ORT, prevalece sobre ai_engine. */
+std::string gCartoonOnnxModelPath;
+/** Dimensión del vector InsightFace (buffalo_l); login/registro ONNX embedding. */
+static constexpr std::size_t kFaceEmbeddingVectorDim = 512;
+double gFaceEmbeddingCosineThreshold = 0.45;
+/** Umbral coseno plantilla legacy (24×24); no debe mezclarse con el de embedding. */
+double gFaceLegacyCosineThreshold = 0.82;
 float gBiometricIcaoEyeConfidenceMin = 70.0f;
 float gBiometricIcaoIlluminationMin = 40.0f;
 bool gImageOptimizerEnabled = false;
 int gBiometricMaxPixels = 1280 * 720;
 int gSessionTtlMinutes = 480;
+std::atomic<bool> gAuthSchemaReady{false};
+std::mutex gAuthSchemaInitMutex;
+std::atomic<bool> gFormulaSchemaReady{false};
+std::mutex gFormulaSchemaInitMutex;
 
 struct FaceAnalysis {
   bool ok = false;
@@ -584,14 +644,30 @@ std::string encodeBase64(const std::vector<unsigned char> &input) {
   return out;
 }
 
+static std::string stripDataUrlBase64(const std::string &in) {
+  const auto pos = in.find("base64,");
+  if (pos != std::string::npos) {
+    return in.substr(pos + 7);
+  }
+  return in;
+}
+
 struct BiometricCaptureRuntimeState {
   int state = 1; // 1=starting, 4=liveness, 7=captured
   int captureCount = 0;
+  /** Frames ICAO inválidos seguidos antes de resetear muestras (evita 0/3 por un solo fallo). */
+  int captureInvalidStreak = 0;
   bool eyesOpen = false;
   bool mouthClosed = false;
   bool faceStraight = false;
   bool noGlasses = false;
   bool detected = false;
+  bool hasFaceOval = false;
+  double faceOvalCx = 0.0;
+  double faceOvalCy = 0.0;
+  double faceOvalW = 0.0;
+  double faceOvalH = 0.0;
+  double faceOvalAngleDeg = 0.0;
   double livenessScore = 0.0;
   std::string stateName = "Estado actual: INICIANDO";
   std::chrono::steady_clock::time_point updatedAt = std::chrono::steady_clock::now();
@@ -664,6 +740,10 @@ struct AiEngineFrameResult {
   /** ai_engine eye_analyzer: confidence 0..1 (MediaPipe EAR + blink). */
   bool hasAiEyeConfidence = false;
   double aiEyeConfidence01 = 0.0;
+  bool hasFaceOvalPoints = false;
+  std::vector<cv::Point2f> faceOvalPoints;
+  bool hasFaceOvalEllipse = false;
+  cv::RotatedRect faceOvalEllipse;
   std::string error;
 };
 
@@ -779,6 +859,14 @@ analyzeFrameWithAiEngine(
       return fail;
     }
     const auto &obj = payload.as_object();
+    const bool hasOvalField =
+        obj.if_contains("face_oval_points") && obj.at("face_oval_points").is_array();
+    if (hasOvalField) {
+      std::cerr << "[AI_OVAL] face_oval_points raw size="
+                << obj.at("face_oval_points").as_array().size() << std::endl;
+    } else {
+      std::cerr << "[AI_OVAL] face_oval_points missing in ai payload" << std::endl;
+    }
     AiEngineFrameResult out;
     out.available = true;
     out.detected = obj.if_contains("detected") && obj.at("detected").is_bool()
@@ -875,12 +963,311 @@ analyzeFrameWithAiEngine(
       out.hasFaceFrontal = true;
       out.faceFrontal = obj.at("face_frontal").as_bool();
     }
+    if (obj.if_contains("face_oval_points") && obj.at("face_oval_points").is_array()) {
+      const auto &arr = obj.at("face_oval_points").as_array();
+      out.faceOvalPoints.reserve(arr.size());
+      for (const auto &v : arr) {
+        if (!v.is_array()) {
+          continue;
+        }
+        const auto &pt = v.as_array();
+        if (pt.size() < 2) {
+          continue;
+        }
+        if (!((pt[0].is_double() || pt[0].is_int64()) &&
+              (pt[1].is_double() || pt[1].is_int64()))) {
+          continue;
+        }
+        const float x = static_cast<float>(
+            pt[0].is_double() ? pt[0].as_double() : static_cast<double>(pt[0].as_int64()));
+        const float y = static_cast<float>(
+            pt[1].is_double() ? pt[1].as_double() : static_cast<double>(pt[1].as_int64()));
+        out.faceOvalPoints.emplace_back(x, y);
+      }
+      out.hasFaceOvalPoints = out.faceOvalPoints.size() >= 5;
+      std::cerr << "[AI_OVAL] parsed points=" << out.faceOvalPoints.size() << std::endl;
+      if (!out.faceOvalPoints.empty()) {
+        float minX = out.faceOvalPoints[0].x;
+        float maxX = out.faceOvalPoints[0].x;
+        float minY = out.faceOvalPoints[0].y;
+        float maxY = out.faceOvalPoints[0].y;
+        for (const auto &p : out.faceOvalPoints) {
+          minX = std::min(minX, p.x);
+          maxX = std::max(maxX, p.x);
+          minY = std::min(minY, p.y);
+          maxY = std::max(maxY, p.y);
+        }
+        std::cerr << "[AI_OVAL] pts bbox min=(" << minX << "," << minY
+                  << ") max=(" << maxX << "," << maxY << ")" << std::endl;
+      }
+      if (out.hasFaceOvalPoints) {
+        try {
+          out.faceOvalEllipse = cv::fitEllipse(out.faceOvalPoints);
+          out.hasFaceOvalEllipse = true;
+          std::cerr << "[AI_OVAL] fitEllipse ok" << std::endl;
+          std::cerr << "[AI_OVAL] ellipse cx=" << out.faceOvalEllipse.center.x
+                    << " cy=" << out.faceOvalEllipse.center.y
+                    << " w=" << out.faceOvalEllipse.size.width
+                    << " h=" << out.faceOvalEllipse.size.height
+                    << " ang=" << out.faceOvalEllipse.angle << std::endl;
+        } catch (...) {
+          out.hasFaceOvalEllipse = false;
+          std::cerr << "[AI_OVAL] fitEllipse failed" << std::endl;
+        }
+      }
+    }
     return out;
   } catch (...) {
     AiEngineFrameResult fail;
     fail.error = "ai_engine_parse_failed";
     return fail;
   }
+}
+
+struct AiEngineEmbeddingResult {
+  std::vector<double> embedding;
+  std::string error;
+  bool ok() const { return embedding.size() == kFaceEmbeddingVectorDim && error.empty(); }
+};
+
+static AiEngineEmbeddingResult
+fetchFaceEmbeddingFromAiEngine(const std::vector<unsigned char> &imageBytes) {
+  AiEngineEmbeddingResult out;
+  if (gAiEngineUrl.empty()) {
+    out.error = "ai_engine_disabled";
+    return out;
+  }
+  if (imageBytes.empty() || imageBytes.size() > gAiEngineMaxImageBytes) {
+    out.error = "ai_engine_skipped_size_limit";
+    return out;
+  }
+
+  ParsedHttpEndpoint endpoint;
+  if (!parseHttpEndpoint(gAiEngineUrl + "/face_embedding", endpoint)) {
+    out.error = "ai_engine_invalid_url";
+    return out;
+  }
+
+  std::string boundary = "----InformeBoundary" + makeId();
+  std::string body;
+  body.reserve(imageBytes.size() + 256);
+  body += "--" + boundary + "\r\n";
+  body +=
+      "Content-Disposition: form-data; name=\"image\"; filename=\"frame.jpg\"\r\n";
+  body += "Content-Type: image/jpeg\r\n\r\n";
+  body.append(reinterpret_cast<const char *>(imageBytes.data()),
+              static_cast<std::streamsize>(imageBytes.size()));
+  body += "\r\n--" + boundary + "--\r\n";
+
+  beast::error_code ec;
+  asio::io_context ioc;
+  asio::ip::tcp::resolver resolver{ioc};
+  beast::tcp_stream stream{ioc};
+  stream.expires_after(std::chrono::milliseconds(gAiEngineTimeoutMs));
+
+  auto const results = resolver.resolve(endpoint.host, endpoint.port, ec);
+  if (ec) {
+    out.error = "ai_engine_resolve_failed";
+    return out;
+  }
+
+  stream.connect(results, ec);
+  if (ec) {
+    out.error = "ai_engine_connect_failed";
+    return out;
+  }
+
+  http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
+  req.set(http::field::host, endpoint.host);
+  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+  req.set(http::field::content_type,
+          "multipart/form-data; boundary=" + boundary);
+  req.body() = std::move(body);
+  req.prepare_payload();
+
+  http::write(stream, req, ec);
+  if (ec) {
+    out.error = "ai_engine_write_failed";
+    return out;
+  }
+
+  beast::flat_buffer buffer;
+  http::response<http::string_body> res;
+  http::read(stream, buffer, res, ec);
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+
+  if (ec) {
+    out.error = "ai_engine_read_failed";
+    return out;
+  }
+  if (res.result() != http::status::ok) {
+    out.error = "ai_engine_http_not_ok";
+    return out;
+  }
+
+  try {
+    auto payload = json::parse(res.body());
+    if (!payload.is_object()) {
+      out.error = "ai_engine_invalid_json";
+      return out;
+    }
+    const auto &obj = payload.as_object();
+    if (obj.if_contains("ok") && obj.at("ok").is_bool() && !obj.at("ok").as_bool()) {
+      if (obj.if_contains("error") && obj.at("error").is_string()) {
+        out.error = json::value_to<std::string>(obj.at("error"));
+      } else {
+        out.error = "face_embedding_failed";
+      }
+      return out;
+    }
+    if (!obj.if_contains("embedding") || !obj.at("embedding").is_array()) {
+      out.error = "ai_engine_no_embedding";
+      return out;
+    }
+    for (const auto &v : obj.at("embedding").as_array()) {
+      if (v.is_double()) {
+        out.embedding.push_back(v.as_double());
+      } else if (v.is_int64()) {
+        out.embedding.push_back(static_cast<double>(v.as_int64()));
+      }
+    }
+    if (out.embedding.size() != kFaceEmbeddingVectorDim) {
+      out.embedding.clear();
+      out.error = "embedding_dim_mismatch";
+      return out;
+    }
+    return out;
+  } catch (...) {
+    out.error = "ai_engine_parse_failed";
+    return out;
+  }
+}
+
+struct AiEngineCartoonResult {
+  std::string imageBase64;
+  std::string error;
+  bool ok() const { return !imageBase64.empty() && error.empty(); }
+};
+
+static AiEngineCartoonResult
+fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
+  AiEngineCartoonResult out;
+  if (gAiEngineUrl.empty()) {
+    out.error = "ai_engine_disabled";
+    return out;
+  }
+  if (imageBytes.empty() || imageBytes.size() > gAiEngineMaxImageBytes) {
+    out.error = "ai_engine_skipped_size_limit";
+    return out;
+  }
+
+  ParsedHttpEndpoint endpoint;
+  if (!parseHttpEndpoint(gAiEngineUrl + "/cartoon_avatar", endpoint)) {
+    out.error = "ai_engine_invalid_url";
+    return out;
+  }
+
+  std::string boundary = "----InformeBoundary" + makeId();
+  std::string body;
+  body.reserve(imageBytes.size() + 256);
+  body += "--" + boundary + "\r\n";
+  body +=
+      "Content-Disposition: form-data; name=\"image\"; filename=\"portrait.jpg\"\r\n";
+  body += "Content-Type: image/jpeg\r\n\r\n";
+  body.append(reinterpret_cast<const char *>(imageBytes.data()),
+              static_cast<std::streamsize>(imageBytes.size()));
+  body += "\r\n--" + boundary + "--\r\n";
+
+  beast::error_code ec;
+  asio::io_context ioc;
+  asio::ip::tcp::resolver resolver{ioc};
+  beast::tcp_stream stream{ioc};
+  stream.expires_after(
+      std::chrono::milliseconds(gAiEngineCartoonTimeoutMs));
+
+  auto const results = resolver.resolve(endpoint.host, endpoint.port, ec);
+  if (ec) {
+    out.error = "ai_engine_resolve_failed";
+    return out;
+  }
+
+  stream.connect(results, ec);
+  if (ec) {
+    out.error = "ai_engine_connect_failed";
+    return out;
+  }
+
+  http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
+  req.set(http::field::host, endpoint.host);
+  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+  req.set(http::field::content_type,
+          "multipart/form-data; boundary=" + boundary);
+  req.body() = std::move(body);
+  req.prepare_payload();
+
+  http::write(stream, req, ec);
+  if (ec) {
+    out.error = "ai_engine_write_failed";
+    return out;
+  }
+
+  beast::flat_buffer buffer;
+  http::response<http::string_body> res;
+  http::read(stream, buffer, res, ec);
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+
+  if (ec) {
+    out.error = "ai_engine_read_failed";
+    return out;
+  }
+  if (res.result() != http::status::ok) {
+    out.error = "ai_engine_http_not_ok";
+    return out;
+  }
+
+  try {
+    auto payload = json::parse(res.body());
+    if (!payload.is_object()) {
+      out.error = "ai_engine_invalid_json";
+      return out;
+    }
+    const auto &obj = payload.as_object();
+    if (obj.if_contains("ok") && obj.at("ok").is_bool() && !obj.at("ok").as_bool()) {
+      if (obj.if_contains("error") && obj.at("error").is_string()) {
+        out.error = json::value_to<std::string>(obj.at("error"));
+      } else {
+        out.error = "cartoon_avatar_failed";
+      }
+      return out;
+    }
+    if (!obj.if_contains("image_base64") ||
+        !obj.at("image_base64").is_string()) {
+      out.error = "ai_engine_no_image";
+      return out;
+    }
+    out.imageBase64 = json::value_to<std::string>(obj.at("image_base64"));
+    return out;
+  } catch (...) {
+    out.error = "ai_engine_parse_failed";
+    return out;
+  }
+}
+
+static AiEngineCartoonResult
+fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes) {
+  AiEngineCartoonResult out;
+  if (informeCartoonOnnxRuntimeLinked() && !gCartoonOnnxModelPath.empty() &&
+      fs::exists(gCartoonOnnxModelPath)) {
+    std::string b64;
+    std::string err;
+    if (informeCartoonOnnxFromImageBytes(imageBytes, gCartoonOnnxModelPath, b64,
+                                         err) &&
+        !b64.empty()) {
+      out.imageBase64 = std::move(b64);
+      return out;
+    }
+  }
+  return fetchCartoonAvatarFromAiEngine(imageBytes);
 }
 
 struct BiometricVerifyEval {
@@ -902,6 +1289,164 @@ static void applyAiFrontalToFaceIssues(FaceAnalysis &face,
   if (!ai.faceFrontal) {
     pushIssueUnique(iss, "face_not_frontal");
   }
+}
+
+/**
+ * El pipeline legacy (Haar + heurísticas OpenCV) suele dejar issues aunque MediaPipe/ai_engine
+ * ya haya validado ojos/boca/lentes/frontal. Eso dejaba eval.ok=false y el contador 0/3 fijo
+ * mientras la UI mostraba ICAO OK (estado tomado de la IA).
+ */
+static void stripLegacyIssuesWhenAiIcaoPasses(FaceAnalysis &face,
+                                              const AiEngineFrameResult &ai) {
+  if (!ai.available || !ai.detected || !ai.bothOpen || !ai.mouthClosed ||
+      !ai.noGlasses) {
+    return;
+  }
+  if (ai.hasFaceFrontal && !ai.faceFrontal) {
+    return;
+  }
+  static const char *kLegacyStripCore[] = {
+      "face_not_detected",
+      "face_detector_unavailable",
+      "eyes_not_open_or_not_visible",
+      "mouth_not_closed",
+      "suspected_glasses",
+      "image_not_sharp",
+      "lighting_out_of_range",
+      "low_dynamic_range",
+      "face_too_small",
+      "face_off_center",
+      "suspected_hat",
+      "suspected_face_accessory",
+      "suspected_heavy_makeup",
+      "dnn_inference_failed",
+  };
+  static const char *kLegacyStripFrontal[] = {
+      "face_not_frontal",
+      "head_pose_not_straight",
+  };
+  auto &iss = face.issues;
+  for (const char *tag : kLegacyStripCore) {
+    const std::string s(tag);
+    iss.erase(std::remove(iss.begin(), iss.end(), s), iss.end());
+  }
+  if (ai.hasFaceFrontal && ai.faceFrontal) {
+    for (const char *tag : kLegacyStripFrontal) {
+      const std::string s(tag);
+      iss.erase(std::remove(iss.begin(), iss.end(), s), iss.end());
+    }
+  }
+}
+
+/**
+ * Login con face_image_base64 usa analyzeFaceImage("verify"), que falla si el Haar de OpenCV
+ * no está cargado o no ve el rostro (típico en contenedores), aunque el ai_engine sí valide
+ * ICAO. Aquí se recupera: primero con IA (misma lógica que captura), si no con plantilla de
+ * marco completo cuando los únicos issues son detector Haar.
+ */
+static bool trySalvageFaceLoginQuality(FaceAnalysis &face,
+                                       const std::string &base64Image) {
+  if (face.ok || face.faceTemplate.empty()) {
+    return false;
+  }
+  if (!gAiEngineUrl.empty()) {
+    std::vector<unsigned char> raw;
+    if (decodeBase64(base64Image, raw) && !raw.empty()) {
+      auto ai = analyzeFrameWithAiEngine(raw, std::nullopt);
+      if (ai.has_value() && ai->available && ai->error.empty() &&
+          ai->detected && ai->bothOpen && ai->mouthClosed && ai->noGlasses &&
+          (!ai->hasFaceFrontal || ai->faceFrontal)) {
+        if (ai->hasAiEyeConfidence && ai->detected && ai->bothOpen) {
+          const float eyeConfPct = static_cast<float>(
+              std::clamp(ai->aiEyeConfidence01 * 100.0, 0.0, 100.0));
+          if (eyeConfPct < gBiometricIcaoEyeConfidenceMin) {
+            return false;
+          }
+        }
+        face.ok = true;
+        face.issues.clear();
+        face.provider = "mediapipe_ia";
+        return true;
+      }
+    }
+  }
+  for (const auto &s : face.issues) {
+    if (s != "face_not_detected" && s != "face_detector_unavailable") {
+      return false;
+    }
+  }
+  if (face.issues.empty()) {
+    return false;
+  }
+  face.ok = true;
+  face.issues.clear();
+  face.provider =
+      face.provider == "legacy" ? "legacy_fullframe" : face.provider;
+  return true;
+}
+
+/**
+ * Construye el vector de comparación para login: embedding ONNX (512) si el registro lo usa,
+ * si no plantilla legacy desde imagen.
+ */
+static bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
+                                const std::optional<std::vector<unsigned char>> &rawImageBytes,
+                                const std::optional<std::string> &base64ForLegacy,
+                                const std::vector<double> &storedTemplate,
+                                std::vector<double> &outProbe, std::string &outProvider,
+                                double &outThreshold, double legacyThreshold,
+                                double embeddingThreshold, std::string &error) {
+  const bool storedIsEmbedding =
+      (storedTemplate.size() == kFaceEmbeddingVectorDim);
+  outThreshold = storedIsEmbedding ? embeddingThreshold : legacyThreshold;
+
+  if (!clientProbeTemplate.empty()) {
+    if (clientProbeTemplate.size() != storedTemplate.size()) {
+      error =
+          "La plantilla enviada no coincide con el tipo biométrico registrado "
+          "para este usuario (embedding vs clásico).";
+      return false;
+    }
+    outProbe = clientProbeTemplate;
+    outProvider = storedIsEmbedding ? "client_embedding" : "client_legacy";
+    return true;
+  }
+
+  if (!rawImageBytes.has_value() || rawImageBytes->empty()) {
+    error = "No se recibió imagen para validar el rostro.";
+    return false;
+  }
+
+  if (storedIsEmbedding) {
+    auto em = fetchFaceEmbeddingFromAiEngine(*rawImageBytes);
+    if (!em.ok()) {
+      error =
+          "No se pudo extraer el embedding facial de alta seguridad "
+          "(InsightFace/ONNX). Compruebe cámara, iluminación y que el "
+          "servicio ai_engine esté actualizado. Código: " +
+          (em.error.empty() ? "unknown" : em.error);
+      return false;
+    }
+    outProbe = std::move(em.embedding);
+    outProvider = "insightface_onnx";
+    return true;
+  }
+
+  if (!base64ForLegacy.has_value() || base64ForLegacy->empty()) {
+    error = "Fallo interno al preparar la imagen para biometría clásica.";
+    return false;
+  }
+  FaceAnalysis face = analyzeFaceImage(*base64ForLegacy, "verify");
+  trySalvageFaceLoginQuality(face, *base64ForLegacy);
+  if (!face.ok || face.faceTemplate.empty()) {
+    error =
+        "No se pudo validar la calidad de la imagen facial (modo clásico). "
+        "Intente de nuevo.";
+    return false;
+  }
+  outProbe = std::move(face.faceTemplate);
+  outProvider = face.provider;
+  return true;
 }
 
 static BiometricVerifyEval runBiometricVerifyForImageBase64(
@@ -957,6 +1502,9 @@ static BiometricVerifyEval runBiometricVerifyForImageBase64(
       }
       applyAiFrontalToFaceIssues(eval.face, *eval.aiEval);
     }
+  }
+  if (eval.aiEval.has_value() && eval.aiEval->available && eval.aiEval->error.empty()) {
+    stripLegacyIssuesWhenAiIcaoPasses(eval.face, *eval.aiEval);
   }
   // Fuente única de verdad final: issues consolidados (legacy + IA).
   eval.ok = eval.face.issues.empty();
@@ -1262,8 +1810,24 @@ void applyDnnAccessoryChecks(const cv::Mat &faceBgr,
 }
 
 cv::Mat normalizeFaceGray(const cv::Mat &faceGray) {
+  cv::Mat fg;
+  if (faceGray.empty()) {
+    return faceGray;
+  }
+  if (faceGray.type() == CV_8UC1) {
+    fg = faceGray;
+  } else if (faceGray.type() == CV_8UC3) {
+    cv::cvtColor(faceGray, fg, cv::COLOR_BGR2GRAY);
+  } else if (faceGray.channels() == 1) {
+    faceGray.convertTo(fg, CV_8U);
+  } else {
+    cv::cvtColor(faceGray, fg, cv::COLOR_BGR2GRAY);
+    if (fg.type() != CV_8UC1) {
+      fg.convertTo(fg, CV_8U);
+    }
+  }
   cv::Mat denoised;
-  cv::bilateralFilter(faceGray, denoised, 5, 25.0, 25.0);
+  cv::bilateralFilter(fg, denoised, 5, 25.0, 25.0);
 
   auto clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
   cv::Mat equalized;
@@ -1743,16 +2307,34 @@ json::object authUserToJson(const AuthUser &u) {
     tpl.push_back(v);
   }
 
-  return { {"id", u.id},
-           {"company", u.company},
-           {"first_name", u.firstName},
-           {"last_name", u.lastName},
-           {"dni", u.dni},
-           {"username", u.username},
-           {"role", u.role},
-           {"password_hash", u.passwordHash},
-           {"face_template", tpl},
-           {"created_at", u.createdAt} };
+  json::object jo{{"id", u.id},
+                  {"company", u.company},
+                  {"first_name", u.firstName},
+                  {"last_name", u.lastName},
+                  {"dni", u.dni},
+                  {"username", u.username},
+                  {"role", u.role},
+                  {"password_hash", u.passwordHash},
+                  {"face_template", tpl},
+                  {"created_at", u.createdAt}};
+  if (!u.avatarCartoonBase64.empty()) {
+    jo["avatar_cartoon_base64"] = u.avatarCartoonBase64;
+  }
+  return jo;
+}
+
+static json::object authUserSessionJson(const AuthUser &u,
+                                        const std::string &token) {
+  json::object jo{{"id", u.id},
+                  {"company", u.company},
+                  {"username", u.username},
+                  {"role", u.role},
+                  {"token", token},
+                  {"full_name", u.firstName + " " + u.lastName}};
+  if (!u.avatarCartoonBase64.empty()) {
+    jo["avatar_cartoon_base64"] = u.avatarCartoonBase64;
+  }
+  return jo;
 }
 
 bool jsonToAuthUser(const json::object &obj, AuthUser &out) {
@@ -1796,6 +2378,12 @@ bool jsonToAuthUser(const json::object &obj, AuthUser &out) {
     } else {
       return false;
     }
+  }
+  out.avatarCartoonBase64.clear();
+  if (obj.if_contains("avatar_cartoon_base64") &&
+      obj.at("avatar_cartoon_base64").is_string()) {
+    out.avatarCartoonBase64 =
+        json::value_to<std::string>(obj.at("avatar_cartoon_base64"));
   }
   return !out.faceTemplate.empty();
 }
@@ -1851,6 +2439,20 @@ void saveAuthUsers(const std::string &dataRoot,
 
   std::ofstream ofs(authUsersFile(dataRoot), std::ios::trunc);
   ofs << json::serialize(arr);
+}
+
+static bool updateUserAvatarCartoonFile(const std::string &dataRoot,
+                                        const std::string &userId,
+                                        const std::string &avatarBase64) {
+  auto users = loadAuthUsers(dataRoot);
+  for (auto &u : users) {
+    if (u.id == userId) {
+      u.avatarCartoonBase64 = avatarBase64;
+      saveAuthUsers(dataRoot, users);
+      return true;
+    }
+  }
+  return false;
 }
 
 std::vector<LegacyFacialUserRecord>
@@ -2094,6 +2696,74 @@ std::string auditRowsToCsv(const json::array &logs) {
   return oss.str();
 }
 
+// Mensajes de login alineados con /api/auth/login/check-identity (Usuario/DNI/RUC por empresa).
+static const char kAuthUserNotFoundMsg[] = "USUARIO NO EXISTE";
+static const char kAuthWrongPasswordMsg[] = "La contraseña no es correcta.";
+static const char kAuthAmbiguousIdentityMsg[] =
+    "El identificador coincide con más de un registro en esa empresa. Use un "
+    "dato único (por ejemplo el DNI) e intente de nuevo.";
+
+static bool authIdentityKeyIsAllDigits(const std::string &s) {
+  return !s.empty() &&
+         std::all_of(s.begin(), s.end(), [](unsigned char c) {
+           return std::isdigit(c) != 0;
+         });
+}
+
+/** username / dni / ruc exacto, o DNI numérico equivalente (p. ej. 9637521 vs 09637521). */
+static bool authIdentityKeyMatchesFsUser(const std::string &identityKey,
+                                         const AuthUser &u) {
+  if (u.username == identityKey || u.dni == identityKey ||
+      (!u.ruc.empty() && u.ruc == identityKey)) {
+    return true;
+  }
+  if (!authIdentityKeyIsAllDigits(identityKey) ||
+      !authIdentityKeyIsAllDigits(u.dni) || u.dni.empty()) {
+    return false;
+  }
+  try {
+    return std::stoll(u.dni) == std::stoll(identityKey);
+  } catch (const std::exception &) {
+    return false;
+  }
+}
+
+struct AuthLoginIdentityLookupResult {
+  enum class Kind { Ok, NotFound, Ambiguous, DbError };
+  Kind kind = Kind::DbError;
+  std::string resolvedUsername;
+  std::string diagnostic;
+};
+
+static AuthLoginIdentityLookupResult authLookupIdentityForCompanyFs(
+    const std::string &dataRoot, const std::string &company,
+    const std::string &identityKey) {
+  AuthLoginIdentityLookupResult out;
+  const auto users = loadAuthUsers(dataRoot);
+  const AuthUser *match = nullptr;
+  size_t matchCount = 0;
+  for (const auto &u : users) {
+    if (u.company != company) {
+      continue;
+    }
+    if (authIdentityKeyMatchesFsUser(identityKey, u)) {
+      match = &u;
+      matchCount++;
+    }
+  }
+  if (matchCount == 0) {
+    out.kind = AuthLoginIdentityLookupResult::Kind::NotFound;
+    return out;
+  }
+  if (matchCount > 1) {
+    out.kind = AuthLoginIdentityLookupResult::Kind::Ambiguous;
+    return out;
+  }
+  out.kind = AuthLoginIdentityLookupResult::Kind::Ok;
+  out.resolvedUsername = match->username;
+  return out;
+}
+
 #if HAS_LIBPQ
 std::string pqEscapeLiteral(PGconn *conn, const std::string &value) {
   char *escaped = PQescapeLiteral(conn, value.c_str(), value.size());
@@ -2117,6 +2787,13 @@ bool pgExecOk(PGconn *conn, const std::string &sql) {
 }
 
 bool ensureAuthSchemaPg(PGconn *conn) {
+  if (gAuthSchemaReady.load(std::memory_order_acquire)) {
+    return true;
+  }
+  std::lock_guard<std::mutex> lk(gAuthSchemaInitMutex);
+  if (gAuthSchemaReady.load(std::memory_order_relaxed)) {
+    return true;
+  }
   const char *sql = R"SQL(
 CREATE TABLE IF NOT EXISTS auth_users (
     id TEXT PRIMARY KEY,
@@ -2140,6 +2817,11 @@ CREATE TABLE IF NOT EXISTS auth_audit_logs (
     success BOOLEAN NOT NULL,
     detail TEXT
 );
+CREATE TABLE IF NOT EXISTS auth_companies (
+    name VARCHAR(180) PRIMARY KEY,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_event_time ON auth_audit_logs(event_time DESC);
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'operator';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS ruc VARCHAR(20) DEFAULT '';
@@ -2147,8 +2829,251 @@ ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS phone VARCHAR(30) DEFAULT '';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS mobile VARCHAR(30) DEFAULT '';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS email VARCHAR(120) DEFAULT '';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS face_template JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS avatar_cartoon_base64 TEXT;
 )SQL";
-  return pgExecOk(conn, sql);
+  const bool ok = pgExecOk(conn, sql);
+  if (ok) {
+    for (const auto &company : kMiningCompanies) {
+      const std::string seedSql =
+          "INSERT INTO auth_companies(name, active) VALUES(" +
+          pqEscapeLiteral(conn, company) +
+          ", true) ON CONFLICT (name) DO NOTHING";
+      (void)pgExecOk(conn, seedSql);
+    }
+  }
+  if (ok) {
+    gAuthSchemaReady.store(true, std::memory_order_release);
+  }
+  return ok;
+}
+
+static std::string trimCompanyName(const std::string &s) {
+  size_t start = 0;
+  while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) {
+    ++start;
+  }
+  size_t end = s.size();
+  while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+    --end;
+  }
+  return s.substr(start, end - start);
+}
+
+bool ensureFormulaCatalogViewPg(PGconn *conn) {
+  static const char *kDropCatalogView = "DROP VIEW IF EXISTS v_mineria_catalogos CASCADE;";
+  static const char *kCreateCatalogView = R"SQL(
+CREATE VIEW v_mineria_catalogos AS
+SELECT
+    e.id AS empresa_id, e.codigo AS empresa_codigo, e.nombre AS empresa_nombre,
+    m.id AS mina_id, m.codigo AS mina_codigo, m.nombre AS mina_nombre, m.zona_tipo, m.umbral_temp_alerta,
+    s.id AS sensor_id, s.codigo AS sensor_codigo, s.nombre AS sensor_nombre,
+    v.id AS variable_id, v.codigo AS variable_codigo, v.nombre AS variable_nombre, v.unidad
+FROM mineria_empresas e
+JOIN mineria_minas m ON m.empresa_id = e.id AND m.activo = TRUE
+JOIN mineria_variables v ON v.empresa_id = e.id AND v.activo = TRUE AND v.tipo = 'temperatura'
+JOIN mineria_sensores s ON s.empresa_id = e.id AND s.mina_id = m.id AND s.variable_id = v.id AND s.activo = TRUE;
+)SQL";
+  (void)pgExecOk(conn, kDropCatalogView);
+  return pgExecOk(conn, kCreateCatalogView);
+}
+
+bool ensureFormulaSchemaPg(PGconn *conn, const std::string &companyName) {
+  if (!gFormulaSchemaReady.load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> lk(gFormulaSchemaInitMutex);
+    if (!gFormulaSchemaReady.load(std::memory_order_relaxed)) {
+      const char *sql = R"SQL(
+CREATE TABLE IF NOT EXISTS mineria_empresas (
+    id SERIAL PRIMARY KEY,
+    codigo VARCHAR(40) UNIQUE NOT NULL,
+    nombre VARCHAR(200) UNIQUE NOT NULL,
+    activo BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS mineria_minas (
+    id SERIAL PRIMARY KEY,
+    empresa_id INTEGER NOT NULL REFERENCES mineria_empresas(id),
+    codigo VARCHAR(40) NOT NULL,
+    nombre VARCHAR(200) NOT NULL,
+    zona_tipo VARCHAR(20) NOT NULL DEFAULT 'sierra',
+    umbral_temp_alerta DECIMAL(6,2) NOT NULL DEFAULT 8.0,
+    factor_ajuste DECIMAL(6,4) NOT NULL DEFAULT 0.82,
+    activo BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(empresa_id, codigo)
+);
+CREATE TABLE IF NOT EXISTS mineria_variables (
+    id SERIAL PRIMARY KEY,
+    empresa_id INTEGER NOT NULL REFERENCES mineria_empresas(id),
+    codigo VARCHAR(30) NOT NULL,
+    nombre VARCHAR(200) NOT NULL,
+    unidad VARCHAR(20),
+    tipo VARCHAR(50) DEFAULT 'temperatura',
+    activo BOOLEAN DEFAULT TRUE,
+    UNIQUE(empresa_id, codigo)
+);
+CREATE TABLE IF NOT EXISTS mineria_sensores (
+    id SERIAL PRIMARY KEY,
+    empresa_id INTEGER NOT NULL REFERENCES mineria_empresas(id),
+    mina_id INTEGER NOT NULL REFERENCES mineria_minas(id),
+    variable_id INTEGER NOT NULL REFERENCES mineria_variables(id),
+    codigo VARCHAR(40) NOT NULL,
+    nombre VARCHAR(200) NOT NULL,
+    activo BOOLEAN DEFAULT TRUE,
+    UNIQUE(empresa_id, codigo)
+);
+CREATE TABLE IF NOT EXISTS mineria_lecturas (
+    id BIGSERIAL PRIMARY KEY,
+    empresa_id INTEGER NOT NULL REFERENCES mineria_empresas(id),
+    mina_id INTEGER NOT NULL REFERENCES mineria_minas(id),
+    variable_id INTEGER NOT NULL REFERENCES mineria_variables(id),
+    timestamp_lectura TIMESTAMPTZ NOT NULL,
+    valor DECIMAL(12,4),
+    calidad SMALLINT DEFAULT 100,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_mlect_lookup ON mineria_lecturas(empresa_id, mina_id, variable_id, timestamp_lectura DESC);
+CREATE OR REPLACE FUNCTION sp_proceso_temperatura(
+    p_empresa_id   INTEGER,
+    p_mina_id      INTEGER,
+    p_variable_id  INTEGER,
+    p_fecha_inicio TIMESTAMPTZ,
+    p_fecha_fin    TIMESTAMPTZ
+)
+RETURNS TABLE (
+    timestamp_lectura   TIMESTAMPTZ,
+    valor_original      DECIMAL(12,4),
+    calidad             SMALLINT,
+    umbral_alerta       DECIMAL(6,2),
+    condicion_resultado VARCHAR(2),
+    valor_procesado     DECIMAL(12,4),
+    descripcion         TEXT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_umbral DECIMAL(6,2);
+    v_factor DECIMAL(6,4);
+BEGIN
+    SELECT m.umbral_temp_alerta, m.factor_ajuste
+    INTO   v_umbral, v_factor
+    FROM   mineria_minas m
+    WHERE  m.id = p_mina_id AND m.empresa_id = p_empresa_id AND m.activo = TRUE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Mina no encontrada para el tenant';
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        l.timestamp_lectura,
+        l.valor AS valor_original,
+        l.calidad,
+        v_umbral AS umbral_alerta,
+        CASE WHEN l.valor > v_umbral THEN 'SI' ELSE 'NO' END::VARCHAR(2) AS condicion_resultado,
+        CASE
+            WHEN l.valor > v_umbral THEN ROUND(CAST(v_umbral + (l.valor - v_umbral) * v_factor AS NUMERIC), 4)
+            ELSE ROUND(CAST(l.valor * 0.985 + 0.12 AS NUMERIC), 4)
+        END AS valor_procesado,
+        CASE
+            WHEN l.valor > v_umbral THEN 'ALERTA: amortiguacion por umbral'
+            ELSE 'NORMAL: calibracion lineal'
+        END::TEXT AS descripcion
+    FROM mineria_lecturas l
+    WHERE l.empresa_id = p_empresa_id
+      AND l.mina_id = p_mina_id
+      AND l.variable_id = p_variable_id
+      AND l.timestamp_lectura BETWEEN p_fecha_inicio AND p_fecha_fin
+      AND l.calidad >= 50
+    ORDER BY l.timestamp_lectura;
+END;
+$$;
+CREATE TABLE IF NOT EXISTS formula_sessions (
+    id BIGSERIAL PRIMARY KEY,
+    usuario_nombre VARCHAR(200),
+    accion VARCHAR(20) DEFAULT 'VISUALIZO',
+    empresa_id INTEGER,
+    empresa_nombre VARCHAR(200),
+    mina_id INTEGER,
+    mina_nombre VARCHAR(200),
+    variable_id INTEGER,
+    variable_nombre VARCHAR(200),
+    fecha_inicio TIMESTAMPTZ,
+    fecha_fin TIMESTAMPTZ,
+    formula_json JSONB,
+    sp_sql_text TEXT,
+    total_lecturas INTEGER,
+    total_si INTEGER,
+    total_no INTEGER,
+    pct_alertas DECIMAL(5,2),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fsess_empresa ON formula_sessions(empresa_id);
+CREATE INDEX IF NOT EXISTS idx_fsess_mina ON formula_sessions(mina_id);
+CREATE INDEX IF NOT EXISTS idx_fsess_created ON formula_sessions(created_at DESC);
+)SQL";
+
+      if (!pgExecOk(conn, sql)) {
+        return false;
+      }
+      gFormulaSchemaReady.store(true, std::memory_order_release);
+    }
+  }
+
+  // Seed tenant-scoped company, mine, variable and demo readings.
+  std::string trimmed = trimCompanyName(companyName);
+  std::string normalized = trimmed.empty() ? "Empresa Minera" : trimmed;
+  std::string code = normalized;
+  for (char &ch : code) {
+    if (!std::isalnum(static_cast<unsigned char>(ch))) ch = '_';
+  }
+  const std::string upsertCompany =
+      "INSERT INTO mineria_empresas(codigo,nombre,activo) VALUES(" +
+      pqEscapeLiteral(conn, code) + "," + pqEscapeLiteral(conn, normalized) +
+      ", true) ON CONFLICT (nombre) DO NOTHING";
+  (void)pgExecOk(conn, upsertCompany);
+
+  const std::string seedMine =
+      "INSERT INTO mineria_minas(empresa_id,codigo,nombre,zona_tipo,umbral_temp_alerta,factor_ajuste,activo) "
+      "SELECT id,'UNI-001','Unidad Minera Principal','sierra',8.0,0.82,true FROM mineria_empresas WHERE nombre=" +
+      pqEscapeLiteral(conn, normalized) + " ON CONFLICT (empresa_id,codigo) DO NOTHING";
+  (void)pgExecOk(conn, seedMine);
+
+  const std::string seedVar =
+      "INSERT INTO mineria_variables(empresa_id,codigo,nombre,unidad,tipo,activo) "
+      "SELECT id,'TEMP-001','Temperatura Ambiente','C','temperatura',true FROM mineria_empresas WHERE nombre=" +
+      pqEscapeLiteral(conn, normalized) + " ON CONFLICT (empresa_id,codigo) DO NOTHING";
+  (void)pgExecOk(conn, seedVar);
+
+  const std::string seedSensor =
+      "INSERT INTO mineria_sensores(empresa_id,mina_id,variable_id,codigo,nombre,activo) "
+      "SELECT e.id,m.id,v.id,'SEN-001','Sensor Temperatura Principal',true "
+      "FROM mineria_empresas e "
+      "JOIN mineria_minas m ON m.empresa_id=e.id "
+      "JOIN mineria_variables v ON v.empresa_id=e.id AND v.codigo='TEMP-001' "
+      "WHERE e.nombre=" + pqEscapeLiteral(conn, normalized) +
+      " ON CONFLICT (empresa_id,codigo) DO NOTHING";
+  (void)pgExecOk(conn, seedSensor);
+
+  const std::string seedReadings = R"SQL(
+INSERT INTO mineria_lecturas(empresa_id, mina_id, variable_id, timestamp_lectura, valor, calidad)
+SELECT e.id, m.id, v.id, ts,
+       ROUND(CAST(9.5 + 4.2 * SIN(EXTRACT(EPOCH FROM ts) / 86400.0 * 2 * PI()) + (random() * 2.5 - 1.2) AS NUMERIC), 2),
+       100
+FROM mineria_empresas e
+JOIN mineria_minas m ON m.empresa_id = e.id
+JOIN mineria_variables v ON v.empresa_id = e.id AND v.codigo = 'TEMP-001'
+CROSS JOIN generate_series(NOW() - INTERVAL '30 days', NOW(), INTERVAL '30 minutes') ts
+WHERE e.nombre = )SQL" + pqEscapeLiteral(conn, normalized) + R"SQL(
+  AND NOT EXISTS (
+  SELECT 1 FROM mineria_lecturas l
+  WHERE l.empresa_id = e.id AND l.mina_id = m.id AND l.variable_id = v.id
+);
+)SQL";
+  (void)pgExecOk(conn, seedReadings);
+  if (!ensureFormulaCatalogViewPg(conn)) {
+    return false;
+  }
+  return true;
 }
 
 void appendAuthAuditLogPg(PGconn *conn, const std::string &action,
@@ -2210,9 +3135,16 @@ std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::str
       PQfinish(conn);
       return reports;
   }
-  std::string sql = "SELECT id, project_id, title, status, created_at, updated_at FROM reports";
-  // The schema doesn't have a 'company' column in 'reports' directly, but we can filter by metadata or joins if needed.
-  // For now, let's fetch all and filter in memory or assume public scope.
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    PQfinish(conn);
+    return reports;
+  }
+  std::string sql =
+      "SELECT id, project_id, title, status, created_at, updated_at, "
+      "COALESCE(company_name,'') "
+      "FROM reports WHERE deleted_at IS NULL AND company_name = " +
+      pqEscapeLiteral(conn, company) + " ORDER BY created_at DESC";
   PGresult *res = PQexec(conn, sql.c_str());
   if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
       for (int i = 0; i < PQntuples(res); ++i) {
@@ -2223,6 +3155,7 @@ std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::str
           r.status = PQgetvalue(res, i, 3);
           r.createdAt = PQgetvalue(res, i, 4);
           r.updatedAt = PQgetvalue(res, i, 5);
+          r.company = PQgetisnull(res, i, 6) ? "" : std::string(PQgetvalue(res, i, 6));
           reports.push_back(std::move(r));
       }
   }
@@ -2231,7 +3164,7 @@ std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::str
   return reports;
 }
 
-bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, Report &out,
+bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, const std::string &company, Report &out,
                      std::string &error) {
   PGconn *conn = PQconnectdb(databaseUrl.c_str());
   if (PQstatus(conn) != CONNECTION_OK) {
@@ -2239,10 +3172,16 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, Repo
     PQfinish(conn);
     return false;
   }
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    PQfinish(conn);
+    return false;
+  }
   std::string sql =
       "SELECT id, project_id::text, title, content_json::text, status, "
-      "created_at::text, updated_at::text FROM reports WHERE id = " +
-      pqEscapeLiteral(conn, id);
+      "created_at::text, updated_at::text, COALESCE(company_name,'') FROM reports WHERE id = " +
+      pqEscapeLiteral(conn, id) + " AND company_name = " + pqEscapeLiteral(conn, company) +
+      " AND deleted_at IS NULL";
   PGresult *res = PQexec(conn, sql.c_str());
   if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) < 1) {
     error = "report_not_found";
@@ -2265,6 +3204,7 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, Repo
   out.status = PQgetvalue(res, 0, 4);
   out.createdAt = PQgetvalue(res, 0, 5);
   out.updatedAt = PQgetvalue(res, 0, 6);
+  out.company = PQgetisnull(res, 0, 7) ? "" : std::string(PQgetvalue(res, 0, 7));
   PQclear(res);
   PQfinish(conn);
   return true;
@@ -2278,12 +3218,18 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
     PQfinish(conn);
     return false;
   }
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    PQfinish(conn);
+    return false;
+  }
   std::string contentStr = json::serialize(r.contentJson);
-  std::string sql = "INSERT INTO reports (project_id, title, content_json, status) VALUES (" +
+  std::string sql = "INSERT INTO reports (project_id, title, content_json, status, company_name) VALUES (" +
       (r.projectId.empty() ? "NULL" : pqEscapeLiteral(conn, r.projectId)) + "," +
       pqEscapeLiteral(conn, r.title) + "," +
       pqEscapeLiteral(conn, contentStr) + "," +
-      pqEscapeLiteral(conn, r.status) + ") RETURNING id::text";
+      pqEscapeLiteral(conn, r.status) + "," +
+      pqEscapeLiteral(conn, r.company) + ") RETURNING id::text";
   PGresult *res = PQexec(conn, sql.c_str());
   if (!res) {
     error = PQerrorMessage(conn);
@@ -2302,10 +3248,15 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
   return true;
 }
 
-bool updateReportPg(const std::string &databaseUrl, const std::string &id, const Report &r, std::string &error) {
+bool updateReportPg(const std::string &databaseUrl, const std::string &id, const std::string &company, const Report &r, std::string &error) {
     PGconn *conn = PQconnectdb(databaseUrl.c_str());
     if (PQstatus(conn) != CONNECTION_OK) {
         error = PQerrorMessage(conn);
+        PQfinish(conn);
+        return false;
+    }
+    if (!ensureAuthSchemaPg(conn)) {
+        error = "failed to ensure auth schema";
         PQfinish(conn);
         return false;
     }
@@ -2313,21 +3264,29 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id, const
     std::string sql = "UPDATE reports SET title = " + pqEscapeLiteral(conn, r.title) +
         ", content_json = " + pqEscapeLiteral(conn, contentStr) +
         ", status = " + pqEscapeLiteral(conn, r.status) +
-        " WHERE id = " + pqEscapeLiteral(conn, id);
+        ", company_name = " + pqEscapeLiteral(conn, company) +
+        " WHERE id = " + pqEscapeLiteral(conn, id) + " AND company_name = " + pqEscapeLiteral(conn, company) +
+        " AND deleted_at IS NULL";
     bool ok = pgExecOk(conn, sql);
     if (!ok) error = PQerrorMessage(conn);
     PQfinish(conn);
     return ok;
 }
 
-bool deleteReportPg(const std::string &databaseUrl, const std::string &id, std::string &error) {
+bool deleteReportPg(const std::string &databaseUrl, const std::string &id, const std::string &company, std::string &error) {
     PGconn *conn = PQconnectdb(databaseUrl.c_str());
     if (PQstatus(conn) != CONNECTION_OK) {
         error = PQerrorMessage(conn);
         PQfinish(conn);
         return false;
     }
-    std::string sql = "DELETE FROM reports WHERE id = " + pqEscapeLiteral(conn, id);
+    if (!ensureAuthSchemaPg(conn)) {
+        error = "failed to ensure auth schema";
+        PQfinish(conn);
+        return false;
+    }
+    std::string sql = "UPDATE reports SET deleted_at = NOW() WHERE id = " + pqEscapeLiteral(conn, id) +
+                      " AND company_name = " + pqEscapeLiteral(conn, company) + " AND deleted_at IS NULL";
     bool ok = pgExecOk(conn, sql);
     if (!ok) error = PQerrorMessage(conn);
     PQfinish(conn);
@@ -2376,8 +3335,12 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
   }
   PQclear(checkRes);
 
+  const std::string avatarSql =
+      user.avatarCartoonBase64.empty()
+          ? "NULL"
+          : pqEscapeLiteral(conn, user.avatarCartoonBase64);
   const std::string insertSql =
-      "INSERT INTO auth_users(id,company_name,first_name,last_name,dni,username,role,password_hash,face_template,ruc,phone,mobile,email) VALUES(" +
+      "INSERT INTO auth_users(id,company_name,first_name,last_name,dni,username,role,password_hash,face_template,ruc,phone,mobile,email,avatar_cartoon_base64) VALUES(" +
       pqEscapeLiteral(conn, user.id) + "," + pqEscapeLiteral(conn, user.company) +
       "," + pqEscapeLiteral(conn, user.firstName) + "," +
       pqEscapeLiteral(conn, user.lastName) + "," + pqEscapeLiteral(conn, user.dni) +
@@ -2388,7 +3351,7 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
       pqEscapeLiteral(conn, user.ruc) + "," + 
       pqEscapeLiteral(conn, user.phone) + "," + 
       pqEscapeLiteral(conn, user.mobile) + "," + 
-      pqEscapeLiteral(conn, user.email) + ")";
+      pqEscapeLiteral(conn, user.email) + "," + avatarSql + ")";
 
   if (!pgExecOk(conn, insertSql)) {
     error = "failed to insert user";
@@ -2404,11 +3367,104 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
   return true;
 }
 
+#if HAS_LIBPQ
+static bool updateUserAvatarCartoonPg(const std::string &databaseUrl,
+                                      const std::string &userId,
+                                      const std::string &avatarBase64,
+                                      std::string &error) {
+  PGconn *conn = PQconnectdb(databaseUrl.c_str());
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    PQfinish(conn);
+    return false;
+  }
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    PQfinish(conn);
+    return false;
+  }
+  const std::string sql = "UPDATE auth_users SET avatar_cartoon_base64=" +
+                          pqEscapeLiteral(conn, avatarBase64) + " WHERE id=" +
+                          pqEscapeLiteral(conn, userId);
+  if (!pgExecOk(conn, sql)) {
+    error = PQerrorMessage(conn);
+    PQfinish(conn);
+    return false;
+  }
+  PQfinish(conn);
+  return true;
+}
+#endif
+
+/** Condición SQL: usuario, DNI o RUC literal; si identity es solo dígitos, también DNI = valor bigint (ceros a la izquierda). */
+static std::string pgSqlAuthIdentityMatch(PGconn *conn,
+                                          const std::string &identityKey) {
+  const std::string e = pqEscapeLiteral(conn, identityKey);
+  std::string clause =
+      "(username=" + e + " OR dni=" + e + " OR ruc=" + e;
+  if (authIdentityKeyIsAllDigits(identityKey) && identityKey.size() <= 15) {
+    clause +=
+        " OR (dni ~ '^[0-9]+$' AND btrim(dni) <> '' AND "
+        "btrim(dni)::bigint = " +
+        e + "::bigint)";
+  }
+  clause += ")";
+  return clause;
+}
+
+static AuthLoginIdentityLookupResult authLookupIdentityForCompanyPg(
+    const std::string &databaseUrl, const std::string &company,
+    const std::string &identityKey) {
+  AuthLoginIdentityLookupResult out;
+  PGconn *conn = PQconnectdb(databaseUrl.c_str());
+  if (PQstatus(conn) != CONNECTION_OK) {
+    out.diagnostic = PQerrorMessage(conn);
+    PQfinish(conn);
+    return out;
+  }
+  (void)ensureAuthSchemaPg(conn);
+  const std::string sql =
+      "SELECT username FROM auth_users WHERE company_name=" +
+      pqEscapeLiteral(conn, company) + " AND " +
+      pgSqlAuthIdentityMatch(conn, identityKey) + " LIMIT 4";
+  PGresult *res = PQexec(conn, sql.c_str());
+  if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+    out.diagnostic = res ? PQresultErrorMessage(res) : PQerrorMessage(conn);
+    if (out.diagnostic.empty()) {
+      out.diagnostic = "query failed";
+    }
+    if (res) {
+      PQclear(res);
+    }
+    PQfinish(conn);
+    return out;
+  }
+  const int rows = PQntuples(res);
+  if (rows == 0) {
+    PQclear(res);
+    PQfinish(conn);
+    out.kind = AuthLoginIdentityLookupResult::Kind::NotFound;
+    return out;
+  }
+  if (rows > 1) {
+    PQclear(res);
+    PQfinish(conn);
+    out.kind = AuthLoginIdentityLookupResult::Kind::Ambiguous;
+    return out;
+  }
+  out.kind = AuthLoginIdentityLookupResult::Kind::Ok;
+  out.resolvedUsername = PQgetvalue(res, 0, 0);
+  PQclear(res);
+  PQfinish(conn);
+  return out;
+}
+
 std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &company,
-                                        const std::string &username,
+                                        const std::string &identityKey,
                                         const std::string &passwordHash,
-                                        std::string &error) {
+                                        std::string &error,
+                                        std::string *errorCodeOut = nullptr) {
   PGconn *conn = PQconnectdb(databaseUrl.c_str());
   if (PQstatus(conn) != CONNECTION_OK) {
     error = PQerrorMessage(conn);
@@ -2418,10 +3474,11 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
   (void)ensureAuthSchemaPg(conn);
 
   const std::string sql =
-      "SELECT id, company_name, first_name, last_name, dni, username, role, password_hash, face_template::text, created_at::text "
+      "SELECT id, company_name, first_name, last_name, dni, username, role, "
+      "password_hash, face_template::text, created_at::text, avatar_cartoon_base64 "
       "FROM auth_users WHERE company_name=" +
-      pqEscapeLiteral(conn, company) + " AND username=" +
-      pqEscapeLiteral(conn, username) + " LIMIT 1";
+      pqEscapeLiteral(conn, company) + " AND " +
+      pgSqlAuthIdentityMatch(conn, identityKey) + " LIMIT 4";
 
   PGresult *res = PQexec(conn, sql.c_str());
   if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
@@ -2434,12 +3491,27 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
     return std::nullopt;
   }
 
-  if (PQntuples(res) == 0) {
+  const int rowCount = PQntuples(res);
+  if (rowCount == 0) {
     PQclear(res);
-    appendAuthAuditLogPg(conn, "login_password", company, username, false,
+    appendAuthAuditLogPg(conn, "login_password", company, identityKey, false,
                          "user_not_found");
     PQfinish(conn);
-    error = "invalid credentials";
+    error = kAuthUserNotFoundMsg;
+    if (errorCodeOut != nullptr) {
+      *errorCodeOut = "user_not_found";
+    }
+    return std::nullopt;
+  }
+  if (rowCount > 1) {
+    PQclear(res);
+    appendAuthAuditLogPg(conn, "login_password", company, identityKey, false,
+                         "ambiguous_identity");
+    PQfinish(conn);
+    error = kAuthAmbiguousIdentityMsg;
+    if (errorCodeOut != nullptr) {
+      *errorCodeOut = "ambiguous_identity";
+    }
     return std::nullopt;
   }
 
@@ -2453,26 +3525,37 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
   u.role = PQgetvalue(res, 0, 6);
   u.passwordHash = PQgetvalue(res, 0, 7);
   u.createdAt = PQgetvalue(res, 0, 9);
+  u.avatarCartoonBase64.clear();
+  if (!PQgetisnull(res, 0, 10)) {
+    u.avatarCartoonBase64 = PQgetvalue(res, 0, 10);
+  }
 
   if (u.passwordHash != passwordHash) {
-    appendAuthAuditLogPg(conn, "login_password", company, username, false,
+    appendAuthAuditLogPg(conn, "login_password", company, u.username, false,
                          "invalid_password");
     PQclear(res);
     PQfinish(conn);
-    error = "invalid credentials";
+    error = kAuthWrongPasswordMsg;
+    if (errorCodeOut != nullptr) {
+      *errorCodeOut = "wrong_password";
+    }
     return std::nullopt;
   }
 
-  appendAuthAuditLogPg(conn, "login_password", company, username, true, "ok");
+  appendAuthAuditLogPg(conn, "login_password", company, u.username, true, "ok");
   PQclear(res);
   PQfinish(conn);
   return u;
 }
 
 std::optional<std::pair<AuthUser, double>>
-loginFacePg(const std::string &databaseUrl, const std::string &company,
-            const std::vector<double> &probeTemplate, double threshold,
-            std::string &error) {
+loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
+                    const std::string &identityKey,
+                    const std::vector<double> &clientProbeTemplate,
+                    const std::optional<std::vector<unsigned char>> &rawImageBytes,
+                    const std::optional<std::string> &base64ForLegacy,
+                    double legacyThreshold, double embeddingThreshold,
+                    std::string &error, std::string *probeProviderOut = nullptr) {
   PGconn *conn = PQconnectdb(databaseUrl.c_str());
   if (PQstatus(conn) != CONNECTION_OK) {
     error = PQerrorMessage(conn);
@@ -2482,8 +3565,12 @@ loginFacePg(const std::string &databaseUrl, const std::string &company,
   (void)ensureAuthSchemaPg(conn);
 
   const std::string sql =
-      "SELECT id, company_name, first_name, last_name, dni, username, role, password_hash, face_template::text, created_at::text, ruc, phone, mobile, email "
-      "FROM auth_users WHERE company_name=" + pqEscapeLiteral(conn, company);
+      "SELECT id, company_name, first_name, last_name, dni, username, role, "
+      "password_hash, face_template::text, created_at::text, ruc, phone, mobile, email, "
+      "avatar_cartoon_base64 "
+      "FROM auth_users WHERE company_name=" +
+      pqEscapeLiteral(conn, company) + " AND " +
+      pgSqlAuthIdentityMatch(conn, identityKey) + " LIMIT 4";
   PGresult *res = PQexec(conn, sql.c_str());
   if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
     error = res ? PQresultErrorMessage(res) : PQerrorMessage(conn);
@@ -2495,60 +3582,121 @@ loginFacePg(const std::string &databaseUrl, const std::string &company,
     return std::nullopt;
   }
 
-  AuthUser best;
-  bool found = false;
-  double bestScore = -1.0;
-
   const int rows = PQntuples(res);
-  for (int i = 0; i < rows; ++i) {
-    std::string tplText = PQgetvalue(res, i, 8);
-    try {
-      auto parsed = json::parse(tplText);
-      if (!parsed.is_array()) {
-        continue;
-      }
-      std::vector<double> tpl;
-      for (const auto &v : parsed.as_array()) {
-        if (v.is_double()) tpl.push_back(v.as_double());
-        else if (v.is_int64()) tpl.push_back(static_cast<double>(v.as_int64()));
-      }
-      const double score = cosineSimilarity(probeTemplate, tpl);
-      if (score > bestScore) {
-        bestScore = score;
-        best.id = PQgetvalue(res, i, 0);
-        best.company = PQgetvalue(res, i, 1);
-        best.firstName = PQgetvalue(res, i, 2);
-        best.lastName = PQgetvalue(res, i, 3);
-        best.dni = PQgetvalue(res, i, 4);
-        best.username = PQgetvalue(res, i, 5);
-        best.role = PQgetvalue(res, i, 6);
-        best.passwordHash = PQgetvalue(res, i, 7);
-        best.createdAt = PQgetvalue(res, i, 9);
-        best.ruc = PQgetvalue(res, i, 10);
-        best.phone = PQgetvalue(res, i, 11);
-        best.mobile = PQgetvalue(res, i, 12);
-        best.email = PQgetvalue(res, i, 13);
-        found = true;
-      }
-    } catch (...) {
-      continue;
-    }
-  }
-
-  if (!found || bestScore < threshold) {
+  if (rows == 0) {
     appendAuthAuditLogPg(conn, "login_face", company, "unknown", false,
-                         "no_match");
+                         "no_user_for_identity");
     PQclear(res);
     PQfinish(conn);
-    error = "face not recognized";
+    error = kAuthUserNotFoundMsg;
+    return std::nullopt;
+  }
+  if (rows > 1) {
+    appendAuthAuditLogPg(conn, "login_face", company, "unknown", false,
+                         "ambiguous_identity");
+    PQclear(res);
+    PQfinish(conn);
+    error = "El identificador coincide con más de un registro en esa empresa. "
+            "Use un dato único (por ejemplo el DNI) e intente de nuevo.";
     return std::nullopt;
   }
 
-  appendAuthAuditLogPg(conn, "login_face", company, best.username, true,
-                       "ok score=" + std::to_string(bestScore));
+  AuthUser u;
+  u.id = PQgetvalue(res, 0, 0);
+  u.company = PQgetvalue(res, 0, 1);
+  u.firstName = PQgetvalue(res, 0, 2);
+  u.lastName = PQgetvalue(res, 0, 3);
+  u.dni = PQgetvalue(res, 0, 4);
+  u.username = PQgetvalue(res, 0, 5);
+  u.role = PQgetvalue(res, 0, 6);
+  u.passwordHash = PQgetvalue(res, 0, 7);
+  u.createdAt = PQgetvalue(res, 0, 9);
+  u.ruc = PQgetvalue(res, 0, 10);
+  u.phone = PQgetvalue(res, 0, 11);
+  u.mobile = PQgetvalue(res, 0, 12);
+  u.email = PQgetvalue(res, 0, 13);
+  u.avatarCartoonBase64.clear();
+  if (!PQgetisnull(res, 0, 14)) {
+    u.avatarCartoonBase64 = PQgetvalue(res, 0, 14);
+  }
+
+  std::vector<double> tpl;
+  try {
+    auto parsed = json::parse(PQgetvalue(res, 0, 8));
+    if (!parsed.is_array()) {
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "invalid_template");
+      PQclear(res);
+      PQfinish(conn);
+      error = "El usuario indicado no tiene una plantilla facial válida "
+              "registrada. Complete el registro biométrico e intente de nuevo.";
+      return std::nullopt;
+    }
+    for (const auto &v : parsed.as_array()) {
+      if (v.is_double()) {
+        tpl.push_back(v.as_double());
+      } else if (v.is_int64()) {
+        tpl.push_back(static_cast<double>(v.as_int64()));
+      }
+    }
+  } catch (...) {
+    appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                         "template_parse_failed");
+    PQclear(res);
+    PQfinish(conn);
+    error = "El usuario indicado no tiene una plantilla facial válida "
+            "registrada. Complete el registro biométrico e intente de nuevo.";
+    return std::nullopt;
+  }
+
+  if (tpl.size() < 100) {
+    appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                         "template_too_short");
+    PQclear(res);
+    PQfinish(conn);
+    error = "El usuario indicado no tiene biometría facial registrada de forma "
+            "completa. Registre el rostro e intente de nuevo.";
+    return std::nullopt;
+  }
+
+  std::vector<double> probe;
+  std::string probeProvider;
+  double useThreshold = legacyThreshold;
+  if (!buildFaceLoginProbe(clientProbeTemplate, rawImageBytes, base64ForLegacy,
+                           tpl, probe, probeProvider, useThreshold,
+                           legacyThreshold, embeddingThreshold, error)) {
+    appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                         "probe_build_failed");
+    PQclear(res);
+    PQfinish(conn);
+    return std::nullopt;
+  }
+
+  const double bestScore = cosineSimilarity(probe, tpl);
+  if (bestScore < useThreshold) {
+    std::cout << "[AUTH_FACE] no_match_pg company=" << company
+              << " user=" << u.username << " stored_dim=" << tpl.size()
+              << " probe_dim=" << probe.size() << " score=" << bestScore
+              << " threshold=" << useThreshold << " probe_provider=" << probeProvider
+              << std::endl;
+    appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                         "no_match score=" + std::to_string(bestScore));
+    PQclear(res);
+    PQfinish(conn);
+    error = "La biometría facial no coincide con el usuario indicado. "
+            "Verifique su identidad y vuelva a intentar.";
+    return std::nullopt;
+  }
+
+  appendAuthAuditLogPg(conn, "login_face", company, u.username, true,
+                       "ok score=" + std::to_string(bestScore) + " probe=" +
+                           probeProvider);
+  if (probeProviderOut != nullptr) {
+    *probeProviderOut = probeProvider;
+  }
   PQclear(res);
   PQfinish(conn);
-  return std::make_pair(best, bestScore);
+  return std::make_pair(u, bestScore);
 }
 
 AuditPageResult readAuthAuditPg(const std::string &databaseUrl,
@@ -2892,7 +4040,13 @@ routeRequest(const http::request<http::string_body> &req,
   }
 
   if (req.method() == http::verb::get && pathOnly == "/health") {
-    return makeJsonResponse(http::status::ok, json::object{{"status", "ok"}});
+    json::object health{{"status", "ok"},
+                        {"cartoon_onnx_linked", informeCartoonOnnxRuntimeLinked()},
+                        {"cartoon_onnx_model", gCartoonOnnxModelPath},
+                        {"cartoon_onnx_model_exists",
+                         !gCartoonOnnxModelPath.empty() &&
+                             fs::exists(gCartoonOnnxModelPath)}};
+    return makeJsonResponse(http::status::ok, health);
   }
 
   if (req.method() == http::verb::get && pathOnly == "/api/capabilities") {
@@ -2902,8 +4056,32 @@ routeRequest(const http::request<http::string_body> &req,
 
   if (req.method() == http::verb::get && pathOnly == "/api/auth/companies") {
     json::array companies;
-    for (const auto &company : kMiningCompanies) {
-      companies.push_back(json::value(company));
+    bool loadedFromDb = false;
+    if (gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+      PGconn *conn = PQconnectdb(gDatabaseUrl.c_str());
+      if (PQstatus(conn) == CONNECTION_OK) {
+        (void)ensureAuthSchemaPg(conn);
+        PGresult *res = PQexec(
+            conn,
+            "SELECT name FROM auth_companies WHERE active=true ORDER BY name ASC");
+        if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
+          for (int i = 0; i < PQntuples(res); ++i) {
+            companies.push_back(json::value(std::string(PQgetvalue(res, i, 0))));
+          }
+          loadedFromDb = PQntuples(res) > 0;
+        }
+        if (res) {
+          PQclear(res);
+        }
+      }
+      PQfinish(conn);
+#endif
+    }
+    if (!loadedFromDb) {
+      for (const auto &company : kMiningCompanies) {
+        companies.push_back(json::value(company));
+      }
     }
     return makeJsonResponse(http::status::ok,
                             json::object{{"companies", companies}});
@@ -2971,6 +4149,8 @@ routeRequest(const http::request<http::string_body> &req,
         return makeJsonResponse(http::status::bad_request,
                                 json::object{{"error", "invalid image data"}});
       }
+      std::cerr << "[AI_OVAL] /api/process_frame decoded w=" << frame.cols
+                << " h=" << frame.rows << std::endl;
       std::vector<unsigned char> jpg;
       cv::imencode(".jpg", frame, jpg, {cv::IMWRITE_JPEG_QUALITY, 60});
       const std::string base64 = encodeBase64(jpg);
@@ -3006,8 +4186,20 @@ routeRequest(const http::request<http::string_body> &req,
         gBiometricCaptureState.mouthClosed = mouthClosed;
         gBiometricCaptureState.noGlasses = noGlasses;
         gBiometricCaptureState.faceStraight = frontal;
+        gBiometricCaptureState.hasFaceOval = false;
+        if (eval.aiEval.has_value() && eval.aiEval->available &&
+            eval.aiEval->hasFaceOvalEllipse) {
+          const auto &e = eval.aiEval->faceOvalEllipse;
+          gBiometricCaptureState.hasFaceOval = true;
+          gBiometricCaptureState.faceOvalCx = static_cast<double>(e.center.x);
+          gBiometricCaptureState.faceOvalCy = static_cast<double>(e.center.y);
+          gBiometricCaptureState.faceOvalW = static_cast<double>(e.size.width);
+          gBiometricCaptureState.faceOvalH = static_cast<double>(e.size.height);
+          gBiometricCaptureState.faceOvalAngleDeg = static_cast<double>(e.angle);
+        }
         const bool frameValid = eval.ok && eyesOpen && mouthClosed && noGlasses && frontal;
         if (frameValid) {
+          gBiometricCaptureState.captureInvalidStreak = 0;
           if (gBiometricCaptureState.captureCount < 3) {
             gBiometricCapturedImages.push_back("data:image/jpeg;base64," + base64);
             if (gBiometricCapturedImages.size() > 3) {
@@ -3017,8 +4209,13 @@ routeRequest(const http::request<http::string_body> &req,
           gBiometricCaptureState.captureCount =
               std::min(3, gBiometricCaptureState.captureCount + 1);
         } else {
-          gBiometricCaptureState.captureCount = 0;
-          gBiometricCapturedImages.clear();
+          gBiometricCaptureState.captureInvalidStreak++;
+          // ~5 ticks ≈ 1 s si el cliente envía cada 200 ms; evita borrar 1/3/2/3 por jitter ICAO.
+          if (gBiometricCaptureState.captureInvalidStreak >= 5) {
+            gBiometricCaptureState.captureCount = 0;
+            gBiometricCaptureState.captureInvalidStreak = 0;
+            gBiometricCapturedImages.clear();
+          }
         }
         const double livenessScore =
             std::min(100.0, static_cast<double>(gBiometricCaptureState.captureCount) * 35.0);
@@ -3051,6 +4248,16 @@ routeRequest(const http::request<http::string_body> &req,
       std::scoped_lock lk(gBiometricCaptureMutex);
       s = gBiometricCaptureState;
     }
+    json::value faceOvalVal = nullptr;
+    if (s.hasFaceOval) {
+      faceOvalVal = json::object{
+          {"cx", s.faceOvalCx},
+          {"cy", s.faceOvalCy},
+          {"w", s.faceOvalW},
+          {"h", s.faceOvalH},
+          {"angle_deg", s.faceOvalAngleDeg},
+      };
+    }
     return makeJsonResponse(http::status::ok,
                             json::object{
                                 {"state", s.state},
@@ -3063,6 +4270,7 @@ routeRequest(const http::request<http::string_body> &req,
                                               {"mouth_closed", s.mouthClosed},
                                               {"face_straight", s.faceStraight},
                                               {"no_glasses", s.noGlasses}}},
+                                {"face_oval", faceOvalVal},
                                 {"liveness_score", s.livenessScore},
                             });
   }
@@ -3213,6 +4421,54 @@ routeRequest(const http::request<http::string_body> &req,
       std::string mobile = obj.if_contains("mobile") && obj.at("mobile").is_string() ? json::value_to<std::string>(obj.at("mobile")) : "";
       std::string email = obj.if_contains("email") && obj.at("email").is_string() ? json::value_to<std::string>(obj.at("email")) : "";
 
+      const auto regT0 = std::chrono::steady_clock::now();
+      auto regLog = [&](const char *tag) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - regT0)
+                            .count();
+        std::cerr << "[AUTH_REGISTER] dni=" << dni << " user=" << username << " +"
+                  << ms << "ms " << tag << std::endl;
+      };
+      regLog("parsed_payload");
+
+      std::vector<unsigned char> rawRegImage;
+      std::string regFaceBase64;
+      if (!hasTemplate && hasImage) {
+        regFaceBase64 =
+            json::value_to<std::string>(obj.at("face_image_base64"));
+        (void)decodeBase64(regFaceBase64, rawRegImage);
+      }
+
+      std::string portraitPayloadEarly;
+      if (obj.if_contains("face_portrait_oval_base64") &&
+          obj.at("face_portrait_oval_base64").is_string()) {
+        portraitPayloadEarly = stripDataUrlBase64(json::value_to<std::string>(
+            obj.at("face_portrait_oval_base64")));
+      }
+      std::vector<unsigned char> portraitBytes;
+      if (!portraitPayloadEarly.empty()) {
+        (void)decodeBase64(portraitPayloadEarly, portraitBytes);
+      }
+      std::string bustPayloadEarly;
+      if (obj.if_contains("face_bust_rect_base64") &&
+          obj.at("face_bust_rect_base64").is_string()) {
+        bustPayloadEarly = stripDataUrlBase64(json::value_to<std::string>(
+            obj.at("face_bust_rect_base64")));
+      }
+      std::vector<unsigned char> bustBytes;
+      if (!bustPayloadEarly.empty()) {
+        (void)decodeBase64(bustPayloadEarly, bustBytes);
+      }
+
+      std::optional<std::future<AiEngineCartoonResult>> cartoonFut;
+      if (!bustBytes.empty()) {
+        std::vector<unsigned char> bustCopy = bustBytes;
+        cartoonFut.emplace(std::async(std::launch::async, [bustCopy]() {
+          return fetchCartoonAvatarBestEffort(bustCopy);
+        }));
+        regLog("cartoon_async_started_parallel_with_embedding");
+      }
+
       std::vector<double> faceTemplate;
       std::string biometricProvider = "legacy";
       double qualityScore = 0.0;
@@ -3228,25 +4484,37 @@ routeRequest(const http::request<http::string_body> &req,
                 json::object{{"error", "face_template must be a numeric array"}});
           }
         }
+        regLog("face_template_from_client_skip_ai_embedding");
       } else {
-        const std::string base64Image =
-            json::value_to<std::string>(obj.at("face_image_base64"));
-        auto face = analyzeFaceImage(base64Image, "register");
-        if (face.faceTemplate.empty()) {
-          json::array issues;
-          for (const auto &issue : face.issues) {
-            issues.push_back(json::value(issue));
+        if (!rawRegImage.empty() && !gAiEngineUrl.empty()) {
+          regLog("embedding_ai_engine_begin");
+          auto em = fetchFaceEmbeddingFromAiEngine(rawRegImage);
+          regLog("embedding_ai_engine_end");
+          if (em.ok()) {
+            faceTemplate = std::move(em.embedding);
+            biometricProvider = "insightface_onnx";
+            qualityScore = 0.92;
           }
-          return makeJsonResponse(
-              http::status::bad_request,
-              json::object{{"error", "face not detected"},
-                           {"provider", face.provider},
-                           {"issues", issues}});
         }
-        // Proceed even if face.ok is false, per user request to "remove these validations"
-        faceTemplate = std::move(face.faceTemplate);
-        biometricProvider = face.provider;
-        qualityScore = face.qualityScore;
+        if (faceTemplate.empty()) {
+          regLog("analyze_face_legacy_begin");
+          auto face = analyzeFaceImage(regFaceBase64, "register");
+          regLog("analyze_face_legacy_end");
+          if (face.faceTemplate.empty()) {
+            json::array issues;
+            for (const auto &issue : face.issues) {
+              issues.push_back(json::value(issue));
+            }
+            return makeJsonResponse(
+                http::status::bad_request,
+                json::object{{"error", "face not detected"},
+                             {"provider", face.provider},
+                             {"issues", issues}});
+          }
+          faceTemplate = std::move(face.faceTemplate);
+          biometricProvider = face.provider;
+          qualityScore = face.qualityScore;
+        }
       }
 
       if (faceTemplate.size() < 100) {
@@ -3266,6 +4534,8 @@ routeRequest(const http::request<http::string_body> &req,
             json::object{{"error", "username or password length is invalid"}});
       }
 
+      regLog("post_validate");
+
       AuthUser created;
       created.id = makeId();
       created.company = company;
@@ -3281,6 +4551,12 @@ routeRequest(const http::request<http::string_body> &req,
       created.phone = phone;
       created.mobile = mobile;
       created.email = email;
+
+      /* Avatar cartoon: se completa en hilo en segundo plano tras INSERT para no
+         bloquear la respuesta HTTP en inferencia ONNX (p. ej. registro con plantilla). */
+      created.avatarCartoonBase64.clear();
+
+      regLog("pre_db_insert");
 
       {
         std::scoped_lock lk(gAuthMutex);
@@ -3329,21 +4605,101 @@ routeRequest(const http::request<http::string_body> &req,
         }
       }
 
-        const auto sessionToken = issueAuthSession(created);
+      regLog("db_insert_ok");
 
-        return makeJsonResponse(
+      const bool deferCartoonWork = cartoonFut.has_value() ||
+                                    !rawRegImage.empty() ||
+                                    !portraitBytes.empty();
+      if (deferCartoonWork) {
+        auto bgCartoonOpt = std::move(cartoonFut);
+        std::vector<unsigned char> bgRawReg = std::move(rawRegImage);
+        std::vector<unsigned char> bgPortrait = std::move(portraitBytes);
+        std::thread(
+            [bgCartoonOpt = std::move(bgCartoonOpt),
+             bgRawReg = std::move(bgRawReg), bgPortrait = std::move(bgPortrait),
+             userId = created.id, regDni = dni, regUser = username,
+             dataRoot]() mutable {
+              const auto t0 = std::chrono::steady_clock::now();
+              auto bgLog = [&](const char *tag) {
+                const auto ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+                std::cerr << "[AUTH_REGISTER_CARTOON_BG] dni=" << regDni
+                          << " user=" << regUser << " id=" << userId << " +"
+                          << ms << "ms " << tag << std::endl;
+              };
+              bgLog("thread_start");
+              std::string b64;
+              if (bgCartoonOpt.has_value()) {
+                try {
+                  auto cartoonB = bgCartoonOpt->get();
+                  bgLog("bust_future_done");
+                  if (cartoonB.ok()) {
+                    b64 = std::move(cartoonB.imageBase64);
+                  }
+                } catch (const std::exception &ex) {
+                  std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: " << ex.what()
+                            << std::endl;
+                } catch (...) {
+                  std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: unknown\n";
+                }
+              }
+              if (b64.empty() && !bgRawReg.empty()) {
+                bgLog("cartoon_sync_raw_bg");
+                auto cartoon = fetchCartoonAvatarBestEffort(bgRawReg);
+                if (cartoon.ok()) {
+                  b64 = std::move(cartoon.imageBase64);
+                }
+              }
+              if (b64.empty() && !bgPortrait.empty()) {
+                bgLog("cartoon_sync_portrait_bg");
+                auto cartoon2 = fetchCartoonAvatarBestEffort(bgPortrait);
+                if (cartoon2.ok()) {
+                  b64 = std::move(cartoon2.imageBase64);
+                }
+              }
+              if (b64.empty()) {
+                bgLog("cartoon_all_failed_bg");
+                return;
+              }
+              bgLog("cartoon_ok_updating_store");
+              std::scoped_lock lk(gAuthMutex);
+              if (gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+                std::string err;
+                if (!updateUserAvatarCartoonPg(gDatabaseUrl, userId, b64, err)) {
+                  std::cerr << "[AUTH_REGISTER_CARTOON_BG] pg: " << err
+                            << std::endl;
+                } else {
+                  bgLog("pg_avatar_updated");
+                }
+#else
+                (void)b64;
+#endif
+              } else {
+                if (!updateUserAvatarCartoonFile(dataRoot, userId, b64)) {
+                  std::cerr << "[AUTH_REGISTER_CARTOON_BG] file: user id not "
+                               "found\n";
+                } else {
+                  bgLog("file_avatar_updated");
+                }
+              }
+            })
+            .detach();
+        regLog("cartoon_bg_detached");
+      }
+
+      const auto sessionToken = issueAuthSession(created);
+      regLog("response_ready");
+
+      return makeJsonResponse(
           http::status::created,
           json::object{{"status", "registered"},
-                 {"biometric_provider", biometricProvider},
-                 {"quality_score", qualityScore},
-                       {"user", json::object{{"id", created.id},
-                                              {"company", created.company},
-                                              {"username", created.username},
-                                              {"role", created.role},
-                            {"token", sessionToken.token},
-                                              {"full_name", created.firstName +
-                                                                " " +
-                                                                created.lastName}}}});
+                       {"biometric_provider", biometricProvider},
+                       {"quality_score", qualityScore},
+                       {"user", authUserSessionJson(created,
+                                                    sessionToken.token)}});
     } catch (const std::exception &ex) {
       appendAuthAuditLog(dataRoot, "register", "unknown", "unknown", false,
                          ex.what());
@@ -3378,11 +4734,16 @@ routeRequest(const http::request<http::string_body> &req,
         if (gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
           std::string dbError;
+          std::string errCode;
           auto user = loginPasswordPg(gDatabaseUrl, company, username,
-                                      hashPassword(password), dbError);
+                                      hashPassword(password), dbError,
+                                      &errCode);
           if (!user) {
-            return makeJsonResponse(http::status::unauthorized,
-                                    json::object{{"error", dbError}});
+            json::object jo{{"error", dbError}};
+            if (!errCode.empty()) {
+              jo["code"] = errCode;
+            }
+            return makeJsonResponse(http::status::unauthorized, jo);
           }
           found = *user;
           ok = true;
@@ -3392,22 +4753,45 @@ routeRequest(const http::request<http::string_body> &req,
               json::object{{"error", "postgres support is not compiled"}});
 #endif
         } else {
+          const AuthUser *match = nullptr;
+          size_t matchCount = 0;
           const auto users = loadAuthUsers(dataRoot);
-          const auto it =
-              std::find_if(users.begin(), users.end(), [&](const auto &u) {
-                return u.company == company && u.username == username;
-              });
-
-          if (it == users.end() || it->passwordHash != hashPassword(password)) {
+          for (const auto &u : users) {
+            if (u.company != company) {
+              continue;
+            }
+            if (authIdentityKeyMatchesFsUser(username, u)) {
+              match = &u;
+              matchCount++;
+            }
+          }
+          if (matchCount == 0) {
             appendAuthAuditLog(dataRoot, "login_password", company, username,
-                               false, "invalid_credentials");
+                               false, "user_not_found");
             return makeJsonResponse(
                 http::status::unauthorized,
-                json::object{{"error", "invalid credentials"}});
+                json::object{{"error", std::string(kAuthUserNotFoundMsg)},
+                               {"code", "user_not_found"}});
           }
-          appendAuthAuditLog(dataRoot, "login_password", company, username,
-                             true, "ok");
-          found = *it;
+          if (matchCount > 1) {
+            appendAuthAuditLog(dataRoot, "login_password", company, username,
+                               false, "ambiguous_identity");
+            return makeJsonResponse(
+                http::status::unauthorized,
+                json::object{{"error", std::string(kAuthAmbiguousIdentityMsg)},
+                               {"code", "ambiguous_identity"}});
+          }
+          if (match->passwordHash != hashPassword(password)) {
+            appendAuthAuditLog(dataRoot, "login_password", company,
+                               match->username, false, "invalid_password");
+            return makeJsonResponse(
+                http::status::unauthorized,
+                json::object{{"error", std::string(kAuthWrongPasswordMsg)},
+                               {"code", "wrong_password"}});
+          }
+          appendAuthAuditLog(dataRoot, "login_password", company,
+                             match->username, true, "ok");
+          found = *match;
           ok = true;
         }
       }
@@ -3423,14 +4807,7 @@ routeRequest(const http::request<http::string_body> &req,
           http::status::ok,
           json::object{{"status", "authenticated"},
                        {"method", "password"},
-                       {"user", json::object{{"id", found.id},
-                                              {"company", found.company},
-                                              {"username", found.username},
-                                              {"role", found.role},
-                            {"token", sessionToken.token},
-                                              {"full_name", found.firstName +
-                                                                " " +
-                                                                found.lastName}}}});
+                       {"user", authUserSessionJson(found, sessionToken.token)}});
     } catch (const std::exception &ex) {
       return makeJsonResponse(http::status::bad_request,
                               json::object{{"error", ex.what()}});
@@ -3447,6 +4824,8 @@ routeRequest(const http::request<http::string_body> &req,
 
       const auto &obj = val.as_object();
       if (!obj.if_contains("company") || !obj.at("company").is_string()) {
+        std::cout << "[AUTH_FACE] reject: missing/invalid company field"
+                  << std::endl;
         return makeJsonResponse(http::status::bad_request,
                                 json::object{{"error", "invalid auth payload"}});
       }
@@ -3456,25 +4835,58 @@ routeRequest(const http::request<http::string_body> &req,
       const bool hasImage = obj.if_contains("face_image_base64") &&
                             obj.at("face_image_base64").is_string();
       if (!hasTemplate && !hasImage) {
+        std::cout << "[AUTH_FACE] reject: missing face_template/face_image_base64"
+                  << std::endl;
         return makeJsonResponse(
             http::status::bad_request,
             json::object{{"error", "face_template or face_image_base64 is required"}});
       }
 
-      const std::string company = json::value_to<std::string>(obj.at("company"));
-      const auto threshold = obj.if_contains("threshold") &&
-                                     obj.at("threshold").is_double()
-                                 ? obj.at("threshold").as_double()
-                                 : 0.89;
+      std::string identityLogin;
+      if (obj.if_contains("identity_login") && obj.at("identity_login").is_string()) {
+        identityLogin = json::value_to<std::string>(obj.at("identity_login"));
+      } else if (obj.if_contains("username") && obj.at("username").is_string()) {
+        identityLogin = json::value_to<std::string>(obj.at("username"));
+      }
+      {
+        const char *ws = " \t\n\r";
+        const auto start = identityLogin.find_first_not_of(ws);
+        if (start == std::string::npos) {
+          identityLogin.clear();
+        } else {
+          const auto end = identityLogin.find_last_not_of(ws);
+          identityLogin = identityLogin.substr(start, end - start + 1);
+        }
+      }
+      if (identityLogin.empty()) {
+        std::cout << "[AUTH_FACE] reject: empty identity_login; company="
+                  << json::value_to<std::string>(obj.at("company"))
+                  << " has_template=" << (hasTemplate ? "1" : "0")
+                  << " has_image=" << (hasImage ? "1" : "0") << std::endl;
+        return makeJsonResponse(
+            http::status::bad_request,
+            json::object{{"error",
+                          "Indique usuario, DNI o RUC (campo identity_login) "
+                          "junto con la empresa para el login facial."}});
+      }
 
-      std::vector<double> faceTemplate;
-      std::string biometricProvider = "legacy";
+      const std::string company = json::value_to<std::string>(obj.at("company"));
+      std::cout << "[AUTH_FACE] request: company=" << company
+                << " identity=" << identityLogin
+                << " has_template=" << (hasTemplate ? "1" : "0")
+                << " has_image=" << (hasImage ? "1" : "0") << std::endl;
+      // Umbrales solo desde el servidor (el cliente ya no debe fijar similitud mínima).
+      const double legacyThreshold = gFaceLegacyCosineThreshold;
+
+      std::vector<double> clientProbeTemplate;
+      std::optional<std::vector<unsigned char>> rawImageBytes;
+      std::optional<std::string> base64ForLegacy;
       if (hasTemplate) {
         for (const auto &v : obj.at("face_template").as_array()) {
           if (v.is_double()) {
-            faceTemplate.push_back(v.as_double());
+            clientProbeTemplate.push_back(v.as_double());
           } else if (v.is_int64()) {
-            faceTemplate.push_back(static_cast<double>(v.as_int64()));
+            clientProbeTemplate.push_back(static_cast<double>(v.as_int64()));
           } else {
             return makeJsonResponse(
                 http::status::bad_request,
@@ -3484,38 +4896,39 @@ routeRequest(const http::request<http::string_body> &req,
       } else {
         const std::string base64Image =
             json::value_to<std::string>(obj.at("face_image_base64"));
-        auto face = analyzeFaceImage(base64Image, "verify");
-        if (!face.ok) {
-          json::array issues;
-          for (const auto &issue : face.issues) {
-            issues.push_back(json::value(issue));
-          }
-          return makeJsonResponse(
-              http::status::bad_request,
-              json::object{{"error", "face quality validation failed"},
-                           {"provider", face.provider},
-                           {"issues", issues}});
+        std::vector<unsigned char> raw;
+        if (!decodeBase64(base64Image, raw) || raw.empty()) {
+          return makeJsonResponse(http::status::bad_request,
+                                  json::object{{"error", "invalid base64 image"}});
         }
-        faceTemplate = std::move(face.faceTemplate);
-        biometricProvider = face.provider;
+        rawImageBytes = std::move(raw);
+        base64ForLegacy = base64Image;
       }
 
       AuthUser bestUser;
       double bestScore = -1.0;
       bool ok = false;
+      std::string biometricProvider = "legacy";
       {
         std::scoped_lock lk(gAuthMutex);
         if (gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
           std::string dbError;
-          auto result =
-              loginFacePg(gDatabaseUrl, company, faceTemplate, threshold, dbError);
+          std::string probeProv;
+          auto result = loginFaceTargetedPg(
+              gDatabaseUrl, company, identityLogin, clientProbeTemplate,
+              rawImageBytes, base64ForLegacy, legacyThreshold,
+              gFaceEmbeddingCosineThreshold, dbError, &probeProv);
           if (!result) {
+            std::cout << "[AUTH_FACE] postgres login failed: company=" << company
+                      << " identity=" << identityLogin << " reason=" << dbError
+                      << std::endl;
             return makeJsonResponse(http::status::unauthorized,
                                     json::object{{"error", dbError}});
           }
           bestUser = result->first;
           bestScore = result->second;
+          biometricProvider = probeProv.empty() ? "legacy" : probeProv;
           ok = true;
 #else
           return makeJsonResponse(
@@ -3525,38 +4938,107 @@ routeRequest(const http::request<http::string_body> &req,
         } else {
           const auto users = loadAuthUsers(dataRoot);
 
-          const AuthUser *best = nullptr;
+          const AuthUser *match = nullptr;
+          size_t matchCount = 0;
           for (const auto &u : users) {
             if (u.company != company) {
               continue;
             }
-            const auto score = cosineSimilarity(faceTemplate, u.faceTemplate);
-            if (score > bestScore) {
-              bestScore = score;
-              best = &u;
+            if (authIdentityKeyMatchesFsUser(identityLogin, u)) {
+              match = &u;
+              matchCount++;
             }
           }
 
-          if (!best || bestScore < threshold) {
+          if (matchCount == 0) {
+            std::cout << "[AUTH_FACE] no user for identity in company: "
+                      << company << " / " << identityLogin << std::endl;
             appendAuthAuditLog(dataRoot, "login_face", company, "unknown",
+                               false, "no_user_for_identity");
+            return makeJsonResponse(
+                http::status::unauthorized,
+                json::object{{"error", std::string(kAuthUserNotFoundMsg)}});
+          }
+          if (matchCount > 1) {
+            std::cout << "[AUTH_FACE] ambiguous identity in company: " << company
+                      << " / " << identityLogin << std::endl;
+            appendAuthAuditLog(dataRoot, "login_face", company, "unknown",
+                               false, "ambiguous_identity");
+            return makeJsonResponse(
+                http::status::unauthorized,
+                json::object{
+                    {"error",
+                     "El identificador coincide con más de un registro en esa "
+                     "empresa. Use un dato único e intente de nuevo."}});
+          }
+
+          if (match->faceTemplate.size() < 100) {
+            appendAuthAuditLog(dataRoot, "login_face", company, match->username,
+                               false, "template_too_short");
+            return makeJsonResponse(
+                http::status::unauthorized,
+                json::object{
+                    {"error",
+                     "El usuario indicado no tiene biometría facial registrada "
+                     "de forma completa. Registre el rostro e intente de "
+                     "nuevo."}});
+          }
+          std::vector<double> probe;
+          std::string probeProv;
+          double useThr = legacyThreshold;
+          std::string probeErr;
+          if (!buildFaceLoginProbe(clientProbeTemplate, rawImageBytes,
+                                   base64ForLegacy, match->faceTemplate, probe,
+                                   probeProv, useThr, legacyThreshold,
+                                   gFaceEmbeddingCosineThreshold, probeErr)) {
+            std::cout << "[AUTH_FACE] probe build failed for user="
+                      << match->username << " reason=" << probeErr << std::endl;
+            appendAuthAuditLog(dataRoot, "login_face", company, match->username,
+                               false, "probe_build_failed");
+            return makeJsonResponse(http::status::unauthorized,
+                                    json::object{{"error", probeErr}});
+          }
+          bestScore = cosineSimilarity(probe, match->faceTemplate);
+          if (bestScore < useThr) {
+            std::cout << "[AUTH_FACE] score below threshold user="
+                      << match->username << " score=" << bestScore
+                      << " threshold=" << useThr << " provider=" << probeProv
+                      << std::endl;
+            appendAuthAuditLog(dataRoot, "login_face", company, match->username,
                                false, "no_match");
             return makeJsonResponse(
                 http::status::unauthorized,
-                json::object{{"error", "face not recognized"}});
+                json::object{
+                    {"error",
+                     "La biometría facial no coincide con el usuario indicado. "
+                     "Verifique su identidad y vuelva a intentar."}});
           }
-          appendAuthAuditLog(dataRoot, "login_face", company, best->username,
-                             true, "ok score=" + std::to_string(bestScore));
-          bestUser = *best;
+          appendAuthAuditLog(
+              dataRoot, "login_face", company, match->username, true,
+              "ok score=" + std::to_string(bestScore) + " probe=" + probeProv);
+          bestUser = *match;
+          biometricProvider =
+              probeProv.empty() ? "legacy" : probeProv;
           ok = true;
         }
       }
 
       if (!ok) {
-        return makeJsonResponse(http::status::unauthorized,
-                                json::object{{"error", "face not recognized"}});
+        std::cout << "[AUTH_FACE] failed: unknown reason company=" << company
+                  << " identity=" << identityLogin << std::endl;
+        return makeJsonResponse(
+            http::status::unauthorized,
+            json::object{
+                {"error",
+                 "No se pudo completar el inicio de sesión facial. Intente de "
+                 "nuevo."}});
       }
 
         const auto sessionToken = issueAuthSession(bestUser);
+        std::cout << "[AUTH_FACE] success user=" << bestUser.username
+                  << " company=" << bestUser.company
+                  << " provider=" << biometricProvider
+                  << " score=" << bestScore << std::endl;
 
         return makeJsonResponse(
           http::status::ok,
@@ -3564,14 +5046,7 @@ routeRequest(const http::request<http::string_body> &req,
                        {"method", "face"},
                        {"biometric_provider", biometricProvider},
                        {"score", bestScore},
-                       {"user", json::object{{"id", bestUser.id},
-                                              {"company", bestUser.company},
-                                              {"username", bestUser.username},
-                                              {"role", bestUser.role},
-                            {"token", sessionToken.token},
-                                              {"full_name", bestUser.firstName +
-                                                                " " +
-                                                                bestUser.lastName}}}});
+                       {"user", authUserSessionJson(bestUser, sessionToken.token)}});
     } catch (const std::exception &ex) {
       return makeJsonResponse(http::status::bad_request,
                               json::object{{"error", ex.what()}});
@@ -3894,7 +5369,9 @@ routeRequest(const http::request<http::string_body> &req,
     for (const auto &r : reports) {
         arr.push_back(json::object{
             {"id", r.id}, {"project_id", r.projectId}, {"title", r.title},
-            {"status", r.status}, {"created_at", r.createdAt}, {"updated_at", r.updatedAt}
+            {"status", r.status}, {"created_at", r.createdAt}, {"updated_at", r.updatedAt},
+            {"company_name", r.company},
+            {"createdAt", r.createdAt}, {"updatedAt", r.updatedAt}, {"company", r.company}
         });
     }
     return makeJsonResponse(http::status::ok, json::object{{"reports", arr}});
@@ -3909,7 +5386,7 @@ routeRequest(const http::request<http::string_body> &req,
     if (!rest.empty() && rest.find('/') == std::string::npos) {
       std::string error;
       Report r;
-      if (getReportByIdPg(gDatabaseUrl, rest, r, error)) {
+      if (getReportByIdPg(gDatabaseUrl, rest, session->company, r, error)) {
         return makeJsonResponse(
             http::status::ok,
             json::object{{"id", r.id},
@@ -3920,7 +5397,11 @@ routeRequest(const http::request<http::string_body> &req,
                          {"content_json", r.contentJson},
                          {"status", r.status},
                          {"created_at", r.createdAt},
-                         {"updated_at", r.updatedAt}});
+                         {"updated_at", r.updatedAt},
+                         {"company_name", r.company},
+                         {"createdAt", r.createdAt},
+                         {"updatedAt", r.updatedAt},
+                         {"company", r.company}});
       }
       return makeJsonResponse(http::status::not_found,
                               json::object{{"error", error}});
@@ -3968,7 +5449,7 @@ routeRequest(const http::request<http::string_body> &req,
         r.status = obj.contains("status") ? json::value_to<std::string>(obj.at("status")) : "draft";
 
         std::string error;
-        if (updateReportPg(gDatabaseUrl, id, r, error)) {
+        if (updateReportPg(gDatabaseUrl, id, session->company, r, error)) {
             return makeJsonResponse(http::status::ok, json::object{{"status", "updated"}});
         }
         return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
@@ -3983,10 +5464,293 @@ routeRequest(const http::request<http::string_body> &req,
 
     std::string id = pathOnly.substr(std::string("/api/reports/").size());
     std::string error;
-    if (deleteReportPg(gDatabaseUrl, id, error)) {
+    if (deleteReportPg(gDatabaseUrl, id, session->company, error)) {
         return makeJsonResponse(http::status::ok, json::object{{"status", "deleted"}});
     }
     return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
+  }
+
+  if (req.method() == http::verb::get && pathOnly == "/api/formula/dictionary") {
+    const auto session = resolveAuthSession(req, query);
+    if (!session) return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+#if HAS_LIBPQ
+    PGconn *conn = PQconnectdb(gDatabaseUrl.c_str());
+    if (PQstatus(conn) == CONNECTION_OK) {
+      if (ensureAuthSchemaPg(conn)) {
+        PGresult *res = PQexec(conn, "SELECT code, display_name, category, data_type, unit, description, example_value, sort_order FROM formula_data_dictionary WHERE is_active = TRUE ORDER BY sort_order, display_name");
+        if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
+          json::array items;
+          for (int i = 0; i < PQntuples(res); ++i) {
+            items.push_back(json::object{
+              {"code", PQgetvalue(res, i, 0)},
+              {"display_name", PQgetvalue(res, i, 1)},
+              {"category", PQgetvalue(res, i, 2)},
+              {"data_type", PQgetvalue(res, i, 3)},
+              {"unit", PQgetisnull(res, i, 4) ? "" : std::string(PQgetvalue(res, i, 4))},
+              {"description", PQgetvalue(res, i, 5)},
+              {"example_value", PQgetisnull(res, i, 6) ? "" : std::string(PQgetvalue(res, i, 6))},
+              {"sort_order", std::atoi(PQgetvalue(res, i, 7))}
+            });
+          }
+          PQclear(res);
+          PQfinish(conn);
+          return makeJsonResponse(http::status::ok, json::object{{"items", items}});
+        }
+        if (res) PQclear(res);
+      }
+    }
+    if (conn) PQfinish(conn);
+#endif
+    return makeJsonResponse(http::status::ok, json::object{{"items", json::array()}});
+  }
+
+  if (req.method() == http::verb::get && pathOnly == "/api/analysis/catalogos") {
+    const auto session = resolveAuthSession(req, query);
+    if (!session) return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+    const std::string formulaCompany = trimCompanyName(session->company);
+#if HAS_LIBPQ
+    PGconn *conn = PQconnectdb(gDatabaseUrl.c_str());
+    if (PQstatus(conn) == CONNECTION_OK && ensureFormulaSchemaPg(conn, formulaCompany)) {
+      std::string sql =
+          "SELECT empresa_id, empresa_codigo, empresa_nombre, mina_id, mina_codigo, mina_nombre, zona_tipo, "
+          "umbral_temp_alerta, sensor_id, sensor_codigo, sensor_nombre, variable_id, variable_codigo, variable_nombre, unidad "
+          "FROM v_mineria_catalogos WHERE empresa_nombre = " + pqEscapeLiteral(conn, formulaCompany) +
+          " ORDER BY mina_codigo";
+      PGresult *res = PQexec(conn, sql.c_str());
+      if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
+        json::array rows;
+        for (int i = 0; i < PQntuples(res); ++i) {
+          rows.push_back(json::object{
+              {"empresa_id", std::atoi(PQgetvalue(res, i, 0))},
+              {"empresa_codigo", PQgetvalue(res, i, 1)},
+              {"empresa_nombre", PQgetvalue(res, i, 2)},
+              {"mina_id", std::atoi(PQgetvalue(res, i, 3))},
+              {"mina_codigo", PQgetvalue(res, i, 4)},
+              {"mina_nombre", PQgetvalue(res, i, 5)},
+              {"zona_tipo", PQgetisnull(res, i, 6) ? "" : std::string(PQgetvalue(res, i, 6))},
+              {"umbral_temp_alerta", std::atof(PQgetvalue(res, i, 7))},
+              {"sensor_id", std::atoi(PQgetvalue(res, i, 8))},
+              {"sensor_codigo", PQgetvalue(res, i, 9)},
+              {"sensor_nombre", PQgetvalue(res, i, 10)},
+              {"variable_id", std::atoi(PQgetvalue(res, i, 11))},
+              {"variable_codigo", PQgetvalue(res, i, 12)},
+              {"variable_nombre", PQgetvalue(res, i, 13)},
+              {"unidad", PQgetisnull(res, i, 14) ? "" : std::string(PQgetvalue(res, i, 14))}
+          });
+        }
+        PQclear(res);
+        std::string usersSql =
+            "SELECT username FROM auth_users WHERE TRIM(company_name) = " + pqEscapeLiteral(conn, formulaCompany) +
+            " ORDER BY username";
+        PGresult *uRes = PQexec(conn, usersSql.c_str());
+        json::array usuarios;
+        if (uRes && PQresultStatus(uRes) == PGRES_TUPLES_OK) {
+          for (int i = 0; i < PQntuples(uRes); ++i) {
+            usuarios.push_back(PQgetvalue(uRes, i, 0));
+          }
+        }
+        if (uRes) PQclear(uRes);
+        PQfinish(conn);
+        return makeJsonResponse(http::status::ok, json::object{{"rows", rows}, {"usuarios", usuarios}});
+      }
+      if (res) PQclear(res);
+    }
+    if (conn) PQfinish(conn);
+#endif
+    return makeJsonResponse(http::status::internal_server_error, json::object{{"error", "analysis_catalog_error"}});
+  }
+
+  if (req.method() == http::verb::post && pathOnly == "/api/analysis/temperaturas") {
+    const auto session = resolveAuthSession(req, query);
+    if (!session) return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+    try {
+      auto body = json::parse(req.body()).as_object();
+      int minaId = body.if_contains("mina_id") ? static_cast<int>(json::value_to<int64_t>(body.at("mina_id"))) : 0;
+      int sensorId = body.if_contains("sensor_id") ? static_cast<int>(json::value_to<int64_t>(body.at("sensor_id"))) : 0;
+      std::string usuario = body.if_contains("usuario") ? json::value_to<std::string>(body.at("usuario")) : "";
+      std::string fechaInicio = body.if_contains("fecha_inicio") ? json::value_to<std::string>(body.at("fecha_inicio")) : "";
+      std::string fechaFin = body.if_contains("fecha_fin") ? json::value_to<std::string>(body.at("fecha_fin")) : "";
+      if (minaId <= 0 || sensorId <= 0 || usuario.empty() || fechaInicio.empty() || fechaFin.empty()) {
+        return makeJsonResponse(http::status::bad_request, json::object{{"error", "mina_id, sensor_id, usuario, fecha_inicio y fecha_fin son requeridos"}});
+      }
+      const std::string formulaCompany = trimCompanyName(session->company);
+#if HAS_LIBPQ
+      PGconn *conn = PQconnectdb(gDatabaseUrl.c_str());
+      if (PQstatus(conn) == CONNECTION_OK && ensureFormulaSchemaPg(conn, formulaCompany)) {
+        const std::string findEmpresa =
+            "SELECT id::text FROM mineria_empresas WHERE nombre = " + pqEscapeLiteral(conn, formulaCompany) + " LIMIT 1";
+        PGresult *empresaRes = PQexec(conn, findEmpresa.c_str());
+        if (!empresaRes || PQresultStatus(empresaRes) != PGRES_TUPLES_OK || PQntuples(empresaRes) < 1) {
+          if (empresaRes) PQclear(empresaRes);
+          PQfinish(conn);
+          return makeJsonResponse(http::status::internal_server_error, json::object{{"error", "empresa_not_found"}});
+        }
+        const std::string empresaId = PQgetvalue(empresaRes, 0, 0);
+        PQclear(empresaRes);
+        const std::string findVariableSql =
+            "SELECT variable_id::text FROM mineria_sensores WHERE id = " + pqEscapeLiteral(conn, std::to_string(sensorId)) +
+            " AND empresa_id = " + pqEscapeLiteral(conn, empresaId) +
+            " AND mina_id = " + pqEscapeLiteral(conn, std::to_string(minaId)) + " LIMIT 1";
+        PGresult *varRes = PQexec(conn, findVariableSql.c_str());
+        if (!varRes || PQresultStatus(varRes) != PGRES_TUPLES_OK || PQntuples(varRes) < 1) {
+          if (varRes) PQclear(varRes);
+          PQfinish(conn);
+          return makeJsonResponse(http::status::bad_request, json::object{{"error", "sensor_no_valido_para_empresa_y_mina"}});
+        }
+        const std::string variableId = PQgetvalue(varRes, 0, 0);
+        PQclear(varRes);
+        std::string sql =
+            "SELECT timestamp_lectura::text, valor_original::double precision, calidad, umbral_alerta::double precision, "
+            "condicion_resultado, valor_procesado::double precision, descripcion "
+            "FROM sp_proceso_temperatura(" + pqEscapeLiteral(conn, empresaId) + "::integer," +
+            pqEscapeLiteral(conn, std::to_string(minaId)) + "::integer," +
+            pqEscapeLiteral(conn, variableId) + "::integer," +
+            pqEscapeLiteral(conn, fechaInicio) + "::timestamptz," +
+            pqEscapeLiteral(conn, fechaFin) + "::timestamptz)";
+        PGresult *res = PQexec(conn, sql.c_str());
+        if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
+          json::array data;
+          int totalSi = 0;
+          for (int i = 0; i < PQntuples(res); ++i) {
+            const std::string cond = PQgetvalue(res, i, 4);
+            if (cond == "SI") totalSi++;
+            data.push_back(json::object{
+              {"timestamp_lectura", PQgetvalue(res, i, 0)},
+              {"valor_original", std::atof(PQgetvalue(res, i, 1))},
+              {"calidad", std::atoi(PQgetvalue(res, i, 2))},
+              {"umbral_alerta", std::atof(PQgetvalue(res, i, 3))},
+              {"condicion_resultado", cond},
+              {"valor_procesado", std::atof(PQgetvalue(res, i, 5))},
+              {"descripcion", PQgetvalue(res, i, 6)}
+            });
+          }
+          int total = PQntuples(res);
+          PQclear(res);
+          PQfinish(conn);
+          double pctAlertas = total > 0 ? (100.0 * static_cast<double>(totalSi) / static_cast<double>(total)) : 0.0;
+          return makeJsonResponse(http::status::ok, json::object{
+            {"rows", data},
+            {"summary", json::object{{"usuario", usuario}, {"total_lecturas", total}, {"total_si", totalSi}, {"total_no", total - totalSi}, {"pct_alertas", pctAlertas}}}
+          });
+        }
+        if (res) PQclear(res);
+      }
+      if (conn) PQfinish(conn);
+#endif
+      return makeJsonResponse(http::status::internal_server_error, json::object{{"error", "analysis_execution_error"}});
+    } catch (...) {
+      return makeJsonResponse(http::status::bad_request, json::object{{"error", "invalid_payload"}});
+    }
+  }
+
+  const auto buildAuthLoginCheckIdentityResponse =
+      [&](std::string companyRaw, std::string identityRaw)
+      -> http::response<http::string_body> {
+        auto trimAuthParam = [](std::string s) -> std::string {
+          const char *ws = " \t\n\r";
+          const auto a = s.find_first_not_of(ws);
+          if (a == std::string::npos) {
+            return {};
+          }
+          const auto b = s.find_last_not_of(ws);
+          return s.substr(a, b - a + 1);
+        };
+        std::string company = trimAuthParam(std::move(companyRaw));
+        std::string identity = trimAuthParam(std::move(identityRaw));
+        if (company.empty() || identity.empty()) {
+          return makeJsonResponse(
+              http::status::bad_request,
+              json::object{
+                  {"ok", false},
+                  {"reason", "bad_request"},
+                  {"error",
+                   "Indique empresa e identificador (Usuario, DNI o RUC)."}});
+        }
+        AuthLoginIdentityLookupResult lu;
+        {
+          std::scoped_lock lk(gAuthMutex);
+          if (gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+            lu = authLookupIdentityForCompanyPg(gDatabaseUrl, company, identity);
+#else
+            lu.kind = AuthLoginIdentityLookupResult::Kind::DbError;
+            lu.diagnostic = "postgres support is not compiled";
+#endif
+          } else {
+            lu = authLookupIdentityForCompanyFs(dataRoot, company, identity);
+          }
+        }
+        using ILKind = AuthLoginIdentityLookupResult::Kind;
+        if (lu.kind == ILKind::DbError) {
+          return makeJsonResponse(
+              http::status::internal_server_error,
+              json::object{
+                  {"ok", false},
+                  {"reason", "server_error"},
+                  {"error",
+                   lu.diagnostic.empty() ? "No se pudo comprobar el usuario."
+                                        : lu.diagnostic}});
+        }
+        if (lu.kind == ILKind::NotFound) {
+          return makeJsonResponse(
+              http::status::ok,
+              json::object{{"ok", false},
+                           {"reason", "not_found"},
+                           {"error", std::string(kAuthUserNotFoundMsg)}});
+        }
+        if (lu.kind == ILKind::Ambiguous) {
+          return makeJsonResponse(
+              http::status::ok,
+              json::object{{"ok", false},
+                           {"reason", "ambiguous"},
+                           {"error", std::string(kAuthAmbiguousIdentityMsg)}});
+        }
+        return makeJsonResponse(
+            http::status::ok,
+            json::object{{"ok", true}, {"username", lu.resolvedUsername}});
+      };
+
+  if (req.method() == http::verb::get &&
+      pathOnly == "/api/auth/login/check-identity") {
+    const std::string company =
+        query.count("company") ? query.at("company") : "";
+    const std::string identity =
+        query.count("identity") ? query.at("identity") : "";
+    return buildAuthLoginCheckIdentityResponse(company, identity);
+  }
+
+  if (req.method() == http::verb::post &&
+      pathOnly == "/api/auth/login/check-identity") {
+    try {
+      auto val = json::parse(req.body());
+      if (!val.is_object()) {
+        return makeJsonResponse(
+            http::status::bad_request,
+            json::object{{"ok", false},
+                         {"reason", "bad_request"},
+                         {"error", "invalid JSON body"}});
+      }
+      const auto &obj = val.as_object();
+      std::string company;
+      std::string identity;
+      if (obj.if_contains("company") && obj.at("company").is_string()) {
+        company = json::value_to<std::string>(obj.at("company"));
+      }
+      if (obj.if_contains("identity") && obj.at("identity").is_string()) {
+        identity = json::value_to<std::string>(obj.at("identity"));
+      } else if (obj.if_contains("username") &&
+                 obj.at("username").is_string()) {
+        identity = json::value_to<std::string>(obj.at("username"));
+      }
+      return buildAuthLoginCheckIdentityResponse(std::move(company),
+                                                 std::move(identity));
+    } catch (const std::exception &) {
+      return makeJsonResponse(
+          http::status::bad_request,
+          json::object{{"ok", false},
+                       {"reason", "bad_request"},
+                       {"error", "invalid JSON body"}});
+    }
   }
 
   if (req.method() == http::verb::get && pathOnly == "/api/auth/validate-company") {
@@ -4169,6 +5933,7 @@ int main() {
     gBiometricDnnEnabled =
         toLowerCopy(getenvOr("BIOMETRIC_DNN_ENABLE", "false")) == "true";
     gAiEngineUrl = getenvOr("AI_ENGINE_URL", "");
+    gCartoonOnnxModelPath = getenvOr("CARTOON_ONNX_MODEL", "");
     try {
       gAiEngineTimeoutMs = std::clamp(
           std::stoi(getenvOr("AI_ENGINE_TIMEOUT_MS", "500")), 50, 5000);
@@ -4176,11 +5941,32 @@ int main() {
       gAiEngineTimeoutMs = 500;
     }
     try {
+      gAiEngineCartoonTimeoutMs = std::clamp(
+          std::stoi(getenvOr("AI_ENGINE_CARTOON_TIMEOUT_MS", "8000")), 500,
+          600000);
+    } catch (...) {
+      gAiEngineCartoonTimeoutMs = 8000;
+    }
+    try {
       gAiEngineMaxImageBytes = static_cast<std::size_t>(std::clamp(
           std::stoi(getenvOr("AI_ENGINE_MAX_IMAGE_BYTES", "450000")), 100000,
-          2000000));
+          6000000));
     } catch (...) {
       gAiEngineMaxImageBytes = 450000;
+    }
+    try {
+      gFaceEmbeddingCosineThreshold = std::clamp(
+          std::stod(getenvOr("FACE_EMBEDDING_COSINE_THRESHOLD", "0.45")), 0.20,
+          0.99);
+    } catch (...) {
+      gFaceEmbeddingCosineThreshold = 0.45;
+    }
+    try {
+      gFaceLegacyCosineThreshold = std::clamp(
+          std::stod(getenvOr("FACE_LEGACY_COSINE_THRESHOLD", "0.82")), 0.55,
+          0.99);
+    } catch (...) {
+      gFaceLegacyCosineThreshold = 0.82;
     }
     try {
       gBiometricIcaoEyeConfidenceMin = static_cast<float>(std::clamp(
@@ -4253,10 +6039,21 @@ int main() {
       std::cout << ", init_error: " << dnnCtx.initError;
     }
     std::cout << std::endl;
+    std::cout << "cartoon_onnx: linked=" << (informeCartoonOnnxRuntimeLinked() ? "true" : "false")
+              << ", model="
+              << (gCartoonOnnxModelPath.empty() ? "(none)" : gCartoonOnnxModelPath)
+              << ", exists="
+              << ((!gCartoonOnnxModelPath.empty() && fs::exists(gCartoonOnnxModelPath))
+                      ? "true"
+                      : "false")
+              << std::endl;
     std::cout << "ai_engine_url: "
               << (gAiEngineUrl.empty() ? "(disabled)" : gAiEngineUrl)
               << ", timeout_ms: " << gAiEngineTimeoutMs
+              << ", cartoon_timeout_ms: " << gAiEngineCartoonTimeoutMs
               << ", max_image_bytes: " << gAiEngineMaxImageBytes
+              << ", face_embed_cos_thr: " << gFaceEmbeddingCosineThreshold
+              << ", face_legacy_cos_thr: " << gFaceLegacyCosineThreshold
               << ", image_optimizer: "
               << (gImageOptimizerEnabled ? "enabled" : "disabled")
               << ", max_pixels: " << gBiometricMaxPixels << std::endl;

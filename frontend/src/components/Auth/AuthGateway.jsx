@@ -1,4 +1,11 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+} from 'react'
 import {
     Camera,
     Building2,
@@ -10,11 +17,11 @@ import {
     AlertTriangle,
 } from 'lucide-react'
 import {
-    clearSession,
     createSession,
     getSession,
 } from '../../auth/authStorage'
 import {
+    checkLoginIdentity,
     fetchCompanies,
     loginWithFace,
     loginWithPassword,
@@ -30,230 +37,94 @@ import {
 } from '../../auth/biometricFiveHelpers'
 import {
     preprocessImageDataForFaceDetection,
+    
     meanLuminanceImageData,
     luminanceStdDevImageData,
     classifyRawDifficultLighting,
     medianFaceBoundingBox,
     faceCenterJumpRatio,
 } from '../../auth/faceTrackingUtils'
+import {
+    getBiometricOvalVideoMetrics,
+    buildFullFrameJpegBase64FromVideo,
+    computeBiometricOvalLayout,
+    mapOvalLayoutVideoToStage,
+    frameToTemplate,
+    frameToJpegBase64,
+    frameToOvalPortraitJpegBase64,
+    frameToBustRectAroundOvalJpegBase64,
+    FACIAL_STRICT_OVAL_MODE,
+    FACIAL_STRICT_OVAL_W_PCT,
+    FACIAL_STRICT_OVAL_H_PCT,
+} from '../../auth/biometricOvalFrame'
+import enterpriseMiningMark from '../../brand/enterprise-mining-mark.svg'
 
-const DEFAULT_COMPANIES = ['Minera Raura', 'Compania Minera Volcan', 'Minera Antamina', 'Minera Cerro Verde']
+const DEFAULT_COMPANIES = [
+    'Alpayana',
+    'Anglo American Quellaveco',
+    'Ares',
+    'Bear Creek Mining',
+    'Buenaventura',
+    'Catalina Huanca',
+    'Chinalco Peru',
+    'Compania Minera Antamina',
+    'Compania Minera Ares',
+    'Compania Minera Poderosa',
+    'Compania Minera Raura',
+    'Compania Minera San Ignacio de Morococha',
+    'Compania Minera Volcan',
+    'Consorcio Minero Horizonte',
+    'DOE Run Peru',
+    'Dynacor',
+    'El Brocal',
+    'Gold Fields La Cima',
+    'Hochschild Mining Peru',
+    'Hudbay Peru',
+    'Jinzhao Mining Peru',
+    'Las Bambas',
+    'Marcobre',
+    'Minera Antamina',
+    'Minera Antapaccay',
+    'Minera Bateas',
+    'Minera Boroo Misquichilca',
+    'Minera Caraveli',
+    'Minera Cerro Verde',
+    'Minera Condestable',
+    'Minera Corona',
+    'Minera IRL',
+    'Minera Los Quenuales',
+    'Minera Poderosa',
+    'Minera Raura',
+    'Minsur',
+    'Nexa Resources Peru',
+    'Pan American Silver Peru',
+    'Shougang Hierro Peru',
+    'Sierra Metals Yauricocha',
+    'Sociedad Minera El Brocal',
+    'Southern Peru Copper Corporation',
+    'Summa Gold',
+    'Yanacocha',
+]
+const DEFAULT_LOGIN_BG_URL = '/data/Image/Login/MINA_image.jpg'
+const LOGIN_BG_BY_COMPANY = {
+    'minera raura': '/data/Image/Login/Minera%20raura.jpg',
+    'compania minera volcan': '/data/Image/Login/Compa%C3%B1ia%20Minera%20Volcal.jpg',
+    'compania minera volcal': '/data/Image/Login/Compa%C3%B1ia%20Minera%20Volcal.jpg',
+    'minera antamina': '/data/Image/Login/Minera%20antamina.jpg',
+    'minera cerro verde': '/data/Image/Login/MINERa%20cerro%20verde.jpg',
+    'minera antapaccay': '/data/Image/Login/Minera%20antapaccay.jpg',
+}
 
-// Recorte enviado al motor IA (rectángulo del detector; independiente de la forma del óvalo UI)
-const BIOMETRIC_OVAL_W_FACTOR = 0.98
-const BIOMETRIC_OVAL_H_FACTOR = 1.02
-const BIOMETRIC_OVAL_X_OFFSET = 0.12
-const BIOMETRIC_OVAL_Y_OFFSET = -0.05
+function normalizeCompanyKey(companyName) {
+    return String(companyName || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
+}
 
-/** Óvalo facial en pantalla: siempre más alto que ancho (proporción humana), no hereda el aspecto del bbox. */
-const OVAL_HEIGHT_OVER_WIDTH = 1.36
-const OVAL_MAX_W_FRAC = 0.86
-const OVAL_MAX_H_FRAC = 0.92
-const OVAL_MIN_W_FRAC = 0.4
-const OVAL_MIN_H_FRAC = 0.74
-/** false = óvalo sigue el bbox suavizado del rostro (como C:\\FACIAL); true = óvalo fijo al centro (sin tracking). */
-const FACIAL_STRICT_OVAL_MODE = false
-const FACIAL_STRICT_OVAL_W_PCT = (280 / 640) * 100
-const FACIAL_STRICT_OVAL_H_PCT = (380 / 480) * 100
 const BUILD_STAMP = import.meta.env.VITE_BUILD_STAMP || 'dev'
-
-function clampPortraitOvalPx(ow, oh, vw, vh, hr = OVAL_HEIGHT_OVER_WIDTH) {
-    let w = Math.max(ow, 24)
-    let h = w * hr
-    const maxW = vw * OVAL_MAX_W_FRAC
-    const maxH = vh * OVAL_MAX_H_FRAC
-    if (w > maxW) {
-        const s = maxW / w
-        w *= s
-        h *= s
-    }
-    if (h > maxH) {
-        const s = maxH / h
-        w *= s
-        h *= s
-    }
-    if (h < w * hr) {
-        h = w * hr
-        if (h > maxH) {
-            h = maxH
-            w = h / hr
-        }
-    }
-    return { ow: w, oh: h }
-}
-
-/**
- * Óvalo centrado en el rostro. El tamaño sigue la distancia (tamaño del rostro en frame);
- * la forma es fija vertical (alto/ancho = OVAL_HEIGHT_OVER_WIDTH), no la del bbox del detector.
- */
-function computeBiometricOvalLayout(box, vw, vh) {
-    if (FACIAL_STRICT_OVAL_MODE) {
-        return {
-            leftPct: 50,
-            topPct: 50,
-            wPct: FACIAL_STRICT_OVAL_W_PCT,
-            hPct: FACIAL_STRICT_OVAL_H_PCT,
-            transform: 'translate(-50%, -50%)',
-        }
-    }
-    const hr = OVAL_HEIGHT_OVER_WIDTH
-    if (!box || vw < 32 || vh < 32) {
-        return null
-    }
-    const cx = box.x + box.width / 2
-    const cy = box.y + box.height / 2
-    const ow0 = Math.max(vw * OVAL_MIN_W_FRAC, box.width * 1.52)
-    const oh0 = ow0 * hr
-    const { ow, oh } = clampPortraitOvalPx(
-        ow0,
-        Math.max(vh * OVAL_MIN_H_FRAC, oh0),
-        vw,
-        vh,
-        hr
-    )
-    const wPct = (ow / vw) * 100
-    const hPct = (oh / vh) * 100
-    return {
-        leftPct: (cx / vw) * 100,
-        topPct: (cy / vh) * 100,
-        wPct,
-        hPct,
-        transform: 'translate(-50%, -50%)',
-    }
-}
-
-/**
- * Mapea el óvalo (coords del frame de vídeo) al contenedor del <video>.
- * Misma lógica que object-fit: contain (como C:\\FACIAL\\www\\style.css #video-stream).
- */
-function mapOvalLayoutVideoToStage(layout, vw, vh, stageW, stageH) {
-    if (stageW < 8 || stageH < 8 || vw < 32 || vh < 32) {
-        return layout
-    }
-    const cx = (layout.leftPct / 100) * vw
-    const cy = (layout.topPct / 100) * vh
-    const ow = (layout.wPct / 100) * vw
-    const oh = (layout.hPct / 100) * vh
-
-    const scale = Math.min(stageW / vw, stageH / vh)
-    const dispW = vw * scale
-    const dispH = vh * scale
-    const offX = (stageW - dispW) / 2
-    const offY = (stageH - dispH) / 2
-
-    const scx = offX + cx * scale
-    const scy = offY + cy * scale
-    const sow = ow * scale
-    const soh = oh * scale
-
-    const wS = (sow / stageW) * 100
-    const hS = (soh / stageH) * 100
-    return {
-        leftPct: (scx / stageW) * 100,
-        topPct: (scy / stageH) * 100,
-        wPct: wS,
-        hPct: hS,
-        transform: layout.transform,
-    }
-}
-
-function getCropFromFaceBox(videoWidth, videoHeight, faceBox) {
-    if (!faceBox) {
-        return { x: 0, y: 0, width: videoWidth, height: videoHeight }
-    }
-
-    const minDim = Math.max(64, Math.min(videoWidth, videoHeight))
-    const maxSquare = Math.min(videoWidth, videoHeight)
-    // Recorte cuadrado centrado en el rostro; escala según tamaño detectado.
-    const adaptiveSize = Math.round(
-        Math.max(minDim * 0.35, Math.min(maxSquare, Math.max(faceBox.width, faceBox.height) * 1.55))
-    )
-    const cropSize = Math.max(64, Math.min(maxSquare, adaptiveSize))
-    const cx = faceBox.x + faceBox.width / 2
-    const cy = faceBox.y + faceBox.height / 2
-
-    let x = Math.floor(cx - cropSize / 2)
-    let y = Math.floor(cy - cropSize / 2)
-    x = Math.max(0, Math.min(videoWidth - cropSize, x))
-    y = Math.max(0, Math.min(videoHeight - cropSize, y))
-
-    return { x, y, width: cropSize, height: cropSize }
-}
-
-function normalizeVector(vector) {
-    const max = Math.max(...vector, 1)
-    if (max === 0) {
-        return vector
-    }
-    return vector.map((v) => Number((v / max).toFixed(6)))
-}
-
-function frameToTemplate(videoElement, cropBox) {
-    const sourceWidth = videoElement.videoWidth || 960
-    const sourceHeight = videoElement.videoHeight || 540
-    const crop = getCropFromFaceBox(sourceWidth, sourceHeight, cropBox)
-
-    const sourceCanvas = document.createElement('canvas')
-    sourceCanvas.width = crop.width
-    sourceCanvas.height = crop.height
-    const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true })
-    sourceContext.drawImage(
-        videoElement,
-        crop.x,
-        crop.y,
-        crop.width,
-        crop.height,
-        0,
-        0,
-        crop.width,
-        crop.height
-    )
-
-    const size = 24
-    const canvas = document.createElement('canvas')
-    canvas.width = size
-    canvas.height = size
-    const context = canvas.getContext('2d', { willReadFrequently: true })
-
-    context.drawImage(sourceCanvas, 0, 0, size, size)
-    const pixels = context.getImageData(0, 0, size, size).data
-
-    const vector = []
-    for (let i = 0; i < pixels.length; i += 4) {
-        const r = pixels[i]
-        const g = pixels[i + 1]
-        const b = pixels[i + 2]
-        const gray = r * 0.299 + g * 0.587 + b * 0.114
-        vector.push(gray)
-    }
-
-    return normalizeVector(vector)
-}
-
-function frameToJpegBase64(videoElement, cropBox) {
-    const sourceWidth = videoElement.videoWidth || 960
-    const sourceHeight = videoElement.videoHeight || 540
-    const crop = getCropFromFaceBox(sourceWidth, sourceHeight, cropBox)
-
-    const canvas = document.createElement('canvas')
-    canvas.width = crop.width
-    canvas.height = crop.height
-    const context = canvas.getContext('2d')
-    context.drawImage(
-        videoElement,
-        crop.x,
-        crop.y,
-        crop.width,
-        crop.height,
-        0,
-        0,
-        crop.width,
-        crop.height
-    )
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
-    const [, base64 = ''] = dataUrl.split(',')
-    return base64
-}
 
 const getSkinCentroid = (ctx, w, h) => {
     try {
@@ -280,6 +151,9 @@ const AuthGateway = ({ onAuthenticated }) => {
     const [message, setMessage] = useState('')
     const [error, setError] = useState('')
     const [cameraReady, setCameraReady] = useState(false)
+    /** Login: cámara solo tras «Ingresar con Reconocimiento Facial»; ventana limitada en tiempo. */
+    const [loginBiometricSession, setLoginBiometricSession] = useState(false)
+    const [loginSessionSecondsLeft, setLoginSessionSecondsLeft] = useState(null)
     const [isProcessing, setIsProcessing] = useState(false)
     const [companies, setCompanies] = useState(DEFAULT_COMPANIES)
 
@@ -303,12 +177,22 @@ const AuthGateway = ({ onAuthenticated }) => {
         role: 'operator',
         rucValid: false,
         isValidatingRuc: false,
+        passwordConfirm: '',
     })
+
+    const [registerUserBiometricStep, setRegisterUserBiometricStep] = useState('form')
+    const [registerSessionSecondsLeft, setRegisterSessionSecondsLeft] = useState(null)
+    const [registrationCompleteSession, setRegistrationCompleteSession] = useState(null)
 
     const [capturedTemplate, setCapturedTemplate] = useState(null)
     const [capturedImageBase64, setCapturedImageBase64] = useState('')
+    const [capturedPortraitOvalBase64, setCapturedPortraitOvalBase64] = useState('')
+    const [capturedBustRectBase64, setCapturedBustRectBase64] = useState('')
     const [liveFaceBox, setLiveFaceBox] = useState(null)
-    const [frameMetrics, setFrameMetrics] = useState({ width: 1, height: 1 })
+    const [frameMetrics, setFrameMetrics] = useState(() => ({
+        width: FACIAL_ICAO.CAMERA.width.ideal,
+        height: FACIAL_ICAO.CAMERA.height.ideal,
+    }))
     const [faceGuide, setFaceGuide] = useState({
         detected: false,
         frontal: false,
@@ -323,7 +207,10 @@ const AuthGateway = ({ onAuthenticated }) => {
         icaoFrontal: null,
         icaoNoGlasses: null,
         livenessScore: 0,
+        inTargetZone: true,
+        serverFaceOval: null,
     })
+    const [cameraStageSize, setCameraStageSize] = useState({ width: 0, height: 0 })
     const videoRef = useRef(null)
     const streamRef = useRef(null)
     const detectorRef = useRef(null)
@@ -345,52 +232,243 @@ const AuthGateway = ({ onAuthenticated }) => {
     const mouthWasOpenPhaseRef = useRef(false)
     const livenessScoreRef = useRef(0)
     const livenessFallbackRef = useRef(0)
+    /** Micro-movimiento del bbox (FaceDetector sin landmarks o parpadeo no detectado). */
+    const bboxMotionHistRef = useRef([])
+    const motionLivenessPtsRef = useRef(0)
+    const lastMotionLivenessBoostAtRef = useRef(0)
+    const eyesBlinkHystRef = useRef(true)
+    const lastServerLivenessRef = useRef(0)
     const lastAutoTriggerRef = useRef(0)
     const cameraRetryTimerRef = useRef(null)
     const cameraStageRef = useRef(null)
     const faceBoxHistoryRef = useRef([])
-    const trackingCanvasRef = useRef(null)
+    /** 640×480: misma rejilla que C:\FACIAL\www\main.js (process-canvas) y que el JPEG de /api/process_frame */
+    const processFrameCanvasRef = useRef(null)
     const trackingFallbackCanvasRef = useRef(null)
     const validFramesRef = useRef(0)
     const missedDetectorFramesRef = useRef(0)
     /** 0..1 con histéresis: modo noche/reflejos para filtros extra y borde más estable */
     const difficultLightingScoreRef = useRef(0)
+    const faceInTargetZoneRef = useRef(true)
+    const loginBiometricSessionRef = useRef(false)
+    const isProcessingRef = useRef(false)
+    /** Reloj de sesión login: el tiempo se congela mientras isProcessing (petición al backend). */
+    const sessionClockRef = useRef({ start: 0, pausedMs: 0, pauseSince: null })
+    const identityAnchorRef = useRef('')
+    const endLoginFaceSessionRef = useRef((/** @type {{ errorMessage?: string }} */ _o) => {})
+    const bestLoginProbeRef = useRef(null)
+    const loginSubmitTriggeredRef = useRef(false)
+    /** Evita spam en consola cuando el gate de login facial está cerrado con 3/3 muestras. */
+    const authFaceAutoDiagAtRef = useRef(0)
+    const registerFaceSessionClockRef = useRef({
+        start: 0,
+        pausedMs: 0,
+        pauseSince: null,
+    })
+    const registerAutoSubmitTriggeredRef = useRef(false)
+    const registerUserBiometricStepRef = useRef('form')
+    const endRegisterFaceSessionRef = useRef(
+        (/** @type {{ errorMessage?: string }} */ _o) => {}
+    )
+    const registrationApiInFlightRef = useRef(false)
 
-    const [cameraStageSize, setCameraStageSize] = useState({ width: 0, height: 0 })
+    const endLoginFaceSession = useCallback((opts) => {
+        const errorMessage = opts?.errorMessage
+        setLoginBiometricSession(false)
+        setLoginSessionSecondsLeft(null)
+        sessionClockRef.current = { start: 0, pausedMs: 0, pauseSince: null }
+        identityAnchorRef.current = ''
+        setCapturedTemplate(null)
+        setCapturedImageBase64('')
+        setCapturedPortraitOvalBase64('')
+        setCapturedBustRectBase64('')
+        bestLoginProbeRef.current = null
+        loginSubmitTriggeredRef.current = false
+        validFramesRef.current = 0
+        resetBiometricCapture().catch(() => {})
+        setFaceGuide((prev) => ({
+            ...prev,
+            qualityReady: false,
+            validFrames: 0,
+            captureCount: 0,
+            lastServerOk: false,
+            serverFaceOval: null,
+        }))
+        if (errorMessage) {
+            setError(errorMessage)
+        }
+    }, [])
 
-    const ovalForStage = useMemo(
-        () => {
-            if (FACIAL_STRICT_OVAL_MODE) {
-                // Modo FACIAL: óvalo fijo, centrado y estable (sin jitter por bbox/frame).
-                return {
-                    leftPct: 50,
-                    topPct: 50,
-                    wPct: FACIAL_STRICT_OVAL_W_PCT,
-                    hPct: FACIAL_STRICT_OVAL_H_PCT,
-                    transform: 'translate(-50%, -50%)',
-                }
+    const endRegisterFaceSession = useCallback((opts) => {
+        const errorMessage = opts?.errorMessage
+        setRegisterUserBiometricStep('form')
+        setRegisterSessionSecondsLeft(null)
+        registerFaceSessionClockRef.current = { start: 0, pausedMs: 0, pauseSince: null }
+        setCapturedTemplate(null)
+        setCapturedImageBase64('')
+        setCapturedPortraitOvalBase64('')
+        setCapturedBustRectBase64('')
+        bestLoginProbeRef.current = null
+        registrationApiInFlightRef.current = false
+        registerAutoSubmitTriggeredRef.current = false
+        validFramesRef.current = 0
+        resetBiometricCapture().catch(() => {})
+        setFaceGuide((prev) => ({
+            ...prev,
+            qualityReady: false,
+            validFrames: 0,
+            captureCount: 0,
+            lastServerOk: false,
+            serverFaceOval: null,
+        }))
+        setRegistrationCompleteSession(null)
+        if (errorMessage) {
+            setError(errorMessage)
+        }
+    }, [])
+
+    useEffect(() => {
+        endLoginFaceSessionRef.current = endLoginFaceSession
+    }, [endLoginFaceSession])
+
+    useEffect(() => {
+        endRegisterFaceSessionRef.current = endRegisterFaceSession
+    }, [endRegisterFaceSession])
+
+    useEffect(() => {
+        registerUserBiometricStepRef.current = registerUserBiometricStep
+    }, [registerUserBiometricStep])
+
+    useEffect(() => {
+        loginBiometricSessionRef.current = loginBiometricSession
+    }, [loginBiometricSession])
+
+    useEffect(() => {
+        isProcessingRef.current = isProcessing
+    }, [isProcessing])
+
+    const registerUserCaptureView =
+        mode === 'register' &&
+        registerTab === 'user' &&
+        registerUserBiometricStep === 'capture'
+    /** Formulario registro persona (sin panel cámara): layout denso, sin scroll en pantallas típicas. */
+    const registerPersonFormOnlyView =
+        mode === 'register' &&
+        registerTab === 'user' &&
+        registerUserBiometricStep === 'form'
+    const showBiometricPanel =
+        loginBiometricSession ||
+        (mode === 'register' && registerTab === 'company') ||
+        registerUserCaptureView
+    const faceCaptureOnlyView =
+        (mode === 'login' && loginBiometricSession) || registerUserCaptureView
+    const loginSessionTotalSec = Math.max(
+        1,
+        Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000)
+    )
+    const loginSessionSecondsSafe = Math.max(
+        0,
+        Math.min(loginSessionTotalSec, Number(loginSessionSecondsLeft ?? loginSessionTotalSec))
+    )
+    const registerSessionSecondsSafe = Math.max(
+        0,
+        Math.min(
+            loginSessionTotalSec,
+            Number(registerSessionSecondsLeft ?? loginSessionTotalSec)
+        )
+    )
+    const faceSessionTimerActive =
+        (mode === 'login' && loginBiometricSession) || registerUserCaptureView
+    const faceTimerSecondsLeft = registerUserCaptureView
+        ? registerSessionSecondsLeft
+        : loginSessionSecondsLeft
+    const faceTimerSecondsSafe = registerUserCaptureView
+        ? registerSessionSecondsSafe
+        : loginSessionSecondsSafe
+    const faceTimerProgress = faceTimerSecondsSafe / loginSessionTotalSec
+    const timerCirc = 2 * Math.PI * 20
+    const timerStrokeColor =
+        faceTimerProgress > 0.66 ? '#22c55e' : faceTimerProgress > 0.33 ? '#f59e0b' : '#ef4444'
+    const timerGlowColor =
+        faceTimerProgress > 0.66
+            ? 'rgba(34,197,94,0.35)'
+            : faceTimerProgress > 0.33
+              ? 'rgba(245,158,11,0.35)'
+              : 'rgba(239,68,68,0.45)'
+    const isCriticalTimer = faceSessionTimerActive && faceTimerSecondsSafe <= 10
+    /** El panel muestra muestras del servidor (captureCount); qualityReady es local y puede desincronizarse. */
+    const { hasRequiredBiometricSamples, loginBiometricGate } = useMemo(() => {
+        const n = Number(faceGuide.captureCount || 0)
+        const hasReq = n >= FACIAL_ICAO.REQUIRED_VALID_FRAMES
+        return {
+            hasRequiredBiometricSamples: hasReq,
+            loginBiometricGate:
+                Boolean(faceGuide.qualityReady) ||
+                (hasReq && Boolean(faceGuide.lastServerOk)),
+        }
+    }, [faceGuide.qualityReady, faceGuide.captureCount, faceGuide.lastServerOk])
+    const selectedLoginBgUrl = useMemo(() => {
+        const key = normalizeCompanyKey(loginForm.company)
+        return LOGIN_BG_BY_COMPANY[key] || DEFAULT_LOGIN_BG_URL
+    }, [loginForm.company])
+
+    const ovalForStage = useMemo(() => {
+        const sw = cameraStageSize.width
+        const sh = cameraStageSize.height
+        const fw = frameMetrics.width
+        const fh = frameMetrics.height
+        const so = faceGuide.serverFaceOval
+        const serverSourceW = Number(FACIAL_ICAO.CAMERA.width.ideal || 640)
+        const serverSourceH = Number(FACIAL_ICAO.CAMERA.height.ideal || 480)
+        if (
+            so &&
+            Number.isFinite(Number(so.cx)) &&
+            Number.isFinite(Number(so.cy)) &&
+            Number.isFinite(Number(so.w)) &&
+            Number.isFinite(Number(so.h)) &&
+            fw > 0 &&
+            fh > 0
+        ) {
+            const serverLayout = {
+                leftPct: (Number(so.cx) / Math.max(1, serverSourceW)) * 100,
+                topPct: (Number(so.cy) / Math.max(1, serverSourceH)) * 100,
+                wPct: (Number(so.w) / Math.max(1, serverSourceW)) * 100,
+                hPct: (Number(so.h) / Math.max(1, serverSourceH)) * 100,
+                transform: `translate(-50%, -50%) rotate(${Number(so.angle_deg || 0)}deg)`,
             }
-            const layout = computeBiometricOvalLayout(
-                liveFaceBox,
-                frameMetrics.width,
-                frameMetrics.height
-            )
-            if (!layout) {
-                return null
+            if (FACIAL_STRICT_OVAL_MODE) {
+                return serverLayout
             }
             return mapOvalLayoutVideoToStage(
-                layout,
-                frameMetrics.width,
-                frameMetrics.height,
-                cameraStageSize.width,
-                cameraStageSize.height
+                serverLayout,
+                serverSourceW,
+                serverSourceH,
+                sw,
+                sh
             )
-        },
-        [liveFaceBox, frameMetrics.width, frameMetrics.height, cameraStageSize.width, cameraStageSize.height]
-    )
+        }
+        const layout = computeBiometricOvalLayout(liveFaceBox, fw, fh)
+        if (!layout) {
+            return null
+        }
+        if (FACIAL_STRICT_OVAL_MODE) {
+            return layout
+        }
+        return mapOvalLayoutVideoToStage(layout, fw, fh, sw, sh)
+    }, [
+        liveFaceBox,
+        frameMetrics.width,
+        frameMetrics.height,
+        cameraStageSize.width,
+        cameraStageSize.height,
+        faceGuide.serverFaceOval,
+    ])
 
     const canRegister = useMemo(() => {
-        let valuesOk = false;
+        const passwordsMatch =
+            registerForm.password.trim().length >= 6 &&
+            registerForm.password === registerForm.passwordConfirm
+        let valuesOk = false
         if (registerTab === 'company') {
             valuesOk =
                 registerForm.ruc.trim().length >= 11 &&
@@ -400,7 +478,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 registerForm.lastName.trim() &&
                 registerForm.dni.trim().length >= 8 &&
                 registerForm.username.trim().length >= 4 &&
-                registerForm.password.trim().length >= 6;
+                passwordsMatch
         } else {
             valuesOk =
                 registerForm.company.trim() &&
@@ -408,10 +486,10 @@ const AuthGateway = ({ onAuthenticated }) => {
                 registerForm.lastName.trim() &&
                 registerForm.dni.trim().length >= 8 &&
                 registerForm.email.trim().length >= 5 &&
+                registerForm.mobile.trim().length >= 6 &&
                 registerForm.username.trim().length >= 4 &&
-                registerForm.password.trim().length >= 6;
+                passwordsMatch
         }
-        // Permissive: capturedImageBase64 is enough to signal intent
         return valuesOk && Boolean(capturedImageBase64)
     }, [registerForm, capturedImageBase64, registerTab])
 
@@ -428,15 +506,37 @@ const AuthGateway = ({ onAuthenticated }) => {
         async function loadCompanies() {
             try {
                 const apiCompanies = await fetchCompanies()
-                if (!active || apiCompanies.length === 0) {
+                if (!active) {
+                    return
+                }
+                if (!Array.isArray(apiCompanies) || apiCompanies.length === 0) {
+                    setCompanies(DEFAULT_COMPANIES)
+                    setLoginForm((prev) => ({ ...prev, company: DEFAULT_COMPANIES[0] }))
+                    setRegisterForm((prev) => ({ ...prev, company: DEFAULT_COMPANIES[0] }))
                     return
                 }
 
-                setCompanies(apiCompanies)
-                setLoginForm((prev) => ({ ...prev, company: apiCompanies[0] }))
-                setRegisterForm((prev) => ({ ...prev, company: apiCompanies[0] }))
-            } catch {
+                const uniqueCompanies = Array.from(new Set(apiCompanies))
+                setCompanies(uniqueCompanies)
+                setLoginForm((prev) => {
+                    const cur = String(prev.company || '').trim()
+                    if (cur && uniqueCompanies.includes(cur)) {
+                        return prev
+                    }
+                    return { ...prev, company: uniqueCompanies[0] }
+                })
+                setRegisterForm((prev) => {
+                    const cur = String(prev.company || '').trim()
+                    if (cur && uniqueCompanies.includes(cur)) {
+                        return prev
+                    }
+                    return { ...prev, company: uniqueCompanies[0] }
+                })
+            } catch (err) {
+                console.warn('[AUTH_UI] fetchCompanies failed; using local catalog', err)
                 setCompanies(DEFAULT_COMPANIES)
+                setLoginForm((prev) => ({ ...prev, company: DEFAULT_COMPANIES[0] }))
+                setRegisterForm((prev) => ({ ...prev, company: DEFAULT_COMPANIES[0] }))
             }
         }
 
@@ -488,6 +588,11 @@ const AuthGateway = ({ onAuthenticated }) => {
         return () => clearTimeout(timeoutId);
     }, [registerForm.ruc, registerForm.company, registerTab]);
 
+    const shouldUseFaceCamera =
+        (mode === 'login' && loginBiometricSession) ||
+        (mode === 'register' && registerTab === 'company') ||
+        registerUserCaptureView
+
     useEffect(() => {
         let cancelled = false
 
@@ -519,15 +624,28 @@ const AuthGateway = ({ onAuthenticated }) => {
                     stream = await navigator.mediaDevices.getUserMedia({
                         video: {
                             facingMode: 'user',
-                            ...FACIAL_ICAO.CAMERA,
+                            width: { ideal: 640, min: 320 },
+                            height: { ideal: 480, min: 240 },
+                            aspectRatio: { ideal: 4 / 3 },
+                            frameRate: FACIAL_ICAO.CAMERA.frameRate,
                         },
                         audio: false,
                     })
                 } catch {
-                    stream = await navigator.mediaDevices.getUserMedia({
-                        video: { facingMode: 'user' },
-                        audio: false,
-                    })
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia({
+                            video: {
+                                facingMode: 'user',
+                                ...FACIAL_ICAO.CAMERA,
+                            },
+                            audio: false,
+                        })
+                    } catch {
+                        stream = await navigator.mediaDevices.getUserMedia({
+                            video: { facingMode: 'user' },
+                            audio: false,
+                        })
+                    }
                 }
 
                 if (cancelled) {
@@ -571,6 +689,18 @@ const AuthGateway = ({ onAuthenticated }) => {
             }
         }
 
+        if (!shouldUseFaceCamera) {
+            if (cameraRetryTimerRef.current) {
+                clearTimeout(cameraRetryTimerRef.current)
+                cameraRetryTimerRef.current = null
+            }
+            stopCurrentStream()
+            setCameraReady(false)
+            return () => {
+                cancelled = true
+            }
+        }
+
         startCamera()
 
         return () => {
@@ -581,11 +711,19 @@ const AuthGateway = ({ onAuthenticated }) => {
             }
             stopCurrentStream()
         }
-    }, [])
+    }, [shouldUseFaceCamera])
 
     useEffect(() => {
+        setLoginBiometricSession(false)
+        setLoginSessionSecondsLeft(null)
+        identityAnchorRef.current = ''
+        sessionClockRef.current = { start: 0, pausedMs: 0, pauseSince: null }
         setCapturedTemplate(null)
         setCapturedImageBase64('')
+        setCapturedPortraitOvalBase64('')
+        setCapturedBustRectBase64('')
+        bestLoginProbeRef.current = null
+        loginSubmitTriggeredRef.current = false
         validFramesRef.current = 0
         resetBiometricCapture().catch(() => {})
         setFaceGuide((prev) => ({
@@ -593,8 +731,121 @@ const AuthGateway = ({ onAuthenticated }) => {
             qualityReady: false,
             validFrames: 0,
             captureCount: 0,
+            serverFaceOval: null,
         }))
+        setRegisterUserBiometricStep('form')
+        setRegistrationCompleteSession(null)
+        setRegisterSessionSecondsLeft(null)
+        registerFaceSessionClockRef.current = { start: 0, pausedMs: 0, pauseSince: null }
+        registrationApiInFlightRef.current = false
+        registerAutoSubmitTriggeredRef.current = false
     }, [mode, registerTab, loginTab])
+
+    useEffect(() => {
+        if (mode !== 'login' || !loginBiometricSession) {
+            return
+        }
+        const key = `${loginForm.company}|${String(loginForm.username || '').trim()}`
+        if (identityAnchorRef.current && identityAnchorRef.current !== key) {
+            endLoginFaceSession({
+                errorMessage:
+                    'Se modificó empresa o usuario. Active de nuevo la verificación facial.',
+            })
+        }
+    }, [loginForm.company, loginForm.username, mode, loginBiometricSession, endLoginFaceSession])
+
+    useEffect(() => {
+        if (mode === 'login' && loginBiometricSession) {
+            const c = sessionClockRef.current
+            if (isProcessing) {
+                if (!c.pauseSince) {
+                    c.pauseSince = Date.now()
+                }
+            } else if (c.pauseSince) {
+                c.pausedMs += Date.now() - c.pauseSince
+                c.pauseSince = null
+            }
+        }
+        if (registerUserCaptureView) {
+            const r = registerFaceSessionClockRef.current
+            if (isProcessing) {
+                if (!r.pauseSince) {
+                    r.pauseSince = Date.now()
+                }
+            } else if (r.pauseSince) {
+                r.pausedMs += Date.now() - r.pauseSince
+                r.pauseSince = null
+            }
+        }
+    }, [isProcessing, mode, loginBiometricSession, registerUserCaptureView])
+
+    useEffect(() => {
+        if (!loginBiometricSession || mode !== 'login') {
+            setLoginSessionSecondsLeft(null)
+            return
+        }
+        const id = setInterval(() => {
+            if (!loginBiometricSessionRef.current) {
+                return
+            }
+            const c = sessionClockRef.current
+            if (!c.start) {
+                return
+            }
+            let pausedExtra = 0
+            if (c.pauseSince) {
+                pausedExtra = Date.now() - c.pauseSince
+            }
+            const elapsed = Date.now() - c.start - c.pausedMs - pausedExtra
+            const left = Math.ceil(
+                (FACIAL_ICAO.LOGIN_FACE_SESSION_MS - elapsed) / 1000
+            )
+            if (left <= 0 && !isProcessingRef.current) {
+                endLoginFaceSessionRef.current({
+                    errorMessage: FACIAL_ICAO.LOGIN_FACE_TIMEOUT_MESSAGE,
+                })
+                return
+            }
+            setLoginSessionSecondsLeft(Math.max(0, left))
+        }, 250)
+        return () => clearInterval(id)
+    }, [loginBiometricSession, mode])
+
+    useEffect(() => {
+        if (!registerUserCaptureView) {
+            setRegisterSessionSecondsLeft(null)
+            return
+        }
+        const id = setInterval(() => {
+            if (registerUserBiometricStepRef.current !== 'capture') {
+                return
+            }
+            const c = registerFaceSessionClockRef.current
+            if (!c.start) {
+                return
+            }
+            let pausedExtra = 0
+            if (c.pauseSince) {
+                pausedExtra = Date.now() - c.pauseSince
+            }
+            const elapsed = Date.now() - c.start - c.pausedMs - pausedExtra
+            const left = Math.ceil(
+                (FACIAL_ICAO.LOGIN_FACE_SESSION_MS - elapsed) / 1000
+            )
+            if (
+                left <= 0 &&
+                !isProcessingRef.current &&
+                !registrationApiInFlightRef.current
+            ) {
+                endRegisterFaceSessionRef.current({
+                    errorMessage: FACIAL_ICAO.LOGIN_FACE_TIMEOUT_MESSAGE,
+                })
+                return
+            }
+            setRegisterSessionSecondsLeft(Math.max(0, left))
+        }, 250)
+        return () => clearInterval(id)
+    }, [registerUserCaptureView])
 
     useEffect(() => {
         let requestID = null
@@ -619,34 +870,26 @@ const AuthGateway = ({ onAuthenticated }) => {
                 return
             }
 
-            if (frameMetrics.width !== video.videoWidth) {
-                setFrameMetrics({ width: video.videoWidth, height: video.videoHeight })
-            }
-
             try {
                 let bestFace = null
 
-                const roiW = video.videoWidth * 0.78
-                const roiH = video.videoHeight * 0.94
-                const roiX = (video.videoWidth - roiW) / 2
-                const roiY = (video.videoHeight - roiH) / 2
+                const pw = FACIAL_ICAO.CAMERA.width.ideal
+                const ph = FACIAL_ICAO.CAMERA.height.ideal
+                const vw = video.videoWidth
+                const vh = video.videoHeight
 
-                const tcScale = FACIAL_ICAO.TRACKING_CANVAS_SCALE
-                const tcW = Math.max(48, Math.round(roiW * tcScale))
-                const tcH = Math.max(48, Math.round(roiH * tcScale))
-                const sx = roiW / tcW
-                const sy = roiH / tcH
+                const pCanvas =
+                    processFrameCanvasRef.current || document.createElement('canvas')
+                processFrameCanvasRef.current = pCanvas
+                pCanvas.width = pw
+                pCanvas.height = ph
+                const pCtx = pCanvas.getContext('2d', { willReadFrequently: true })
+                pCtx.filter = 'none'
+                pCtx.drawImage(video, 0, 0, vw, vh, 0, 0, pw, ph)
 
-                const trackingCanvas = trackingCanvasRef.current || document.createElement('canvas')
-                trackingCanvasRef.current = trackingCanvas
-                trackingCanvas.width = tcW
-                trackingCanvas.height = tcH
-                const trackingCtx = trackingCanvas.getContext('2d', { willReadFrequently: true })
-                trackingCtx.filter = 'none'
-                trackingCtx.drawImage(video, roiX, roiY, roiW, roiH, 0, 0, tcW, tcH)
-                const trackImg = trackingCtx.getImageData(0, 0, tcW, tcH)
-                const rawMean = meanLuminanceImageData(trackImg)
-                const rawStd = luminanceStdDevImageData(trackImg, rawMean)
+                const lightSample = pCtx.getImageData(0, 0, pw, ph)
+                const rawMean = meanLuminanceImageData(lightSample)
+                const rawStd = luminanceStdDevImageData(lightSample, rawMean)
                 const rawHard = classifyRawDifficultLighting(rawMean, rawStd)
                 let dlScore =
                     difficultLightingScoreRef.current +
@@ -655,18 +898,15 @@ const AuthGateway = ({ onAuthenticated }) => {
                         : -FACIAL_ICAO.DIFFICULT_LIGHTING_FALL_PER_FRAME)
                 dlScore = Math.max(0, Math.min(1, dlScore))
                 difficultLightingScoreRef.current = dlScore
-                const difficultActive = dlScore >= FACIAL_ICAO.DIFFICULT_LIGHTING_ON_THRESHOLD
+                const difficultActive =
+                    dlScore >= FACIAL_ICAO.DIFFICULT_LIGHTING_ON_THRESHOLD
 
-                preprocessImageDataForFaceDetection(trackImg, {
-                    difficultNightMode: difficultActive,
-                    lowLumEqBelow: FACIAL_ICAO.TRACKING_LOW_LUM_EQ_BELOW,
-                    highlightCompressAbove: FACIAL_ICAO.TRACKING_HIGH_LUM_COMPRESS_ABOVE,
-                    nightLowLumEqBelow: FACIAL_ICAO.NIGHT_TRACKING_LOW_LUM_EQ_BELOW,
-                    nightHighlightCompressAbove: FACIAL_ICAO.NIGHT_TRACKING_HIGH_LUM_COMPRESS_ABOVE,
-                    nightGamma: FACIAL_ICAO.NIGHT_TRACKING_GAMMA,
-                    nightUseBlur: difficultActive && FACIAL_ICAO.NIGHT_TRACKING_USE_BLUR,
-                })
-                trackingCtx.putImageData(trackImg, 0, 0)
+                if (
+                    frameMetrics.width !== pw ||
+                    frameMetrics.height !== ph
+                ) {
+                    setFrameMetrics({ width: pw, height: ph })
+                }
 
                 const hasNativeFaceDetector = 'FaceDetector' in window
                 if (hasNativeFaceDetector) {
@@ -676,20 +916,20 @@ const AuthGateway = ({ onAuthenticated }) => {
                         })
                     }
 
-                    const detections = await detectorRef.current.detect(trackingCanvas)
+                    const detections = await detectorRef.current.detect(pCanvas)
                     if (detections.length > 0) {
                         missedDetectorFramesRef.current = 0
                         const box = detections[0].boundingBox
                         bestFace = {
-                            x: roiX + box.x * sx,
-                            y: roiY + box.y * sy,
-                            width: box.width * sx,
-                            height: box.height * sy,
+                            x: box.x,
+                            y: box.y,
+                            width: box.width,
+                            height: box.height,
                             landmarks: (detections[0].landmarks || []).map((l) => ({
                                 ...l,
                                 locations: l.locations.map((loc) => ({
-                                    x: roiX + loc.x * sx,
-                                    y: roiY + loc.y * sy,
+                                    x: loc.x,
+                                    y: loc.y,
                                 })),
                             })),
                         }
@@ -700,28 +940,29 @@ const AuthGateway = ({ onAuthenticated }) => {
 
                 if (!bestFace && !hasNativeFaceDetector) {
                     const canvas =
-                        trackingFallbackCanvasRef.current || document.createElement('canvas')
+                        trackingFallbackCanvasRef.current ||
+                        document.createElement('canvas')
                     trackingFallbackCanvasRef.current = canvas
                     canvas.width = 160
                     canvas.height = 120
                     const ctx = canvas.getContext('2d', { willReadFrequently: true })
-                    ctx.drawImage(video, 0, 0, 160, 120);
-                    const centroid = getSkinCentroid(ctx, 160, 120);
+                    ctx.drawImage(pCanvas, 0, 0, pw, ph, 0, 0, 160, 120)
+                    const centroid = getSkinCentroid(ctx, 160, 120)
                     if (centroid && centroid.density > 0.05) {
-                        const targetWidth = video.videoWidth * 0.45;
-                        const targetHeight = video.videoHeight * 0.75;
+                        const targetWidth = pw * 0.45
+                        const targetHeight = ph * 0.75
                         const x = Math.max(
                             0,
                             Math.min(
-                                video.videoWidth - targetWidth,
-                                (centroid.x / 160) * video.videoWidth - targetWidth / 2
+                                pw - targetWidth,
+                                (centroid.x / 160) * pw - targetWidth / 2
                             )
                         )
                         const y = Math.max(
                             0,
                             Math.min(
-                                video.videoHeight - targetHeight,
-                                (centroid.y / 120) * video.videoHeight - targetHeight / 2
+                                ph - targetHeight,
+                                (centroid.y / 120) * ph - targetHeight / 2
                             )
                         )
                         bestFace = {
@@ -730,7 +971,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                             width: targetWidth,
                             height: targetHeight,
                             landmarks: [],
-                            isFallback: true
+                            isFallback: true,
                         }
                     }
                 }
@@ -743,7 +984,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                     }
                 }
 
-                if (bestFace) {
+                    if (bestFace) {
                     const hist = faceBoxHistoryRef.current
                     const histMax = difficultActive
                         ? FACIAL_ICAO.NIGHT_FACE_BOX_HISTORY_LEN
@@ -787,9 +1028,13 @@ const AuthGateway = ({ onAuthenticated }) => {
                     setLiveFaceBox(null)
                     setCapturedTemplate(null)
                     setCapturedImageBase64('')
+                    setCapturedPortraitOvalBase64('')
+                    setCapturedBustRectBase64('')
+                    bestLoginProbeRef.current = null
                     validFramesRef.current = 0
                     smoothedFaceRef.current = null
                     lastVerifyOkRef.current = false
+                    lastServerLivenessRef.current = 0
                     livenessBlinkRef.current = 0
                     livenessMouthEventsRef.current = 0
                     prevEyesOpenLandmarkRef.current = null
@@ -797,6 +1042,10 @@ const AuthGateway = ({ onAuthenticated }) => {
                     mouthWasOpenPhaseRef.current = false
                     livenessScoreRef.current = 0
                     livenessFallbackRef.current = 0
+                    bboxMotionHistRef.current = []
+                    motionLivenessPtsRef.current = 0
+                    lastMotionLivenessBoostAtRef.current = 0
+                    eyesBlinkHystRef.current = true
                     prevMouthClosedLandmarkRef.current = null
                     lastIcaoFourRef.current = {
                         eyes: false,
@@ -816,6 +1065,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                         icaoFrontal: null,
                         icaoNoGlasses: null,
                         livenessScore: 0,
+                        serverFaceOval: null,
                     }))
                 } else {
                     if (smoothedFaceRef.current) {
@@ -834,7 +1084,8 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 ? FACIAL_ICAO.NIGHT_FACE_BOX_EMA_ALPHA_OUTLIER
                                 : FACIAL_ICAO.FACE_BOX_EMA_ALPHA_OUTLIER
                         } else if (jump < 0.04) {
-                            alpha = Math.min(alpha, 0.07)
+                            // Mayor respuesta al movimiento real (menos retardo perceptible).
+                            alpha = Math.max(alpha, 0.28)
                         }
                         const prev = smoothedFaceRef.current
                         bestFace = {
@@ -893,6 +1144,28 @@ const AuthGateway = ({ onAuthenticated }) => {
                     eyesOpen = hasLandmarks
                         ? eyeOpenness(leftEye) > earHint && eyeOpenness(rightEye) > earHint
                         : false
+                    /** Histéresis sobre apertura mínima (evita que el ratio quede siempre “abierto” y no cuente parpadeos). */
+                    let blinkGateOpen = eyesOpen
+                    if (hasLandmarks && leftEye && rightEye) {
+                        const eyeMin = Math.min(
+                            eyeOpenness(leftEye),
+                            eyeOpenness(rightEye)
+                        )
+                        const hi = 0.2
+                        const lo = 0.1
+                        if (eyesBlinkHystRef.current) {
+                            if (eyeMin < lo) {
+                                eyesBlinkHystRef.current = false
+                            }
+                        } else if (eyeMin > hi) {
+                            eyesBlinkHystRef.current = true
+                        }
+                        blinkGateOpen = eyesBlinkHystRef.current
+                    } else {
+                        eyesBlinkHystRef.current = true
+                        blinkGateOpen = true
+                    }
+
                     const isMouthOpen = hasLandmarks
                         ? mouthRatio > FACIAL_ICAO.MOUTH_OPEN_LANDMARK_RATIO
                         : false
@@ -901,14 +1174,54 @@ const AuthGateway = ({ onAuthenticated }) => {
 
                     const now = performance.now()
 
+                    const vwM = pw
+                    const vhM = ph
+                    const mhist = bboxMotionHistRef.current
+                    mhist.push({
+                        nx: (bestFace.x + bestFace.width / 2) / vwM,
+                        ny: (bestFace.y + bestFace.height / 2) / vhM,
+                    })
+                    while (mhist.length > 30) {
+                        mhist.shift()
+                    }
+                    if (mhist.length >= 8) {
+                        const mx =
+                            mhist.reduce((s, p) => s + p.nx, 0) / mhist.length
+                        const my =
+                            mhist.reduce((s, p) => s + p.ny, 0) / mhist.length
+                        let vx = 0
+                        let vy = 0
+                        for (const p of mhist) {
+                            const dx = p.nx - mx
+                            const dy = p.ny - my
+                            vx += dx * dx
+                            vy += dy * dy
+                        }
+                        const v = (vx + vy) / mhist.length
+                        if (v > 3e-6 && v < 0.00014) {
+                            if (now - lastMotionLivenessBoostAtRef.current >= 160) {
+                                lastMotionLivenessBoostAtRef.current = now
+                                motionLivenessPtsRef.current = Math.min(
+                                    100,
+                                    motionLivenessPtsRef.current + 11
+                                )
+                            }
+                        } else if (v < 4e-8) {
+                            motionLivenessPtsRef.current = Math.max(
+                                0,
+                                motionLivenessPtsRef.current - 0.55
+                            )
+                        }
+                    }
+
                     if (hasLandmarks) {
                         const prevO = prevEyesOpenLandmarkRef.current
-                        if (prevO === true && !eyesOpen) {
+                        if (prevO === true && !blinkGateOpen) {
                             blinkCloseStartedAtRef.current = now
                         }
                         if (
                             prevO === false &&
-                            eyesOpen &&
+                            blinkGateOpen &&
                             blinkCloseStartedAtRef.current != null
                         ) {
                             const dtBlink = now - blinkCloseStartedAtRef.current
@@ -918,13 +1231,13 @@ const AuthGateway = ({ onAuthenticated }) => {
                             blinkCloseStartedAtRef.current = null
                         }
                         if (
-                            !eyesOpen &&
+                            !blinkGateOpen &&
                             blinkCloseStartedAtRef.current != null &&
                             now - blinkCloseStartedAtRef.current > 900
                         ) {
                             blinkCloseStartedAtRef.current = null
                         }
-                        prevEyesOpenLandmarkRef.current = eyesOpen
+                        prevEyesOpenLandmarkRef.current = blinkGateOpen
 
                         const prevM = prevMouthClosedLandmarkRef.current
                         if (prevM === true && !mouthClosed) {
@@ -959,18 +1272,17 @@ const AuthGateway = ({ onAuthenticated }) => {
                         syncingRef.current = true
                         lastSyncRef.current = nowSync
 
-                        // Mismo encuadre que C:\FACIAL\www\main.js: frame completo a 640×480
-                        // para MediaPipe (EAR adaptativo, blendshapes, ROI de lentes).
+                        // Motor (/api/process_frame): JPEG 640×480 misma escala que process-canvas en C:\FACIAL\www\main.js
+                        // y que el FaceDetector (processFrameCanvasRef).
+                        // Parpadeo/boca en cliente siguen usando landmarks del FaceDetector sobre el bbox.
                         const tw = FACIAL_ICAO.CAMERA.width.ideal
                         const th = FACIAL_ICAO.CAMERA.height.ideal
-                        const canvas = document.createElement('canvas')
-                        canvas.width = tw
-                        canvas.height = th
-                        const ctx = canvas.getContext('2d')
-                        ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, tw, th)
-                        const base64 = canvas
-                            .toDataURL('image/jpeg', FACIAL_ICAO.VERIFY_JPEG_QUALITY)
-                            .split(',')[1]
+                        const base64 = buildFullFrameJpegBase64FromVideo(
+                            video,
+                            tw,
+                            th,
+                            FACIAL_ICAO.VERIFY_JPEG_QUALITY
+                        )
 
                         processBiometricFrame(base64)
                             .then(() => fetchBiometricStatus())
@@ -983,9 +1295,11 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     frontal: Boolean(icao.face_straight),
                                     noGlasses: Boolean(icao.no_glasses),
                                 }
+                                lastServerLivenessRef.current = Number(
+                                    status?.liveness_score ?? 0
+                                )
                                 lastVerifyOkRef.current = Boolean(
-                                    status?.capture_count >= 1 &&
-                                        four.eyes &&
+                                    four.eyes &&
                                         four.mouth &&
                                         four.frontal &&
                                         four.noGlasses
@@ -1012,6 +1326,11 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     icaoMouth: four.mouth,
                                     icaoFrontal: four.frontal,
                                     icaoNoGlasses: four.noGlasses,
+                                    serverFaceOval:
+                                        status?.face_oval &&
+                                        typeof status.face_oval === 'object'
+                                            ? status.face_oval
+                                            : null,
                                 }))
                             })
                             .catch(() => {
@@ -1021,13 +1340,41 @@ const AuthGateway = ({ onAuthenticated }) => {
                     }
 
                     setFaceGuide((prev) => {
+                        const frameW = pw
+                        const frameH = ph
+                        let faceInsideTargetZone = true
+                        if (FACIAL_STRICT_OVAL_MODE) {
+                            const centerX = bestFace.x + bestFace.width / 2
+                            const centerY = bestFace.y + bestFace.height / 2
+                            const zoneCx = frameW * 0.5
+                            const zoneCy = frameH * 0.5
+                            const zoneRx = frameW * (FACIAL_STRICT_OVAL_W_PCT / 100) * 0.5
+                            const zoneRy = frameH * (FACIAL_STRICT_OVAL_H_PCT / 100) * 0.5
+                            const nx = (centerX - zoneCx) / Math.max(1, zoneRx)
+                            const ny = (centerY - zoneCy) / Math.max(1, zoneRy)
+                            faceInsideTargetZone = nx * nx + ny * ny <= 1
+                        }
+                        faceInTargetZoneRef.current = faceInsideTargetZone
+
                         const I = lastIcaoFourRef.current
-                        const lv = hasLandmarks
-                            ? livenessScoreRef.current
-                            : livenessFallbackRef.current
+                        const blinkPts = livenessScoreRef.current
+                        const motionPts = motionLivenessPtsRef.current
+                        const clientLv = Math.min(
+                            100,
+                            Math.max(blinkPts, motionPts)
+                        )
+                        const fallbackLv = livenessFallbackRef.current
+                        const lv = Math.min(
+                            100,
+                            Math.max(
+                                hasLandmarks ? clientLv : Math.max(clientLv, fallbackLv),
+                                lastServerLivenessRef.current
+                            )
+                        )
                         const livenessPass =
                             lv >= FACIAL_ICAO.LIVENESS_SCORE_PASS
                         const baseChecksOk =
+                            faceInsideTargetZone &&
                             lastVerifyOkRef.current &&
                             livenessPass &&
                             I.eyes &&
@@ -1052,15 +1399,35 @@ const AuthGateway = ({ onAuthenticated }) => {
                             eyesOpen,
                             mouthClosed,
                             livenessScore: lv,
+                            inTargetZone: faceInsideTargetZone,
                             validFrames: validFramesRef.current,
                             qualityReady,
                         }
 
-                        if (updated.qualityReady && hasFaceNow && !capturedImageBase64) {
+                        if (updated.qualityReady && hasFaceNow) {
                             const template = frameToTemplate(video, bestFace)
                             const imageBase64 = frameToJpegBase64(video, bestFace)
-                            setCapturedTemplate(template)
-                            setCapturedImageBase64(imageBase64)
+                            const portraitOvalBase64 = frameToOvalPortraitJpegBase64(
+                                video,
+                                bestFace
+                            )
+                            const candidateScore =
+                                Number(lv || 0) +
+                                (lastVerifyOkRef.current ? 35 : 0) +
+                                Number(validFramesRef.current || 0) * 10
+                            const prevBest = bestLoginProbeRef.current
+                            if (!prevBest || candidateScore >= prevBest.score) {
+                                bestLoginProbeRef.current = {
+                                    template,
+                                    imageBase64,
+                                    portraitOvalBase64,
+                                    score: candidateScore,
+                                    capturedAt: Date.now(),
+                                }
+                                setCapturedTemplate(template)
+                                setCapturedImageBase64(imageBase64)
+                                setCapturedPortraitOvalBase64(portraitOvalBase64)
+                            }
                         }
                         return updated
                     })
@@ -1083,27 +1450,231 @@ const AuthGateway = ({ onAuthenticated }) => {
 
     useEffect(() => {
         let timer = null
-        if (faceGuide.qualityReady && !isProcessing) {
+        const shouldAutoFaceLogin =
+            mode === 'login' &&
+            loginBiometricSession &&
+            !message.includes('Ingreso autorizado')
+        const shouldAutoRegisterCapture =
+            mode === 'register' &&
+            (registerTab === 'company' ||
+                (registerTab === 'user' &&
+                    registerUserBiometricStep === 'capture'))
+        const gateOk = loginBiometricGate && !isProcessing
+        if (shouldAutoFaceLogin && hasRequiredBiometricSamples && !isProcessing) {
             const now = performance.now()
-            if (now - lastAutoTriggerRef.current >= FACIAL_ICAO.CAPTURE_COOLDOWN_MS) {
-                timer = setTimeout(() => {
-                    lastAutoTriggerRef.current = performance.now()
-                    if (mode === 'login' && !message.includes('Ingreso autorizado')) {
-                        handleFaceLogin()
-                    } else if (mode === 'register' && !capturedTemplate) {
-                        handleCaptureForRegistration()
-                    }
-                }, FACIAL_ICAO.AUTO_CAPTURE_DELAY_MS)
+            if (!gateOk && now - authFaceAutoDiagAtRef.current > 2000) {
+                authFaceAutoDiagAtRef.current = now
+                console.info('[AUTH_FACE_AUTO] 3/3 muestras pero gate de envío cerrado', {
+                    qualityReady: Boolean(faceGuide.qualityReady),
+                    validFrames: Number(faceGuide.validFrames || 0),
+                    captureCount: Number(faceGuide.captureCount || 0),
+                    lastServerOk: Boolean(faceGuide.lastServerOk),
+                    loginBiometricGate,
+                    isProcessing,
+                    loginSubmitTriggered: loginSubmitTriggeredRef.current,
+                    hint: 'El contador en pantalla es del servidor; qualityReady es local (ICAO+liveness). Si divergen, antes no se disparaba el login.',
+                })
+            }
+        }
+        if (gateOk) {
+            if (
+                shouldAutoFaceLogin &&
+                hasRequiredBiometricSamples &&
+                !loginSubmitTriggeredRef.current
+            ) {
+                console.info('[AUTH_FACE_AUTO] disparando login facial', {
+                    qualityReady: Boolean(faceGuide.qualityReady),
+                    captureCount: Number(faceGuide.captureCount || 0),
+                    lastServerOk: Boolean(faceGuide.lastServerOk),
+                    hasProbe: Boolean(bestLoginProbeRef.current),
+                })
+                loginSubmitTriggeredRef.current = true
+                lastAutoTriggerRef.current = performance.now()
+                handleFaceLogin(bestLoginProbeRef.current)
+            } else {
+                const now = performance.now()
+                if (now - lastAutoTriggerRef.current >= FACIAL_ICAO.CAPTURE_COOLDOWN_MS) {
+                    timer = setTimeout(() => {
+                        lastAutoTriggerRef.current = performance.now()
+                        /* Registro usuario 3/3: solo useEffect directo (sin delay). Empresa u otros flujos siguen aquí. */
+                        if (
+                            shouldAutoRegisterCapture &&
+                            hasRequiredBiometricSamples &&
+                            !(
+                                registerTab === 'user' &&
+                                registerUserBiometricStep === 'capture'
+                            )
+                        ) {
+                            console.info('[AUTH_REGISTER_FLOW] auto trigger 3/3', {
+                                mode,
+                                registerTab,
+                                step: registerUserBiometricStep,
+                                captureCount: Number(faceGuide.captureCount || 0),
+                                requiredFrames: Number(FACIAL_ICAO.REQUIRED_VALID_FRAMES),
+                            })
+                            handleCaptureForRegistration()
+                        }
+                    }, FACIAL_ICAO.AUTO_CAPTURE_DELAY_MS)
+                }
             }
         }
         return () => {
             if (timer) clearTimeout(timer)
         }
-    }, [faceGuide.qualityReady, isProcessing, mode, capturedTemplate, message])
+    }, [
+        loginBiometricGate,
+        hasRequiredBiometricSamples,
+        isProcessing,
+        mode,
+        capturedTemplate,
+        message,
+        loginBiometricSession,
+        faceGuide.captureCount,
+        faceGuide.qualityReady,
+        faceGuide.validFrames,
+        faceGuide.lastServerOk,
+        registerTab,
+        registerUserBiometricStep,
+    ])
 
-    const handleFaceLogin = async () => {
+    useEffect(() => {
+        const inRegisterCapture =
+            mode === 'register' &&
+            registerTab === 'user' &&
+            registerUserBiometricStep === 'capture'
+        const samples = Number(faceGuide.captureCount || 0)
+        if (!inRegisterCapture) {
+            registerAutoSubmitTriggeredRef.current = false
+            return
+        }
+        if (samples < FACIAL_ICAO.REQUIRED_VALID_FRAMES) {
+            registerAutoSubmitTriggeredRef.current = false
+            return
+        }
+        if (isProcessing || registrationApiInFlightRef.current) {
+            return
+        }
+        if (registerAutoSubmitTriggeredRef.current) {
+            return
+        }
+        registerAutoSubmitTriggeredRef.current = true
+        console.info('[AUTH_REGISTER_FLOW] direct trigger by samples', {
+            samples,
+            requiredFrames: Number(FACIAL_ICAO.REQUIRED_VALID_FRAMES),
+            qualityReady: Boolean(faceGuide.qualityReady),
+            lastServerOk: Boolean(faceGuide.lastServerOk),
+        })
+        handleCaptureForRegistration()
+    }, [
+        mode,
+        registerTab,
+        registerUserBiometricStep,
+        faceGuide.captureCount,
+        faceGuide.qualityReady,
+        faceGuide.lastServerOk,
+        isProcessing,
+    ])
+
+    const startLoginFaceSession = async () => {
+        const id = String(loginForm.username || '').trim()
+        const company = String(loginForm.company || '').trim()
+        console.info('[AUTH_FACE_UI] start session requested', {
+            company,
+            identity: id,
+            loginTab,
+        })
+        if (!id) {
+            setError(
+                'Indique Usuario, DNI o RUC antes del reconocimiento facial.'
+            )
+            return
+        }
+        if (!company) {
+            setError('Seleccione la empresa asignada / compañía.')
+            return
+        }
+        setError('')
+        setMessage('')
+        setIsProcessing(true)
+        try {
+            const check = await checkLoginIdentity(company, id)
+            if (check.ok !== true) {
+                const msg =
+                    check.reason === 'not_found' || check.reason === 'invalid_response'
+                        ? 'USUARIO NO EXISTE'
+                        : check.error || 'USUARIO NO EXISTE'
+                setError(msg)
+                console.warn('[AUTH_FACE_UI] identidad rechazada antes de cámara', {
+                    company,
+                    identity: id,
+                    reason: check.reason,
+                    rawOk: check.ok,
+                })
+                return
+            }
+            console.info('[AUTH_FACE_UI] identidad verificada, abriendo sesión facial', {
+                company,
+                resolvedUsername: check.username,
+            })
+            identityAnchorRef.current = `${company}|${id}`
+            sessionClockRef.current = {
+                start: Date.now(),
+                pausedMs: 0,
+                pauseSince: null,
+            }
+            setCapturedTemplate(null)
+            setCapturedImageBase64('')
+            setCapturedPortraitOvalBase64('')
+            setCapturedBustRectBase64('')
+            bestLoginProbeRef.current = null
+            loginSubmitTriggeredRef.current = false
+            authFaceAutoDiagAtRef.current = 0
+            validFramesRef.current = 0
+            resetBiometricCapture().catch(() => {})
+            setFaceGuide((prev) => ({
+                ...prev,
+                qualityReady: false,
+                validFrames: 0,
+                captureCount: 0,
+                lastServerOk: false,
+            }))
+            setLoginBiometricSession(true)
+        } catch (e) {
+            setError(
+                e?.message ||
+                    'No se pudo comprobar el usuario con el servidor. Intente de nuevo.'
+            )
+        } finally {
+            setIsProcessing(false)
+        }
+    }
+
+    const handleFaceLogin = async (probeOverride = null) => {
         if (!videoRef.current || !cameraReady) {
+            loginSubmitTriggeredRef.current = false
+            console.warn('[AUTH_FACE_UI] handleFaceLogin abort: camera', {
+                hasVideo: Boolean(videoRef.current),
+                cameraReady,
+            })
             setError('La camara no esta lista.')
+            return
+        }
+        if (mode === 'login' && !loginBiometricSessionRef.current) {
+            loginSubmitTriggeredRef.current = false
+            console.warn('[AUTH_FACE_UI] handleFaceLogin abort: no sesión biométrica login')
+            setError(
+                'Active la verificación facial con el botón «Ingresar con Reconocimiento Facial».'
+            )
+            return
+        }
+
+        const id = String(loginForm.username || '').trim()
+        if (!id) {
+            loginSubmitTriggeredRef.current = false
+            console.warn('[AUTH_FACE_UI] handleFaceLogin abort: identidad vacía')
+            setError(
+                'Indique Usuario, DNI o RUC antes del reconocimiento facial.'
+            )
             return
         }
 
@@ -1112,15 +1683,49 @@ const AuthGateway = ({ onAuthenticated }) => {
         setMessage('')
 
         try {
-            const template = frameToTemplate(videoRef.current, liveFaceBox)
-            const imageBase64 = frameToJpegBase64(videoRef.current, liveFaceBox)
-            const result = await loginWithFace({ company: loginForm.company, template, imageBase64 })
+            const probe =
+                probeOverride ||
+                bestLoginProbeRef.current || {
+                    template: frameToTemplate(videoRef.current, liveFaceBox),
+                    imageBase64: frameToJpegBase64(videoRef.current, liveFaceBox),
+                    score: -1,
+                }
+            const template = probe.template
+            const imageBase64 = probe.imageBase64
+            console.info('[AUTH_FACE_UI] submit face login', {
+                company: String(loginForm.company || '').trim(),
+                identity: id,
+                template_dim: Array.isArray(template) ? template.length : 0,
+                has_image_base64: Boolean(imageBase64),
+                image_base64_len: imageBase64?.length || 0,
+                chosen_probe_score: Number(probe?.score || 0),
+                quality_ready: Boolean(faceGuide.qualityReady),
+                capture_count: Number(faceGuide.captureCount || 0),
+            })
+            const result = await loginWithFace({
+                company: loginForm.company,
+                identityLogin: id,
+                template,
+                imageBase64,
+            })
             const user = result.user
             const score = result.score || 0
+            console.info('[AUTH_FACE_UI] login success', {
+                user: user?.username,
+                company: user?.company,
+                score,
+                provider: result?.biometric_provider || 'unknown',
+            })
             const session = createSession(user, loginTab)
             setMessage(`Rostro validado (${(score * 100).toFixed(1)}%). Ingreso autorizado.`)
             onAuthenticated(session)
         } catch (err) {
+            loginSubmitTriggeredRef.current = false
+            console.warn('[AUTH_FACE_UI] login failed', {
+                message: err?.message || String(err),
+                company: String(loginForm.company || '').trim(),
+                identity: id,
+            })
             setError(err.message)
         } finally {
             setIsProcessing(false)
@@ -1134,6 +1739,14 @@ const AuthGateway = ({ onAuthenticated }) => {
         setMessage('')
 
         try {
+            if (!String(loginForm.username || '').trim()) {
+                setError('Indique Usuario, DNI o RUC.')
+                return
+            }
+            if (!String(loginForm.password || '').trim()) {
+                setError('Indique la contraseña.')
+                return
+            }
             const result = await loginWithPassword(loginForm)
             const session = createSession(result.user, loginTab)
             setMessage('Autenticacion por usuario y contrasena validada.')
@@ -1145,29 +1758,238 @@ const AuthGateway = ({ onAuthenticated }) => {
         }
     }
 
-    const handleCaptureForRegistration = () => {
+    const handleCaptureForRegistration = async () => {
+        const isUserRegisterCapture =
+            mode === 'register' &&
+            registerTab === 'user' &&
+            registerUserBiometricStepRef.current === 'capture'
+
+        const releaseRegisterAutoTrigger = (reason) => {
+            if (!isUserRegisterCapture) return
+            console.info('[AUTH_REGISTER_FLOW] registerAutoSubmit ref liberado', { reason })
+            registerAutoSubmitTriggeredRef.current = false
+        }
+
+        const serverSamplesReady =
+            Number(faceGuide.captureCount || 0) >= FACIAL_ICAO.REQUIRED_VALID_FRAMES &&
+            Boolean(faceGuide.lastServerOk)
+
+        console.info('[AUTH_REGISTER_FLOW] capture invoked', {
+            mode,
+            registerTab,
+            step: registerUserBiometricStepRef.current,
+            captureCount: Number(faceGuide.captureCount || 0),
+            lastServerOk: Boolean(faceGuide.lastServerOk),
+            serverSamplesReady,
+            qualityReady: Boolean(faceGuide.qualityReady),
+            detected: Boolean(faceGuide.detected),
+            cameraReady: Boolean(cameraReady),
+            inFlight: Boolean(registrationApiInFlightRef.current),
+            isUserRegisterCapture,
+        })
+        if (registrationApiInFlightRef.current) {
+            console.info('[AUTH_REGISTER_FLOW] blocked: request already in flight')
+            return
+        }
         if (!videoRef.current || !cameraReady) {
             setError('La camara no esta lista para el registro facial.')
+            console.warn('[AUTH_REGISTER_FLOW] blocked: camera not ready')
+            releaseRegisterAutoTrigger('camera_not_ready')
             return
         }
 
-        if (!faceGuide.detected || !faceGuide.qualityReady) {
+        if (!faceGuide.detected) {
+            setError('Mantenga el rostro visible y centrado en el ovalo.')
+            console.warn('[AUTH_REGISTER_FLOW] blocked: face not detected')
+            releaseRegisterAutoTrigger('not_detected')
+            return
+        }
+        if (!faceGuide.qualityReady && !serverSamplesReady) {
             setError(
                 'Complete los 5 parámetros ICAO + liveness (FACIAL): ojos, boca, frontalidad, sin lentes y anti-spoofing ≥ 70%.'
             )
+            console.warn('[AUTH_REGISTER_FLOW] blocked: quality_gate', {
+                qualityReady: Boolean(faceGuide.qualityReady),
+                captureCount: Number(faceGuide.captureCount || 0),
+                lastServerOk: Boolean(faceGuide.lastServerOk),
+                serverSamplesReady,
+            })
+            releaseRegisterAutoTrigger('quality_gate')
             return
+        }
+        if (isUserRegisterCapture && serverSamplesReady && !faceGuide.qualityReady) {
+            console.info(
+                '[AUTH_REGISTER_FLOW] envío permitido por 3/3 servidor + último frame OK (qualityReady local false)'
+            )
         }
 
         const template = frameToTemplate(videoRef.current, liveFaceBox)
         const imageBase64 = frameToJpegBase64(videoRef.current, liveFaceBox)
+        const portraitOvalBase64 = frameToOvalPortraitJpegBase64(
+            videoRef.current,
+            liveFaceBox
+        )
+        const bustRectBase64 = frameToBustRectAroundOvalJpegBase64(
+            videoRef.current,
+            liveFaceBox
+        )
+
+        if (isUserRegisterCapture) {
+            registrationApiInFlightRef.current = true
+            setIsProcessing(true)
+            setError('')
+            setMessage('')
+            console.info('[AUTH_REGISTER_FLOW] registerUser request', {
+                company: String(registerForm.company || '').trim(),
+                username: String(registerForm.username || '').trim(),
+                dni: String(registerForm.dni || '').trim(),
+                role: String(registerForm.role || '').trim(),
+                imageB64Len: Number(imageBase64?.length || 0),
+                portraitB64Len: Number(portraitOvalBase64?.length || 0),
+                bustB64Len: Number(bustRectBase64?.length || 0),
+                templateDim: Array.isArray(template) ? template.length : 0,
+            })
+            try {
+                const result = await registerUser({
+                    ...registerForm,
+                    faceTemplate: template,
+                    faceImageBase64: imageBase64,
+                    facePortraitOvalBase64: portraitOvalBase64,
+                    faceBustRectBase64: bustRectBase64,
+                })
+                console.info('[AUTH_REGISTER_FLOW] registerUser success', {
+                    user: result?.user?.username,
+                    company: result?.user?.company,
+                    provider: result?.biometric_provider || 'unknown',
+                    qualityScore: Number(result?.quality_score || 0),
+                })
+                setCapturedTemplate(template)
+                setCapturedImageBase64(imageBase64)
+                setRegisterUserBiometricStep('form')
+                setRegisterSessionSecondsLeft(null)
+                registerFaceSessionClockRef.current = {
+                    start: 0,
+                    pausedMs: 0,
+                    pauseSince: null,
+                }
+                setCapturedTemplate(null)
+                setCapturedImageBase64('')
+                setCapturedPortraitOvalBase64('')
+                setCapturedBustRectBase64('')
+                setMessage(
+                    'Registro completado. Ya puede iniciar sesión con su usuario y reconocimiento facial.'
+                )
+                /* alert() bloquea el hilo: difiere un tick para pintar fin de "procesando" */
+                setTimeout(() => {
+                    window.alert(
+                        'Registro facial completado correctamente. Presione OK para volver a LOGIN.'
+                    )
+                }, 0)
+                setMode('login')
+                setError('')
+                registerAutoSubmitTriggeredRef.current = false
+            } catch (err) {
+                setCapturedTemplate(null)
+                setCapturedImageBase64('')
+                setCapturedPortraitOvalBase64('')
+                setCapturedBustRectBase64('')
+                setError(err.message)
+                releaseRegisterAutoTrigger('api_error')
+                console.warn('[AUTH_REGISTER_FLOW] registerUser error', {
+                    message: err?.message || String(err),
+                    stack: err?.stack || null,
+                })
+            } finally {
+                setIsProcessing(false)
+                registrationApiInFlightRef.current = false
+            }
+            return
+        }
+
         setCapturedTemplate(template)
         setCapturedImageBase64(imageBase64)
+        setCapturedPortraitOvalBase64(portraitOvalBase64)
+        setCapturedBustRectBase64(bustRectBase64)
         setMessage('Registro facial capturado correctamente.')
         setError('')
     }
 
+    const startRegisterUserFaceCapture = () => {
+        if (registerTab !== 'user') {
+            return
+        }
+        const pw = String(registerForm.password || '')
+        const pc = String(registerForm.passwordConfirm || '')
+        if (pw.length < 6) {
+            setError('La contraseña debe tener al menos 6 caracteres.')
+            return
+        }
+        if (pw !== pc) {
+            setError('Las contraseñas no coinciden.')
+            return
+        }
+        if (!String(registerForm.company || '').trim()) {
+            setError('Seleccione la empresa asignada.')
+            return
+        }
+        if (!String(registerForm.dni || '').trim() || registerForm.dni.trim().length < 8) {
+            setError('Indique un DNI válido (mínimo 8 caracteres).')
+            return
+        }
+        if (!String(registerForm.firstName || '').trim()) {
+            setError('Indique los nombres.')
+            return
+        }
+        if (!String(registerForm.lastName || '').trim()) {
+            setError('Indique los apellidos.')
+            return
+        }
+        if (!String(registerForm.email || '').trim() || registerForm.email.trim().length < 5) {
+            setError('Indique un correo electrónico válido.')
+            return
+        }
+        if (!String(registerForm.mobile || '').trim() || registerForm.mobile.trim().length < 6) {
+            setError('Indique un número de celular válido.')
+            return
+        }
+        if (!String(registerForm.username || '').trim() || registerForm.username.trim().length < 4) {
+            setError('El usuario de sistema debe tener al menos 4 caracteres.')
+            return
+        }
+        setError('')
+        setMessage('')
+        setCapturedTemplate(null)
+        setCapturedImageBase64('')
+        setCapturedPortraitOvalBase64('')
+        setCapturedBustRectBase64('')
+        bestLoginProbeRef.current = null
+        validFramesRef.current = 0
+        resetBiometricCapture().catch(() => {})
+        setFaceGuide((prev) => ({
+            ...prev,
+            qualityReady: false,
+            validFrames: 0,
+            captureCount: 0,
+            lastServerOk: false,
+        }))
+        registerFaceSessionClockRef.current = {
+            start: Date.now(),
+            pausedMs: 0,
+            pauseSince: null,
+        }
+        setRegisterSessionSecondsLeft(
+            Math.max(1, Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000))
+        )
+        registerAutoSubmitTriggeredRef.current = false
+        setRegisterUserBiometricStep('capture')
+    }
+
     const handleRegister = async (event) => {
         event.preventDefault()
+        if (registerForm.password !== registerForm.passwordConfirm) {
+            setError('Las contraseñas no coinciden.')
+            return
+        }
         if (!canRegister) {
             setError('Completa todos los datos y registra el rostro para continuar.')
             return
@@ -1182,6 +2004,8 @@ const AuthGateway = ({ onAuthenticated }) => {
                 ...registerForm,
                 faceTemplate: capturedTemplate,
                 faceImageBase64: capturedImageBase64,
+                facePortraitOvalBase64: capturedPortraitOvalBase64 || undefined,
+                faceBustRectBase64: capturedBustRectBase64 || undefined,
             })
 
             const session = createSession(result.user, registerTab)
@@ -1195,9 +2019,38 @@ const AuthGateway = ({ onAuthenticated }) => {
     }
 
     return (
-        <div className="auth-screen" data-auth-ui="icao-login-v2">
-            <div className="auth-background" />
-            <div className="auth-shell">
+        <div
+            className={`auth-screen${
+                registerPersonFormOnlyView
+                    ? ' auth-screen--register-person-fit'
+                    : ''
+            }`}
+            data-auth-ui="icao-login-v2"
+        >
+            <div
+                className="auth-background"
+                style={{
+                    backgroundImage: `url("${selectedLoginBgUrl}")`,
+                }}
+            />
+            <div
+                className="auth-shell"
+                style={{
+                    gridTemplateColumns: faceCaptureOnlyView
+                        ? '1fr'
+                        : showBiometricPanel
+                          ? '1.1fr 1fr'
+                          : '1fr',
+                    width: faceCaptureOnlyView
+                        ? 'min(900px, 100%)'
+                        : showBiometricPanel
+                          ? 'min(1080px, 100%)'
+                          : registerPersonFormOnlyView
+                            ? 'min(960px, 100%)'
+                            : 'min(720px, 100%)',
+                }}
+            >
+                {showBiometricPanel && (
                 <section className="auth-panel auth-panel-main">
                     <div className="camera-card camera-card-tall">
                         <div className="camera-header">
@@ -1213,8 +2066,73 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 </span>
                             </div>
                             <span className={cameraReady ? 'status-dot online' : 'status-dot offline'}>
-                                {cameraReady ? 'Activa' : 'Sin acceso'}
+                                {cameraReady
+                                    ? 'Activa'
+                                    : mode === 'login' && !loginBiometricSession
+                                      ? 'En espera'
+                                      : 'Sin acceso'}
                             </span>
+                            {faceSessionTimerActive &&
+                                faceTimerSecondsLeft != null && (
+                                    <div
+                                        className={isCriticalTimer ? 'timer-critical-wrap' : ''}
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                            marginLeft: '10px',
+                                            padding: '4px 8px',
+                                            borderRadius: '10px',
+                                            border: '1px solid rgba(34,211,238,0.45)',
+                                            background: 'rgba(15, 23, 42, 0.82)',
+                                        }}
+                                    >
+                                        <svg width="44" height="44" viewBox="0 0 52 52">
+                                            <circle
+                                                cx="26"
+                                                cy="26"
+                                                r="20"
+                                                stroke="rgba(148,163,184,0.35)"
+                                                strokeWidth="5"
+                                                fill="none"
+                                            />
+                                            <circle
+                                                cx="26"
+                                                cy="26"
+                                                r="20"
+                                                stroke={timerStrokeColor}
+                                                strokeWidth="5"
+                                                fill="none"
+                                                strokeLinecap="round"
+                                                transform="rotate(-90 26 26)"
+                                                strokeDasharray={timerCirc}
+                                                strokeDashoffset={timerCirc * (1 - faceTimerProgress)}
+                                                style={{
+                                                    transition:
+                                                        'stroke-dashoffset 650ms linear, stroke 250ms ease',
+                                                    filter: `drop-shadow(0 0 6px ${timerGlowColor})`,
+                                                }}
+                                            />
+                                            <text
+                                                x="26"
+                                                y="29"
+                                                textAnchor="middle"
+                                                fontSize="11"
+                                                fontWeight="700"
+                                                fill={faceTimerProgress > 0.33 ? '#fde68a' : '#fecaca'}
+                                            >
+                                                {faceTimerSecondsSafe}s
+                                            </text>
+                                        </svg>
+                                        <div
+                                            className={`text-[10px] tracking-wider uppercase opacity-90 ${
+                                                isCriticalTimer ? 'text-red-300' : 'text-amber-200'
+                                            }`}
+                                        >
+                                            Tiempo restante
+                                        </div>
+                                    </div>
+                                )}
                         </div>
                         <div
                             ref={cameraStageRef}
@@ -1230,6 +2148,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 style={{ display: cameraReady ? 'block' : 'none' }}
                             />
                             
+                            {/* Marco: mismo tamaño que cv::ellipse en C:\FACIAL (FaceDetectionEngine::getMainFaceOval). border-radius 50% = elipse en rectángulo ow×oh. */}
                             {ovalForStage && (
                                 <div
                                     className="absolute pointer-events-none transition-all duration-100 ease-out biometric-oval"
@@ -1247,6 +2166,45 @@ const AuthGateway = ({ onAuthenticated }) => {
                                         boxShadow: 'none',
                                     }}
                                 >
+                                    <div
+                                        className="absolute inset-0 pointer-events-none"
+                                        style={{
+                                            borderRadius: '50%',
+                                            boxShadow: '0 0 0 9999px rgba(2, 6, 23, 0.42)',
+                                        }}
+                                    />
+                                    {/* Mira como FacialRecognitionSystem::drawUI (líneas ~587–590) */}
+                                    <div
+                                        className="absolute left-1/2 top-1/2 z-[1] pointer-events-none"
+                                        style={{
+                                            transform: 'translate(-50%, -50%)',
+                                            width: 21,
+                                            height: 21,
+                                        }}
+                                    >
+                                        <div
+                                            className="absolute left-1/2 top-1/2"
+                                            style={{
+                                                transform: 'translate(-50%, -50%)',
+                                                width: 20,
+                                                height: 1,
+                                                backgroundColor: faceGuide.qualityReady
+                                                    ? '#22c55e'
+                                                    : 'rgba(239, 68, 68, 0.95)',
+                                            }}
+                                        />
+                                        <div
+                                            className="absolute left-1/2 top-1/2"
+                                            style={{
+                                                transform: 'translate(-50%, -50%)',
+                                                width: 1,
+                                                height: 20,
+                                                backgroundColor: faceGuide.qualityReady
+                                                    ? '#22c55e'
+                                                    : 'rgba(239, 68, 68, 0.95)',
+                                            }}
+                                        />
+                                    </div>
                                     {!faceGuide.qualityReady && (
                                         <div className="absolute inset-0 flex items-center justify-center">
                                             <span
@@ -1266,9 +2224,17 @@ const AuthGateway = ({ onAuthenticated }) => {
                             )}
 
                             {!cameraReady && (
-                                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 text-white gap-3" style={{ zIndex: 20 }}>
+                                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 text-white gap-3 px-4 text-center" style={{ zIndex: 20 }}>
                                     <ScanFace size={48} className="animate-pulse opacity-50" />
-                                    <span className="text-sm font-medium">Iniciando Biometría Facial...</span>
+                                    {mode === 'login' && !loginBiometricSession ? (
+                                        <span className="text-sm font-medium max-w-xs">
+                                            Seleccione empresa y usuario, luego pulse «Ingresar con Reconocimiento
+                                            Facial». La cámara se activará solo entonces (máx.{' '}
+                                            {Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000)} s).
+                                        </span>
+                                    ) : (
+                                        <span className="text-sm font-medium">Iniciando Biometría Facial...</span>
+                                    )}
                                 </div>
                             )}
 
@@ -1302,13 +2268,37 @@ const AuthGateway = ({ onAuthenticated }) => {
                             )}
                         </div>
 
+                        {faceCaptureOnlyView && error && (
+                            <div
+                                className="auth-message error"
+                                style={{ margin: '10px 12px 0', flexShrink: 0 }}
+                                role="alert"
+                            >
+                                <AlertTriangle size={15} /> {error}
+                            </div>
+                        )}
+                        {faceCaptureOnlyView && message && !error && (
+                            <div
+                                className="auth-message ok"
+                                style={{ margin: '10px 12px 0', flexShrink: 0 }}
+                            >
+                                {message}
+                            </div>
+                        )}
+
                         <div className="bio-icao-panel">
                             <div className="bio-icao-section">
                                 <div className="bio-icao-title">CALIDAD ICAO</div>
                                 <div className="bio-icao-grid-2">
                                     <div className="bio-icao-row">
                                         <span>OJOS ABIERTOS</span>
-                                        <span className="bio-icao-val">
+                                        <span
+                                            className={`bio-icao-val${
+                                                faceGuide.icaoEyes === false
+                                                    ? ' bio-icao-val--fail'
+                                                    : ''
+                                            }`}
+                                        >
                                             {formatIcaoCell(
                                                 faceGuide.icaoEyes === null ? null : faceGuide.icaoEyes
                                             )}
@@ -1316,7 +2306,13 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     </div>
                                     <div className="bio-icao-row">
                                         <span>BOCA CERRADA</span>
-                                        <span className="bio-icao-val">
+                                        <span
+                                            className={`bio-icao-val${
+                                                faceGuide.icaoMouth === false
+                                                    ? ' bio-icao-val--fail'
+                                                    : ''
+                                            }`}
+                                        >
                                             {formatIcaoCell(
                                                 faceGuide.icaoMouth === null ? null : faceGuide.icaoMouth
                                             )}
@@ -1324,7 +2320,13 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     </div>
                                     <div className="bio-icao-row">
                                         <span>FRONTALIDAD</span>
-                                        <span className="bio-icao-val">
+                                        <span
+                                            className={`bio-icao-val${
+                                                faceGuide.icaoFrontal === false
+                                                    ? ' bio-icao-val--fail'
+                                                    : ''
+                                            }`}
+                                        >
                                             {formatIcaoCell(
                                                 faceGuide.icaoFrontal === null
                                                     ? null
@@ -1334,7 +2336,13 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     </div>
                                     <div className="bio-icao-row">
                                         <span>SIN LENTES</span>
-                                        <span className="bio-icao-val">
+                                        <span
+                                            className={`bio-icao-val${
+                                                faceGuide.icaoNoGlasses === false
+                                                    ? ' bio-icao-val--fail'
+                                                    : ''
+                                            }`}
+                                        >
                                             {formatIcaoCell(
                                                 faceGuide.icaoNoGlasses === null
                                                     ? null
@@ -1356,14 +2364,39 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 </div>
                                 <div className="bio-icao-liveness-meta">
                                     <span>Umbral {FACIAL_ICAO.LIVENESS_SCORE_PASS}%</span>
-                                    <span className="bio-icao-pct">
+                                    <span
+                                        className={`bio-icao-pct${
+                                            Number(faceGuide.livenessScore || 0) <
+                                            FACIAL_ICAO.LIVENESS_SCORE_PASS
+                                                ? ' bio-icao-pct--warn'
+                                                : ''
+                                        }`}
+                                    >
                                         {Number(faceGuide.livenessScore || 0).toFixed(1)}%
                                     </span>
                                 </div>
                             </div>
                         </div>
+                        {faceCaptureOnlyView && (
+                            <button
+                                type="button"
+                                className="logout-demo"
+                                disabled={isProcessing}
+                                onClick={() => {
+                                    if (registerUserCaptureView) {
+                                        endRegisterFaceSession({})
+                                    } else {
+                                        endLoginFaceSession({})
+                                    }
+                                }}
+                                style={{ marginTop: '8px', width: '100%', padding: '10px', fontSize: '13px' }}
+                            >
+                                Cancelar verificación facial
+                            </button>
+                        )}
                     </div>
 
+                    {!faceCaptureOnlyView && (
                     <div className="mode-switch mode-switch-below-bio">
                         <button
                             type="button"
@@ -1390,18 +2423,48 @@ const AuthGateway = ({ onAuthenticated }) => {
                             <UserPlus size={20} /> Crear Cuenta (REGISTRO)
                         </button>
                     </div>
+                    )}
                 </section>
+                )}
 
-                <section className="auth-panel auth-panel-form">
+                {!faceCaptureOnlyView && (
+                <section
+                    className={`auth-panel auth-panel-form${
+                        registerPersonFormOnlyView
+                            ? ' auth-panel-form--register-person'
+                            : ''
+                    }`}
+                >
                     {mode === 'login' ? (
                         <>
+                            <div
+                                style={{
+                                    marginBottom: '14px',
+                                    border: '1px solid rgba(56, 189, 248, 0.26)',
+                                    borderRadius: '12px',
+                                    padding: '10px 12px',
+                                    background:
+                                        'linear-gradient(120deg, rgba(8,47,73,0.38), rgba(15,23,42,0.25))',
+                                }}
+                            >
+                                <img
+                                    src={enterpriseMiningMark}
+                                    alt="NEXMINE"
+                                    style={{ width: '320px', maxWidth: '100%', height: 'auto', display: 'block' }}
+                                />
+                                <h2 style={{ margin: '6px 0 3px' }}>Acceso Seguro</h2>
+                            </div>
                             <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
                                 <button type="button" className={loginTab === 'user' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '8px', fontSize: '13px'}} onClick={() => { setLoginTab('user'); setError(''); }}>LOGIN Usuario</button>
                                 <button type="button" className={loginTab === 'company' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '8px', fontSize: '13px'}} onClick={() => { setLoginTab('company'); setError(''); }}>LOGIN Empresa</button>
                             </div>
-
-                            <h2>{loginTab === 'user' ? 'Ingresar como Usuario (Trabajador)' : 'Ingresar como Empresa Contratista'}</h2>
                             
+                            <form
+                                id="auth-login-credentials-form"
+                                className="stack-form"
+                                onSubmit={handlePasswordLogin}
+                                style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}
+                            >
                             <label className="field-label">
                                 <Building2 size={14} /> Empresa Asignada / Compañía
                                 <select
@@ -1418,6 +2481,38 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 </select>
                             </label>
 
+                            <label className="field-label">
+                                <UserRound size={14} /> Usuario / DNI / RUC
+                                <input
+                                    type="text"
+                                    value={loginForm.username}
+                                    onChange={(event) =>
+                                        setLoginForm((prev) => ({
+                                            ...prev,
+                                            username: event.target.value,
+                                        }))
+                                    }
+                                    placeholder="Requerido para facial y para acceso manual"
+                                    autoComplete="username"
+                                />
+                            </label>
+                            <label className="field-label">
+                                <KeyRound size={14} /> Contraseña
+                                <input
+                                    id="auth-login-password-input"
+                                    type="password"
+                                    value={loginForm.password}
+                                    onChange={(event) =>
+                                        setLoginForm((prev) => ({
+                                            ...prev,
+                                            password: event.target.value,
+                                        }))
+                                    }
+                                    placeholder="Para ingreso con contraseña"
+                                    autoComplete="current-password"
+                                />
+                            </label>
+                            </form>
                             {/* Captured Face Preview for Login */}
                             {capturedImageBase64 && (
                                 <div className="captured-preview-container" style={{ margin: '15px 0', padding: '10px', background: 'rgba(30, 41, 59, 0.5)', borderRadius: '8px', border: '1px solid #334155', display: 'flex', alignItems: 'center', gap: '15px' }}>
@@ -1434,55 +2529,238 @@ const AuthGateway = ({ onAuthenticated }) => {
                             <button
                                 type="button"
                                 className="primary-face-button"
-                                disabled={!cameraReady || isProcessing}
-                                onClick={handleFaceLogin}
-                                style={{marginTop: '12px'}}
+                                disabled={
+                                    isProcessing ||
+                                    (loginBiometricSession &&
+                                        (!cameraReady || !loginBiometricGate))
+                                }
+                                onClick={async () => {
+                                    if (!loginBiometricSession) {
+                                        await startLoginFaceSession()
+                                        return
+                                    }
+                                    if (cameraReady && loginBiometricGate && !isProcessing) {
+                                        loginSubmitTriggeredRef.current = true
+                                        handleFaceLogin(bestLoginProbeRef.current)
+                                    } else {
+                                        setError(
+                                            'Verificación biométrica en curso: espere 3 muestras válidas (ICAO + liveness) o 3/3 del servidor con último frame OK.'
+                                        )
+                                    }
+                                }}
+                                style={{ marginTop: '12px' }}
                             >
                                 <ScanFace size={17} />
-                                {isProcessing ? 'Validando rostro...' : 'Ingresar con Reconocimiento Facial'}
+                                {isProcessing
+                                    ? 'Validando rostro...'
+                                    : !loginBiometricSession
+                                      ? 'Ingresar con Reconocimiento Facial'
+                                      : !cameraReady
+                                        ? 'Abriendo cámara…'
+                                        : !loginBiometricGate
+                                          ? 'Verificación biométrica en curso…'
+                                          : hasRequiredBiometricSamples
+                                            ? 'Envío automático en curso…'
+                                            : `Capturando biometría (${Number(
+                                                  faceGuide.captureCount || 0
+                                              )}/${FACIAL_ICAO.REQUIRED_VALID_FRAMES})…`}
                             </button>
-
-                            <div className="auth-divider">
-                                <span>O Acceso Manual</span>
-                            </div>
-
-                            <form onSubmit={handlePasswordLogin} className="stack-form">
-                                <label className="field-label">
-                                    <UserRound size={14} /> Usuario / DNI / RUC
-                                    <input
-                                        type="text"
-                                        value={loginForm.username}
-                                        onChange={(event) =>
-                                            setLoginForm((prev) => ({ ...prev, username: event.target.value }))
-                                        }
-                                        required
-                                    />
-                                </label>
-                                <label className="field-label">
-                                    <KeyRound size={14} /> Contraseña
-                                    <input
-                                        type="password"
-                                        value={loginForm.password}
-                                        onChange={(event) =>
-                                            setLoginForm((prev) => ({ ...prev, password: event.target.value }))
-                                        }
-                                        required
-                                    />
-                                </label>
-                                <button type="submit" className="secondary-button" disabled={isProcessing} style={{marginTop: '10px'}}>
-                                    Ingresar con Usuario y Contraseña
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '8px' }}>
+                                <button
+                                    type="submit"
+                                    form="auth-login-credentials-form"
+                                    className="auth-login-password-button"
+                                    disabled={isProcessing}
+                                >
+                                    <KeyRound size={16} /> Ingresar con Password
                                 </button>
-                            </form>
+                                <button
+                                    type="button"
+                                    className="secondary-button"
+                                    disabled={isProcessing}
+                                    onClick={() => {
+                                        setMode('register')
+                                        setRegisterTab('user')
+                                        setError('')
+                                        setMessage('')
+                                    }}
+                                >
+                                    <UserPlus size={16} /> Registrar Usuario
+                                </button>
+                            </div>
+                            {mode === 'login' && loginBiometricSession && (
+                                <button
+                                    type="button"
+                                    className="logout-demo"
+                                    disabled={isProcessing}
+                                    onClick={() => endLoginFaceSession({})}
+                                    style={{
+                                        marginTop: '8px',
+                                        width: '100%',
+                                        padding: '10px',
+                                        fontSize: '13px',
+                                    }}
+                                >
+                                    Cancelar verificación facial
+                                </button>
+                            )}
+
                         </>
                     ) : (
                         <>
-                            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-                                <button type="button" className={registerTab === 'user' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '8px', fontSize: '13px'}} onClick={() => { setRegisterTab('user'); setError(''); }}>REGISTRO de Persona</button>
-                                <button type="button" className={registerTab === 'company' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '8px', fontSize: '13px'}} onClick={() => { setRegisterTab('company'); setError(''); }}>REGISTRO de Empresa</button>
+                            <div
+                                className="auth-login-brand-block auth-register-brand-block"
+                                style={{
+                                    marginBottom: '10px',
+                                    border: '1px solid rgba(56, 189, 248, 0.26)',
+                                    borderRadius: '12px',
+                                    padding: '8px 10px',
+                                    background:
+                                        'linear-gradient(120deg, rgba(8,47,73,0.38), rgba(15,23,42,0.25))',
+                                }}
+                            >
+                                <img
+                                    src={enterpriseMiningMark}
+                                    alt="NEXMINE"
+                                    className="auth-register-brand-img"
+                                    style={{
+                                        width: 'min(300px, 100%)',
+                                        height: 'auto',
+                                        display: 'block',
+                                    }}
+                                />
+                                <h2
+                                    className="auth-register-brand-title"
+                                    style={{ margin: '4px 0 2px' }}
+                                >
+                                    Acceso Seguro
+                                </h2>
                             </div>
+                            <div className="register-mode-tabs">
+                                <button
+                                    type="button"
+                                    className={
+                                        registerTab === 'user'
+                                            ? 'secondary-button'
+                                            : 'logout-demo'
+                                    }
+                                    onClick={() => {
+                                        setRegisterTab('user')
+                                        setError('')
+                                    }}
+                                >
+                                    REGISTRO de Persona
+                                </button>
+                                <button
+                                    type="button"
+                                    className={
+                                        registerTab === 'company'
+                                            ? 'secondary-button'
+                                            : 'logout-demo'
+                                    }
+                                    onClick={() => {
+                                        setRegisterTab('company')
+                                        setError('')
+                                    }}
+                                >
+                                    REGISTRO de Empresa
+                                </button>
+                            </div>
+                            {mode === 'register' &&
+                                registerTab === 'user' &&
+                                registerUserBiometricStep === 'form' &&
+                                !showBiometricPanel && (
+                                    <button
+                                        type="button"
+                                        className="logout-demo register-back-login-btn"
+                                        onClick={() => {
+                                            setMode('login')
+                                            setError('')
+                                            setMessage('')
+                                        }}
+                                    >
+                                        Volver al inicio de sesión
+                                    </button>
+                                )}
 
-                            <h2>{registerTab === 'company' ? 'Registrar Empresa Contratista' : 'Registrar Nuevo Usuario'}</h2>
-                            <form onSubmit={handleRegister} className="stack-form">
+                            {registerTab === 'user' &&
+                            registerUserBiometricStep === 'success' ? (
+                                <div
+                                    className="stack-form"
+                                    style={{ padding: '8px 0 24px', textAlign: 'center' }}
+                                >
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            justifyContent: 'center',
+                                            marginBottom: '16px',
+                                        }}
+                                    >
+                                        <ShieldCheck
+                                            size={56}
+                                            strokeWidth={1.5}
+                                            style={{ color: '#22c55e' }}
+                                        />
+                                    </div>
+                                    <h2 style={{ marginBottom: '8px' }}>Registro exitoso</h2>
+                                    <p
+                                        style={{
+                                            color: '#94a3b8',
+                                            marginBottom: '24px',
+                                            fontSize: '15px',
+                                            lineHeight: 1.45,
+                                        }}
+                                    >
+                                        El registro facial se completó correctamente. Ya puede acceder al
+                                        sistema.
+                                    </p>
+                                    <button
+                                        type="button"
+                                        className="primary-face-button"
+                                        disabled={!registrationCompleteSession || isProcessing}
+                                        onClick={() => {
+                                            if (registrationCompleteSession) {
+                                                onAuthenticated(registrationCompleteSession)
+                                            }
+                                        }}
+                                        style={{ width: '100%', marginBottom: '10px' }}
+                                    >
+                                        <UserPlus size={17} /> Entrar al sistema
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="secondary-button"
+                                        disabled={isProcessing}
+                                        onClick={() => {
+                                            setMode('login')
+                                            setRegisterUserBiometricStep('form')
+                                            setRegistrationCompleteSession(null)
+                                            setMessage('')
+                                            setError('')
+                                        }}
+                                        style={{ width: '100%' }}
+                                    >
+                                        Volver al inicio de sesión
+                                    </button>
+                                </div>
+                            ) : (
+                            <>
+                            {registerTab === 'company' && (
+                                <h2>Registrar Empresa Contratista</h2>
+                            )}
+                            <form
+                                onSubmit={(e) => {
+                                    e.preventDefault()
+                                    if (registerTab === 'company') {
+                                        handleRegister(e)
+                                    }
+                                }}
+                                className={`stack-form${
+                                    registerTab === 'user'
+                                        ? ' stack-form--register-person'
+                                        : ''
+                                }`}
+                            >
                                 {registerTab === 'company' ? (
                                     <>
                                          <label className="field-label">
@@ -1548,86 +2826,237 @@ const AuthGateway = ({ onAuthenticated }) => {
                                          </div>
                                     </>
                                 ) : (
-                                    <>
-                                        <label className="field-label">
-                                            <Building2 size={14} /> Empresa Asignada
-                                            <select value={registerForm.company} onChange={(e) => setRegisterForm((prev) => ({ ...prev, company: e.target.value }))}>
+                                    <div className="register-person-fields">
+                                        <label className="field-label reg-grid-full">
+                                            <Building2 size={16} /> Empresa Asignada
+                                            <select
+                                                value={registerForm.company}
+                                                onChange={(e) =>
+                                                    setRegisterForm((prev) => ({
+                                                        ...prev,
+                                                        company: e.target.value,
+                                                    }))
+                                                }
+                                                required
+                                            >
                                                 {companies.map((company) => (
-                                                    <option key={company} value={company}>{company}</option>
+                                                    <option key={company} value={company}>
+                                                        {company}
+                                                    </option>
                                                 ))}
                                             </select>
                                         </label>
-                                        <label className="field-label">
+                                        <label className="field-label reg-grid-dni">
                                             DNI Trabajador
-                                            <input type="text" maxLength={12} value={registerForm.dni} onChange={(e) => setRegisterForm((prev) => ({ ...prev, dni: e.target.value }))} required />
+                                            <input
+                                                type="text"
+                                                maxLength={12}
+                                                value={registerForm.dni}
+                                                onChange={(e) =>
+                                                    setRegisterForm((prev) => ({
+                                                        ...prev,
+                                                        dni: e.target.value,
+                                                    }))
+                                                }
+                                                required
+                                            />
                                         </label>
-                                        <div style={{display: 'flex', gap: '10px'}}>
-                                            <label className="field-label" style={{flex: 1}}>
-                                                Nombres
-                                                <input type="text" value={registerForm.firstName} onChange={(e) => setRegisterForm((prev) => ({ ...prev, firstName: e.target.value }))} required />
-                                            </label>
-                                            <label className="field-label" style={{flex: 1}}>
-                                                Apellidos
-                                                <input type="text" value={registerForm.lastName} onChange={(e) => setRegisterForm((prev) => ({ ...prev, lastName: e.target.value }))} required />
-                                            </label>
-                                        </div>
-                                        <div style={{display: 'flex', gap: '10px'}}>
-                                            <label className="field-label" style={{flex: 1}}>
-                                                Correo Electronico
-                                                <input type="email" value={registerForm.email} onChange={(e) => setRegisterForm((prev) => ({ ...prev, email: e.target.value }))} required />
-                                            </label>
-                                            <label className="field-label" style={{flex: 1}}>
-                                                Celular
-                                                <input type="tel" value={registerForm.mobile} onChange={(e) => setRegisterForm((prev) => ({ ...prev, mobile: e.target.value }))} required />
-                                            </label>
-                                        </div>
-                                        <label className="field-label">
+                                        <label className="field-label reg-grid-nombres">
+                                            Nombres
+                                            <input
+                                                type="text"
+                                                value={registerForm.firstName}
+                                                onChange={(e) =>
+                                                    setRegisterForm((prev) => ({
+                                                        ...prev,
+                                                        firstName: e.target.value,
+                                                    }))
+                                                }
+                                                required
+                                            />
+                                        </label>
+                                        <label className="field-label reg-grid-apellidos">
+                                            Apellidos
+                                            <input
+                                                type="text"
+                                                value={registerForm.lastName}
+                                                onChange={(e) =>
+                                                    setRegisterForm((prev) => ({
+                                                        ...prev,
+                                                        lastName: e.target.value,
+                                                    }))
+                                                }
+                                                required
+                                            />
+                                        </label>
+                                        <label className="field-label reg-grid-email">
+                                            Correo electrónico
+                                            <input
+                                                type="email"
+                                                value={registerForm.email}
+                                                onChange={(e) =>
+                                                    setRegisterForm((prev) => ({
+                                                        ...prev,
+                                                        email: e.target.value,
+                                                    }))
+                                                }
+                                                required
+                                            />
+                                        </label>
+                                        <label className="field-label reg-grid-celular">
+                                            Celular
+                                            <input
+                                                type="tel"
+                                                value={registerForm.mobile}
+                                                onChange={(e) =>
+                                                    setRegisterForm((prev) => ({
+                                                        ...prev,
+                                                        mobile: e.target.value,
+                                                    }))
+                                                }
+                                                required
+                                            />
+                                        </label>
+                                        <label className="field-label reg-grid-full">
                                             Cargo / Nivel de Usuario
-                                            <select style={{ backgroundColor: '#1e293b', padding: '10px', borderRadius: '6px', color: '#fff', border: '1px solid #334155'}} value={registerForm.role} onChange={(e) => setRegisterForm((prev) => ({...prev, role: e.target.value}))}>
-                                                <option value="operator">Operador / Personal Tecnico</option>
-                                                <option value="supervisor">Supervisor / Jefe de Guardia</option>
-                                                <option value="manager">Gerente de Operaciones</option>
-                                                <option value="geologist">Ingeniero Geomecanico</option>
-                                                <option value="safety">Prevencionista / SSOMA</option>
-                                                <option value="admin">Administrador del Sistema</option>
+                                            <select
+                                                className="register-role-select"
+                                                value={registerForm.role}
+                                                onChange={(e) =>
+                                                    setRegisterForm((prev) => ({
+                                                        ...prev,
+                                                        role: e.target.value,
+                                                    }))
+                                                }
+                                                required
+                                            >
+                                                <option value="operator">
+                                                    Operador / Personal Tecnico
+                                                </option>
+                                                <option value="supervisor">
+                                                    Supervisor / Jefe de Guardia
+                                                </option>
+                                                <option value="manager">
+                                                    Gerente de Operaciones
+                                                </option>
+                                                <option value="geologist">
+                                                    Ingeniero Geomecanico
+                                                </option>
+                                                <option value="safety">
+                                                    Prevencionista / SSOMA
+                                                </option>
+                                                <option value="admin">
+                                                    Administrador del Sistema
+                                                </option>
                                             </select>
                                         </label>
-
-                                        {/* Captured Face Preview for Registration (User) */}
-                                        {capturedImageBase64 && (
-                                            <div className="captured-preview-container" style={{ margin: '15px 0', padding: '10px', background: 'rgba(30, 41, 59, 0.5)', borderRadius: '8px', border: '1px solid #334155', display: 'flex', alignItems: 'center', gap: '15px' }}>
-                                                <div style={{ width: '80px', height: '80px', borderRadius: '50%', overflow: 'hidden', border: '2px solid #22c55e', boxShadow: '0 0 10px rgba(34, 197, 94, 0.3)' }}>
-                                                    <img src={`data:image/jpeg;base64,${capturedImageBase64}`} className="w-full h-full object-cover" alt="registration face snapshot" />
-                                                </div>
-                                                <div style={{ flex: 1 }}>
-                                                    <span style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', color: '#22c55e', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Biometría para Registro</span>
-                                                    <span style={{ fontSize: '13px', color: '#94a3b8' }}>Rostro capturado correctamente</span>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </>
+                                    </div>
                                 )}
 
-                                <div className="auth-divider" style={{margin: '12px 0'}}><span>Credenciales de Acceso</span></div>
-                                <div style={{display: 'flex', gap: '10px'}}>
-                                    <label className="field-label" style={{flex: 1}}>
-                                        Usuario de Sistema
-                                        <input type="text" value={registerForm.username} onChange={(e) => setRegisterForm((prev) => ({ ...prev, username: e.target.value }))} required />
+                                <div className="auth-divider auth-divider--tight">
+                                    <span>Credenciales de Acceso</span>
+                                </div>
+                                <label className="field-label register-credentials-username">
+                                    Usuario de Sistema
+                                    <input
+                                        type="text"
+                                        value={registerForm.username}
+                                        onChange={(e) =>
+                                            setRegisterForm((prev) => ({
+                                                ...prev,
+                                                username: e.target.value,
+                                            }))
+                                        }
+                                        autoComplete="username"
+                                        required
+                                    />
+                                </label>
+                                <div className="register-password-row">
+                                    <label className="field-label">
+                                        Contraseña
+                                        <input
+                                            type="password"
+                                            value={registerForm.password}
+                                            onChange={(e) =>
+                                                setRegisterForm((prev) => ({
+                                                    ...prev,
+                                                    password: e.target.value,
+                                                }))
+                                            }
+                                            autoComplete="new-password"
+                                            required
+                                            minLength={6}
+                                        />
                                     </label>
-                                    <label className="field-label" style={{flex: 1}}>
-                                        Contrasena
-                                        <input type="password" value={registerForm.password} onChange={(e) => setRegisterForm((prev) => ({ ...prev, password: e.target.value }))} required />
+                                    <label className="field-label">
+                                        Confirmar contraseña
+                                        <input
+                                            type="password"
+                                            value={registerForm.passwordConfirm}
+                                            onChange={(e) =>
+                                                setRegisterForm((prev) => ({
+                                                    ...prev,
+                                                    passwordConfirm: e.target.value,
+                                                }))
+                                            }
+                                            autoComplete="new-password"
+                                            required
+                                            minLength={6}
+                                        />
                                     </label>
                                 </div>
 
-                                <button type="button" className={`secondary-button ${capturedImageBase64 ? 'success' : ''}`} disabled={!cameraReady} onClick={handleCaptureForRegistration} style={{marginTop: '10px'}}>
-                                    {capturedImageBase64 ? <ShieldCheck size={15} /> : <Camera size={15} />} 
-                                    {capturedImageBase64 ? ' Biometría Capturada' : ' Registrar biometrica facial (Obligatorio)'}
+                                <button
+                                    type="button"
+                                    className={`${
+                                        registerTab === 'user'
+                                            ? 'register-biometric-btn '
+                                            : ''
+                                    }secondary-button ${
+                                        registerTab === 'company' &&
+                                        capturedImageBase64
+                                            ? 'success'
+                                            : ''
+                                    }`}
+                                    disabled={
+                                        registerTab === 'user' &&
+                                        registerUserBiometricStep === 'form'
+                                            ? isProcessing
+                                            : !cameraReady
+                                    }
+                                    onClick={
+                                        registerTab === 'user' &&
+                                        registerUserBiometricStep === 'form'
+                                            ? startRegisterUserFaceCapture
+                                            : handleCaptureForRegistration
+                                    }
+                                    style={
+                                        registerTab === 'user'
+                                            ? undefined
+                                            : { marginTop: '10px' }
+                                    }
+                                >
+                                    {registerTab === 'company' && capturedImageBase64 ? (
+                                        <ShieldCheck size={15} />
+                                    ) : (
+                                        <Camera size={15} />
+                                    )}
+                                    {registerTab === 'company' && capturedImageBase64
+                                        ? ' Biometría Capturada'
+                                        : ' Registrar biometrica facial (Obligatorio)'}
                                 </button>
-                                <button type="submit" className="primary-face-button" disabled={!canRegister || isProcessing}>
-                                    <UserPlus size={17} /> Guardar registro e Iniciar Sesion
-                                </button>
+                                {registerTab === 'company' && (
+                                    <button
+                                        type="submit"
+                                        className="primary-face-button"
+                                        disabled={!canRegister || isProcessing}
+                                    >
+                                        <UserPlus size={17} /> Guardar registro e Iniciar Sesion
+                                    </button>
+                                )}
                             </form>
+                            </>
+                            )}
                         </>
                     )}
 
@@ -1637,17 +3066,8 @@ const AuthGateway = ({ onAuthenticated }) => {
                         </div>
                     )}
                     {message && <div className="auth-message ok">{message}</div>}
-                    <button
-                        type="button"
-                        className="logout-demo"
-                        onClick={() => {
-                            clearSession()
-                            setMessage('Sesion reiniciada para pruebas de acceso.')
-                        }}
-                    >
-                        Reiniciar sesion local
-                    </button>
                 </section>
+                )}
             </div>
         </div>
     )

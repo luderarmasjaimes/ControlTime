@@ -11,9 +11,11 @@ import numpy as np
 from collections import deque
 import threading
 
+import base64
 import json
 import os
 import requests
+from typing import Optional, Tuple
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 
@@ -66,22 +68,20 @@ EAR_SMOOTH_WIN = max(1, int(os.environ.get("EAR_SMOOTH_WIN", "5")))
 GLASSES_SPEC_V_MIN = float(os.environ.get("GLASSES_SPEC_V_MIN", "237"))
 GLASSES_SPEC_S_MAX = float(os.environ.get("GLASSES_SPEC_S_MAX", "40"))
 
-MODEL_PATH = os.environ.get("FACE_LANDMARKER_MODEL", "face_landmarker.task")
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
-    "face_landmarker/float16/1/face_landmarker.task"
+from mediapipe_models_fetch import (
+    ensure_mediapipe_models,
+    get_face_model_path,
+    get_selfie_model_path,
 )
 
-if not os.path.exists(MODEL_PATH):
-    print(f"[*] Descargando modelo MediaPipe: {MODEL_PATH}...", flush=True)
-    try:
-        r = requests.get(MODEL_URL, timeout=120)
-        r.raise_for_status()
-        with open(MODEL_PATH, "wb") as f:
-            f.write(r.content)
-        print("[✓] Modelo descargado exitosamente.", flush=True)
-    except Exception as e:
-        print(f"[!] Error descargando modelo: {e}.", flush=True)
+if not ensure_mediapipe_models():
+    raise RuntimeError(
+        "[EYE_AI] Modelos MediaPipe obligatorios no disponibles "
+        "(red o CDN). Revise logs [mediapipe_models]."
+    )
+
+MODEL_PATH = get_face_model_path()
+SELFIE_SEGMENTER_PATH = get_selfie_model_path()
 
 base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
 options = vision.FaceLandmarkerOptions(
@@ -95,15 +95,48 @@ options = vision.FaceLandmarkerOptions(
 )
 detector = vision.FaceLandmarker.create_from_options(options)
 
+_selfie_segmenter = None
+_selfie_segmenter_failed = False
+
 # Índices ojos (malla MediaPipe 478 puntos) — orden estándar EAR
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
+try:
+    _FACE_OVAL_INDICES_SET = set()
+    for _conn in mp.solutions.face_mesh.FACEMESH_FACE_OVAL:
+        _FACE_OVAL_INDICES_SET.add(int(_conn[0]))
+        _FACE_OVAL_INDICES_SET.add(int(_conn[1]))
+    FACE_OVAL_INDICES = sorted(_FACE_OVAL_INDICES_SET)
+except Exception:
+    FACE_OVAL_INDICES = []
+if not FACE_OVAL_INDICES:
+    # Fallback fijo (MediaPipe 468): contorno facial equivalente a FACEMESH_FACE_OVAL.
+    FACE_OVAL_INDICES = [
+        10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+        397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+        172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+    ]
 
 mouth_closed_prev = True
-glasses_score_hist = deque(maxlen=9)
+# Ventana corta = reacción más rápida al quitarse gafas (frame ya recortado al óvalo).
+def _glasses_hist_maxlen() -> int:
+    try:
+        return max(3, min(11, int(os.environ.get("GLASSES_SCORE_HIST_LEN", "5"))))
+    except ValueError:
+        return 5
+
+
+def _glasses_fusion_hist_maxlen() -> int:
+    try:
+        return max(3, min(11, int(os.environ.get("GLASSES_FUSION_HIST_LEN", "5"))))
+    except ValueError:
+        return 5
+
+
+glasses_score_hist = deque(maxlen=_glasses_hist_maxlen())
 glasses_state_prev = False
 # Fusión CV + ONNX (GLASSES_ONNX_PATH): histéresis sobre señal fusionada 0–100
-glasses_fusion_hist = deque(maxlen=9)
+glasses_fusion_hist = deque(maxlen=_glasses_fusion_hist_maxlen())
 glasses_fusion_state_prev = False
 # Exclusión mutua + reset por petición: el backend llama /analyze_eyes en HTTP stateless
 # (un JPEG por request). Sin esto, el deque y la histéresis mezclan frames y queda
@@ -482,11 +515,24 @@ def _glasses_from_frame_impl(img_bgr, points):
     # Salida (histéresis "lentes → sin lentes"): antes stable<32 y NOT weak_frame_presence.
     # Sin lentes, nariz/cejas suelen dejar weak_frame_presence=True y stable~40–48 → nunca salía.
     no_spec_for_exit = spec_density < 0.00075 and comp_count == 0
+    # ROI óvalo: al quitarse gafas, rim/puente caen ya; el mediano de la ventana puede tardar 2–3 frames.
+    low_rim_bridge = rim_density < 0.050 and bridge_dark < 0.015
     exit_glasses = (
-        no_spec_for_exit
-        and stable < 49.0
-        and not strong_glare
-        and not medium_glare
+        (
+            no_spec_for_exit
+            and stable < 49.0
+            and not strong_glare
+            and not medium_glare
+        )
+        or (
+            glasses_state_prev
+            and low_rim_bridge
+            and score_final < 47.5
+            and spec_density < 0.0010
+            and comp_count == 0
+            and not strong_glare
+            and not medium_glare
+        )
     )
 
     if not glasses_state_prev:
@@ -619,8 +665,25 @@ def apply_glasses_fusion_pipeline(
             hit = glasses_fusion_state_prev
             mode_out = fusion_mode
         else:
-            # cv_primary: no usar histéresis ONNX para el booleano ICAO
+            # cv_primary: booleano ICAO = CV; ONNX puede vetar FP (auriculares/reflejos sin brillo de cristal).
             hit = bool(cv_glasses_hit)
+            veto_on = os.environ.get("GLASSES_ONNX_NO_GLASSES_VETO", "1").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if veto_on and onnx_p is not None and hit:
+                try:
+                    p_max = float(os.environ.get("GLASSES_ONNX_VETO_MAX_PROB", "0.17"))
+                    sd_max = float(
+                        os.environ.get("GLASSES_ONNX_VETO_MAX_SPEC_DENSITY", "0.0028")
+                    )
+                except ValueError:
+                    p_max, sd_max = 0.17, 0.0028
+                sd = float(gdebug.get("spec_density", 1.0))
+                if float(onnx_p) < p_max and sd < sd_max:
+                    hit = False
+                    gdebug["onnx_no_glasses_veto"] = True
             mode_out = f"{fusion_mode}+cv_primary_bool"
         return fused, hit, mode_out, onnx_p, sf, float(cv_gscore)
 
@@ -645,9 +708,19 @@ def analyze_eyes():
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({"error": "Invalid image"}), 400
-
-    # Ligera reducción de ruido en color (preserva bordes mejor que blur global) — C:\FACIAL
-    img = cv2.bilateralFilter(img, d=5, sigmaColor=42, sigmaSpace=42)
+    # Asegurar BGR 8 bits (bilateralFilter 8u solo CV_8UC1/CV_8UC3; no in-place mismo buffer).
+    if img.dtype != np.uint8:
+        if img.dtype in (np.float32, np.float64) and float(np.nanmax(img)) <= 1.01:
+            img = (img * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+    img = np.ascontiguousarray(img)
+    # OpenCV exige src.data != dst.data: filtrar sobre copia explícita.
+    img = cv2.bilateralFilter(img.copy(), 5, 42, 42)
 
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
@@ -697,6 +770,7 @@ def analyze_eyes():
                 "glasses_onnx_prob": None,
                 "glasses_fusion_mode": None,
                 "confidence": 0.0,
+                "face_oval_points": [],
             }
         )
 
@@ -776,6 +850,16 @@ def analyze_eyes():
         flush=True,
     )
 
+    face_oval_points = []
+    for idx in FACE_OVAL_INDICES:
+        if not (0 <= idx < points.shape[0]):
+            continue
+        x = float(points[idx][0])
+        y = float(points[idx][1])
+        if not (np.isfinite(x) and np.isfinite(y)):
+            continue
+        face_oval_points.append([int(round(x)), int(round(y))])
+
     return jsonify(
         {
             "detected": True,
@@ -797,6 +881,555 @@ def analyze_eyes():
             "glasses_fusion_mode": fusion_mode,
             "glasses_debug": gdebug,
             "confidence": float(conf),
+            "face_oval_points": face_oval_points,
+        }
+    )
+
+
+def _face_embed_status():
+    try:
+        from face_embedding_insight import embedding_engine_status
+
+        return embedding_engine_status()
+    except Exception as ex:  # noqa: BLE001
+        return {"ready": False, "error": str(ex), "model_name": None, "root": None}
+
+
+def _get_selfie_segmenter():
+    """ImageSegmenter binario (persona vs fondo) para avatar con fondo blanco real."""
+    global _selfie_segmenter, _selfie_segmenter_failed
+    if _selfie_segmenter_failed:
+        return None
+    if _selfie_segmenter is not None:
+        return _selfie_segmenter
+    if not os.path.isfile(SELFIE_SEGMENTER_PATH):
+        print("[!] Falta selfie_segmenter.tflite; sin segmentación persona/fondo.", flush=True)
+        _selfie_segmenter_failed = True
+        return None
+    try:
+        base = python.BaseOptions(model_asset_path=SELFIE_SEGMENTER_PATH)
+        opts = vision.ImageSegmenterOptions(
+            base_options=base,
+            running_mode=vision.RunningMode.IMAGE,
+            output_category_mask=True,
+        )
+        _selfie_segmenter = vision.ImageSegmenter.create_from_options(opts)
+    except Exception as ex:  # noqa: BLE001
+        print(f"[!] ImageSegmenter no disponible: {ex}", flush=True)
+        _selfie_segmenter_failed = True
+        return None
+    return _selfie_segmenter
+
+
+def _refine_person_mask_u8(m: np.ndarray) -> np.ndarray:
+    m = np.clip(m, 0, 255).astype(np.uint8)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=2)
+    k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k2, iterations=1)
+    return cv2.GaussianBlur(m, (5, 5), 0)
+
+
+def _person_mask_grabcut_fallback(img_bgr: np.ndarray) -> Optional[np.ndarray]:
+    h, w = img_bgr.shape[:2]
+    try:
+        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        dr = detector.detect(mp_image)
+        if not dr.face_landmarks:
+            return None
+        pts = np.array(
+            [[lm.x * w, lm.y * h] for lm in dr.face_landmarks[0]], dtype=np.float32
+        )
+        x0, y0 = float(pts[:, 0].min()), float(pts[:, 1].min())
+        x1, y1 = float(pts[:, 0].max()), float(pts[:, 1].max())
+        fw, fh = max(1.0, x1 - x0), max(1.0, y1 - y0)
+        pad_x, pad_y = int(fw * 0.4), int(fh * 0.55)
+        ax0 = max(0, int(x0 - pad_x))
+        ay0 = max(0, int(y0 - pad_y * 0.35))
+        ax1 = min(w - 1, int(x1 + pad_x))
+        ay1 = min(h - 1, int(y1 + pad_y))
+        rw, rh = max(1, ax1 - ax0), max(1, ay1 - ay0)
+        rect = (ax0, ay0, rw, rh)
+        mask = np.zeros((h, w), np.uint8)
+        bgd = np.zeros((1, 65), np.float64)
+        fgd = np.zeros((1, 65), np.float64)
+        cv2.grabCut(img_bgr, mask, rect, bgd, fgd, 5, cv2.GC_INIT_WITH_RECT)
+        out = np.where((mask == cv2.GC_BGD) | (mask == cv2.GC_PR_BGD), 0, 255).astype(
+            np.uint8
+        )
+        if np.count_nonzero(out) < max(80, (h * w) // 200):
+            return None
+        return _refine_person_mask_u8(out)
+    except Exception:
+        return None
+
+
+def _person_mask_selfie_or_fallback(img_bgr: np.ndarray) -> np.ndarray:
+    """Máscara 0–255 persona; tamaño = imagen. Nunca None (último recurso: todo opaco)."""
+    h, w = img_bgr.shape[:2]
+    seg = _get_selfie_segmenter()
+    if seg is not None:
+        try:
+            rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            res = seg.segment(mp_image)
+            if res.category_mask is not None:
+                mv = np.asarray(res.category_mask.numpy_view(), dtype=np.uint8)
+                if mv.shape[0] != h or mv.shape[1] != w:
+                    mv = cv2.resize(mv, (w, h), interpolation=cv2.INTER_NEAREST)
+                fg = (mv > 0).astype(np.uint8) * 255
+                if np.count_nonzero(fg) > max(200, (h * w) // 80):
+                    return _refine_person_mask_u8(fg)
+        except Exception:
+            pass
+    gc = _person_mask_grabcut_fallback(img_bgr)
+    if gc is not None:
+        return gc
+    return np.full((h, w), 255, dtype=np.uint8)
+
+
+def _local_avatar_stylize(work_bgr: np.ndarray, alpha_f: np.ndarray) -> np.ndarray:
+    """
+    Avatar local legible: realza contraste local (CLAHE) y suavizado sin k-means,
+    que en bustos claros colapsaba todo en un bloque blanco sin ojos/nariz/boca.
+    """
+    a = np.clip(alpha_f, 0.0, 1.0)
+    inner = (a > 0.14).astype(np.float32)
+
+    lab = cv2.cvtColor(work_bgr, cv2.COLOR_BGR2LAB)
+    l_ch, a_ch, b_ch = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.3, tileGridSize=(8, 8))
+    l2 = clahe.apply(l_ch)
+    lab2 = cv2.merge([l2, a_ch, b_ch])
+    enhanced = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+
+    inner3 = inner[..., None]
+    mix = (
+        enhanced.astype(np.float32) * inner3
+        + work_bgr.astype(np.float32) * (1.0 - inner3)
+    ).astype(np.uint8)
+
+    try:
+        mix = cv2.detailEnhance(mix, sigma_s=12, sigma_r=0.14)
+    except Exception:
+        pass
+    try:
+        mix = cv2.edgePreservingFilter(mix, flags=1, sigma_s=55, sigma_r=0.32)
+    except Exception:
+        pass
+    mix = cv2.bilateralFilter(mix, 5, 42, 42)
+
+    x = mix.astype(np.float32)
+    levels = 20.0
+    q = np.floor(x / 255.0 * levels) / levels * 255.0
+    q = np.clip(q, 0, 255).astype(np.uint8)
+    q = cv2.bilateralFilter(q, 3, 22, 22)
+    return q
+
+
+def _kmeans_flat_illustration(
+    bgr: np.ndarray, weight: np.ndarray, k_clusters: int = 18
+) -> np.ndarray:
+    """
+    Opcional (AVATAR_USE_KMEANS=1): ilustración muy plana; puede arruinar rostros claros.
+    """
+    h, w = bgr.shape[:2]
+    maxd = 320
+    scale = min(1.0, maxd / float(max(h, w)))
+    sh = max(1, int(round(h * scale)))
+    sw = max(1, int(round(w * scale)))
+    sm = cv2.resize(bgr, (sw, sh), interpolation=cv2.INTER_AREA)
+    sw_map = cv2.resize(weight, (sw, sh), interpolation=cv2.INTER_LINEAR)
+    fg = sw_map.flatten() > 0.42
+    pix = sm.reshape(-1, 3).astype(np.float32)
+    data = pix[fg]
+    if data.shape[0] < k_clusters * 28:
+        return bgr
+    k_use = min(k_clusters, data.shape[0] // 28)
+    k_use = max(k_use, 8)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.2)
+    _compact, _lbl, ctr = cv2.kmeans(
+        data, k_use, None, criteria, 3, cv2.KMEANS_PP_CENTERS
+    )
+    ctr = np.asarray(ctr, dtype=np.float32).reshape(-1, 3)
+    dists = np.sum((pix[:, None, :] - ctr[None, :, :]) ** 2, axis=2)
+    assign = np.argmin(dists, axis=1).reshape(sh, sw)
+    out_s = ctr[assign.reshape(-1)].reshape(sh, sw, 3)
+    out_s = np.clip(out_s, 0, 255).astype(np.uint8)
+    low = sw_map < 0.38
+    out_s[low] = 255
+    return cv2.resize(out_s, (w, h), interpolation=cv2.INTER_NEAREST)
+
+
+def _is_oval_matte_black_background(img_bgr: np.ndarray) -> bool:
+    """
+    True si parece el JPEG enmascarado del cliente (óvalo sobre negro).
+    Si es False, asumimos recorte rectangular (busto) y NO usamos máscara oval de malla.
+    Solo cuatro esquinas (no todo el borde): evita confundir pelo oscuro arriba con lienzo negro.
+    """
+    h, w = img_bgr.shape[:2]
+    if h < 24 or w < 24:
+        return False
+    k = max(2, min(h, w) // 45)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    patches = (
+        gray[0:k, 0:k],
+        gray[0:k, w - k : w],
+        gray[h - k : h, 0:k],
+        gray[h - k : h, w - k : w],
+    )
+    corner_means = [float(np.mean(p)) for p in patches]
+    if max(corner_means) > 34.0:
+        return False
+    cy, cx = h // 2, w // 2
+    rh, rw = max(1, h // 5), max(1, w // 5)
+    cen = gray[max(0, cy - rh) : min(h, cy + rh), max(0, cx - rw) : min(w, cx + rw)]
+    if cen.size < 16:
+        return False
+    center_mean = float(np.mean(cen))
+    return max(corner_means) < 30.0 and center_mean > 42.0
+
+
+def _soft_edge_rectangle_mask(h: int, w: int, band_frac: float = 0.038) -> np.ndarray:
+    """Máscara casi rectangular: opaca al centro, desvanece solo en el borde (sin silueta oval)."""
+    band = max(5, int(band_frac * float(min(h, w))))
+    yy = np.arange(h, dtype=np.float32)[:, None]
+    xx = np.arange(w, dtype=np.float32)[None, :]
+    dist = np.minimum(
+        np.minimum(yy + 0.5, (h - 1) - yy + 0.5),
+        np.minimum(xx + 0.5, (w - 1) - xx + 0.5),
+    )
+    alpha = np.clip(dist / float(max(1, band)), 0.0, 1.0)
+    sigma = max(1.2, float(band) * 0.28)
+    alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=sigma)
+    return (np.clip(alpha, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _segment_face_mask_from_oval_matte(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    El cliente envía JPEG con rostro dentro de elipse y fondo negro.
+    Separamos primer plano sin incluir el negro del lienzo (evita 'marco' en el avatar).
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    mx = np.max(img_bgr, axis=2)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    _, s, v = cv2.split(hsv)
+    # Tonos oscuros de piel siguen teniendo S/V; el negro puro cae en todos los canales bajos
+    fg = (gray > 11) | (mx > 15) | ((v > 14) & (s > 5))
+    m = fg.astype(np.uint8) * 255
+    k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k9, iterations=2)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k3, iterations=1)
+    return m
+
+
+def _bust_roi_mask_from_mediapipe(
+    img_bgr: np.ndarray,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """
+    ROI vertical: rostro + cuello + algo de hombros (referencia malla MediaPipe).
+    Máscara suave tipo busto (no rectángulo duro del óvalo negro).
+    """
+    h, w = img_bgr.shape[:2]
+    if h < 48 or w < 48:
+        return None
+    try:
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        dr = detector.detect(mp_image)
+        if not dr.face_landmarks or len(FACE_OVAL_INDICES) < 10:
+            return None
+        pts = np.array(
+            [[lm.x * w, lm.y * h] for lm in dr.face_landmarks[0]], dtype=np.float32
+        )
+        oval_pts = pts[FACE_OVAL_INDICES]
+        x0, y0 = oval_pts.min(axis=0)
+        x1, y1 = oval_pts.max(axis=0)
+        fw = max(8.0, float(x1 - x0))
+        fh = max(8.0, float(y1 - y0))
+        cx = (x0 + x1) * 0.5
+        chin_y = float(pts[152, 1])
+        top_y = float(min(float(pts[10, 1]), float(y0))) - 0.06 * fh
+        bottom_y = min(float(h), chin_y + 0.82 * fh)
+        half_w = max(fw * 0.74, (bottom_y - top_y) * 0.40)
+        rx0 = int(max(0, cx - half_w))
+        rx1 = int(min(w, cx + half_w))
+        ry0 = int(max(0, top_y))
+        ry1 = int(min(h, bottom_y))
+        rw, rh = rx1 - rx0, ry1 - ry0
+        if rw < 40 or rh < 50:
+            return None
+        roi = img_bgr[ry0:ry1, rx0:rx1].copy()
+        oval_roi = oval_pts - np.array([rx0, ry0], dtype=np.float32)
+        hull = cv2.convexHull(oval_roi.astype(np.int32))
+        mask = np.zeros((rh, rw), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, hull, 255)
+        mid = rh // 2
+        k_neck = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (max(19, rw // 7), max(28, rh // 8))
+        )
+        lower = mask[mid:, :].copy()
+        lower = cv2.dilate(lower, k_neck, iterations=1)
+        mask[mid:, :] = np.maximum(mask[mid:, :], lower)
+        mask = cv2.GaussianBlur(mask, (7, 7), 0)
+        _, mask = cv2.threshold(mask, 28, 255, cv2.THRESH_BINARY)
+        mask = cv2.morphologyEx(
+            mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        )
+        return roi, mask
+    except Exception:
+        return None
+
+
+def _bust_roi_matte_fallback(
+    img_bgr: np.ndarray,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Recorte elipse con negro: extiende hacia abajo para cuello si no hay malla."""
+    mask_full = _segment_face_mask_from_oval_matte(img_bgr)
+    H, W = img_bgr.shape[:2]
+    ys, xs = np.where(mask_full > 0)
+    if len(xs) < 40:
+        return None
+    ymin, ymax = int(ys.min()), int(ys.max())
+    xmin, xmax = int(xs.min()), int(xs.max())
+    fh = ymax - ymin + 1
+    ymax2 = min(H - 1, ymax + int(0.58 * fh))
+    pad_x = int(0.14 * (xmax - xmin + 1))
+    rx0 = max(0, xmin - pad_x)
+    rx1 = min(W, xmax + pad_x)
+    ry0 = max(0, ymin - int(0.06 * fh))
+    ry1 = min(H, ymax2)
+    if rx1 - rx0 < 32 or ry1 - ry0 < 40:
+        return None
+    roi = img_bgr[ry0:ry1, rx0:rx1].copy()
+    mask = mask_full[ry0:ry1, rx0:rx1].copy()
+    mask = cv2.GaussianBlur(mask, (5, 5), 0)
+    return roi, mask
+
+
+def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[str]:
+    """
+    Un único avatar PNG por imagen, 100 % local:
+    segmentación selfie / GrabCut, fondo blanco, estilo con CLAHE + realce suave
+    (por defecto). k-means plano solo si AVATAR_USE_KMEANS=1 (puede borrar rasgos).
+    """
+    if img_bgr is None or img_bgr.size == 0:
+        return None
+    h0, w0 = img_bgr.shape[:2]
+    if h0 < 32 or w0 < 32:
+        return None
+    try:
+        matte_oval = _is_oval_matte_black_background(img_bgr)
+        if matte_oval:
+            pair = _bust_roi_mask_from_mediapipe(img_bgr)
+            if pair is None:
+                pair = _bust_roi_matte_fallback(img_bgr)
+        else:
+            pm = _person_mask_selfie_or_fallback(img_bgr)
+            edge = (
+                _soft_edge_rectangle_mask(h0, w0, 0.036).astype(np.float32) / 255.0
+            )
+            m_float = np.clip(pm.astype(np.float32) / 255.0 * edge, 0.0, 1.0)
+            # Selfie a veces marca casi todo el cuadro → rostro se pierde en k-means/colores.
+            if float(np.mean(m_float > 0.45)) > 0.88:
+                gc = _person_mask_grabcut_fallback(img_bgr)
+                if gc is not None:
+                    m_float = np.clip(
+                        gc.astype(np.float32) / 255.0 * edge, 0.0, 1.0
+                    )
+            m = (m_float * 255.0).astype(np.uint8)
+            pair = (img_bgr.copy(), m)
+        if pair is None:
+            return None
+        roi, m = pair
+        md0 = min(roi.shape[0], roi.shape[1])
+        min_up = 480 if not matte_oval else 400
+        if md0 < min_up:
+            s_up = float(min_up) / float(md0)
+            roi = cv2.resize(
+                roi,
+                (
+                    max(1, int(round(roi.shape[1] * s_up))),
+                    max(1, int(round(roi.shape[0] * s_up))),
+                ),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            m = cv2.resize(m, (roi.shape[1], roi.shape[0]), interpolation=cv2.INTER_LINEAR)
+            blur0 = cv2.GaussianBlur(roi, (0, 0), sigmaX=1.0)
+            roi = cv2.addWeighted(roi, 1.06, blur0, -0.06, 0)
+        rh, rw = roi.shape[:2]
+        max_side = 920 if not matte_oval else 768
+        sc = min(max_side / float(max(rh, rw)), 1.0)
+        tw = max(96, int(round(rw * sc)))
+        th = max(96, int(round(rh * sc)))
+        work = cv2.resize(roi, (tw, th), interpolation=cv2.INTER_AREA)
+        mw = cv2.resize(m, (tw, th), interpolation=cv2.INTER_LINEAR)
+        _, mw_bin = cv2.threshold(mw, 40, 255, cv2.THRESH_BINARY)
+
+        a = np.clip(mw.astype(np.float32) / 255.0, 0.0, 1.0)
+        a = cv2.GaussianBlur(a, (3, 3), 0)
+        work_wb = (
+            work.astype(np.float32) * a[..., None] + 255.0 * (1.0 - a[..., None])
+        ).astype(np.uint8)
+
+        if matte_oval:
+            dt = cv2.distanceTransform(mw_bin, cv2.DIST_L2, 5)
+            r_soft = min(0.045 * float(max(tw, th)), 18.0)
+            r_soft = max(r_soft, 4.0)
+            if dt.max() > 1e-3:
+                alpha_sm = np.clip(dt / r_soft, 0.0, 1.0)
+            else:
+                alpha_sm = (mw_bin > 0).astype(np.float32)
+            alpha_sm = cv2.GaussianBlur(alpha_sm, (5, 5), 0)
+        else:
+            bin_fg = (mw > 80).astype(np.uint8) * 255
+            dt = cv2.distanceTransform(bin_fg, cv2.DIST_L2, 5)
+            r_soft = min(0.03 * float(max(tw, th)), 14.0)
+            r_soft = max(r_soft, 3.0)
+            if dt.max() > 1e-3:
+                alpha_sm = np.clip(dt / r_soft, 0.0, 1.0)
+            else:
+                alpha_sm = a
+            alpha_sm = cv2.GaussianBlur(alpha_sm, (5, 5), 0)
+
+        try:
+            base = cv2.edgePreservingFilter(
+                work_wb, flags=1, sigma_s=62, sigma_r=0.35
+            )
+            base = cv2.bilateralFilter(base, 7, 46, 46)
+        except Exception:
+            base = cv2.bilateralFilter(work_wb, 7, 44, 44)
+
+        if np.count_nonzero(mw_bin > 0) < 100:
+            return None
+
+        k_flat = 14 if matte_oval else 20
+        if os.environ.get("AVATAR_USE_KMEANS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            flat = _kmeans_flat_illustration(base, a, k_clusters=k_flat)
+            out = cv2.bilateralFilter(flat, 3, 20, 20)
+        else:
+            out = _local_avatar_stylize(work_wb, a)
+
+        ink_strength = 0.065 if not matte_oval else 0.095
+        if min(tw, th) >= 140:
+            g = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY)
+            g = cv2.bilateralFilter(g, 3, 22, 22)
+            edges = cv2.adaptiveThreshold(
+                g,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                9,
+                2,
+            )
+            _, edges = cv2.threshold(edges, 175, 255, cv2.THRESH_BINARY)
+            edge_m = (edges > 0) & (mw_bin > 0)
+            ink = np.array([34, 30, 44], dtype=np.uint8)
+            out = out.copy()
+            out[edge_m] = (
+                (1.0 - ink_strength) * out[edge_m].astype(np.float32)
+                + ink_strength * ink
+            ).astype(np.uint8)
+
+        CANVAS_W, CANVAS_H = 768, 1024
+        scale2 = min(CANVAS_W * 0.92 / tw, CANVAS_H * 0.92 / th)
+        nw = max(64, int(round(tw * scale2)))
+        nh = max(64, int(round(th * scale2)))
+        up = cv2.resize(out, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
+        alpha_big = cv2.resize(alpha_sm, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        alpha_big = cv2.GaussianBlur(alpha_big, (3, 3), 0)
+        mup_f = alpha_big[..., None]
+
+        canvas = np.ones((CANVAS_H, CANVAS_W, 3), dtype=np.uint8) * 255
+        aflat = alpha_big.reshape(-1)
+        if np.any(aflat > 0.08):
+            ys, xs = np.where(alpha_big > 0.2)
+            pcx = float(np.mean(xs))
+            pcy = float(np.mean(ys))
+        else:
+            pcx, pcy = nw * 0.5, nh * 0.5
+        target_cx = CANVAS_W * 0.5
+        target_cy = CANVAS_H * (0.39 if not matte_oval else 0.42)
+        ox = int(round(target_cx - pcx))
+        oy = int(round(target_cy - pcy))
+        ox = max(0, min(ox, CANVAS_W - nw))
+        oy = max(0, min(oy, CANVAS_H - nh))
+
+        reg = canvas[oy : oy + nh, ox : ox + nw]
+        reg[:] = (
+            reg.astype(np.float32) * (1.0 - mup_f) + up.astype(np.float32) * mup_f
+        ).astype(np.uint8)
+
+        ok, buf = cv2.imencode(".png", canvas, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        if not ok:
+            return None
+        return base64.b64encode(buf.tobytes()).decode("ascii")
+    except Exception:
+        return None
+
+
+@app.route("/cartoon_avatar", methods=["POST"])
+def cartoon_avatar():
+    """POST multipart field 'image' — JPEG/PNG (busto rectangular o retrato óvalo sobre negro)."""
+    if "image" not in request.files:
+        return jsonify({"ok": False, "error": "no_image"}), 400
+    raw = request.files["image"].read()
+    if not raw:
+        return jsonify({"ok": False, "error": "empty_image"}), 400
+    nparr = np.frombuffer(raw, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({"ok": False, "error": "invalid_image"}), 400
+    b64 = _cartoonify_face_bgr(img)
+    if not b64:
+        return jsonify({"ok": False, "error": "cartoonify_failed"}), 200
+    return jsonify({"ok": True, "image_base64": b64, "format": "png"})
+
+
+@app.route("/face_embedding", methods=["POST"])
+def face_embedding():
+    """
+    Vector facial L2-normalizado (InsightFace / ONNX Runtime) para registro/login seguro.
+    """
+    if "image" not in request.files:
+        return jsonify({"ok": False, "error": "no_image"}), 400
+    file = request.files["image"]
+    raw = file.read()
+    if not raw:
+        return jsonify({"ok": False, "error": "empty_image"}), 400
+    nparr = np.frombuffer(raw, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({"ok": False, "error": "invalid_image"}), 400
+    try:
+        from face_embedding_insight import extract_normed_embedding_bgr
+
+        emb, err = extract_normed_embedding_bgr(img)
+    except Exception as ex:  # noqa: BLE001
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "face_embedding_import_failed",
+                    "detail": str(ex),
+                }
+            ),
+            503,
+        )
+    if emb is None:
+        return jsonify({"ok": False, "error": err or "unknown"}), 200
+    return jsonify(
+        {
+            "ok": True,
+            "dim": int(emb.shape[0]),
+            "embedding": [float(x) for x in emb.flat],
+            "provider": "insightface_onnx",
         }
     )
 
@@ -813,6 +1446,17 @@ def health():
             "glasses_probe_sin_gafas_log": _glasses_probe_sin_gafas_path(),
             "glasses_onnx_path": os.environ.get("GLASSES_ONNX_PATH", "").strip() or None,
             "glasses_onnx_error": onnx_load_error(),
+            "face_embedding": _face_embed_status(),
+            "cartoon_avatar": {
+                "mode": "local",
+                "external_apis": False,
+            },
+            "mediapipe_models": {
+                "face_landmarker_path": MODEL_PATH,
+                "face_landmarker_ok": os.path.isfile(MODEL_PATH),
+                "selfie_segmenter_path": SELFIE_SEGMENTER_PATH,
+                "selfie_segmenter_ok": os.path.isfile(SELFIE_SEGMENTER_PATH),
+            },
         }
     )
 
@@ -826,4 +1470,15 @@ if __name__ == "__main__":
     print("[EYE_AI] Motor IA puerto 5000", flush=True)
     if os.environ.get("GLASSES_ONNX_PATH", "").strip():
         warmup_glasses_onnx()
+    if os.environ.get("WARMUP_FACE_EMBEDDING", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    ):
+        try:
+            from face_embedding_insight import warmup_face_embedding
+
+            warmup_face_embedding()
+        except Exception as ex:  # noqa: BLE001
+            print(f"[FACE_EMB] Warmup omitido: {ex}", flush=True)
     app.run(host="0.0.0.0", port=5000, threaded=True)

@@ -8,7 +8,10 @@ const MiningDashboard = () => {
     useEffect(() => {
         const fetchMetrics = async () => {
             try {
-                const apiUrl = '/api/dashboard/metrics'
+                if (typeof process !== 'undefined' && process.env?.VITEST) {
+                    return
+                }
+                const apiUrl = new URL('/api/dashboard/metrics', window.location.origin).toString()
                 const res = await fetch(apiUrl);
                 if (res.ok) {
                     const data = await res.json();

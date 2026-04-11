@@ -9,12 +9,13 @@ import ReadOnlyViewer from './components/viewers/ReadOnlyViewer';
 import ShareReportModal from './components/modals/ShareReportModal';
 import DeleteReportConfirm from './components/modals/DeleteReportConfirm';
 import MapCaptureModal from './components/modals/MapCaptureModal';
+import FormulaAnalysisModal from './components/modals/FormulaAnalysisModal';
 import { saveReportAsync } from './lib/reportsStorage';
 import { fetchReportById } from './lib/api';
 import { getSession } from '../../auth/authStorage';
 import './styles.css';
 
-export default function App() {
+export default function App({ openFormulaOnLoad = false }) {
   const session = getSession();
   const loggedAuthor = session?.fullName || session?.username || 'Usuario';
 
@@ -55,6 +56,7 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveLabel, setSaveLabel] = useState('Guardar');
   const [showMapCapture, setShowMapCapture] = useState(false);
+  const [showFormulaAnalysis, setShowFormulaAnalysis] = useState(openFormulaOnLoad);
 
   const currentReportId = useEditorStore((s) => s.currentReportId);
   const currentReportTitle = useEditorStore((s) => s.currentReportTitle);
@@ -342,6 +344,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <TopToolbar
+        companyName={session?.company}
         onExportPdf={() => window.print()}
         onExportVideo={handleExportVideo}
         onPrint={() => window.print()}
@@ -360,6 +363,7 @@ export default function App() {
         onSaveReport={handleSaveReport}
         isSaving={isSaving}
         saveLabel={saveLabel}
+        onOpenFormulaAnalysis={() => setShowFormulaAnalysis(true)}
       />
 
       <div className="studio-layout">
@@ -595,6 +599,10 @@ export default function App() {
           onClose={() => setShowMapCapture(false)}
           onCaptureComplete={handleMapCaptureComplete}
         />
+      )}
+
+      {showFormulaAnalysis && (
+        <FormulaAnalysisModal onClose={() => setShowFormulaAnalysis(false)} />
       )}
     </div>
   );

@@ -1,0 +1,1258 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FORMULA - Editor de Reglas de Negocio</title>    <link rel="icon" type="image/x-icon" href="data:image/x-icon;base64,AAABAAEAEBAQAAEABACoBAAA==" />    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+      * { box-sizing: border-box; }
+      body { margin:0; font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#f5f7fa; color:#2c3e50 }
+      
+      /* Toolbar - Corporate Header */
+      #toolbar { 
+        padding:8px 12px; 
+        background: linear-gradient(135deg, #1e3a5f 0%, #2a4a70 100%);
+        color: white;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: nowrap;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        font-size: 13px;
+        min-height: 46px;
+      }
+      
+      #toolbar button {
+        padding: 6px 10px;
+        background: #e8921e;
+        color: white;
+        border: none;
+        cursor: pointer;
+        border-radius: 5px;
+        font-weight: 500;
+        font-size: 12px;
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition: all 0.2s ease;
+        font-family: 'Poppins', sans-serif;
+      }
+      
+      #toolbar button:hover {
+        background: #d17d0f;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(232, 146, 30, 0.3);
+      }
+      
+      #toolbar input {
+        padding: 6px 10px;
+        border: 1px solid rgba(255,255,255,0.3);
+        border-radius: 4px;
+        background: rgba(255,255,255,0.1);
+        color: white;
+        font-family: 'Poppins', sans-serif;
+      }
+      
+      #toolbar input::placeholder { color: rgba(255,255,255,0.7); }
+      
+      #wsStatus { 
+        padding: 4px 8px; 
+        background: rgba(46, 204, 113, 0.2);
+        border-radius: 3px;
+        color: #2ecc71;
+        font-weight: 500;
+      }
+      
+      /* Main Layout */
+      #mainLayout { display:flex; height: calc(100vh - 46px); overflow: hidden; }
+      
+      /* Left Sidebar */
+      #leftSidebar {
+        width: 280px;
+        padding: 0;
+        background: white;
+        border-right: 1px solid #e0e4e8;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        box-shadow: 2px 0 8px rgba(0,0,0,0.05);
+        position: relative;
+        z-index: 1001;
+      }
+
+      /* ── Context Panel (Empresa / Mina / Sensor) ── */
+      #ctxPanel {
+        background: linear-gradient(180deg,#1e3a5f 0%,#2a4a70 100%);
+        padding: 12px 14px;
+        flex-shrink: 0;
+        border-bottom: 2px solid #e8921e;
+      }
+      #ctxPanel h4 {
+        margin: 0 0 10px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #e8921e;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+      .ctx-label {
+        display: block;
+        font-size: 10px;
+        font-weight: 700;
+        color: rgba(255,255,255,0.7);
+        text-transform: uppercase;
+        letter-spacing: .6px;
+        margin: 8px 0 3px;
+      }
+      .ctx-label:first-of-type { margin-top: 0; }
+      .ctx-select {
+        width: 100%;
+        padding: 6px 8px;
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 5px;
+        background: rgba(255,255,255,0.1);
+        color: #fff;
+        font-family: 'Poppins', sans-serif;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        outline: none;
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23fff' opacity='.7'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 8px center;
+        padding-right: 24px;
+      }
+      .ctx-select:focus { border-color: #e8921e; background-color: rgba(255,255,255,0.15); }
+      .ctx-select option { background: #1e3a5f; color: #fff; }
+      .ctx-select:disabled { opacity: 0.45; cursor: not-allowed; }
+      #ctxSensorInfo {
+        margin-top: 10px;
+        padding: 8px 10px;
+        background: rgba(255,255,255,0.08);
+        border-radius: 6px;
+        border-left: 3px solid #e8921e;
+        font-size: 11px;
+        color: rgba(255,255,255,0.88);
+        line-height: 1.7;
+        display: none;
+      }
+      #ctxSensorInfo .si-var {
+        display: inline-block;
+        padding: 2px 8px;
+        background: #e8921e;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: 700;
+        color: #fff;
+        margin-left: 4px;
+      }
+      #ctxSensorInfo .si-unit {
+        display: inline-block;
+        padding: 2px 8px;
+        background: rgba(46,204,113,0.8);
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: 700;
+        color: #fff;
+        margin-left: 4px;
+      }
+
+      /* ── Dictionary section below context panel ── */
+      #dictSection {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+      }
+      
+      #leftSidebar h3 {
+        margin: 0 0 8px 0;
+        font-size: 11px;
+        font-weight: 700;
+        color: #1e3a5f;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        border-bottom: 1px solid #e8ecf3;
+        padding-bottom: 6px;
+      }
+        border: 1px solid #e0e4e8;
+        padding: 8px;
+        margin-bottom: 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        overflow-y: auto;
+        flex-shrink: 1;
+      }
+      
+      .variable-item, .operator-item {
+        padding: 8px;
+        margin-bottom: 6px;
+        background: white;
+        border-left: 3px solid #e8921e;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      
+      .variable-item:hover, .operator-item:hover {
+        background: #f0f4f8;
+        border-left-color: #d17d0f;
+        transform: translateX(2px);
+      }
+      
+      .variable-name, .operator-name { font-weight: 500; color: #1e3a5f; }
+      .variable-unit, .operator-category { font-size: 11px; color: #7f8c8d; margin-top: 2px; }
+      
+      /* Canvas */
+      #canvas { 
+        flex: 1; 
+        min-width: 0;
+        min-height: 0;
+        display: block;
+        border: none;
+        background: linear-gradient(135deg, #ffffff 0%, #f5f7fa 100%);
+      }
+      
+      #threeContainer {
+        flex: 1;
+        min-width: 0;
+        display: none;
+        border-right: 1px solid #e0e4e8;
+        min-height: 0;
+        box-sizing: border-box;
+        background: white;
+      }
+      
+      /* Right Sidebar */
+      #sidebar {
+        width: 340px;
+        padding: 16px;
+        background: white;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        border-left: 1px solid #e0e4e8;
+        box-shadow: -2px 0 8px rgba(0,0,0,0.05);
+      }
+      
+      #sidebar h3, #sidebar h4 {
+        margin: 0 0 10px 0;
+        color: #1e3a5f;
+        font-weight: 600;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      
+      #sidebar h4 { margin-top: 16px; }
+      
+      #noSelection {
+        font-size: 13px;
+        color: #95a5a6;
+        padding: 12px;
+        background: #ecf0f1;
+        border-radius: 4px;
+      }
+      
+      #props {
+        font-size: 13px;
+        margin-bottom: 12px;
+        flex: 0 0 auto;
+      }
+      
+      #props label {
+        display: block;
+        margin: 8px 0;
+        font-weight: 500;
+        color: #2c3e50;
+      }
+      
+      #props input, #props textarea {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #e0e4e8;
+        border-radius: 4px;
+        font-family: 'Poppins', sans-serif;
+        font-size: 12px;
+      }
+      
+      #props input:focus, #props textarea:focus {
+        outline: none;
+        border-color: #e8921e;
+        box-shadow: 0 0 0 3px rgba(232, 146, 30, 0.1);
+      }
+      
+      #propColor {
+        cursor: pointer;
+        height: 36px;
+      }
+      
+      /* Meta JSON section */
+      .meta-section {
+        border: 1px solid #e0e4e8;
+        border-radius: 6px;
+        overflow: hidden;
+        margin: 10px 0 6px 0;
+      }
+      .meta-section-header {
+        background: linear-gradient(135deg, #1e3a5f 0%, #2a4a70 100%);
+        color: white;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: pointer;
+        user-select: none;
+        letter-spacing: 0.4px;
+      }
+      .meta-section-header:hover { background: linear-gradient(135deg, #254a78 0%, #2f5580 100%); }
+
+      /* Meta tabs */
+      .meta-tabs {
+        display: flex;
+        background: #141720;
+        border-bottom: 1px solid #2c2f38;
+      }
+      .meta-tab {
+        flex: 1;
+        padding: 9px 4px;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: #7a8094;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        letter-spacing: 0.8px;
+        font-family: 'Poppins', sans-serif;
+        transition: all 0.2s;
+        text-transform: uppercase;
+      }
+      .meta-tab:hover { color: #c5cad4; background: rgba(255,255,255,0.04); }
+      .meta-tab.active { color: #e8921e; border-bottom-color: #e8921e; background: rgba(232,146,30,0.1); }
+      .meta-panel { background: #1a1d23; }
+      .meta-panel-label {
+        color: #6a7090;
+        font-size: 10px;
+        font-family: 'Roboto Mono', monospace;
+        padding: 6px 12px 2px;
+        letter-spacing: 0.3px;
+      }
+      .meta-panel-hint {
+        color: #3a4060;
+        font-size: 10px;
+        padding: 3px 12px 8px;
+        font-family: 'Poppins', sans-serif;
+        line-height: 1.4;
+      }
+      #propFormula {
+        font-family: 'Roboto Mono', monospace;
+        min-height: 80px;
+        max-height: 160px;
+        resize: vertical;
+        background: #1a1d23;
+        color: #f0c070;
+        border: none;
+        font-size: 13px;
+        line-height: 1.7;
+        padding: 12px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      #propFormula:focus { outline: none; }
+      #propFormula::placeholder { color: #3a3f50; }
+      #propSql {
+        font-family: 'Roboto Mono', monospace;
+        min-height: 100px;
+        max-height: 180px;
+        resize: vertical;
+        background: #1a1d23;
+        color: #7ec8a4;
+        border: none;
+        font-size: 12px;
+        line-height: 1.65;
+        padding: 12px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      #propSql:focus { outline: none; }
+      #propVisual {
+        font-family: 'Roboto Mono', monospace;
+        min-height: 100px;
+        max-height: 200px;
+        overflow-y: auto;
+        background: #1a1d23;
+        color: #8ec8e8;
+        font-size: 11px;
+        line-height: 1.65;
+        padding: 12px;
+        margin: 0;
+        white-space: pre;
+      }
+
+      .meta-line-count {
+        font-size: 11px;
+        background: rgba(255,255,255,0.18);
+        padding: 2px 7px;
+        border-radius: 10px;
+        font-weight: 400;
+        margin-right: 4px;
+      }
+      .meta-editor-wrapper { background: #1a1d23; }
+      #propMeta {
+        font-family: 'Roboto Mono', monospace;
+        min-height: 160px;
+        max-height: 340px;
+        resize: vertical;
+        background: #1a1d23;
+        color: #e8eaf0;
+        border: none;
+        border-radius: 0;
+        font-size: 12px;
+        line-height: 1.65;
+        padding: 12px;
+        width: 100%;
+        tab-size: 2;
+        box-sizing: border-box;
+      }
+      #propMeta:focus { outline: none; box-shadow: none; border-color: transparent; }
+      #propMeta::placeholder { color: #4a4f5a; }
+      .meta-feedback {
+        padding: 7px 12px;
+        font-size: 11px;
+        font-family: 'Roboto Mono', monospace;
+        border-top: 1px solid #2c2f38;
+        background: #1a1d23;
+        word-break: break-all;
+        line-height: 1.5;
+      }
+      .meta-feedback.success { color: #2ecc71; }
+      .meta-feedback.error   { color: #e74c3c; }
+      .meta-feedback.info    { color: #3498db; }
+
+      /* Properties action buttons */
+      .props-btns {
+        display: flex;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      #saveProps, #verifyProps, #cancelProps {
+        flex: 1;
+        padding: 8px 4px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 500;
+        font-size: 12px;
+        transition: all 0.2s;
+        min-width: 0;
+      }
+      #saveProps   { background: #e8921e; color: white; }
+      #saveProps:hover   { background: #d17d0f; }
+      #verifyProps { background: #2980b9; color: white; }
+      #verifyProps:hover { background: #2472a4; transform: translateY(-1px); box-shadow: 0 3px 8px rgba(41,128,185,.3); }
+      #cancelProps { background: #95a5a6; color: white; }
+      #cancelProps:hover { background: #7f8c8d; }
+      
+      #rulesList {
+        flex: 1;
+        overflow: auto;
+        background: #f9fafc;
+        border: 1px solid #e0e4e8;
+        padding: 8px;
+        margin-bottom: 12px;
+        font-size: 12px;
+        border-radius: 6px;
+      }
+      
+      .rule-item {
+        padding: 8px;
+        margin-bottom: 6px;
+        background: white;
+        border: 1px solid #e0e4e8;
+        border-radius: 4px;
+        border-left: 3px solid #2ecc71;
+      }
+      
+      #ruleNew, #ruleRefresh {
+        padding: 6px 10px;
+        font-size: 12px;
+        margin-right: 4px;
+        background: #2ecc71;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-family: 'Poppins', sans-serif;
+      }
+      
+      #ruleNew:hover, #ruleRefresh:hover { background: #27ae60; }
+      
+      #voiceBtn {
+        width: 100%;
+        padding: 10px;
+        background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);
+        color: white;
+        border: none;
+        cursor: pointer;
+        border-radius: 5px;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 600;
+        transition: all 0.3s;
+        margin-top: 12px;
+      }
+      
+      #voiceBtn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(46, 204, 113, 0.3);
+      }
+      
+      /* Rule Editor — Floating Draggable Panel (NOT modal, does not block sidebar/toolbar) */
+      #ruleEditorOverlay {
+        display: none !important;  /* neutralized: no overlay, no click-blocking */
+        pointer-events: none;
+      }
+      #ruleEditor {
+        display: none;
+        position: fixed;
+        right: 20px;
+        top: 80px;
+        background: white;
+        border: 1px solid #c8d0db;
+        padding: 0;
+        z-index: 9999;
+        width: 460px;
+        max-width: 95vw;
+        max-height: calc(100vh - 100px);
+        overflow-y: auto;
+        border-radius: 10px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.3), 0 4px 16px rgba(30,58,95,0.15);
+      }
+      #ruleEditorGrabBar {
+        background: linear-gradient(135deg, #1e3a5f 0%, #2a4a70 100%);
+        color: white;
+        padding: 12px 16px;
+        border-radius: 9px 9px 0 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: move;
+        user-select: none;
+        flex-shrink: 0;
+      }
+      #ruleEditorGrabBar h3 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+        color: white;
+      }
+      #ruleEditorCloseBtn {
+        background: rgba(255,255,255,0.15);
+        border: 1px solid rgba(255,255,255,0.3);
+        color: white;
+        font-size: 16px;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: 4px;
+        line-height: 1.4;
+        font-family: 'Poppins', sans-serif;
+      }
+      #ruleEditorCloseBtn:hover { background: rgba(255,255,255,0.25); }
+      #ruleEditorBody {
+        padding: 20px;
+      }
+      #ruleEditorBody input, #ruleEditorBody textarea {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #e0e4e8;
+        border-radius: 4px;
+        font-family: 'Roboto Mono', monospace;
+        margin-bottom: 4px;
+        box-sizing: border-box;
+      }
+      #ruleEditorBody button {
+        padding: 8px 16px;
+        background: #e8921e;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 500;
+      }
+      
+      /* Connection Editor — Floating Draggable Panel */
+      #connEditor {
+        display: none;
+        position: fixed;
+        right: 500px;
+        top: 80px;
+        background: white;
+        border: 1px solid #c8d0db;
+        padding: 0;
+        z-index: 9998;
+        width: 460px;
+        max-width: 95vw;
+        max-height: calc(100vh - 100px);
+        overflow-y: auto;
+        border-radius: 10px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.3), 0 4px 16px rgba(30,58,95,0.15);
+      }
+      #connEditorGrabBar {
+        background: linear-gradient(135deg, #16543a 0%, #1e7050 100%);
+        color: white;
+        padding: 12px 16px;
+        border-radius: 9px 9px 0 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: move;
+        user-select: none;
+        flex-shrink: 0;
+      }
+      #connEditorGrabBar h3 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+        color: white;
+      }
+      #connEditorCloseBtn {
+        background: rgba(255,255,255,0.15);
+        border: 1px solid rgba(255,255,255,0.3);
+        color: white;
+        font-size: 16px;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: 4px;
+        line-height: 1.4;
+        font-family: 'Poppins', sans-serif;
+      }
+      #connEditorCloseBtn:hover { background: rgba(255,255,255,0.25); }
+      #connEditorBody {
+        padding: 16px 20px 20px;
+      }
+      #connEditorBody input[type="hidden"] { display: none; }
+      #connEditorBody select {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #e0e4e8;
+        border-radius: 4px;
+        font-family: 'Poppins', sans-serif;
+        margin-bottom: 4px;
+        box-sizing: border-box;
+        font-size: 13px;
+        cursor: pointer;
+        background: #f0f4f8;
+        color: #1e3a5f;
+        font-weight: 600;
+      }
+      /* connEditor tab strip */
+      #connEditorTabs {
+        display: flex;
+        background: #141720;
+        border-radius: 6px 6px 0 0;
+        overflow: hidden;
+        margin-bottom: 0;
+        border-bottom: 1px solid #2c2f38;
+      }
+      .conn-tab {
+        flex: 1;
+        padding: 9px 4px;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: #7a8094;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        letter-spacing: 0.8px;
+        font-family: 'Poppins', sans-serif;
+        transition: all 0.2s;
+        text-transform: uppercase;
+      }
+      .conn-tab:hover { color: #c5cad4; background: rgba(255,255,255,0.04); }
+      .conn-tab.active { color: #e8921e; border-bottom-color: #e8921e; background: rgba(232,146,30,0.1); }
+      /* connEditor tab panels */
+      .conn-panel { background: #1a1d23; border-radius: 0 0 6px 6px; margin-bottom: 14px; }
+      .conn-panel-label {
+        color: #6a7090; font-size: 10px;
+        font-family: 'Roboto Mono', monospace;
+        padding: 6px 12px 2px; letter-spacing: 0.3px;
+      }
+      .conn-panel-hint {
+        color: #3a4060; font-size: 10px;
+        padding: 3px 12px 8px;
+        font-family: 'Poppins', sans-serif; line-height: 1.4;
+      }
+      #connCondition {
+        font-family: 'Roboto Mono', monospace;
+        min-height: 110px;
+        max-height: 200px;
+        resize: vertical;
+        background: #1a1d23;
+        color: #f0c070;
+        border: none;
+        font-size: 13px;
+        line-height: 1.7;
+        padding: 12px;
+        width: 100%;
+        box-sizing: border-box;
+        display: block;
+      }
+      #connCondition:focus { outline: none; }
+      #connCondition::placeholder { color: #3a3f50; }
+      #connJsonPreview {
+        font-family: 'Roboto Mono', monospace;
+        min-height: 110px;
+        max-height: 200px;
+        resize: vertical;
+        background: #1a1d23;
+        color: #7ec8e3;
+        border: none;
+        font-size: 11px;
+        line-height: 1.6;
+        padding: 12px;
+        width: 100%;
+        box-sizing: border-box;
+        display: block;
+      }
+      /* connEditor bottom buttons */
+      .conn-editor-btns {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .conn-editor-btns button {
+        flex: 1;
+        padding: 11px 8px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 600;
+        font-size: 13px;
+        transition: filter 0.15s;
+      }
+      .conn-editor-btns button:hover { filter: brightness(1.12); }
+      #connEditorSave   { background: #16543a; color: #fff; }
+      #connEditorVerify { background: #1e3a5f; color: #fff; }
+      #connEditorCancel { background: #7f8c8d; color: #fff; }
+      /* SI/NO backward-connection label toggle */
+      #connBackwardLabelRow { margin-top: 10px; }
+      .conn-label-btn {
+        flex: 1;
+        padding: 9px;
+        border: 2px solid #c8d6e3;
+        border-radius: 6px;
+        background: #f0f4f8;
+        color: #1e3a5f;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 700;
+        font-size: 15px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .conn-label-btn:hover { background: #e0eaf4; border-color: #1e3a5f; }
+      .conn-label-btn.active-label { background: #1e3a5f; color: white; border-color: #1e3a5f; box-shadow: 0 2px 6px rgba(30,58,95,0.25); }
+      .conn-info-badge {
+        background: #f0f4f8;
+        border: 1px solid #c8d6e3;
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #1e3a5f;
+        margin-bottom: 14px;
+        text-align: center;
+        letter-spacing: 0.3px;
+      }
+      
+      /* Scrollbar styling */
+      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar-track { background: #f0f0f0; border-radius: 3px; }
+      ::-webkit-scrollbar-thumb { background: #d0d0d0; border-radius: 3px; }
+      ::-webkit-scrollbar-thumb:hover { background: #a0a0a0; }
+
+      /* ─── MODAL Búsqueda Historial ─────────────────────────────────── */
+      #buscarModalOverlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(14,30,55,.65);
+        z-index: 10000;
+        align-items: center;
+        justify-content: center;
+      }
+      #buscarModalOverlay.open { display: flex; }
+      #buscarModal {
+        background: #fff;
+        border-radius: 12px;
+        width: min(960px, 97vw);
+        max-height: 92vh;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 12px 48px rgba(0,0,0,.32);
+        overflow: hidden;
+      }
+      #buscarModalHdr {
+        background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+        color: #fff;
+        padding: 14px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+      }
+      #buscarModalHdr h2 { margin:0; font-size:16px; font-weight:700; letter-spacing:.3px; }
+      #buscarModalHdr .close-btn {
+        background: rgba(255,255,255,.2);
+        border: 1px solid rgba(255,255,255,.35);
+        color: #fff;
+        width: 30px; height: 30px;
+        border-radius: 50%;
+        cursor: pointer;
+        font-size: 16px;
+        display: flex; align-items: center; justify-content: center;
+        padding: 0;
+        font-family: 'Poppins', sans-serif;
+      }
+      #buscarModalHdr .close-btn:hover { background: rgba(255,255,255,.38); }
+      #buscarModalBody {
+        padding: 18px 20px 10px;
+        flex-shrink: 0;
+        border-bottom: 1px solid #e0e6f0;
+        background: #f8f9fc;
+      }
+      #buscarParamsGrid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 10px 14px;
+        margin-bottom: 10px;
+      }
+      .bFld label {
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        color: #3a3a6a;
+        text-transform: uppercase;
+        letter-spacing: .4px;
+        margin-bottom: 4px;
+      }
+      .bFld select, .bFld input[type="datetime-local"] {
+        width: 100%;
+        padding: 7px 9px;
+        border: 1px solid #c8d0e0;
+        border-radius: 5px;
+        font-family: 'Poppins', sans-serif;
+        font-size: 12px;
+        color: #2c3e50;
+        background: #fff;
+        box-sizing: border-box;
+      }
+      .bFld select:focus, .bFld input:focus {
+        outline: none;
+        border-color: #7c3aed;
+        box-shadow: 0 0 0 2px rgba(124,58,237,.15);
+      }
+      #buscarModalFooter {
+        padding: 10px 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+        background: #f8f9fc;
+        border-bottom: 1px solid #e0e6f0;
+      }
+      #buscarBtn {
+        padding: 9px 22px;
+        background: #7c3aed;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 700;
+        font-size: 13px;
+        transition: filter .15s;
+      }
+      #buscarBtn:hover { filter: brightness(1.12); }
+      #buscarBtn:disabled { background: #b0b8c4; cursor: not-allowed; }
+      #buscarLimpiarBtn {
+        padding: 9px 16px;
+        background: #fff;
+        color: #7c3aed;
+        border: 2px solid #7c3aed;
+        border-radius: 6px;
+        cursor: pointer;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 600;
+        font-size: 12px;
+      }
+      #buscarLimpiarBtn:hover { background: #f3f0ff; }
+      #buscarStatus {
+        font-size: 12px;
+        color: #7f8c8d;
+        margin-left: auto;
+      }
+      /* Results area */
+      #buscarResults {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px 20px 16px;
+        min-height: 0;
+      }
+      #buscarEmpty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 160px;
+        color: #aaa;
+        font-size: 13px;
+        border: 2px dashed #dde;
+        border-radius: 8px;
+        margin-top: 8px;
+      }
+      /* Table wrapper with horizontal scroll */
+      .bTableWrap {
+        overflow-x: auto;
+        overflow-y: auto;
+        border-radius: 8px;
+        border: 1px solid #e0e6f0;
+        max-height: 400px;
+        margin-top: 8px;
+      }
+      .bTable {
+        width: 100%;
+        min-width: 1100px;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      .bTable th {
+        background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+        color: #fff;
+        padding: 9px 10px;
+        text-align: left;
+        font-weight: 700;
+        font-size: 11px;
+        letter-spacing: .3px;
+        white-space: nowrap;
+        position: sticky;
+        top: 0;
+        z-index: 2;
+      }
+      .bTable td {
+        padding: 7px 10px;
+        border-bottom: 1px solid #eef0f5;
+        color: #2c3e50;
+        white-space: nowrap;
+        vertical-align: middle;
+      }
+      .bTable tr:nth-child(even) td { background: #f8f9fc; }
+      .bTable tr:hover td { background: #f0f0ff; }
+      .bTable tr.bRow { cursor: pointer; }
+      .bTable tr.bRow:hover td { background: #ede9fe; }
+      .bTable tr.bRow:active td { background: #ddd6fe; }
+      .bTable .chip-si  { background:#fdecea; color:#c0392b; padding:2px 7px; border-radius:9px; font-weight:700; font-size:11px; }
+      .bTable .chip-no  { background:#d1fae5; color:#065f46; padding:2px 7px; border-radius:9px; font-weight:700; font-size:11px; }
+      .bTable .chip-acc { background:#ede9fe; color:#5b21b6; padding:2px 7px; border-radius:9px; font-weight:600; font-size:11px; }
+      /* Pagination */
+      #buscarPagination {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 10px 0 0;
+        flex-wrap: wrap;
+      }
+      .pg-btn {
+        padding: 5px 11px;
+        border: 1px solid #c8d0e0;
+        border-radius: 4px;
+        background: #fff;
+        color: #3a3a6a;
+        cursor: pointer;
+        font-family: 'Poppins', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        transition: background .15s;
+        min-width: 32px;
+        text-align: center;
+      }
+      .pg-btn:hover { background: #f3f0ff; border-color: #7c3aed; }
+      .pg-btn.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
+      .pg-btn:disabled { background: #f0f0f0; color: #ccc; cursor: not-allowed; border-color: #ddd; }
+      #buscarPgInfo { font-size: 12px; color: #7f8c8d; padding: 0 6px; }
+    </style>
+  </head>
+  <body>
+    <div id="toolbar">
+      <button id="addBlock">Añadir bloque</button>
+      <button id="nuevoDiagrama" style="margin-left:6px; background:#7c3aed; color:#fff;" title="Borrar todo el lienzo y empezar desde cero">🗑 Nuevo Diagrama</button>
+      <button id="addDecision" style="margin-left:6px; background:#f4d03f; color:#333;">◇ Decisión</button>
+      <button id="connectMode" style="margin-left:6px;">Modo conexión</button>
+      <button id="deleteBlock">Eliminar bloque</button>
+      <a href="analisis.html" target="_blank" style="margin-left:6px; text-decoration:none"><button style="background:#16543a; color:#fff;">⚗ Análisis SP</button></a>
+      <button id="btnBuscarHistorial" style="background:#7c3aed; color:#fff;" title="Buscar historial de fórmulas guardadas">🔍 Buscar Historial</button>
+      <span id="wsStatus" style="display:none">desconocido</span>
+      <button id="wsReconnect" style="display:none">Reconectar WS</button>
+      <input id="authToken" style="display:none" />
+      <button id="saveToken" style="display:none">Guardar token</button>
+      <!-- Parámetros al extremo derecho de la barra -->
+      <span id="ctxParamsBar" style="display:flex;align-items:center;gap:4px;margin-left:auto;flex-shrink:0;padding:0 8px;border-left:1px solid rgba(255,255,255,0.2);">
+        <span style="font-size:9px;font-weight:700;color:#e8921e;text-transform:uppercase;letter-spacing:1px;white-space:nowrap;">⚙ Params</span>
+        <select id="ctxEmpresa" class="ctx-select" style="width:110px;font-size:11px;padding:4px 20px 4px 6px" title="Empresa Minera"><option value="">— empresa —</option></select>
+        <select id="ctxMina" class="ctx-select" style="width:100px;font-size:11px;padding:4px 20px 4px 6px" disabled title="Mina"><option value="">— mina —</option></select>
+        <select id="ctxSensor" class="ctx-select" style="width:110px;font-size:11px;padding:4px 20px 4px 6px" disabled title="Sensor"><option value="">— sensor —</option></select>
+        <div id="ctxSensorInfo" style="margin-top:0;padding:4px 8px;"></div>
+      </span>
+    </div>
+
+    <div id="mainLayout">
+      <!-- LEFT SIDEBAR: Data Dictionary + Operators -->
+      <div id="leftSidebar">
+
+        <!-- ── Dictionary & Operators ── -->
+        <div id="dictSection">
+          <h3>📊 Diccionario de Datos</h3>
+          <div id="variablesList"></div>
+
+          <h3 style="margin-top:10px">⚙️ Operadores</h3>
+          <div id="operatorsList"></div>
+        </div>
+
+      </div>
+      
+      <!-- MAIN CANVAS & 3D -->
+      <canvas id="canvas"></canvas>
+      <div id="threeContainer"></div>
+      
+      <!-- RIGHT SIDEBAR: Properties & Rules -->
+      <div id="sidebar">
+        <h3>⚙️ Propiedades del Bloque</h3>
+        <div id="noSelection">Seleccione un bloque para editar</div>
+        <div id="props" style="display:none">
+          <div style="margin:6px 0 8px; padding:6px 8px; background:#f0f4f8; border-radius:4px; font-size:11px; color:#7f8c8d;">ID: <span id="propId" style="font-family:'Roboto Mono',monospace; color:#1e3a5f; font-weight:600;"></span></div>
+          <label>Etiqueta: <input id="propLabel" /></label>
+          <label>Color: <input id="propColor" type="color" /></label>
+          <div style="display:flex; gap:8px;">
+            <label style="flex:1;">Ancho: <input id="propW" type="number" /></label>
+            <label style="flex:1;">Alto: <input id="propH" type="number" /></label>
+          </div>
+          <!-- Meta: 4-tab panel -->
+          <div class="meta-section">
+            <div class="meta-section-header" onclick="toggleMetaSection()">
+              <span>📋 Meta</span>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <span id="metaLineCount" class="meta-line-count">—</span>
+                <span id="metaToggleIcon" style="font-size:10px;">▲</span>
+              </div>
+            </div>
+            <div id="metaCollapsible">
+              <!-- Tab buttons -->
+              <div class="meta-tabs">
+                <button class="meta-tab active" id="mtab-formula" onclick="switchMetaTab('formula')">⚗ FORMULA</button>
+                <button class="meta-tab" id="mtab-json"    onclick="switchMetaTab('json')">{ } JSON</button>
+              </div>
+              <!-- Panel 1: FORMULA (first step, raw expression) -->
+              <div class="meta-panel" id="mpanel-formula">
+                <div class="meta-panel-label">Expresión de fórmula (paso 1 — ingreso original):</div>
+                <textarea id="propFormula" spellcheck="false"
+                  placeholder="ej: temperatura_horno > 800 AND presion_bomba < 2.5"></textarea>
+                <div class="meta-panel-hint">Doble-clic en variable u operador del panel izquierdo para insertar aquí.</div>
+              </div>
+              <!-- Panel 2: JSON (structured meta) -->
+              <div class="meta-panel" id="mpanel-json" style="display:none;">
+                <div class="meta-editor-wrapper">
+                  <textarea id="propMeta" spellcheck="false" placeholder='{&#10;  "formula": {&#10;    "expression": "...",&#10;    "type": "condition"&#10;  }&#10;}'></textarea>
+                </div>
+                <div id="metaFeedback" class="meta-feedback" style="display:none;"></div>
+              </div>
+
+            </div>
+          </div>
+          <div class="props-btns">
+            <button id="saveProps">💾 Guardar</button>
+            <button id="verifyProps">🔍 Verificar</button>
+            <button id="cancelProps">❌ Cancelar</button>
+          </div>
+        </div>
+        
+        <h4>🔗 Conexiones</h4>
+        <p style="font-size:11px;color:#7f8c8d;margin:0 0 8px 0;">Arrastre el trazo del conector para mover el punto intermedio. Use el selector <b>→ ← ↔ —</b> para cambiar la dirección de la flecha en cualquier momento.</p>
+        <div id="connectionsList" style="flex:0 0 auto; max-height:180px; overflow:auto; font-size:12px; background:#f9fafc; border:1px solid #e0e4e8; padding:8px; border-radius:6px; margin-bottom:12px;"></div>
+        
+        <h4>📋 Reglas / Condiciones</h4>
+        <div style="margin-bottom: 6px; flex: 0 0 auto; display: flex; gap: 6px;">
+          <button id="ruleNew" style="flex: 1;">➕ Nueva regla</button>
+          <button id="ruleRefresh" onclick="loadRulesFor(selected?selected.id:'')">🔄 Refrescar</button>
+        </div>
+        <div id="rulesList"></div>
+        
+        <button id="voiceBtn">🎤 Comando por voz</button>
+      </div>
+    </div>
+    <!-- Rule editor — Floating Draggable Panel (NOT modal, must be BEFORE app.js) -->
+    <!-- Connection editor — Floating Draggable Panel -->
+    <div id="connEditor">
+      <div id="connEditorGrabBar">
+        <h3>🔗 Editar Conexión</h3>
+        <button id="connEditorCloseBtn" title="Cerrar panel">✕</button>
+      </div>
+      <div id="connEditorBody">
+        <input id="connEditorId" type="hidden" />
+        <!-- Connection info: from → to -->
+        <div class="conn-info-badge" id="connEditorInfo">—</div>
+        <!-- Direction -->
+        <div style="margin-bottom:14px;">
+          <label style="font-weight:600;color:#1e3a5f;font-size:13px;display:block;margin-bottom:6px;">↕ Dirección de la flecha:</label>
+          <select id="connEditorDir">
+            <option value="forward">Dir 1 → (hacia adelante)</option>
+            <option value="backward">Dir 2 ← (hacia atrás)</option>
+          </select>
+          <!-- SI/NO label: only visible for backward connections -->
+          <div id="connBackwardLabelRow" style="display:none;">
+            <label style="font-weight:600;color:#1e3a5f;font-size:13px;display:block;margin-bottom:8px;">🏷 Etiqueta en origen de flecha:</label>
+            <div style="display:flex; gap:8px;">
+              <button type="button" id="connLabelSI" class="conn-label-btn" onclick="setConnLabel('SI')">SI</button>
+              <button type="button" id="connLabelNO" class="conn-label-btn" onclick="setConnLabel('NO')">NO</button>
+            </div>
+          </div>
+        </div>
+        <hr style="border:none;border-top:1px solid #e0e4e8;margin:0 0 14px 0;">
+        <!-- Validation expression — tabbed like block Meta -->
+        <div id="connEditorTabs">
+          <button class="conn-tab active" id="ctab-formula" onclick="switchConnTab('formula')">⚗ FORMULA</button>
+          <button class="conn-tab"        id="ctab-json"    onclick="switchConnTab('json')">{ } JSON</button>
+        </div>
+        <!-- FORMULA panel -->
+        <div class="conn-panel" id="cpanel-formula">
+          <div class="conn-panel-label">Validación / Condición (lenguaje natural):</div>
+          <textarea id="connCondition" spellcheck="false"
+            placeholder="ej: temperatura_horno > 800 AND presion_bomba < 2.5
+ej: estado_valvula = 'abierta'
+ej: nivel_tanque >= umbral_minimo"></textarea>
+          <div class="conn-panel-hint">Doble-clic en variable u operador del panel izquierdo para insertar aquí.</div>
+        </div>
+        <!-- JSON panel -->
+        <div class="conn-panel" id="cpanel-json" style="display:none;">
+          <div class="conn-panel-label">JSON generado (solo lectura):</div>
+          <textarea id="connJsonPreview" readonly spellcheck="false" placeholder="Presione Verificar para generar el JSON..."></textarea>
+        </div>
+        <!-- Three action buttons -->
+        <div class="conn-editor-btns">
+          <button id="connEditorSave">💾 Guardar</button>
+          <button id="connEditorVerify">🔍 Verificar</button>
+          <button id="connEditorCancel">✕ Cancelar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="ruleEditorOverlay"></div>
+    <div id="ruleEditor" style="display:none;">
+      <!-- Drag handle bar -->
+      <div id="ruleEditorGrabBar">
+        <h3>✏️ Editar regla</h3>
+        <button id="ruleEditorCloseBtn" title="Cerrar panel">✕</button>
+      </div>
+      <div id="ruleEditorBody">
+        <input id="ruleId" type="hidden" />
+        <div style="margin-bottom:12px;">
+          <label style="font-weight:600; color:#1e3a5f; font-size:13px;">Block id:</label>
+          <input id="ruleBlockId" style="width:100%; margin-top:4px;" />
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="font-weight:600; color:#1e3a5f; font-size:13px;">Expresión:</label>
+          <small style="color:#7f8c8d; margin-left:8px; font-size:11px;">— doble-clic en variable/operador para insertar —</small>
+          <textarea id="ruleExpr" style="width:100%; height:140px; margin-top:6px; font-family:'Roboto Mono',monospace; font-size:13px; padding:8px; border:1px solid #e0e4e8; border-radius:4px; resize:vertical;"></textarea>
+        </div>
+        <div style="margin-bottom:12px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+            <label style="font-weight:600; color:#1e3a5f; font-size:13px;">{ } JSON generado:</label>
+            <button id="ruleVerify" style="padding:4px 12px; background:#1e3a5f; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px; font-family:'Poppins',sans-serif;">🔍 Verificar</button>
+          </div>
+          <textarea id="ruleJsonPreview" readonly spellcheck="false" style="width:100%; height:130px; font-family:'Roboto Mono',monospace; font-size:11px; padding:8px; border:1px solid #c8d6e3; border-radius:4px; background:#f0f4f8; color:#1e3a5f; resize:vertical;"></textarea>
+          <div id="ruleVerifyFeedback" style="font-size:11px; margin-top:4px; display:none;"></div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button id="ruleSave" style="flex:1; padding:10px; background:#e8921e; color:white; border:none; border-radius:4px; cursor:pointer; font-family:'Poppins',sans-serif; font-weight:600; font-size:14px;">💾 Guardar regla</button>
+          <button id="ruleCancel" style="flex:1; padding:10px; background:#95a5a6; color:white; border:none; border-radius:4px; cursor:pointer; font-family:'Poppins',sans-serif; font-weight:600; font-size:14px;">✕ Cancelar</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js"></script>
+
+    <!-- Modal Búsqueda Avanzada de Historial de Fórmulas -->
+    <div id="buscarModalOverlay">
+      <div id="buscarModal">
+        <div id="buscarModalHdr">
+          <h2>🔍 Búsqueda Avanzada de Historial de Fórmulas</h2>
+          <button class="close-btn" id="buscarModalClose" title="Cerrar">✕</button>
+        </div>
+        <div id="buscarModalBody">
+          <div id="buscarParamsGrid">
+            <!-- A) Empresa Minera -->
+            <div class="bFld">
+              <label>A) Empresa Minera (Tenant)</label>
+              <select id="bSelEmpresa">
+                <option value="">— Todas las empresas —</option>
+              </select>
+            </div>
+            <!-- B) Mina -->
+            <div class="bFld">
+              <label>B) Mina</label>
+              <select id="bSelMina">
+                <option value="">— Todas las minas —</option>
+              </select>
+            </div>
+            <!-- C) Variable -->
+            <div class="bFld">
+              <label>C) Variable (Medición)</label>
+              <select id="bSelVariable">
+                <option value="">— Todas las variables —</option>
+              </select>
+            </div>
+            <!-- D) Fecha/Hora Inicio -->
+            <div class="bFld">
+              <label>D) Fecha / Hora Inicio</label>
+              <input type="datetime-local" id="bFechaInicio" />
+            </div>
+            <!-- E) Fecha/Hora Fin -->
+            <div class="bFld">
+              <label>E) Fecha / Hora Fin</label>
+              <input type="datetime-local" id="bFechaFin" />
+            </div>
+            <!-- Límite -->
+            <div class="bFld">
+              <label>Registros por página</label>
+              <select id="bSelLimit">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div id="buscarModalFooter">
+          <button id="buscarBtn">🔍 Buscar</button>
+          <button id="buscarLimpiarBtn">✕ Limpiar filtros</button>
+          <span id="buscarStatus"></span>
+        </div>
+        <div id="buscarResults">
+          <div id="buscarEmpty">Use los filtros y presione Buscar para ver el historial guardado.</div>
+        </div>
+      </div>
+    </div>
+
+    <script>window.FORMULA_API_PREFIX = '/formula-api';</script>
+    <script src="app.js"></script>
+  </body>
+</html>

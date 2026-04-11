@@ -1,6 +1,9 @@
 opencv-python-headless
-mediapipe
+mediapipe>=0.10.9
 flask
 numpy
 requests
 onnxruntime>=1.16.0
+# Embeddings faciales (modelos ONNX descargados en INSIGHTFACE_ROOT)
+insightface>=0.7.3
+onnx>=1.15.0

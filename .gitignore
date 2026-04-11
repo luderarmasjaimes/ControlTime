@@ -18,5 +18,8 @@ data/glasses_dataset/**/*.bmp
 node_modules/
 dist/
 build/
+__pycache__/
+*.pyc
+_deployed_frontend.js
 .env
 biometric-models/

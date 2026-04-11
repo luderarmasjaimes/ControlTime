@@ -6,8 +6,9 @@
  *   de histograma en gris, compresión de highlights, gamma, desenfoque caja 3×3 (estabilizar ruido).
  * - FaceDetector: API nativa del navegador (Chromium → modelos internos, no es OpenCV en cliente).
  * - Respaldo sin landmarks: heurística de píxeles tipo piel en canvas reducido (AuthGateway).
- * - Backend C++ (Beast/Boost): /api/auth/biometric/verify-frame, iluminación global JPEG, EMA lentes.
- * - ai_engine Python: MediaPipe Tasks Face Landmarker + OpenCV/NumPy (EAR, lentes, boca).
+ * - Backend C++ (Beast/Boost): /api/process_frame y payloads login/registro usan JPEG 640×480 enmascarado
+ *   al óvalo (`biometricOvalFrame.js`); iluminación ICAO usa solo píxeles > 0.
+ * - ai_engine Python: MediaPipe + OpenCV/NumPy sobre ese JPEG.
  * - Dermalog (opcional): CLI/SDK en backend si BIOMETRIC_PROVIDER=dermalog_cli; no participa en el canvas.
  */
 

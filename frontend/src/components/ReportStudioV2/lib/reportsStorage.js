@@ -5,6 +5,22 @@ import {
   deleteReport as deleteReportApi,
 } from './api';
 
+function normalizeReport(r = {}) {
+  return {
+    ...r,
+    createdAt: r.createdAt || r.created_at || null,
+    updatedAt: r.updatedAt || r.updated_at || null,
+    deletedAt: r.deletedAt || r.deleted_at || null,
+    company: r.company || r.company_name || '',
+    projectName: r.projectName || r.project_name || '',
+    createdBy: r.createdBy || r.created_by || '',
+    createdByName: r.createdByName || r.created_by_name || '',
+    reviewedBy: r.reviewedBy || r.reviewed_by || '',
+    reviewedByName: r.reviewedByName || r.reviewed_by_name || '',
+    versionNumber: r.versionNumber || r.version_number || 1,
+  };
+}
+
 export function buildFullName(user) {
   const first = user?.first_name || user?.firstName || '';
   const last = user?.last_name || user?.lastName || '';
@@ -30,7 +46,7 @@ export async function listReportsAsync({
 } = {}) {
   try {
     const rawReports = await fetchReports();
-    let all = rawReports.filter((r) => !r.deletedAt);
+    let all = rawReports.map(normalizeReport).filter((r) => !r.deletedAt);
 
     if (company) {
       all = all.filter((r) => r.company === company);

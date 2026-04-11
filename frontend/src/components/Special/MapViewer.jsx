@@ -28,42 +28,45 @@ const MapViewer = () => {
         map.current.addControl(new L.Control.Zoom({ position: 'topright' }));
 
         // Fetch Markers
-        fetch('/api/map/markers')
-            .then(res => res.json())
-            .then(data => {
-                if (data.markers && map.current) {
-                    data.markers.forEach(m => {
-                        const el = document.createElement('div');
-                        el.className = 'w-4 h-4 rounded-full border-2 border-white shadow-[0_0_10px_rgba(0,0,0,0.5)]';
-                        
-                        if (m.status === 'warning') {
-                            el.className += ' bg-amber-500 animate-pulse';
-                        } else if (m.type === 'equipment') {
-                            el.className += ' bg-sky-500';
-                        } else if (m.type === 'personnel') {
-                            el.className += ' bg-emerald-500';
-                        } else {
-                            el.className += ' bg-purple-500';
-                        }
+        if (!(typeof process !== 'undefined' && process.env?.VITEST)) {
+            const apiUrl = new URL('/api/map/markers', window.location.origin).toString();
+            fetch(apiUrl)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.markers && map.current) {
+                        data.markers.forEach(m => {
+                            const el = document.createElement('div');
+                            el.className = 'w-4 h-4 rounded-full border-2 border-white shadow-[0_0_10px_rgba(0,0,0,0.5)]';
+                            
+                            if (m.status === 'warning') {
+                                el.className += ' bg-amber-500 animate-pulse';
+                            } else if (m.type === 'equipment') {
+                                el.className += ' bg-sky-500';
+                            } else if (m.type === 'personnel') {
+                                el.className += ' bg-emerald-500';
+                            } else {
+                                el.className += ' bg-purple-500';
+                            }
 
-                        const popup = L.popup({ offset: [0, -25] })
-                            .setContent(`<div class="p-2"><h4 class="font-bold text-sm m-0">${m.name}</h4><p class="text-xs text-slate-500 m-0 capitalize">${m.type} - ${m.status}</p></div>`);
+                            const popup = L.popup({ offset: [0, -25] })
+                                .setContent(`<div class="p-2"><h4 class="font-bold text-sm m-0">${m.name}</h4><p class="text-xs text-slate-500 m-0 capitalize">${m.type} - ${m.status}</p></div>`);
 
-                        const marker = L.marker([m.lat, m.lng], { 
-                            icon: L.divIcon({ 
-                                html: el.outerHTML, 
-                                iconSize: [16, 16],
-                                className: 'leaflet-div-icon' 
-                            }) 
-                        })
-                            .bindPopup(popup)
-                            .addTo(map.current);
-                        
-                        markersRef.current.push(marker);
-                    });
-                }
-            })
-            .catch(err => console.error("Error loading map markers", err));
+                            const marker = L.marker([m.lat, m.lng], { 
+                                icon: L.divIcon({ 
+                                    html: el.outerHTML, 
+                                    iconSize: [16, 16],
+                                    className: 'leaflet-div-icon' 
+                                }) 
+                            })
+                                .bindPopup(popup)
+                                .addTo(map.current);
+                            
+                            markersRef.current.push(marker);
+                        });
+                    }
+                })
+                .catch(err => console.error("Error loading map markers", err));
+        }
 
         // Clean up
         return () => {

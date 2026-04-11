@@ -14,7 +14,17 @@ export default defineConfig({
             '/ws': {
                 target: 'ws://localhost:8082',
                 ws: true
-            }
+            },
+            '/formula-api/ws': {
+                target: 'ws://localhost:18020',
+                ws: true,
+                rewrite: (path) => path.replace(/^\/formula-api/, '') || '/',
+            },
+            '/formula-api': {
+                target: 'http://localhost:18020',
+                changeOrigin: true,
+                rewrite: (path) => path.replace(/^\/formula-api/, '') || '/',
+            },
         }
     },
     // `vite preview` no hereda el proxy del dev server; sin esto, /api apunta al puerto del preview (p. ej. 8021) y falla con "Failed to fetch".
@@ -25,7 +35,17 @@ export default defineConfig({
             '/ws': {
                 target: 'ws://localhost:8082',
                 ws: true
-            }
+            },
+            '/formula-api/ws': {
+                target: 'ws://localhost:18020',
+                ws: true,
+                rewrite: (path) => path.replace(/^\/formula-api/, '') || '/',
+            },
+            '/formula-api': {
+                target: 'http://localhost:18020',
+                changeOrigin: true,
+                rewrite: (path) => path.replace(/^\/formula-api/, '') || '/',
+            },
         }
     }
 })

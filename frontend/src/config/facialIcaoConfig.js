@@ -7,7 +7,7 @@
  * | Borde del rostro (óvalo UI) | Navegador: FaceDetector API + canvas preprocesado (JS: BT.601, histograma, gamma, blur 3×3 solo en modo noche/reflejos). |
  * | Validación servidor | C++17 (Boost.Beast): JPEG, umbral de iluminación, EMA lentes, llamada HTTP al motor IA. |
  * | Ojos / boca / lentes en frame | Python 3 + MediaPipe Tasks Face Landmarker + OpenCV (NumPy) en `ai_engine/eye_analyzer.py`. |
- * | Plantilla / match facial (login) | C++ OpenCV en backend (legacy 24×24) o Dermalog CLI si `BIOMETRIC_PROVIDER=dermalog_cli`. |
+ * | Plantilla / match facial (login/registro) | Cliente: vector 24×24 desde JPEG 640×480 con máscara elíptica (`biometricOvalFrame.js`); backend C++ OpenCV legacy o Dermalog si aplica. |
  *
  * OpenCV en el cliente: no; solo en Python (ai_engine) y en el binario C++ del backend.
  */
@@ -38,7 +38,7 @@ export const FACIAL_ICAO = {
     /** Intervalo mínimo entre frames de detección (~12–13 fps: menos ruido que 15 fps) */
     DETECT_FRAME_MIN_MS: 78,
     /** Intervalo entre envíos al backend verify-frame (ms), cercano al loop de estado de FACIAL */
-    VERIFY_SYNC_MS: 220,
+    VERIFY_SYNC_MS: 175,
     /** Calidad JPEG para verify-frame (FACIAL main.js usa 0.6) */
     VERIFY_JPEG_QUALITY: 0.6,
     /** getUserMedia video ideal (FACIAL www/main.js) */
@@ -49,18 +49,25 @@ export const FACIAL_ICAO = {
     },
     /** Reintento cámara ocupada (ms) — FACIAL main.js */
     CAMERA_RETRY_MS: 2000,
+    /**
+     * Login facial: tiempo máximo con cámara activa para completar ICAO + liveness y validar en servidor.
+     * El contador se pausa mientras dura la petición HTTP de login.
+     */
+    LOGIN_FACE_SESSION_MS: 60_000,
+    LOGIN_FACE_TIMEOUT_MESSAGE:
+        'Timeout de operación en validación facial: se excedieron 60 segundos. Intente de nuevo pulsando «Ingresar con Reconocimiento Facial».',
     /** Retardo tras calidad OK antes de auto-login/captura (ms) */
     AUTO_CAPTURE_DELAY_MS: 350,
     /** Suavizado EMA del box facial (más bajo = borde más estable) */
-    FACE_BOX_EMA_ALPHA: 0.11,
+    FACE_BOX_EMA_ALPHA: 0.22,
     /** EMA cuando el detector salta (reflejo / falso positivo) */
-    FACE_BOX_EMA_ALPHA_OUTLIER: 0.05,
+    FACE_BOX_EMA_ALPHA_OUTLIER: 0.12,
     /** Ventana de mediana sobre detecciones crudas (reduce jitter) */
-    FACE_BOX_HISTORY_LEN: 7,
+    FACE_BOX_HISTORY_LEN: 4,
     /** Mínimo de muestras para usar mediana */
-    FACE_BOX_MEDIAN_MIN_SAMPLES: 4,
+    FACE_BOX_MEDIAN_MIN_SAMPLES: 3,
     /** Si el centro salta más que esta fracción del tamaño previo → EMA outlier */
-    FACE_BOX_OUTLIER_JUMP_RATIO: 0.34,
+    FACE_BOX_OUTLIER_JUMP_RATIO: 0.24,
     /** Escala del canvas de tracking respecto al ROI (más alto = más resolución para el detector) */
     TRACKING_CANVAS_SCALE: 0.74,
     /** Ecualizar histograma solo en canvas de detección si luminancia media < esto */
@@ -81,12 +88,12 @@ export const FACIAL_ICAO = {
     /** Desenfoque 3×3 en canvas de tracking solo modo difícil (reduce ruido del borde) */
     NIGHT_TRACKING_USE_BLUR: true,
     /** Más frames en mediana + EMA más bajo = borde más estable de noche */
-    NIGHT_FACE_BOX_HISTORY_LEN: 9,
-    NIGHT_FACE_BOX_MEDIAN_MIN_SAMPLES: 4,
-    NIGHT_FACE_BOX_EMA_ALPHA: 0.065,
-    NIGHT_FACE_BOX_EMA_ALPHA_OUTLIER: 0.035,
+    NIGHT_FACE_BOX_HISTORY_LEN: 5,
+    NIGHT_FACE_BOX_MEDIAN_MIN_SAMPLES: 3,
+    NIGHT_FACE_BOX_EMA_ALPHA: 0.16,
+    NIGHT_FACE_BOX_EMA_ALPHA_OUTLIER: 0.10,
     /** Menos saltos “outlier” de noche (paredes / parpadeo de luz) */
-    NIGHT_FACE_BOX_OUTLIER_JUMP_RATIO: 0.64,
+    NIGHT_FACE_BOX_OUTLIER_JUMP_RATIO: 0.42,
     /** Un poco menos de FPS al detector en modo difícil */
     NIGHT_DETECT_FRAME_MIN_MS: 92,
 

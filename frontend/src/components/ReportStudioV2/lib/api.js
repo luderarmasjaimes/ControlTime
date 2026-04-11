@@ -38,6 +38,34 @@ export async function fetchReports() {
   return response.data?.reports ?? [];
 }
 
+export async function fetchAnalysisCatalogs() {
+  try {
+    const response = await api.get('/analysis/catalogos');
+    return response.data ?? { rows: [], usuarios: [] };
+  } catch (error) {
+    const status = error?.response?.status;
+    const backendError = error?.response?.data?.error;
+    if (status === 401) {
+      throw new Error('Sesion expirada o invalida. Vuelve a iniciar sesion.');
+    }
+    throw new Error(backendError || 'No se pudo cargar el catalogo de formula minera.');
+  }
+}
+
+export async function runTemperatureAnalysis(payload) {
+  try {
+    const response = await api.post('/analysis/temperaturas', payload, { timeout: 60000 });
+    return response.data ?? { rows: [], summary: {} };
+  } catch (error) {
+    const status = error?.response?.status;
+    const backendError = error?.response?.data?.error;
+    if (status === 401) {
+      throw new Error('Sesion expirada o invalida. Vuelve a iniciar sesion.');
+    }
+    throw new Error(backendError || 'No fue posible ejecutar la formula minera.');
+  }
+}
+
 /** Carga un informe completo (incl. content_json) para edición. */
 export async function fetchReportById(id) {
   const response = await api.get(`/reports/${encodeURIComponent(id)}`);

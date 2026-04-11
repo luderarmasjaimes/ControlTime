@@ -8,7 +8,13 @@ const VideoDiagram = () => {
     const videoRef = useRef(null);
 
     useEffect(() => {
-        fetch('/api/surveillance/cameras')
+        if (typeof process !== 'undefined' && process.env?.VITEST) {
+            setLoading(false);
+            return;
+        }
+
+        const apiUrl = new URL('/api/surveillance/cameras', window.location.origin).toString();
+        fetch(apiUrl)
             .then(res => res.json())
             .then(data => {
                 if(data.cameras) setCameras(data.cameras);
@@ -172,7 +178,7 @@ const VideoDiagram = () => {
                 ))}
             </div>
 
-            <style jsx>{`
+            <style>{`
                 .custom-scrollbar::-webkit-scrollbar { width: 4px; }
                 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
                 .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }

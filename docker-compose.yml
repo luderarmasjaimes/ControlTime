@@ -11,9 +11,19 @@ services:
       - ./db_scripts/02_seed_demo.sql:/docker-entrypoint-initdb.d/02_seed_demo.sql:ro
       - ./db_scripts/03_auth_biometric.sql:/docker-entrypoint-initdb.d/03_auth_biometric.sql:ro
       - ./db_scripts/04_telemetry_schema_v2.sql:/docker-entrypoint-initdb.d/04_telemetry_schema_v2.sql:ro
+      - ./db_scripts/05_reports_admin.sql:/docker-entrypoint-initdb.d/05_reports_admin.sql:ro
       - ./db_scripts/06_seed_users_raura.sql:/docker-entrypoint-initdb.d/06_seed_users_raura.sql:ro
       - ./db_scripts/07_auth_login_operacion.sql:/docker-entrypoint-initdb.d/07_auth_login_operacion.sql:ro
       - ./db_scripts/08_formula_dictionary_seed.sql:/docker-entrypoint-initdb.d/08_formula_dictionary_seed.sql:ro
+      - ./db_scripts/09_formula_mining_reports.sql:/docker-entrypoint-initdb.d/09_formula_mining_reports.sql:ro
+      - ./db_scripts/10_seed_formula_company_data.sql:/docker-entrypoint-initdb.d/10_seed_formula_company_data.sql:ro
+      - ./db_scripts/12_sp_proceso_temperatura_inicio_fix.sql:/docker-entrypoint-initdb.d/12_sp_proceso_temperatura_inicio_fix.sql:ro
+      - ./db_scripts/13_auth_avatar_cartoon_reset_users.sql:/docker-entrypoint-initdb.d/13_auth_avatar_cartoon_reset_users.sql:ro
+      - ./db_scripts/16_platform_multitenant_latam_i18n_rbac_audit.sql:/docker-entrypoint-initdb.d/16_platform_multitenant_latam_i18n_rbac_audit.sql:ro
+      - ./db_scripts/17_telemetry_multivariate_sensor_specs.sql:/docker-entrypoint-initdb.d/17_telemetry_multivariate_sensor_specs.sql:ro
+      - ./db_scripts/18_tb_sensor_model_notify_etl_triggers.sql:/docker-entrypoint-initdb.d/18_tb_sensor_model_notify_etl_triggers.sql:ro
+      - ./db_scripts/19_report_technical_mining_enterprise.sql:/docker-entrypoint-initdb.d/19_report_technical_mining_enterprise.sql:ro
+      - ./db_scripts/20_audit_traceability_enforcement.sql:/docker-entrypoint-initdb.d/20_audit_traceability_enforcement.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
       interval: 10s
@@ -39,8 +49,13 @@ services:
       - BIOMETRIC_DNN_LABELS=${BIOMETRIC_DNN_LABELS:-glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal}
       - BIOMETRIC_DNN_THRESHOLD=${BIOMETRIC_DNN_THRESHOLD:-0.72}
       - AI_ENGINE_URL=http://ai_engine:5000
-      - AI_ENGINE_TIMEOUT_MS=500
-      - AI_ENGINE_MAX_IMAGE_BYTES=450000
+      - CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
+      - OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
+      - AI_ENGINE_TIMEOUT_MS=3000
+      - AI_ENGINE_CARTOON_TIMEOUT_MS=${AI_ENGINE_CARTOON_TIMEOUT_MS:-120000}
+      - AI_ENGINE_MAX_IMAGE_BYTES=${AI_ENGINE_MAX_IMAGE_BYTES:-2500000}
+      - FACE_EMBEDDING_COSINE_THRESHOLD=0.40
+      - FACE_LEGACY_COSINE_THRESHOLD=0.80
       - BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN=70
       - BIOMETRIC_IMAGE_OPTIMIZER_ENABLE=false
       - BIOMETRIC_MAX_PIXELS=921600
@@ -74,11 +89,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.75'
-          memory: 1g
+          cpus: '1.25'
+          memory: 1536M
         reservations:
           cpus: '0.25'
-          memory: 256M
+          memory: 384M
 
   tileserver:
     image: ghcr.io/consbio/mbtileserver:latest
@@ -103,10 +118,52 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Motor FORMULA: editor embebido (/formula) + API proxificada como /formula-api
+  formula_db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: formula
+      POSTGRES_PASSWORD: formula
+      POSTGRES_DB: formula
+    volumes:
+      - formula_db_data:/var/lib/postgresql/data
+      - ./formula_engine/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./formula_engine/init_minas.sql:/docker-entrypoint-initdb.d/02-init-minas.sql:ro
+      - ./formula_engine/add_sensores.sql:/docker-entrypoint-initdb.d/03-add-sensores.sql:ro
+      - ./formula_engine/02_multitenant_scope_registry.sql:/docker-entrypoint-initdb.d/04-multitenant-scope-registry.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U formula -d formula"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+
+  formula_engine:
+    build:
+      context: ./formula_engine
+    environment:
+      DATABASE_URL: postgresql://formula:formula@formula_db:5432/formula
+      AUTH_TOKEN: devtoken
+    depends_on:
+      formula_db:
+        condition: service_healthy
+    ports:
+      - "18020:8020"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8020/api/catalogos >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 45s
+    restart: unless-stopped
+
   ai_engine:
     build:
       context: ./ai_engine
       dockerfile: Dockerfile.ai
+      args:
+        # Exige modelo ONNX en build (falla si falta).
+        VERIFY_GLASSES_ONNX: ${VERIFY_GLASSES_ONNX:-1}
     image: informe-ai-engine:latest
     restart: unless-stopped
     environment:
@@ -118,7 +175,10 @@ services:
       - GLASSES_FUSION_WEIGHT_AI=${GLASSES_FUSION_WEIGHT_AI:-0.35}
       # cv_primary = boolean "sin lentes" solo CV (recomendado; ONNX a veces falla fuera del dataset)
       - GLASSES_ONNX_DECISION_MODE=${GLASSES_ONNX_DECISION_MODE:-cv_primary}
+      - INSIGHTFACE_ROOT=/app/.insightface
+      - WARMUP_FACE_EMBEDDING=0
     volumes:
+      - insightface_models:/app/.insightface
       - ./ai_engine_probe_logs:/app/logs
     networks:
       - default
@@ -128,7 +188,8 @@ services:
       test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 8
+      start_period: 120s
 
   # Si el login no refleja cambios de UI: .\scripts\rebuild-frontend-docker.ps1
   # (o: docker compose build --no-cache frontend && docker compose up -d frontend)
@@ -142,6 +203,8 @@ services:
         condition: service_healthy
       tileserver:
         condition: service_started
+      formula_engine:
+        condition: service_healthy
     volumes:
       - ./data:/data:ro
     healthcheck:
@@ -162,6 +225,8 @@ services:
 
 volumes:
   db_data: {}
+  formula_db_data: {}
+  insightface_models: {}
 
 networks:
   default:

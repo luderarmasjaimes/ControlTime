@@ -18,8 +18,13 @@ services:
       - MAPAS_PORT=8081
       - MAPAS_DATA_ROOT=/data
       - AI_ENGINE_URL=http://ai_engine:5000
-      - AI_ENGINE_TIMEOUT_MS=120
-      - AI_ENGINE_MAX_IMAGE_BYTES=450000
+      - CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
+      - OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
+      - AI_ENGINE_TIMEOUT_MS=3000
+      - AI_ENGINE_CARTOON_TIMEOUT_MS=${AI_ENGINE_CARTOON_TIMEOUT_MS:-120000}
+      - AI_ENGINE_MAX_IMAGE_BYTES=${AI_ENGINE_MAX_IMAGE_BYTES:-2500000}
+      - FACE_EMBEDDING_COSINE_THRESHOLD=0.40
+      - FACE_LEGACY_COSINE_THRESHOLD=0.80
       - BIOMETRIC_IMAGE_OPTIMIZER_ENABLE=false
       - BIOMETRIC_MAX_PIXELS=921600
     depends_on:
@@ -73,6 +78,7 @@ services:
 
 volumes:
   db_data: {}
+  insightface_models: {}
 
 networks:
   default:

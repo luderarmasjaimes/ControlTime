@@ -19,6 +19,11 @@ async function parseJsonResponse(response) {
     }
 
     if (!response.ok) {
+        console.error('[AUTH_API] HTTP error', {
+            status: response.status,
+            statusText: response.statusText,
+            payload,
+        })
         let message = payload.error || `Error HTTP ${response.status}`
         if (Array.isArray(payload.issues) && payload.issues.length > 0) {
             const translations = {
@@ -92,15 +97,37 @@ export async function registerUser(payload) {
     if (payload.mobile) body.mobile = payload.mobile
     if (payload.email) body.email = payload.email
 
-    if (payload.faceImageBase64) {
-        body.face_image_base64 = payload.faceImageBase64
-    } else {
+    /* Enviar plantilla e imagen si existen: el backend prioriza face_template (rápido)
+       y ya no fuerza embedding en ai_engine cuando la plantilla viene del cliente. */
+    const hasTemplate =
+        Array.isArray(payload.faceTemplate) &&
+        payload.faceTemplate.length > 0
+    if (hasTemplate) {
         body.face_template = payload.faceTemplate
     }
+    if (payload.faceImageBase64) {
+        body.face_image_base64 = payload.faceImageBase64
+    }
+    if (payload.facePortraitOvalBase64) {
+        body.face_portrait_oval_base64 = payload.facePortraitOvalBase64
+    }
+    if (payload.faceBustRectBase64) {
+        body.face_bust_rect_base64 = payload.faceBustRectBase64
+    }
 
-    return postJson('/api/auth/register', {
+    const t0 = typeof performance !== 'undefined' ? performance.now() : 0
+    const out = await postJson('/api/auth/register', {
         ...body,
     })
+    if (t0 && typeof performance !== 'undefined') {
+        const ms = Math.round(performance.now() - t0)
+        console.info('[AUTH_API] /api/auth/register OK', {
+            ms,
+            sent_template: Boolean(body.face_template),
+            sent_image: Boolean(body.face_image_base64),
+        })
+    }
+    return out
 }
 
 export async function loginWithPassword(payload) {
@@ -111,17 +138,101 @@ export async function loginWithPassword(payload) {
     })
 }
 
+const MSG_USUARIO_NO_EXISTE = 'USUARIO NO EXISTE'
+
+/**
+ * Comprueba si existe un usuario (Usuario, DNI o RUC) en la empresa antes de abrir la cámara.
+ * Usa POST (JSON) para evitar proxies que alteran el query string; si el backend solo tiene GET, reintenta por GET.
+ * Solo si payload.ok === true se debe abrir la sesión facial.
+ */
+export async function checkLoginIdentity(company, identity) {
+    const c = String(company ?? '').trim()
+    const id = String(identity ?? '').trim()
+    const base = `${backendBaseUrl()}/api/auth/login/check-identity`
+    const postOpts = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company: c, identity: id }),
+    }
+    let response = await fetch(base, postOpts)
+    if (response.status === 404) {
+        const q = new URLSearchParams({ company: c, identity: id })
+        response = await fetch(`${base}?${q.toString()}`)
+    }
+    let payload = {}
+    try {
+        payload = await response.json()
+    } catch {
+        payload = {}
+    }
+    if (response.status >= 500) {
+        throw new Error(
+            payload.error || `Error HTTP ${response.status}: no se pudo verificar el usuario.`
+        )
+    }
+    if (response.status === 400) {
+        return {
+            ok: false,
+            reason: payload.reason || 'bad_request',
+            error:
+                payload.error ||
+                'Indique empresa e identificador (Usuario, DNI o RUC).',
+        }
+    }
+    if (response.status === 200 && payload && typeof payload.ok === 'boolean') {
+        console.info('[AUTH_API] checkLoginIdentity', {
+            company: c,
+            identityLen: id.length,
+            ok: payload.ok,
+            reason: payload.reason,
+            username: payload.username,
+        })
+        return payload
+    }
+    return {
+        ok: false,
+        reason: 'invalid_response',
+        error: MSG_USUARIO_NO_EXISTE,
+    }
+}
+
 export async function loginWithFace(payload) {
+    const company = String(payload.company ?? payload.companyName ?? '').trim()
+    const identity = String(
+        payload.identityLogin ??
+            payload.identity_login ??
+            payload.username ??
+            payload.dni ??
+            payload.ruc ??
+            ''
+    ).trim()
+    if (!company || !identity) {
+        throw new Error(
+            'Complete empresa y Usuario/DNI/RUC antes del reconocimiento facial.'
+        )
+    }
     const body = {
-        company: payload.company,
-        threshold: 0.89,
+        company,
+        identity_login: identity,
+        username: identity,
     }
 
     if (payload.imageBase64) {
         body.face_image_base64 = payload.imageBase64
-    } else {
+    } else if (payload.template) {
         body.face_template = payload.template
+    } else {
+        throw new Error('No se capturó imagen o plantilla facial para validar.')
     }
+
+    console.info('[AUTH_FACE] loginWithFace request', {
+        company,
+        identity_login: identity,
+        has_template: Boolean(body.face_template),
+        template_dim: Array.isArray(body.face_template) ? body.face_template.length : 0,
+        has_image_base64: Boolean(body.face_image_base64),
+        image_base64_len: typeof body.face_image_base64 === 'string' ? body.face_image_base64.length : 0,
+    })
 
     return postJson('/api/auth/login/face', {
         ...body,

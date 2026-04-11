@@ -1,11 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
     Activity,
+    ArrowLeft,
     Compass,
-    Download,
-    Share2,
     Clock,
-    Settings,
     Layers,
     FileText,
     Map as MapIcon,
@@ -13,8 +11,9 @@ import {
     BarChart2,
     Layout,
     ShieldCheck,
-    Sparkles,
     Users,
+    UserRound,
+    Sigma,
 } from 'lucide-react'
     // Hubspot is removed as it is not available in lucide-react
 import { motion, AnimatePresence } from 'framer-motion'
@@ -27,15 +26,31 @@ import AzimuthCompass from './components/Special/AzimuthCompass'
 import DisplacementCharts from './components/Special/DisplacementCharts'
 import MiningDashboard from './components/Dashboard/MiningDashboard'
 import VideoDiagram from './components/Special/VideoDiagram'
-import QRGenerator from './components/Special/QRGenerator'
 import RichTextEditor from './components/Editor/RichTextEditor'
 import AuthGateway from './components/Auth/AuthGateway'
 import AuditCenter from './components/Auth/AuditCenter'
 import AdvancedSensors from './components/Dashboard/AdvancedSensors'
 import ReportStudioV2 from './components/ReportStudioV2/App'
+import FormulaEngineEmbed from './components/Formula/FormulaEngineEmbed'
 import UserMaintenanceModal from './components/ReportStudioV2/components/modals/UserMaintenanceModal'
+import aurixaLogo from './brand/aurixa-logo.svg'
 import { ensureCompanyUsers } from './components/ReportStudioV2/lib/userBootstrap'
 import { clearSession, getSession, createSession } from './auth/authStorage'
+
+/** Base64 guardado en BD/sesión: sin espacios ni saltos de línea. */
+function normalizeSessionAvatarBase64(sess) {
+    const raw = sess?.avatarCartoonBase64
+    if (typeof raw !== 'string') return null
+    const b64 = raw.replace(/\s/g, '')
+    return b64.length > 0 ? b64 : null
+}
+
+function sessionAvatarDataUrlFromB64(b64) {
+    if (!b64) return null
+    if (b64.startsWith('iVBOR')) return `data:image/png;base64,${b64}`
+    if (b64.startsWith('/9j')) return `data:image/jpeg;base64,${b64}`
+    return `data:image/png;base64,${b64}`
+}
 
 const DashboardApp = ({ session, onLogout }) => {
     const mainScrollRef = useRef(null)
@@ -45,8 +60,8 @@ const DashboardApp = ({ session, onLogout }) => {
     const [installationAngle, setInstallationAngle] = useState(55)
     const [azimuthOffset, setAzimuthOffset] = useState(true)
     const [dbStatus, setDbStatus] = useState('Sincronizado')
-    const [showMenu, setShowMenu] = useState(false)
-    const [showQR, setShowQR] = useState(false)
+    const [activeMainMenu, setActiveMainMenu] = useState('monitoreo')
+    const [navLevel, setNavLevel] = useState('main')
     const [showAuditCenter, setShowAuditCenter] = useState(false)
     const [showUserMaintenance, setShowUserMaintenance] = useState(false)
     const [showUserMaintenancePrompt, setShowUserMaintenancePrompt] = useState(false)
@@ -54,6 +69,27 @@ const DashboardApp = ({ session, onLogout }) => {
     const isAdmin = (session?.role || '').toLowerCase() === 'admin'
     const isCompanyLogin = session?.loginType === 'company'
     const canMaintain = isCompanyLogin && (isAdmin || (session?.role || '').toLowerCase() === 'supervisor')
+    const [currentDateLabel] = useState(() =>
+        new Intl.DateTimeFormat('es-PE', {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+        }).format(new Date())
+    )
+    const [avatarImageFailed, setAvatarImageFailed] = useState(false)
+    const avatarB64 = normalizeSessionAvatarBase64(session)
+    const headerAvatarDataUrl = sessionAvatarDataUrlFromB64(avatarB64)
+
+    useEffect(() => {
+        setAvatarImageFailed(false)
+    }, [avatarB64, session?.username])
+    const platformCompanyName = session?.platformCompany || session?.ownerCompany || 'AURIXA'
+    const miningCompanyName = session?.company || session?.miningCompany || 'Empresa minera'
+    const miningUnitName =
+        session?.miningUnit ||
+        session?.unitName ||
+        session?.mineUnit ||
+        session?.site ||
+        'Unidad principal'
 
     // Ensure company users are bootstrapped on login
     useEffect(() => {
@@ -119,191 +155,306 @@ const DashboardApp = ({ session, onLogout }) => {
     const tabs = [
         {
             name: 'Dashboard',
-            label: 'Overview',
+            label: 'Centro de Control',
             icon: Activity,
+            glyph: 'KPI',
             badge: 'Live',
-            tip: 'Resumen ejecutivo de KPIs operativos y tendencia diaria.'
+            tip: 'Resumen ejecutivo de indicadores operativos y productividad de mina.'
         },
         {
             name: 'Sensores Técnicos',
-            label: 'Sensores',
+            label: 'Sensores de Mina',
             icon: BarChart2,
-            tip: 'Telemetria tecnica por tipo de sensor y estado de calidad.'
+            glyph: 'IoT',
+            tip: 'Telemetría de instrumentación, calidad de dato y estado por sensor.'
         },
         {
             name: 'Inclinometer',
-            label: 'Inclinometro',
+            label: 'Estabilidad de Talud',
             icon: Activity,
-            tip: 'Monitorea deformacion, azimut y estabilidad en campo.'
+            glyph: 'GEO',
+            tip: 'Monitoreo geotécnico de inclinación, deformación y alertas tempranas.'
         },
         {
             name: 'Displacement Cumulative',
-            label: 'Desplazamiento',
+            label: 'Desplazamiento Acumulado',
             icon: Layers,
-            tip: 'Vista acumulada de desplazamientos para analisis estructural.'
+            glyph: 'MOV',
+            tip: 'Evolución histórica de desplazamientos para análisis estructural.'
         },
         {
             name: '3D',
-            label: 'Escena 3D',
+            label: 'Gemelo 3D Mina',
             icon: FileText,
-            tip: 'Explora la mina en entorno 3D con orientacion instrumental.'
+            glyph: '3D',
+            tip: 'Visualización 3D interactiva del frente minero e instrumentación.'
         },
         {
             name: 'Map',
-            label: 'Mapa Base',
+            label: 'Mapa Satelital',
             icon: MapIcon,
-            tip: 'Mapa satelital rapido para navegacion operacional.'
+            glyph: 'MAP',
+            tip: 'Navegación satelital base para operación y ubicación de frentes.'
         },
         {
             name: 'Mapa Detallado',
-            label: 'Mapa Detallado',
+            label: 'Mapa Geotécnico HD',
             icon: Layers,
+            glyph: 'HD',
             badge: 'Pro',
-            tip: 'Carga capas MBTiles detalladas y revisa zonas criticas.'
+            tip: 'Capas MBTiles de alta resolución para zonas críticas y detalle técnico.'
         },
         {
             name: 'Surveillance',
-            label: 'Vigilancia',
+            label: 'Video Vigilancia',
             icon: Compass,
-            tip: 'Panel de vigilancia con monitoreo visual de areas activas.'
+            glyph: 'CAM',
+            tip: 'Monitoreo visual de áreas activas con enfoque de seguridad operativa.'
+        },
+        {
+            name: 'Formula',
+            label: 'Motor de Fórmula',
+            icon: Sigma,
+            glyph: 'AI',
+            badge: 'NEW',
+            tip: 'Ejecución del motor de cálculo minero para análisis y generación técnica.'
         },
         {
             name: 'Report',
-            label: 'Reporte',
+            label: 'Redactor Técnico',
             icon: FileText,
-            tip: 'Editor principal para informes operativos de turno.'
+            glyph: 'DOC',
+            tip: 'Editor rápido para reportes operativos y novedades de turno.'
         },
         {
             name: 'Report v2',
-            label: 'Informe Minero',
+            label: 'Informe Corporativo',
             icon: Layout,
+            glyph: 'PDF',
             badge: 'Beta',
-            tip: 'Estudio avanzado de reportes multipagina y plantillas.'
+            tip: 'Estudio corporativo avanzado de reportes multi-página y plantilla.'
         }
     ]
 
+    const enterpriseGroups = [
+        {
+            id: 'monitoreo',
+            title: 'Monitoreo en tiempo real',
+            icon: Activity,
+            tip: 'Seguimiento continuo de KPIs, sensores y vigilancia.',
+            items: ['Dashboard', 'Sensores Técnicos', 'Surveillance']
+        },
+        {
+            id: 'geotecnia',
+            title: 'Geotecnia y modelado 3D',
+            icon: Layers,
+            tip: 'Análisis geotécnico, deformaciones y modelo tridimensional.',
+            items: ['Inclinometer', 'Displacement Cumulative', '3D']
+        },
+        {
+            id: 'geoespacial',
+            title: 'Geoespacial y cartografía',
+            icon: MapIcon,
+            tip: 'Mapas base y cartografía de alta resolución para operaciones.',
+            items: ['Map', 'Mapa Detallado']
+        },
+        {
+            id: 'ingenieria',
+            title: 'Ingeniería y reportabilidad',
+            icon: Sigma,
+            tip: 'Motor de cálculo y generación de informes técnicos y corporativos.',
+            items: ['Formula', 'Report', 'Report v2']
+        }
+    ]
+
+    useEffect(() => {
+        const groupForTab = enterpriseGroups.find((group) => group.items.includes(activeTab))
+        if (groupForTab && groupForTab.id !== activeMainMenu) {
+            setActiveMainMenu(groupForTab.id)
+        }
+    }, [activeTab, activeMainMenu])
+
+    const activeGroup = enterpriseGroups.find((group) => group.id === activeMainMenu) || enterpriseGroups[0]
+    const visibleTabs = tabs.filter((tab) => activeGroup.items.includes(tab.name))
+
     return (
-        <div className="dashboard-shell flex h-screen w-full bg-[#f8fafc] dark:bg-[#020617] text-slate-900 dark:text-slate-100 font-sans selection:bg-blue-500/30 overflow-hidden">
+        <div className="dashboard-shell dashboard-shell-mining flex h-screen w-full text-slate-100 font-sans selection:bg-cyan-500/30 overflow-hidden">
 
             {/* Main Content Area */}
             <div className="flex-1 flex flex-col min-w-0">
 
-                {/* Top Header / Tab Bar */}
-                <header className="relative px-4 lg:px-6 py-3 border-b border-slate-200/80 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60 backdrop-blur-xl overflow-hidden">
-                    <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_-120%,rgba(14,165,233,0.22),transparent_48%),radial-gradient(circle_at_84%_-130%,rgba(244,114,182,0.16),transparent_45%)]" />
+                {/* Top Header / Tab Bar — misma familia visual que login (auth-screen) */}
+                <header className="relative px-4 lg:px-7 py-3.5 border-b border-cyan-500/25 bg-slate-950/75 backdrop-blur-xl overflow-hidden">
+                    <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_-90%,rgba(245,158,11,0.14),transparent_46%),radial-gradient(circle_at_86%_-95%,rgba(14,165,233,0.18),transparent_50%)]" />
 
-                    <div className="relative z-10 flex items-center gap-3">
-                        <div className="hidden xl:flex items-center gap-3 pl-1 pr-2">
-                            <div className="top-brand-orb">
-                                <Sparkles size={14} />
+                    <div className="relative z-10 flex flex-wrap items-center gap-x-5 gap-y-3">
+                        <div className="flex flex-1 min-w-[200px] items-center gap-4">
+                            <img
+                                src={aurixaLogo}
+                                alt="Logo empresa"
+                                className="enterprise-brand-logo"
+                            />
+                            <div className="enterprise-brand-copy min-w-0">
+                                <div className="enterprise-brand-company truncate">
+                                    {platformCompanyName}
+                                </div>
+                                <div className="enterprise-brand-suite truncate">
+                                    {miningCompanyName} | {miningUnitName}
+                                </div>
                             </div>
-                            <div className="leading-tight">
-                                <div className="top-brand-title">SENSOR3D Command</div>
-                                <div className="top-brand-subtitle">UX Navigation Layer</div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-end gap-3 md:gap-4 ml-auto">
+                            <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border border-emerald-500/35 bg-emerald-950/45 text-[10px] text-emerald-300 font-semibold whitespace-nowrap">
+                                <ShieldCheck size={12} />
+                                <span>Stack online</span>
                             </div>
-                        </div>
 
-                        <div className="flex-1" />
+                            <div className="hidden md:flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-slate-600/40 bg-slate-900/50 text-[10px] text-slate-400 font-medium whitespace-nowrap">
+                                <Clock size={12} className="shrink-0 text-slate-500" />
+                                <span>{currentDateLabel}</span>
+                            </div>
 
-                        <div className="hidden lg:flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-emerald-200/70 bg-emerald-50/70 text-[10px] text-emerald-700 font-semibold whitespace-nowrap">
-                            <ShieldCheck size={12} />
-                            <span>Stack online</span>
-                        </div>
+                            <div className="hidden xl:flex items-center gap-2 px-3 py-1.5 rounded-lg border border-amber-500/35 bg-amber-950/30 text-[10px] text-amber-100">
+                                <span className="font-bold text-amber-200/90">Minera:</span>
+                                <span>{miningCompanyName}</span>
+                            </div>
 
-                        <div className="hidden md:flex items-center gap-3 text-[10px] text-slate-500 font-medium whitespace-nowrap">
-                            <Clock size={12} />
-                            <span>Jan 27 2018 - Apr 08 2025</span>
-                        </div>
+                            <div className="hidden xl:flex items-center gap-2 px-3 py-1.5 rounded-lg border border-cyan-500/35 bg-cyan-950/30 text-[10px] text-cyan-100">
+                                <span className="font-bold text-cyan-200/90">Unidad:</span>
+                                <span>{miningUnitName}</span>
+                            </div>
 
-                        <div className="flex items-center gap-2 relative">
-                        <div className="hidden md:flex items-center gap-2 px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">
-                            <span className="font-bold">{session?.fullName || 'Usuario'}</span>
-                            <span className="text-slate-400">{session?.company || 'Empresa'}</span>
-                        </div>
-                        {canMaintain && (
-                            <button
-                                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-indigo-300 bg-indigo-900/30 border border-indigo-700/50 hover:bg-indigo-800/50 hover:text-indigo-100 transition-all duration-200 text-[11px] font-bold whitespace-nowrap"
-                                onClick={() => setShowUserMaintenance(true)}
-                                title="Mantenimiento de usuarios de la plataforma"
-                            >
-                                <Users size={13} />
-                                <span className="hidden lg:inline">Usuarios</span>
-                            </button>
-                        )}
-                        <button
-                            className="p-2.5 rounded-xl text-blue-500 bg-blue-50/90 border border-blue-200/70 hover:bg-blue-100 dark:bg-blue-900/20 dark:border-blue-900/40 dark:hover:bg-blue-900/30 transition-all duration-200"
-                            onClick={() => setShowQR(true)}
-                            title="Exportar captura para reporte"
-                        >
-                            <Download size={16} />
-                        </button>
-                        <button
-                            className="p-2.5 rounded-xl text-slate-500 border border-slate-200/80 bg-white/80 hover:bg-slate-100 dark:text-slate-300 dark:border-slate-700 dark:bg-slate-800/70 dark:hover:bg-slate-700 transition-all duration-200"
-                            onClick={() => setShowMenu(!showMenu)}
-                            title="Opciones rapidas"
-                        >
-                            <Share2 size={16} />
-                        </button>
-                        {isAdmin && (
-                            <button
-                                className="p-2 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg text-indigo-500"
-                                onClick={() => setShowAuditCenter(true)}
-                                title="Abrir auditoria"
-                            >
-                                <FileText size={16} />
-                            </button>
-                        )}
-                        <button
-                            className="flex items-center gap-2 px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 bg-red-50/50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/50 rounded-lg text-red-600 dark:text-red-400 font-bold text-[11px] transition-colors"
-                            onClick={onLogout}
-                            title="Cerrar sesion"
-                        >
-                            <LogOut size={14} />
-                            <span>Salir</span>
-                        </button>
-
-                        {showMenu && (
-                            <div className="absolute top-12 right-0 w-36 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl z-50 overflow-hidden p-1">
-                                <button className="w-full flex items-center gap-3 px-3 py-2 text-[11px] font-bold text-slate-600 dark:text-slate-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:text-blue-600 rounded-lg transition-colors text-left">
-                                    <Settings size={14} /> Edit
+                            <div className="flex items-center gap-3 pl-1 md:pl-2 border-l border-slate-600/40 md:ml-1">
+                                <div className="flex items-center gap-2 sm:gap-2.5 px-2 sm:px-3 py-1.5 rounded-xl border border-slate-500/45 bg-slate-900/80 text-[9px] sm:text-[10px] text-slate-100 shadow-inner min-w-0 max-w-full">
+                                    {headerAvatarDataUrl && !avatarImageFailed ? (
+                                        <img
+                                            src={headerAvatarDataUrl}
+                                            alt=""
+                                            className="header-user-avatar w-8 h-8 sm:w-9 sm:h-9"
+                                            width={36}
+                                            height={36}
+                                            onError={() => {
+                                                console.warn('[SESSION_AVATAR] imagen base64 no válida o corrupta')
+                                                setAvatarImageFailed(true)
+                                            }}
+                                        />
+                                    ) : (
+                                        <span
+                                            className="header-user-avatar header-user-avatar--placeholder w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center shrink-0"
+                                            title={
+                                                avatarB64
+                                                    ? 'Avatar no disponible (dato inválido). Cierre sesión y entre de nuevo tras un registro con IA activa.'
+                                                    : 'Sin avatar facial guardado. Cierre sesión y vuelva a entrar tras registrarse con biométrico.'
+                                            }
+                                            aria-hidden
+                                        >
+                                            <UserRound size={18} className="text-amber-100" />
+                                        </span>
+                                    )}
+                                    <span className="font-semibold text-slate-400 whitespace-nowrap shrink-0">Usuario:</span>
+                                    <span className="font-bold text-slate-50 truncate min-w-0 max-w-[7rem] sm:max-w-[12rem] lg:max-w-[14rem]">
+                                        {session?.fullName || session?.username || '—'}
+                                    </span>
+                                </div>
+                                {canMaintain && (
+                                    <button
+                                        className="aurixa-toolbar-btn aurixa-toolbar-btn--indigo"
+                                        onClick={() => setShowUserMaintenance(true)}
+                                        title="Mantenimiento de usuarios de la plataforma"
+                                    >
+                                        <Users size={13} />
+                                        <span className="hidden lg:inline">Usuarios</span>
+                                    </button>
+                                )}
+                                {isAdmin && (
+                                    <button
+                                        className="aurixa-toolbar-btn aurixa-toolbar-btn--indigo aurixa-toolbar-btn--icon"
+                                        onClick={() => setShowAuditCenter(true)}
+                                        title="Abrir auditoria"
+                                    >
+                                        <FileText size={16} />
+                                    </button>
+                                )}
+                                <button
+                                    className="aurixa-toolbar-btn aurixa-toolbar-btn--danger"
+                                    onClick={onLogout}
+                                    title="Cerrar sesion"
+                                >
+                                    <LogOut size={14} />
+                                    <span>Salir</span>
                                 </button>
-                                <div className="h-[1px] bg-slate-100 dark:bg-slate-800 my-1 mx-2" />
-                                <button className="w-full flex items-center gap-3 px-3 py-2 text-[11px] font-bold text-slate-600 dark:text-slate-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:text-blue-600 rounded-lg transition-colors text-left">
-                                    <Download size={14} /> Download
-                                </button>
                             </div>
-                        )}
                         </div>
                     </div>
 
                     <div className="relative z-10 mt-3">
-                        <div className="top-nav-shell top-nav-shell--wrap">
-                            {tabs.map(t => {
-                                const Icon = t.icon
-                                const isActive = activeTab === t.name
-                                return (
-                                    <div key={t.name} className="tab-chip-wrap">
-                                        <button
-                                            onClick={() => setActiveTab(t.name)}
-                                            className={`tab-button tab-button--premium ${isActive ? 'tab-button--active' : ''}`}
-                                            aria-label={`Abrir ${t.name}`}
-                                        >
-                                            <span className="tab-icon-ring">
-                                                <Icon size={13} />
-                                            </span>
-                                            <span>{t.label || t.name}</span>
-                                            {t.badge && <span className="tab-pill">{t.badge}</span>}
-                                        </button>
-                                        <div className="tab-tooltip">{t.tip}</div>
-                                    </div>
-                                )
-                            })}
-                        </div>
+                        {navLevel === 'main' ? (
+                            <div className="enterprise-main-nav">
+                                {enterpriseGroups.map((group) => {
+                                    const Icon = group.icon
+                                    const isActiveGroup = activeMainMenu === group.id
+                                    return (
+                                        <div key={group.id} className="tab-chip-wrap">
+                                            <button
+                                                className={`enterprise-main-btn ${isActiveGroup ? 'is-active' : ''}`}
+                                                onClick={() => {
+                                                    setActiveMainMenu(group.id)
+                                                    const nextTab = tabs.find((tab) => group.items.includes(tab.name))
+                                                    if (nextTab) setActiveTab(nextTab.name)
+                                                    setNavLevel('sub')
+                                                }}
+                                                title={group.tip}
+                                            >
+                                                <span className="tab-icon-ring">
+                                                    <Icon size={13} />
+                                                </span>
+                                                <span>{group.title}</span>
+                                                <span className="tab-glyph" aria-hidden="true">GIF</span>
+                                            </button>
+                                            <div className="tab-tooltip">{group.tip}</div>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        ) : (
+                            <div className="top-nav-shell top-nav-shell--wrap">
+                                <button
+                                    className="subnav-back-btn"
+                                    onClick={() => setNavLevel('main')}
+                                    title="Volver al menú principal"
+                                >
+                                    <ArrowLeft size={14} />
+                                    Volver
+                                </button>
+                                {visibleTabs.map(t => {
+                                    const Icon = t.icon
+                                    const isActive = activeTab === t.name
+                                    return (
+                                        <div key={t.name} className="tab-chip-wrap">
+                                            <button
+                                                onClick={() => setActiveTab(t.name)}
+                                                className={`tab-button tab-button--premium tab-button--3d ${isActive ? 'tab-button--active' : ''}`}
+                                                aria-label={`Abrir ${t.name}`}
+                                            >
+                                                <span className="tab-icon-ring">
+                                                    <Icon size={13} />
+                                                </span>
+                                                <span>{t.label || t.name}</span>
+                                                <span className="tab-glyph" aria-hidden="true">{t.glyph}</span>
+                                                {t.badge && <span className="tab-pill">{t.badge}</span>}
+                                            </button>
+                                            <div className="tab-tooltip">{t.tip}</div>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        )}
                     </div>
                 </header>
 
                 {/* Dynamic Visualization Bench */}
-                <main className="flex-1 relative flex bg-white min-h-0 overflow-hidden">
+                <main className="flex-1 relative flex min-h-0 overflow-hidden bg-transparent">
                     <div
                         ref={mainScrollRef}
                         onScroll={() => {
@@ -357,6 +508,7 @@ const DashboardApp = ({ session, onLogout }) => {
                         )}
                         {activeTab === 'Report' && <RichTextEditor />}
                         {activeTab === "Report v2" && <ReportStudioV2 />}
+                        {activeTab === "Formula" && <FormulaEngineEmbed />}
                     </div>
 
                     {/* Temporal Legend Sidebar (Inside Main View) */}
@@ -474,7 +626,6 @@ const DashboardApp = ({ session, onLogout }) => {
             </div>
 
             {/* QR Modal */}
-            {showQR && <QRGenerator reportId="RAURA-2025-001" onClose={() => setShowQR(false)} />}
             {isAdmin && (
                 <AuditCenter
                     open={showAuditCenter}

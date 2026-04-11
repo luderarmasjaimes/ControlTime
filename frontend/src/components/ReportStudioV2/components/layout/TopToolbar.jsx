@@ -11,6 +11,7 @@ import {
   Sparkles,
   FolderOpen,
   Save,
+  Sigma,
 } from 'lucide-react';
 
 export default function TopToolbar({
@@ -32,24 +33,12 @@ export default function TopToolbar({
   onSaveReport,
   isSaving,
   saveLabel,
+  onOpenFormulaAnalysis,
 }) {
   return (
     <header className="top-toolbar">
       {/* Título */}
-      <div className="top-toolbar-title">
-        <div style={{
-          background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-          padding: '7px',
-          borderRadius: '9px',
-          color: 'white',
-          display: 'flex',
-          boxShadow: '0 2px 8px rgba(99,102,241,0.4)',
-        }}>
-          <FileText size={18} />
-        </div>
-        <strong>Informe Técnico Minero</strong>
-        <span className="ui-refresh-badge">Editor Pro</span>
-      </div>
+      <div className="top-toolbar-title" />
 
       {/* Acciones agrupadas */}
       <div className="toolbar-actions">
@@ -99,9 +88,17 @@ export default function TopToolbar({
 
         {/* ===== Mis Informes ===== */}
         <button
+          onClick={onOpenFormulaAnalysis}
+          className="toolbar-btn-variant toolbar-btn-variant--formula"
+          title="Ejecutar FORMULA minera para generación de reportes"
+        >
+          <Sigma size={15} />
+          FORMULA
+        </button>
+        <button
           onClick={onOpenReportsAdmin}
+          className="toolbar-btn-variant toolbar-btn-variant--reports"
           title="Administrar informes técnicos grabados"
-          style={{ background: 'rgba(37,99,235,0.68)', borderColor: 'rgba(96,165,250,0.95)', color: '#ffffff', fontWeight: '700' }}
         >
           <FolderOpen size={15} />
           Mis Informes
@@ -110,10 +107,8 @@ export default function TopToolbar({
         <button
           onClick={onSaveReport}
           disabled={isSaving}
+          className={`toolbar-btn-variant toolbar-btn-variant--save${isSaving ? ' is-busy' : ''}`}
           title="Guardar informe en la base de datos"
-          style={isSaving
-            ? { opacity: 0.65, cursor: 'wait' }
-            : { background: 'rgba(5,150,105,0.68)', borderColor: 'rgba(110,231,183,0.95)', color: '#ffffff', fontWeight: '700' }}
         >
           <Save size={15} />
           {saveLabel || 'Guardar'}
@@ -122,8 +117,8 @@ export default function TopToolbar({
         <button
           onClick={onOptimizeDocument}
           disabled={isOptimizing}
+          className={isOptimizing ? 'is-busy' : ''}
           title="Optimizar sintaxis y redacción con IA"
-          style={isOptimizing ? { opacity: 0.65, cursor: 'wait' } : {}}
         >
           <Sparkles size={15} />
           {isOptimizing ? 'Analizando…' : 'Optimizar IA'}

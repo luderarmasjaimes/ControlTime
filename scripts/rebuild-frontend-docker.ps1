@@ -70,14 +70,14 @@ if (-not $SkipPull) {
     $buildCmd += "--pull"
 }
 
-Write-Host ">>> docker $($buildCmd -join ' ')" -ForegroundColor Yellow
+Write-Host ('>>> docker ' + ($buildCmd -join ' ')) -ForegroundColor Yellow
 docker @buildCmd
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Fallo en docker compose build (código $LASTEXITCODE)."
 }
 
 Write-Host ""
-Write-Host ">>> Recreando contenedor (sin reutilizar el anterior)..." -ForegroundColor Yellow
+Write-Host '>>> Recreando contenedor (sin reutilizar el anterior)...' -ForegroundColor Yellow
 $upCmd = @("compose") + $composeArgs + @("up", "-d", "--force-recreate", "--remove-orphans", $Service)
 docker @upCmd
 if ($LASTEXITCODE -ne 0) {
@@ -86,7 +86,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if (-not $SkipHttpCheck) {
     Write-Host ""
-    Write-Host ">>> Esperando nginx (hasta ~25 s)..." -ForegroundColor Yellow
+    Write-Host '>>> Esperando nginx (hasta ~25 s)...' -ForegroundColor Yellow
     $ok = $false
     $deadline = (Get-Date).AddSeconds(25)
     while ((Get-Date) -lt $deadline) {
