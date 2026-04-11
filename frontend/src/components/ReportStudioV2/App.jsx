@@ -15,7 +15,11 @@ import { fetchReportById } from './lib/api';
 import { getSession } from '../../auth/authStorage';
 import './styles.css';
 
-export default function App({ openFormulaOnLoad = false }) {
+export default function App({
+  openFormulaOnLoad = false,
+  platformCompanyName,
+  miningCompanyName,
+}) {
   const session = getSession();
   const loggedAuthor = session?.fullName || session?.username || 'Usuario';
 
@@ -344,7 +348,8 @@ export default function App({ openFormulaOnLoad = false }) {
   return (
     <div className="app-shell">
       <TopToolbar
-        companyName={session?.company}
+        companyName={miningCompanyName || session?.company}
+        platformCompanyName={platformCompanyName || session?.platformCompany || session?.ownerCompany}
         onExportPdf={() => window.print()}
         onExportVideo={handleExportVideo}
         onPrint={() => window.print()}

@@ -25,6 +25,7 @@ services:
       - ./db_scripts/19_report_technical_mining_enterprise.sql:/docker-entrypoint-initdb.d/19_report_technical_mining_enterprise.sql:ro
       - ./db_scripts/20_audit_traceability_enforcement.sql:/docker-entrypoint-initdb.d/20_audit_traceability_enforcement.sql:ro
       - ./db_scripts/21_audit_context_from_login.sql:/docker-entrypoint-initdb.d/21_audit_context_from_login.sql:ro
+      - ./db_scripts/22_mining_demo_telemetry_surveillance.sql:/docker-entrypoint-initdb.d/22_mining_demo_telemetry_surveillance.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
       interval: 10s

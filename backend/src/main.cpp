@@ -5366,57 +5366,102 @@ routeRequest(const http::request<http::string_body> &req,
 #if HAS_LIBPQ
       PGconn *conn = PQconnectdb(gDatabaseUrl.c_str());
       if (PQstatus(conn) == CONNECTION_OK) {
-        // Fetch Categories
-        PGresult *res_cat = PQexec(conn, "SELECT id, name, description FROM mining_sensor_categories ORDER BY id ASC");
+        const auto itCo = query.find("mining_company");
+        const auto itU = query.find("site_unit");
+        const bool scoped = itCo != query.end() && !itCo->second.empty() && itU != query.end() &&
+                            !itU->second.empty();
+        std::string scopeWhere;
+        if (scoped) {
+          try {
+            const std::string litCo = pqEscapeLiteral(conn, itCo->second);
+            const std::string litU = pqEscapeLiteral(conn, itU->second);
+            scopeWhere =
+                std::string(" AND s.mining_company = ") + litCo + " AND s.site_unit = " + litU + " ";
+          } catch (...) {
+            PQfinish(conn);
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid_scope_params"}});
+          }
+        }
+
+        const std::string sqlCategories =
+            scoped ? ("SELECT DISTINCT c.id, c.name, c.description FROM mining_sensor_categories c "
+                      "INNER JOIN mining_sensor_types t ON t.category_id = c.id "
+                      "INNER JOIN mining_sensors s ON s.type_id = t.id "
+                      "WHERE 1=1 " +
+                      scopeWhere + "ORDER BY c.id ASC")
+                   : "SELECT id, name, description FROM mining_sensor_categories ORDER BY id ASC";
+        const std::string sqlTypes =
+            scoped ? ("SELECT DISTINCT t.id, t.category_id, t.name, t.unit FROM mining_sensor_types t "
+                      "INNER JOIN mining_sensors s ON s.type_id = t.id "
+                      "WHERE 1=1 " +
+                      scopeWhere + "ORDER BY t.id ASC")
+                   : "SELECT id, category_id, name, unit FROM mining_sensor_types ORDER BY id ASC";
+        const std::string sqlSensors =
+            scoped ? ("SELECT s.id, s.type_id, s.name, s.lat, s.lng, s.status, s.current_value FROM "
+                      "mining_sensors s WHERE 1=1 " +
+                      scopeWhere + "ORDER BY s.id ASC")
+                   : "SELECT id, type_id, name, lat, lng, status, current_value FROM mining_sensors "
+                     "ORDER BY id ASC";
+        const std::string sqlHistory =
+            scoped ? ("SELECT h.sensor_id, h.value, h.timestamp FROM mining_sensor_history h "
+                      "INNER JOIN mining_sensors s ON s.id = h.sensor_id "
+                      "WHERE h.timestamp > NOW() - INTERVAL '7 DAYS' " +
+                      scopeWhere + "ORDER BY h.sensor_id ASC, h.timestamp ASC")
+                   : "SELECT sensor_id, value, timestamp FROM mining_sensor_history WHERE timestamp > "
+                     "NOW() - INTERVAL '7 DAYS' ORDER BY sensor_id ASC, timestamp ASC";
+
+        PGresult *res_cat = PQexec(conn, sqlCategories.c_str());
         json::array categories;
         if (res_cat && PQresultStatus(res_cat) == PGRES_TUPLES_OK) {
           for (int i = 0; i < PQntuples(res_cat); ++i) {
-            categories.push_back(json::object{{"id", std::stoi(PQgetvalue(res_cat, i, 0))}, {"name", PQgetvalue(res_cat, i, 1)}, {"description", PQgetvalue(res_cat, i, 2)}});
+            categories.push_back(json::object{{"id", std::stoi(PQgetvalue(res_cat, i, 0))},
+                                              {"name", PQgetvalue(res_cat, i, 1)},
+                                              {"description", PQgetvalue(res_cat, i, 2)}});
           }
         }
         if (res_cat) PQclear(res_cat);
         data["categories"] = categories;
 
-        // Fetch Types
-        PGresult *res_types = PQexec(conn, "SELECT id, category_id, name, unit FROM mining_sensor_types ORDER BY id ASC");
+        PGresult *res_types = PQexec(conn, sqlTypes.c_str());
         json::array sensor_types;
         if (res_types && PQresultStatus(res_types) == PGRES_TUPLES_OK) {
           for (int i = 0; i < PQntuples(res_types); ++i) {
-            sensor_types.push_back(json::object{{"id", std::stoi(PQgetvalue(res_types, i, 0))}, {"category_id", std::stoi(PQgetvalue(res_types, i, 1))}, {"name", PQgetvalue(res_types, i, 2)}, {"unit", PQgetvalue(res_types, i, 3)}});
+            sensor_types.push_back(
+                json::object{{"id", std::stoi(PQgetvalue(res_types, i, 0))},
+                             {"category_id", std::stoi(PQgetvalue(res_types, i, 1))},
+                             {"name", PQgetvalue(res_types, i, 2)},
+                             {"unit", PQgetvalue(res_types, i, 3)}});
           }
         }
         if (res_types) PQclear(res_types);
         data["sensor_types"] = sensor_types;
 
-        // Fetch Sensors
-        PGresult *res_sensors = PQexec(conn, "SELECT id, type_id, name, lat, lng, status, current_value FROM mining_sensors ORDER BY id ASC");
+        PGresult *res_sensors = PQexec(conn, sqlSensors.c_str());
         json::array sensors;
         if (res_sensors && PQresultStatus(res_sensors) == PGRES_TUPLES_OK) {
           for (int i = 0; i < PQntuples(res_sensors); ++i) {
             sensors.push_back(json::object{
-              {"id", std::stoi(PQgetvalue(res_sensors, i, 0))}, 
-              {"type_id", std::stoi(PQgetvalue(res_sensors, i, 1))}, 
-              {"name", PQgetvalue(res_sensors, i, 2)}, 
-              {"lat", std::stod(PQgetvalue(res_sensors, i, 3))}, 
-              {"lng", std::stod(PQgetvalue(res_sensors, i, 4))}, 
-              {"status", PQgetvalue(res_sensors, i, 5)}, 
-              {"current_value", std::stod(PQgetvalue(res_sensors, i, 6))}
-            });
+                {"id", std::stoi(PQgetvalue(res_sensors, i, 0))},
+                {"type_id", std::stoi(PQgetvalue(res_sensors, i, 1))},
+                {"name", PQgetvalue(res_sensors, i, 2)},
+                {"lat", std::stod(PQgetvalue(res_sensors, i, 3))},
+                {"lng", std::stod(PQgetvalue(res_sensors, i, 4))},
+                {"status", PQgetvalue(res_sensors, i, 5)},
+                {"current_value", std::stod(PQgetvalue(res_sensors, i, 6))}});
           }
         }
         if (res_sensors) PQclear(res_sensors);
         data["sensors"] = sensors;
 
-        // Fetch History (last 48 points per sensor for charting)
-        PGresult *res_history = PQexec(conn, "SELECT sensor_id, value, timestamp FROM mining_sensor_history WHERE timestamp > NOW() - INTERVAL '7 DAYS' ORDER BY sensor_id ASC, timestamp ASC");
+        PGresult *res_history = PQexec(conn, sqlHistory.c_str());
         json::array history;
         if (res_history && PQresultStatus(res_history) == PGRES_TUPLES_OK) {
           for (int i = 0; i < PQntuples(res_history); ++i) {
             history.push_back(json::object{
-              {"sensor_id", std::stoi(PQgetvalue(res_history, i, 0))}, 
-              {"value", std::stod(PQgetvalue(res_history, i, 1))}, 
-              {"timestamp", PQgetvalue(res_history, i, 2)}
-            });
+                {"sensor_id", std::stoi(PQgetvalue(res_history, i, 0))},
+                {"value", std::stod(PQgetvalue(res_history, i, 1))},
+                {"timestamp", PQgetvalue(res_history, i, 2)}});
           }
         }
         if (res_history) PQclear(res_history);
@@ -5437,19 +5482,39 @@ routeRequest(const http::request<http::string_body> &req,
 #if HAS_LIBPQ
       PGconn *conn = PQconnectdb(gDatabaseUrl.c_str());
       if (PQstatus(conn) == CONNECTION_OK) {
-        PGresult *res = PQexec(conn, "SELECT id, name, location, rtmp_url, status, lat, lng FROM surveillance_cameras ORDER BY id ASC");
+        const auto itCo = query.find("mining_company");
+        const auto itU = query.find("site_unit");
+        const bool scoped = itCo != query.end() && !itCo->second.empty() && itU != query.end() &&
+                            !itU->second.empty();
+        std::string sql;
+        if (scoped) {
+          try {
+            const std::string litCo = pqEscapeLiteral(conn, itCo->second);
+            const std::string litU = pqEscapeLiteral(conn, itU->second);
+            sql = "SELECT id, name, location, rtmp_url, status, lat, lng FROM surveillance_cameras "
+                  "WHERE mining_company = " +
+                  litCo + " AND site_unit = " + litU + " ORDER BY id ASC";
+          } catch (...) {
+            PQfinish(conn);
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid_scope_params"}});
+          }
+        } else {
+          sql = "SELECT id, name, location, rtmp_url, status, lat, lng FROM surveillance_cameras "
+                "ORDER BY id ASC";
+        }
+        PGresult *res = PQexec(conn, sql.c_str());
         if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
           int rows = PQntuples(res);
           for (int i = 0; i < rows; ++i) {
             cameras.push_back(json::object{
-              {"id", std::stoi(PQgetvalue(res, i, 0))},
-              {"name", PQgetvalue(res, i, 1)},
-              {"location", PQgetvalue(res, i, 2)},
-              {"rtmp_url", PQgetvalue(res, i, 3)},
-              {"status", PQgetvalue(res, i, 4)},
-              {"lat", std::stod(PQgetvalue(res, i, 5))},
-              {"lng", std::stod(PQgetvalue(res, i, 6))}
-            });
+                {"id", std::stoi(PQgetvalue(res, i, 0))},
+                {"name", PQgetvalue(res, i, 1)},
+                {"location", PQgetvalue(res, i, 2)},
+                {"rtmp_url", PQgetvalue(res, i, 3)},
+                {"status", PQgetvalue(res, i, 4)},
+                {"lat", std::stod(PQgetvalue(res, i, 5))},
+                {"lng", std::stod(PQgetvalue(res, i, 6))}});
           }
         }
         if (res) PQclear(res);

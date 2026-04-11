@@ -70,9 +70,16 @@
     transition: border-color 0.2s, background-color 0.2s;
 }
 
+html {
+    height: 100%;
+    overflow: hidden;
+}
+
 body {
     margin: 0;
     padding: 0;
+    height: 100%;
+    max-height: 100dvh;
     font-family: var(--font-main);
     background-color: var(--bg-main);
     color: var(--text-main);
@@ -122,6 +129,13 @@ textarea {
 
 #root {
     position: relative;
+    min-height: 100%;
+    min-height: 100dvh;
+    height: 100%;
+    max-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 #root::before {
@@ -138,6 +152,10 @@ textarea {
 #root > * {
     position: relative;
     z-index: 1;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 .glass {
@@ -597,6 +615,14 @@ textarea {
     scrollbar-color: rgba(71, 85, 105, 0.7) rgba(148, 163, 184, 0.22);
 }
 
+/* Área central: debe poder encogerse (min-height 0) para que overflow-y muestre scroll */
+.dashboard-shell-mining main.flex > .dashboard-main-scroll {
+    flex: 1 1 0%;
+    min-height: 0;
+    min-width: 0;
+    align-self: stretch;
+}
+
 .dashboard-main-scroll::-webkit-scrollbar {
     width: 12px;
     height: 12px;
@@ -665,17 +691,40 @@ textarea {
 }
 
 .auth-screen {
-    min-height: 100vh;
     position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    max-height: 100dvh;
     display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    padding: 6px 10px 8px;
     background:
         radial-gradient(circle at 18% 12%, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0) 30%),
         radial-gradient(circle at 85% 18%, rgba(14, 165, 233, 0.2), rgba(14, 165, 233, 0) 34%),
         linear-gradient(160deg, #1d2532 0%, #0d1521 40%, #070d16 100%);
-    overflow: auto;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.auth-screen[data-auth-ui='icao-login-v2'] .auth-screen-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    justify-content: safe center;
+}
+
+/* Contenedor columna: evita que la marca y el panel queden en fila (flex row) y desplazados al centro */
+.auth-screen-content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 /* Dashboard autenticado: mismo lenguaje visual que login (auth-screen) */
@@ -770,7 +819,7 @@ textarea {
 
 .dashboard-shell-mining header,
 .dashboard-shell-mining aside,
-.dashboard-shell-mining .dashboard-main-scroll > *:not(.pointer-events-none),
+.dashboard-shell-mining .dashboard-main-scroll > *:not(.pointer-events-none):not(.mining-dashboard-root),
 .auth-panel,
 .camera-card,
 .face-guidance-panel,
@@ -930,24 +979,323 @@ textarea {
     filter: drop-shadow(0 8px 18px rgba(15, 23, 42, 0.28));
 }
 
+/* Marca dentro del panel credenciales (login/registro), esquina superior izquierda del panel */
+.auth-panel-brand-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 6px 0;
+    padding: 0 0 6px 0;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.22);
+    flex-shrink: 0;
+}
+
+.auth-panel-brand-header-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 11px;
+    object-fit: contain;
+    padding: 5px;
+    flex-shrink: 0;
+    background: linear-gradient(145deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.92));
+    border: 2px solid rgba(251, 146, 60, 0.72);
+    box-shadow: 0 4px 12px rgba(2, 6, 23, 0.35);
+}
+
+.auth-panel-brand-name {
+    font-family: 'Outfit', 'Segoe UI', system-ui, sans-serif;
+    font-size: 1.05rem;
+    font-weight: 800;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: #f8fafc;
+    line-height: 1.05;
+}
+
+.auth-panel-brand-tag {
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #fed7aa;
+    line-height: 1.2;
+    margin-top: 2px;
+    opacity: 0.95;
+}
+
+.auth-panel-brand-header--compact {
+    margin-bottom: 4px;
+    padding-bottom: 4px;
+    gap: 6px;
+}
+
+.auth-panel-brand-header--compact .auth-panel-brand-header-logo {
+    width: 32px;
+    height: 32px;
+    padding: 4px;
+}
+
+.auth-panel-brand-header--compact .auth-panel-brand-name {
+    font-size: 0.88rem;
+}
+
+.auth-panel-brand-header--compact .auth-panel-brand-tag {
+    font-size: 0.52rem;
+    margin-top: 1px;
+}
+
+.auth-platform-brand-strip {
+    position: relative;
+    z-index: 2;
+    align-self: flex-start;
+    width: fit-content;
+    max-width: min(100%, 520px);
+    margin: 0 0 14px 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(56, 189, 248, 0.28);
+    background: linear-gradient(120deg, rgba(8, 47, 73, 0.72), rgba(15, 23, 42, 0.65));
+    box-shadow:
+        0 8px 20px rgba(2, 6, 23, 0.4),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(8px) saturate(120%);
+    -webkit-backdrop-filter: blur(8px) saturate(120%);
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.auth-platform-brand-strip .enterprise-brand-copy {
+    min-width: 0;
+    max-width: 360px;
+}
+
+.auth-platform-brand-strip .enterprise-brand-suite {
+    white-space: normal;
+    line-height: 1.25;
+}
+
+/* Centrar el panel(s) respecto al fondo; la marca sigue arriba a la izquierda */
+.auth-screen-content > .auth-shell {
+    align-self: center;
+}
+
+/* Formulario registro persona/empresa solo panel: ancho fijo como tarjeta, no 100% viewport */
+.auth-shell--narrow-only {
+    max-width: min(680px, 100%) !important;
+    width: 100% !important;
+}
+
+.auth-company-register-pending {
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-align: center;
+    color: #a5f3fc;
+    background: rgba(8, 47, 73, 0.55);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.auth-form-section-intro {
+    margin-bottom: 6px;
+    padding: 6px 8px;
+    border-radius: 10px;
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    background: linear-gradient(120deg, rgba(8, 47, 73, 0.35), rgba(15, 23, 42, 0.22));
+}
+
+.auth-form-section-intro-title {
+    margin: 0 0 2px;
+    font-size: 0.92rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #f8fafc;
+    line-height: 1.15;
+}
+
+.auth-form-section-intro-text {
+    margin: 0;
+    font-size: 0.65rem;
+    line-height: 1.3;
+    color: #94a3b8;
+    font-weight: 600;
+}
+
+.auth-register-section-heading {
+    margin: 0 0 4px;
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #e2e8f0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.register-company-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.auth-camera-brand-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    object-fit: contain;
+    border: 2px solid rgba(251, 146, 60, 0.65);
+    padding: 4px;
+    background: rgba(15, 23, 42, 0.9);
+    flex-shrink: 0;
+}
+
 .auth-shell {
     position: relative;
     width: min(1080px, 100%);
+    max-width: 100%;
+    max-height: min(100dvh - 14px, 100vh - 14px);
+    margin-left: auto;
+    margin-right: auto;
     display: grid;
     grid-template-columns: 1.1fr 1fr;
-    gap: 16px;
+    gap: 8px;
+    min-height: 0;
+    align-items: stretch;
+    overflow: hidden;
+}
+
+/* Solo cámara / biometría: marca compacta + escenario acotado al viewport */
+.auth-shell[data-auth-layout='camera-only'] {
+    max-height: min(100dvh - 12px, 100vh - 12px);
+}
+
+.auth-shell[data-auth-layout='camera-only'] .auth-panel {
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    padding: 8px 10px 10px;
+}
+
+.auth-shell[data-auth-layout='camera-only'] .camera-stage-tall {
+    max-height: min(40dvh, 340px);
+    max-width: min(100%, calc(min(40dvh, 340px) * 4 / 3));
+}
+
+.auth-shell[data-auth-layout='single'] .auth-panel-form {
+    max-height: min(100dvh - 12px, 100vh - 12px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    min-height: 0;
+}
+
+/* Registro / login una sola columna: menos aire vertical */
+.auth-shell[data-auth-layout='single'] .auth-panel.auth-panel-form {
+    padding: 6px 9px 8px !important;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-form-section-intro {
+    margin-bottom: 4px;
+    padding: 4px 6px;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-form-section-intro-title {
+    font-size: 0.8rem;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-form-section-intro-text {
+    font-size: 0.58rem;
+    line-height: 1.25;
+}
+
+.auth-shell[data-auth-layout='single'] .register-mode-tabs {
+    margin-bottom: 3px;
+    gap: 4px;
+}
+
+.auth-shell[data-auth-layout='single'] .register-mode-tabs button {
+    padding: 4px 5px;
+    font-size: 0.54rem;
+}
+
+.auth-shell[data-auth-layout='single'] .register-back-login-btn {
+    margin-bottom: 3px;
+    padding: 4px 7px;
+    font-size: 0.54rem;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-register-section-heading {
+    font-size: 0.7rem;
+    margin-bottom: 3px;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-divider {
+    margin: 5px 0;
+    font-size: 0.65rem;
 }
 
 .auth-panel {
     background: rgba(7, 14, 27, 0.78);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 18px;
+    border-radius: 14px;
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    padding: 14px 16px 16px;
+    padding: 10px 12px 12px;
     color: #eaf1ff;
-    max-height: min(92vh, 920px);
+    max-height: min(100dvh - 24px, 100vh - 24px, 900px);
     overflow-y: auto;
+    scrollbar-width: thin;
+    min-height: 0;
+}
+
+.auth-panel-form--auth-compact {
+    padding: 8px 10px 10px !important;
+}
+
+.auth-panel-form--auth-compact.auth-panel-form--register-person {
+    padding: 6px 8px 8px !important;
+}
+
+.auth-panel-form--auth-compact .field-label {
+    font-size: 0.78rem;
+    gap: 3px;
+}
+
+.auth-panel-form--auth-compact .field-label input,
+.auth-panel-form--auth-compact .field-label select {
+    padding: 5px 8px;
+    font-size: 0.78rem;
+    min-height: 1.95rem;
+}
+
+.auth-panel-form--auth-compact .primary-face-button,
+.auth-panel-form--auth-compact .secondary-button,
+.auth-panel-form--auth-compact .auth-login-password-button,
+.auth-panel-form--auth-compact .logout-demo {
+    padding: 7px 10px;
+    font-size: 10px;
+}
+
+.auth-login-tab-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.auth-login-credentials-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.auth-panel-main .auth-panel-brand-header {
+    flex-shrink: 0;
 }
 
 .auth-brand h1 {
@@ -1274,14 +1622,14 @@ textarea {
 }
 
 .mode-switch {
-    margin-top: 18px;
+    margin-top: 10px;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    gap: 6px;
 }
 
 .mode-switch-below-bio {
-    margin-top: 10px;
+    margin-top: 6px;
     flex-shrink: 0;
 }
 
@@ -1410,6 +1758,11 @@ textarea {
     color: #fff7ed;
 }
 
+.auth-panel-form--auth-compact .auth-divider {
+    margin: 5px 0;
+    font-size: 0.72rem;
+}
+
 .auth-divider {
     margin: 12px 0;
     display: flex;
@@ -1437,16 +1790,47 @@ textarea {
     font-size: 0.82rem;
 }
 
-/* Registro persona: caber en viewport típico sin scroll interno del panel */
+/* Registro persona: viewport alto limitado; tipografía compacta */
 .auth-screen--register-person-fit {
-    padding: 10px 12px;
-    align-items: flex-start;
+    padding: 4px 8px 6px;
+}
+
+.auth-screen--register-person-fit .auth-screen-content {
+    align-items: stretch;
 }
 
 .auth-panel-form--register-person {
-    max-height: none;
-    overflow-y: visible;
-    padding: 8px 12px 12px;
+    max-height: min(100dvh - 10px, 100vh - 10px);
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-panel-form--register-person .auth-panel-brand-header {
+    margin-bottom: 4px;
+    padding-bottom: 4px;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-panel-form--register-person .register-company-fields {
+    gap: 2px;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-panel-form--register-person .field-label {
+    font-size: 0.72rem;
+    gap: 1px;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-panel-form--register-person .field-label input,
+.auth-shell[data-auth-layout='single'] .auth-panel-form--register-person .field-label select {
+    padding: 3px 7px;
+    font-size: 0.72rem;
+    min-height: 1.65rem;
+}
+
+.auth-shell[data-auth-layout='single'] .auth-panel-form--register-person .primary-face-button,
+.auth-shell[data-auth-layout='single'] .auth-panel-form--register-person .secondary-button,
+.auth-shell[data-auth-layout='single'] .auth-panel-form--register-person .logout-demo {
+    padding: 5px 8px;
+    font-size: 9px;
 }
 
 .auth-register-brand-title {
@@ -1457,37 +1841,37 @@ textarea {
 
 .register-mode-tabs {
     display: flex;
-    gap: 8px;
-    margin-bottom: 6px;
+    gap: 6px;
+    margin-bottom: 4px;
 }
 
 .register-mode-tabs button {
     flex: 1;
-    padding: 7px 8px;
-    font-size: 0.68rem;
+    padding: 5px 6px;
+    font-size: 0.58rem;
 }
 
 .register-back-login-btn {
     width: 100%;
-    margin-bottom: 6px;
-    padding: 7px 10px;
-    font-size: 0.68rem;
+    margin-bottom: 4px;
+    padding: 5px 8px;
+    font-size: 0.58rem;
 }
 
 .stack-form--register-person {
-    gap: 5px;
+    gap: 3px;
 }
 
 .auth-panel-form--register-person .field-label {
-    font-size: 1rem;
-    gap: 3px;
+    font-size: 0.78rem;
+    gap: 2px;
 }
 
 .auth-panel-form--register-person .field-label input,
 .auth-panel-form--register-person .field-label select {
-    padding: 7px 10px;
-    font-size: 1rem;
-    min-height: 2.35rem;
+    padding: 4px 8px;
+    font-size: 0.78rem;
+    min-height: 1.95rem;
 }
 
 .register-person-fields {

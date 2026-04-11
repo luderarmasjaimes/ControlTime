@@ -13,6 +13,8 @@ import {
   Save,
   Sigma,
 } from 'lucide-react';
+import { getSession } from '../../../../auth/authStorage';
+import { PlatformBrandToolbarBlock } from '../../../../brand/PlatformBrandMark';
 
 export default function TopToolbar({
   onExportPdf,
@@ -34,11 +36,26 @@ export default function TopToolbar({
   isSaving,
   saveLabel,
   onOpenFormulaAnalysis,
+  companyName,
+  platformCompanyName,
 }) {
+  const session = getSession();
+  const platformLabel =
+    platformCompanyName ||
+    session?.platformCompany ||
+    session?.ownerCompany ||
+    'AURIXA';
+  const miningLabel =
+    companyName || session?.company || session?.miningCompany || 'Empresa minera';
+
   return (
     <header className="top-toolbar">
-      {/* Título */}
-      <div className="top-toolbar-title" />
+      <div className="top-toolbar-title">
+        <PlatformBrandToolbarBlock
+          titleLine={platformLabel}
+          subtitleLine={`Informe corporativo · ${miningLabel}`}
+        />
+      </div>
 
       {/* Acciones agrupadas */}
       <div className="toolbar-actions">

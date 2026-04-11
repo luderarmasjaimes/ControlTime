@@ -57,7 +57,7 @@ import {
     FACIAL_STRICT_OVAL_W_PCT,
     FACIAL_STRICT_OVAL_H_PCT,
 } from '../../auth/biometricOvalFrame'
-import enterpriseMiningMark from '../../brand/enterprise-mining-mark.svg'
+import { PlatformBrandPanelHeader } from '../../brand/PlatformBrandMark'
 
 const DEFAULT_COMPANIES = [
     'Alpayana',
@@ -178,9 +178,13 @@ const AuthGateway = ({ onAuthenticated }) => {
         rucValid: false,
         isValidatingRuc: false,
         passwordConfirm: '',
+        /** Razón social del contratista (solo pestaña empresa); `company` = empresa minera para RUC/login. */
+        contractorLegalName: '',
     })
 
     const [registerUserBiometricStep, setRegisterUserBiometricStep] = useState('form')
+    /** Igual que registro persona: formulario estrecho primero; cámara solo en paso capture. */
+    const [registerCompanyBiometricStep, setRegisterCompanyBiometricStep] = useState('form')
     const [registerSessionSecondsLeft, setRegisterSessionSecondsLeft] = useState(null)
     const [registrationCompleteSession, setRegistrationCompleteSession] = useState(null)
 
@@ -267,10 +271,13 @@ const AuthGateway = ({ onAuthenticated }) => {
     })
     const registerAutoSubmitTriggeredRef = useRef(false)
     const registerUserBiometricStepRef = useRef('form')
+    const registerCompanyBiometricStepRef = useRef('form')
     const endRegisterFaceSessionRef = useRef(
         (/** @type {{ errorMessage?: string }} */ _o) => {}
     )
     const registrationApiInFlightRef = useRef(false)
+    /** Registro empresa: envío automático solo al pasar canRegister de false → true (evita bucle si el API falla). */
+    const prevCompanyCanRegisterRef = useRef(false)
 
     const endLoginFaceSession = useCallback((opts) => {
         const errorMessage = opts?.errorMessage
@@ -302,6 +309,7 @@ const AuthGateway = ({ onAuthenticated }) => {
     const endRegisterFaceSession = useCallback((opts) => {
         const errorMessage = opts?.errorMessage
         setRegisterUserBiometricStep('form')
+        setRegisterCompanyBiometricStep('form')
         setRegisterSessionSecondsLeft(null)
         registerFaceSessionClockRef.current = { start: 0, pausedMs: 0, pauseSince: null }
         setCapturedTemplate(null)
@@ -340,6 +348,10 @@ const AuthGateway = ({ onAuthenticated }) => {
     }, [registerUserBiometricStep])
 
     useEffect(() => {
+        registerCompanyBiometricStepRef.current = registerCompanyBiometricStep
+    }, [registerCompanyBiometricStep])
+
+    useEffect(() => {
         loginBiometricSessionRef.current = loginBiometricSession
     }, [loginBiometricSession])
 
@@ -351,17 +363,28 @@ const AuthGateway = ({ onAuthenticated }) => {
         mode === 'register' &&
         registerTab === 'user' &&
         registerUserBiometricStep === 'capture'
+    const registerCompanyCaptureView =
+        mode === 'register' &&
+        registerTab === 'company' &&
+        registerCompanyBiometricStep === 'capture'
+    const anyRegisterCaptureView = registerUserCaptureView || registerCompanyCaptureView
     /** Formulario registro persona (sin panel cámara): layout denso, sin scroll en pantallas típicas. */
     const registerPersonFormOnlyView =
         mode === 'register' &&
         registerTab === 'user' &&
         registerUserBiometricStep === 'form'
+    const registerCompanyFormOnlyView =
+        mode === 'register' &&
+        registerTab === 'company' &&
+        registerCompanyBiometricStep === 'form'
+    const registerFormNarrowFitView =
+        registerPersonFormOnlyView || registerCompanyFormOnlyView
     const showBiometricPanel =
-        loginBiometricSession ||
-        (mode === 'register' && registerTab === 'company') ||
-        registerUserCaptureView
+        loginBiometricSession || anyRegisterCaptureView
     const faceCaptureOnlyView =
-        (mode === 'login' && loginBiometricSession) || registerUserCaptureView
+        (mode === 'login' && loginBiometricSession) || anyRegisterCaptureView
+    /** `camera-only`: solo biometría; `single`: login o registro en tarjeta (sin cámara simultánea). */
+    const authShellLayout = faceCaptureOnlyView ? 'camera-only' : 'single'
     const loginSessionTotalSec = Math.max(
         1,
         Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000)
@@ -378,11 +401,11 @@ const AuthGateway = ({ onAuthenticated }) => {
         )
     )
     const faceSessionTimerActive =
-        (mode === 'login' && loginBiometricSession) || registerUserCaptureView
-    const faceTimerSecondsLeft = registerUserCaptureView
+        (mode === 'login' && loginBiometricSession) || anyRegisterCaptureView
+    const faceTimerSecondsLeft = anyRegisterCaptureView
         ? registerSessionSecondsLeft
         : loginSessionSecondsLeft
-    const faceTimerSecondsSafe = registerUserCaptureView
+    const faceTimerSecondsSafe = anyRegisterCaptureView
         ? registerSessionSecondsSafe
         : loginSessionSecondsSafe
     const faceTimerProgress = faceTimerSecondsSafe / loginSessionTotalSec
@@ -471,9 +494,10 @@ const AuthGateway = ({ onAuthenticated }) => {
         let valuesOk = false
         if (registerTab === 'company') {
             valuesOk =
+                registerForm.company.trim() &&
                 registerForm.ruc.trim().length >= 11 &&
                 registerForm.rucValid &&
-                registerForm.company.trim() &&
+                registerForm.contractorLegalName.trim() &&
                 registerForm.firstName.trim() &&
                 registerForm.lastName.trim() &&
                 registerForm.dni.trim().length >= 8 &&
@@ -590,8 +614,8 @@ const AuthGateway = ({ onAuthenticated }) => {
 
     const shouldUseFaceCamera =
         (mode === 'login' && loginBiometricSession) ||
-        (mode === 'register' && registerTab === 'company') ||
-        registerUserCaptureView
+        registerUserCaptureView ||
+        registerCompanyCaptureView
 
     useEffect(() => {
         let cancelled = false
@@ -734,6 +758,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             serverFaceOval: null,
         }))
         setRegisterUserBiometricStep('form')
+        setRegisterCompanyBiometricStep('form')
         setRegistrationCompleteSession(null)
         setRegisterSessionSecondsLeft(null)
         registerFaceSessionClockRef.current = { start: 0, pausedMs: 0, pauseSince: null }
@@ -766,7 +791,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 c.pauseSince = null
             }
         }
-        if (registerUserCaptureView) {
+        if (anyRegisterCaptureView) {
             const r = registerFaceSessionClockRef.current
             if (isProcessing) {
                 if (!r.pauseSince) {
@@ -777,7 +802,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 r.pauseSince = null
             }
         }
-    }, [isProcessing, mode, loginBiometricSession, registerUserCaptureView])
+    }, [isProcessing, mode, loginBiometricSession, anyRegisterCaptureView])
 
     useEffect(() => {
         if (!loginBiometricSession || mode !== 'login') {
@@ -812,12 +837,14 @@ const AuthGateway = ({ onAuthenticated }) => {
     }, [loginBiometricSession, mode])
 
     useEffect(() => {
-        if (!registerUserCaptureView) {
+        if (!anyRegisterCaptureView) {
             setRegisterSessionSecondsLeft(null)
             return
         }
         const id = setInterval(() => {
-            if (registerUserBiometricStepRef.current !== 'capture') {
+            const inUserCap = registerUserBiometricStepRef.current === 'capture'
+            const inCompanyCap = registerCompanyBiometricStepRef.current === 'capture'
+            if (!inUserCap && !inCompanyCap) {
                 return
             }
             const c = registerFaceSessionClockRef.current
@@ -845,7 +872,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             setRegisterSessionSecondsLeft(Math.max(0, left))
         }, 250)
         return () => clearInterval(id)
-    }, [registerUserCaptureView])
+    }, [anyRegisterCaptureView])
 
     useEffect(() => {
         let requestID = null
@@ -1449,16 +1476,10 @@ const AuthGateway = ({ onAuthenticated }) => {
 
 
     useEffect(() => {
-        let timer = null
         const shouldAutoFaceLogin =
             mode === 'login' &&
             loginBiometricSession &&
             !message.includes('Ingreso autorizado')
-        const shouldAutoRegisterCapture =
-            mode === 'register' &&
-            (registerTab === 'company' ||
-                (registerTab === 'user' &&
-                    registerUserBiometricStep === 'capture'))
         const gateOk = loginBiometricGate && !isProcessing
         if (shouldAutoFaceLogin && hasRequiredBiometricSamples && !isProcessing) {
             const now = performance.now()
@@ -1476,50 +1497,21 @@ const AuthGateway = ({ onAuthenticated }) => {
                 })
             }
         }
-        if (gateOk) {
-            if (
-                shouldAutoFaceLogin &&
-                hasRequiredBiometricSamples &&
-                !loginSubmitTriggeredRef.current
-            ) {
-                console.info('[AUTH_FACE_AUTO] disparando login facial', {
-                    qualityReady: Boolean(faceGuide.qualityReady),
-                    captureCount: Number(faceGuide.captureCount || 0),
-                    lastServerOk: Boolean(faceGuide.lastServerOk),
-                    hasProbe: Boolean(bestLoginProbeRef.current),
-                })
-                loginSubmitTriggeredRef.current = true
-                lastAutoTriggerRef.current = performance.now()
-                handleFaceLogin(bestLoginProbeRef.current)
-            } else {
-                const now = performance.now()
-                if (now - lastAutoTriggerRef.current >= FACIAL_ICAO.CAPTURE_COOLDOWN_MS) {
-                    timer = setTimeout(() => {
-                        lastAutoTriggerRef.current = performance.now()
-                        /* Registro usuario 3/3: solo useEffect directo (sin delay). Empresa u otros flujos siguen aquí. */
-                        if (
-                            shouldAutoRegisterCapture &&
-                            hasRequiredBiometricSamples &&
-                            !(
-                                registerTab === 'user' &&
-                                registerUserBiometricStep === 'capture'
-                            )
-                        ) {
-                            console.info('[AUTH_REGISTER_FLOW] auto trigger 3/3', {
-                                mode,
-                                registerTab,
-                                step: registerUserBiometricStep,
-                                captureCount: Number(faceGuide.captureCount || 0),
-                                requiredFrames: Number(FACIAL_ICAO.REQUIRED_VALID_FRAMES),
-                            })
-                            handleCaptureForRegistration()
-                        }
-                    }, FACIAL_ICAO.AUTO_CAPTURE_DELAY_MS)
-                }
-            }
-        }
-        return () => {
-            if (timer) clearTimeout(timer)
+        if (
+            gateOk &&
+            shouldAutoFaceLogin &&
+            hasRequiredBiometricSamples &&
+            !loginSubmitTriggeredRef.current
+        ) {
+            console.info('[AUTH_FACE_AUTO] disparando login facial', {
+                qualityReady: Boolean(faceGuide.qualityReady),
+                captureCount: Number(faceGuide.captureCount || 0),
+                lastServerOk: Boolean(faceGuide.lastServerOk),
+                hasProbe: Boolean(bestLoginProbeRef.current),
+            })
+            loginSubmitTriggeredRef.current = true
+            lastAutoTriggerRef.current = performance.now()
+            handleFaceLogin(bestLoginProbeRef.current)
         }
     }, [
         loginBiometricGate,
@@ -1540,8 +1532,10 @@ const AuthGateway = ({ onAuthenticated }) => {
     useEffect(() => {
         const inRegisterCapture =
             mode === 'register' &&
-            registerTab === 'user' &&
-            registerUserBiometricStep === 'capture'
+            ((registerTab === 'user' &&
+                registerUserBiometricStep === 'capture') ||
+                (registerTab === 'company' &&
+                    registerCompanyBiometricStep === 'capture'))
         const samples = Number(faceGuide.captureCount || 0)
         if (!inRegisterCapture) {
             registerAutoSubmitTriggeredRef.current = false
@@ -1569,6 +1563,7 @@ const AuthGateway = ({ onAuthenticated }) => {
         mode,
         registerTab,
         registerUserBiometricStep,
+        registerCompanyBiometricStep,
         faceGuide.captureCount,
         faceGuide.qualityReady,
         faceGuide.lastServerOk,
@@ -1984,6 +1979,80 @@ const AuthGateway = ({ onAuthenticated }) => {
         setRegisterUserBiometricStep('capture')
     }
 
+    const startRegisterCompanyFaceCapture = () => {
+        if (registerTab !== 'company') {
+            return
+        }
+        const pw = String(registerForm.password || '')
+        const pc = String(registerForm.passwordConfirm || '')
+        if (pw.length < 6) {
+            setError('La contraseña debe tener al menos 6 caracteres.')
+            return
+        }
+        if (pw !== pc) {
+            setError('Las contraseñas no coinciden.')
+            return
+        }
+        if (registerForm.ruc.trim().length < 11 || !registerForm.rucValid) {
+            setError('Indique un RUC válido de 11 dígitos y espere la validación.')
+            return
+        }
+        if (!String(registerForm.contractorLegalName || '').trim()) {
+            setError('Indique la razón social / nombre del contratista.')
+            return
+        }
+        if (!String(registerForm.company || '').trim()) {
+            setError('Seleccione la empresa minera asociada.')
+            return
+        }
+        if (!String(registerForm.dni || '').trim() || registerForm.dni.trim().length < 8) {
+            setError('Indique el DNI del representante legal (mínimo 8 caracteres).')
+            return
+        }
+        if (!String(registerForm.firstName || '').trim()) {
+            setError('Indique los nombres del representante.')
+            return
+        }
+        if (!String(registerForm.lastName || '').trim()) {
+            setError('Indique los apellidos del representante.')
+            return
+        }
+        if (!String(registerForm.mobile || '').trim() || registerForm.mobile.trim().length < 6) {
+            setError('Indique un celular de contacto válido.')
+            return
+        }
+        if (!String(registerForm.username || '').trim() || registerForm.username.trim().length < 4) {
+            setError('El usuario de sistema debe tener al menos 4 caracteres.')
+            return
+        }
+        setError('')
+        setMessage('')
+        setCapturedTemplate(null)
+        setCapturedImageBase64('')
+        setCapturedPortraitOvalBase64('')
+        setCapturedBustRectBase64('')
+        bestLoginProbeRef.current = null
+        validFramesRef.current = 0
+        resetBiometricCapture().catch(() => {})
+        setFaceGuide((prev) => ({
+            ...prev,
+            qualityReady: false,
+            validFrames: 0,
+            captureCount: 0,
+            lastServerOk: false,
+        }))
+        registerFaceSessionClockRef.current = {
+            start: Date.now(),
+            pausedMs: 0,
+            pauseSince: null,
+        }
+        setRegisterSessionSecondsLeft(
+            Math.max(1, Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000))
+        )
+        registerAutoSubmitTriggeredRef.current = false
+        setRegisterCompanyBiometricStep('capture')
+    }
+
     const handleRegister = async (event) => {
         event.preventDefault()
         if (registerForm.password !== registerForm.passwordConfirm) {
@@ -2000,8 +2069,15 @@ const AuthGateway = ({ onAuthenticated }) => {
         setMessage('')
 
         try {
+            const registrationPayload =
+                registerTab === 'company'
+                    ? {
+                          ...registerForm,
+                          company: String(registerForm.contractorLegalName || '').trim(),
+                      }
+                    : registerForm
             const result = await registerUser({
-                ...registerForm,
+                ...registrationPayload,
                 faceTemplate: capturedTemplate,
                 faceImageBase64: capturedImageBase64,
                 facePortraitOvalBase64: capturedPortraitOvalBase64 || undefined,
@@ -2018,12 +2094,29 @@ const AuthGateway = ({ onAuthenticated }) => {
         }
     }
 
+    useEffect(() => {
+        if (mode !== 'register' || registerTab !== 'company') {
+            prevCompanyCanRegisterRef.current = false
+            return
+        }
+        if (!capturedImageBase64) {
+            prevCompanyCanRegisterRef.current = false
+            return
+        }
+        const prev = prevCompanyCanRegisterRef.current
+        const rose = Boolean(canRegister) && !prev
+        prevCompanyCanRegisterRef.current = Boolean(canRegister)
+        if (!rose || isProcessing) {
+            return
+        }
+        handleRegister({ preventDefault() {} })
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- handleRegister; canRegister resume el formulario completo
+    }, [mode, registerTab, capturedImageBase64, canRegister, isProcessing])
+
     return (
         <div
             className={`auth-screen${
-                registerPersonFormOnlyView
-                    ? ' auth-screen--register-person-fit'
-                    : ''
+                registerFormNarrowFitView ? ' auth-screen--register-person-fit' : ''
             }`}
             data-auth-ui="icao-login-v2"
         >
@@ -2033,25 +2126,34 @@ const AuthGateway = ({ onAuthenticated }) => {
                     backgroundImage: `url("${selectedLoginBgUrl}")`,
                 }}
             />
+            <div className="auth-screen-content">
             <div
-                className="auth-shell"
+                className={`auth-shell${
+                    registerFormNarrowFitView && !showBiometricPanel
+                        ? ' auth-shell--narrow-only'
+                        : ''
+                }`}
+                data-auth-layout={authShellLayout}
                 style={{
                     gridTemplateColumns: faceCaptureOnlyView
                         ? '1fr'
                         : showBiometricPanel
-                          ? '1.1fr 1fr'
+                          ? '1.05fr 1fr'
                           : '1fr',
                     width: faceCaptureOnlyView
-                        ? 'min(900px, 100%)'
+                        ? 'min(880px, 100%)'
                         : showBiometricPanel
-                          ? 'min(1080px, 100%)'
-                          : registerPersonFormOnlyView
-                            ? 'min(960px, 100%)'
+                          ? 'min(920px, 100%)'
+                          : registerFormNarrowFitView
+                            ? 'min(720px, 100%)'
                             : 'min(720px, 100%)',
                 }}
             >
                 {showBiometricPanel && (
                 <section className="auth-panel auth-panel-main">
+                    {faceCaptureOnlyView && (
+                        <PlatformBrandPanelHeader compact />
+                    )}
                     <div className="camera-card camera-card-tall">
                         <div className="camera-header">
                             <div className="camera-title camera-title-with-pill">
@@ -2383,7 +2485,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 className="logout-demo"
                                 disabled={isProcessing}
                                 onClick={() => {
-                                    if (registerUserCaptureView) {
+                                    if (anyRegisterCaptureView) {
                                         endRegisterFaceSession({})
                                     } else {
                                         endLoginFaceSession({})
@@ -2406,7 +2508,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 setError('')
                                 setMessage('')
                             }}
-                            style={{padding: '16px', fontSize: '15px'}}
+                            style={{padding: '8px', fontSize: '12px'}}
                         >
                             <ShieldCheck size={20} /> Entrar (LOGIN)
                         </button>
@@ -2415,10 +2517,13 @@ const AuthGateway = ({ onAuthenticated }) => {
                             className={mode === 'register' ? 'active' : ''}
                             onClick={() => {
                                 setMode('register')
+                                setRegisterTab('user')
+                                setRegisterUserBiometricStep('form')
+                                setRegisterCompanyBiometricStep('form')
                                 setError('')
                                 setMessage('')
                             }}
-                            style={{padding: '16px', fontSize: '15px'}}
+                            style={{padding: '8px', fontSize: '12px'}}
                         >
                             <UserPlus size={20} /> Crear Cuenta (REGISTRO)
                         </button>
@@ -2429,41 +2534,30 @@ const AuthGateway = ({ onAuthenticated }) => {
 
                 {!faceCaptureOnlyView && (
                 <section
-                    className={`auth-panel auth-panel-form${
-                        registerPersonFormOnlyView
+                    className={`auth-panel auth-panel-form auth-panel-form--auth-compact${
+                        registerFormNarrowFitView
                             ? ' auth-panel-form--register-person'
                             : ''
                     }`}
                 >
+                    <PlatformBrandPanelHeader compact={registerFormNarrowFitView} />
                     {mode === 'login' ? (
                         <>
-                            <div
-                                style={{
-                                    marginBottom: '14px',
-                                    border: '1px solid rgba(56, 189, 248, 0.26)',
-                                    borderRadius: '12px',
-                                    padding: '10px 12px',
-                                    background:
-                                        'linear-gradient(120deg, rgba(8,47,73,0.38), rgba(15,23,42,0.25))',
-                                }}
-                            >
-                                <img
-                                    src={enterpriseMiningMark}
-                                    alt="NEXMINE"
-                                    style={{ width: '320px', maxWidth: '100%', height: 'auto', display: 'block' }}
-                                />
-                                <h2 style={{ margin: '6px 0 3px' }}>Acceso Seguro</h2>
+                            <div className="auth-form-section-intro">
+                                <h2 className="auth-form-section-intro-title">Acceso seguro</h2>
+                                <p className="auth-form-section-intro-text">
+                                    Ingrese con usuario o empresa y contraseña, o con reconocimiento facial.
+                                </p>
                             </div>
-                            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-                                <button type="button" className={loginTab === 'user' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '8px', fontSize: '13px'}} onClick={() => { setLoginTab('user'); setError(''); }}>LOGIN Usuario</button>
-                                <button type="button" className={loginTab === 'company' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '8px', fontSize: '13px'}} onClick={() => { setLoginTab('company'); setError(''); }}>LOGIN Empresa</button>
+                            <div className="auth-login-tab-row">
+                                <button type="button" className={loginTab === 'user' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '6px', fontSize: '11px'}} onClick={() => { setLoginTab('user'); setError(''); }}>LOGIN Usuario</button>
+                                <button type="button" className={loginTab === 'company' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '6px', fontSize: '11px'}} onClick={() => { setLoginTab('company'); setError(''); }}>LOGIN Empresa</button>
                             </div>
                             
                             <form
                                 id="auth-login-credentials-form"
-                                className="stack-form"
+                                className="stack-form auth-login-credentials-stack"
                                 onSubmit={handlePasswordLogin}
-                                style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}
                             >
                             <label className="field-label">
                                 <Building2 size={14} /> Empresa Asignada / Compañía
@@ -2608,33 +2702,12 @@ const AuthGateway = ({ onAuthenticated }) => {
                         </>
                     ) : (
                         <>
-                            <div
-                                className="auth-login-brand-block auth-register-brand-block"
-                                style={{
-                                    marginBottom: '10px',
-                                    border: '1px solid rgba(56, 189, 248, 0.26)',
-                                    borderRadius: '12px',
-                                    padding: '8px 10px',
-                                    background:
-                                        'linear-gradient(120deg, rgba(8,47,73,0.38), rgba(15,23,42,0.25))',
-                                }}
-                            >
-                                <img
-                                    src={enterpriseMiningMark}
-                                    alt="NEXMINE"
-                                    className="auth-register-brand-img"
-                                    style={{
-                                        width: 'min(300px, 100%)',
-                                        height: 'auto',
-                                        display: 'block',
-                                    }}
-                                />
-                                <h2
-                                    className="auth-register-brand-title"
-                                    style={{ margin: '4px 0 2px' }}
-                                >
-                                    Acceso Seguro
-                                </h2>
+                            <div className="auth-form-section-intro">
+                                <h2 className="auth-form-section-intro-title">Acceso seguro</h2>
+                                <p className="auth-form-section-intro-text">
+                                    Registro de persona o empresa contratista. Use «Volver al inicio de sesión»
+                                    para regresar al login.
+                                </p>
                             </div>
                             <div className="register-mode-tabs">
                                 <button
@@ -2646,6 +2719,8 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     }
                                     onClick={() => {
                                         setRegisterTab('user')
+                                        setRegisterCompanyBiometricStep('form')
+                                        setRegisterUserBiometricStep('form')
                                         setError('')
                                     }}
                                 >
@@ -2660,6 +2735,12 @@ const AuthGateway = ({ onAuthenticated }) => {
                                     }
                                     onClick={() => {
                                         setRegisterTab('company')
+                                        setRegisterCompanyBiometricStep('form')
+                                        setRegisterUserBiometricStep('form')
+                                        setRegisterForm((prev) => ({
+                                            ...prev,
+                                            contractorLegalName: '',
+                                        }))
                                         setError('')
                                     }}
                                 >
@@ -2667,13 +2748,30 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 </button>
                             </div>
                             {mode === 'register' &&
-                                registerTab === 'user' &&
-                                registerUserBiometricStep === 'form' &&
-                                !showBiometricPanel && (
+                                !showBiometricPanel &&
+                                !(registerTab === 'user' && registerUserBiometricStep === 'success') && (
                                     <button
                                         type="button"
                                         className="logout-demo register-back-login-btn"
                                         onClick={() => {
+                                            setMode('login')
+                                            setRegisterUserBiometricStep('form')
+                                            setRegisterCompanyBiometricStep('form')
+                                            setError('')
+                                            setMessage('')
+                                        }}
+                                    >
+                                        Volver al inicio de sesión
+                                    </button>
+                                )}
+                            {mode === 'register' &&
+                                registerTab === 'company' &&
+                                registerCompanyBiometricStep === 'capture' && (
+                                    <button
+                                        type="button"
+                                        className="logout-demo register-back-login-btn"
+                                        onClick={() => {
+                                            endRegisterFaceSession({})
                                             setMode('login')
                                             setError('')
                                             setMessage('')
@@ -2745,24 +2843,43 @@ const AuthGateway = ({ onAuthenticated }) => {
                                 </div>
                             ) : (
                             <>
-                            {registerTab === 'company' && (
-                                <h2>Registrar Empresa Contratista</h2>
+                            {registerTab === 'company' && registerCompanyBiometricStep === 'form' && (
+                                <h2 className="auth-register-section-heading">
+                                    <Building2 size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 6 }} />
+                                    Registro de empresa contratista
+                                </h2>
                             )}
                             <form
                                 onSubmit={(e) => {
                                     e.preventDefault()
-                                    if (registerTab === 'company') {
-                                        handleRegister(e)
-                                    }
                                 }}
                                 className={`stack-form${
-                                    registerTab === 'user'
+                                    registerFormNarrowFitView
                                         ? ' stack-form--register-person'
                                         : ''
                                 }`}
                             >
                                 {registerTab === 'company' ? (
-                                    <>
+                                    <div className="register-company-fields">
+                                        <label className="field-label">
+                                            <Building2 size={16} /> Empresa minera asociada
+                                            <select
+                                                value={registerForm.company}
+                                                onChange={(e) =>
+                                                    setRegisterForm((prev) => ({
+                                                        ...prev,
+                                                        company: e.target.value,
+                                                    }))
+                                                }
+                                                required
+                                            >
+                                                {companies.map((company) => (
+                                                    <option key={company} value={company}>
+                                                        {company}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </label>
                                          <label className="field-label">
                                             RUC de la Empresa (Validación automática)
                                             <div style={{ position: 'relative' }}>
@@ -2796,10 +2913,20 @@ const AuthGateway = ({ onAuthenticated }) => {
                                             )}
                                          </label>
                                          <label className="field-label" style={{ clear: 'both' }}>
-                                             Razon Social / Nombre Empresa
-                                             <input type="text" value={registerForm.company} onChange={(e) => setRegisterForm((prev) => ({ ...prev, company: e.target.value }))} required />
+                                             Razón social / nombre del contratista
+                                             <input
+                                                 type="text"
+                                                 value={registerForm.contractorLegalName}
+                                                 onChange={(e) =>
+                                                     setRegisterForm((prev) => ({
+                                                         ...prev,
+                                                         contractorLegalName: e.target.value,
+                                                     }))
+                                                 }
+                                                 required
+                                             />
                                          </label>
-                                         <div className="auth-divider" style={{margin: '12px 0'}}><span>Representante Legal</span></div>
+                                         <div className="auth-divider auth-divider--tight"><span>Representante Legal</span></div>
                                          <label className="field-label">
                                              DNI Representante
                                              <input type="text" maxLength={12} value={registerForm.dni} onChange={(e) => setRegisterForm((prev) => ({ ...prev, dni: e.target.value }))} required />
@@ -2824,9 +2951,13 @@ const AuthGateway = ({ onAuthenticated }) => {
                                                  <input type="tel" value={registerForm.mobile} onChange={(e) => setRegisterForm((prev) => ({ ...prev, mobile: e.target.value }))} required />
                                              </label>
                                          </div>
-                                    </>
+                                    </div>
                                 ) : (
                                     <div className="register-person-fields">
+                                        <h2 className="auth-register-section-heading reg-grid-full">
+                                            <UserRound size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 6 }} />
+                                            Registro de persona
+                                        </h2>
                                         <label className="field-label reg-grid-full">
                                             <Building2 size={16} /> Empresa Asignada
                                             <select
@@ -3022,16 +3153,25 @@ const AuthGateway = ({ onAuthenticated }) => {
                                         registerTab === 'user' &&
                                         registerUserBiometricStep === 'form'
                                             ? isProcessing
-                                            : !cameraReady
+                                            : registerTab === 'company' &&
+                                                registerCompanyBiometricStep === 'form'
+                                              ? isProcessing
+                                              : !cameraReady
                                     }
                                     onClick={
                                         registerTab === 'user' &&
                                         registerUserBiometricStep === 'form'
                                             ? startRegisterUserFaceCapture
-                                            : handleCaptureForRegistration
+                                            : registerTab === 'company' &&
+                                                registerCompanyBiometricStep === 'form'
+                                              ? startRegisterCompanyFaceCapture
+                                              : handleCaptureForRegistration
                                     }
                                     style={
-                                        registerTab === 'user'
+                                        (registerTab === 'user' &&
+                                            registerUserBiometricStep === 'form') ||
+                                        (registerTab === 'company' &&
+                                            registerCompanyBiometricStep === 'form')
                                             ? undefined
                                             : { marginTop: '10px' }
                                     }
@@ -3045,14 +3185,10 @@ const AuthGateway = ({ onAuthenticated }) => {
                                         ? ' Biometría Capturada'
                                         : ' Registrar biometrica facial (Obligatorio)'}
                                 </button>
-                                {registerTab === 'company' && (
-                                    <button
-                                        type="submit"
-                                        className="primary-face-button"
-                                        disabled={!canRegister || isProcessing}
-                                    >
-                                        <UserPlus size={17} /> Guardar registro e Iniciar Sesion
-                                    </button>
+                                {registerTab === 'company' && capturedImageBase64 && canRegister && isProcessing && (
+                                    <p className="auth-company-register-pending" role="status">
+                                        Enviando registro e iniciando sesión…
+                                    </p>
                                 )}
                             </form>
                             </>
@@ -3068,6 +3204,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                     {message && <div className="auth-message ok">{message}</div>}
                 </section>
                 )}
+            </div>
             </div>
         </div>
     )

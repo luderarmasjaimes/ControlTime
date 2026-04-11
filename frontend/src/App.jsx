@@ -33,9 +33,23 @@ import AdvancedSensors from './components/Dashboard/AdvancedSensors'
 import ReportStudioV2 from './components/ReportStudioV2/App'
 import FormulaEngineEmbed from './components/Formula/FormulaEngineEmbed'
 import UserMaintenanceModal from './components/ReportStudioV2/components/modals/UserMaintenanceModal'
-import aurixaLogo from './brand/aurixa-logo.svg'
+import { PlatformBrandDashboardBlock } from './brand/PlatformBrandMark'
 import { ensureCompanyUsers } from './components/ReportStudioV2/lib/userBootstrap'
 import { clearSession, getSession, createSession } from './auth/authStorage'
+
+/** Ámbito telemetría/CCTV alineado con seed `22_mining_demo_telemetry_surveillance.sql`. */
+function telemetryScopeFromSession(sess) {
+    const demoCompany = 'ACTIVOS MINEROS'
+    const demoUnit = 'UNIDAD PRINCIPAL'
+    const rawCo = (sess?.company || sess?.miningCompany || '').trim()
+    const rawUnit = (sess?.miningUnit || sess?.unitName || sess?.mineUnit || sess?.site || '').trim()
+    const company = rawCo || demoCompany
+    let unit = rawUnit || demoUnit
+    if (/primcipal/i.test(unit) || /^unidad\s*prin?c?ipal$/i.test(unit)) {
+        unit = demoUnit
+    }
+    return { miningCompanyName: company, siteUnitName: unit }
+}
 
 /** Base64 guardado en BD/sesión: sin espacios ni saltos de línea. */
 function normalizeSessionAvatarBase64(sess) {
@@ -53,6 +67,7 @@ function sessionAvatarDataUrlFromB64(b64) {
 }
 
 const DashboardApp = ({ session, onLogout }) => {
+    const telemetryScope = telemetryScopeFromSession(session)
     const mainScrollRef = useRef(null)
     const [activeTab, setActiveTab] = useState('Dashboard')
     const [sidebarTab, setSidebarTab] = useState('Azimuth')
@@ -278,10 +293,10 @@ const DashboardApp = ({ session, onLogout }) => {
     const visibleTabs = tabs.filter((tab) => activeGroup.items.includes(tab.name))
 
     return (
-        <div className="dashboard-shell dashboard-shell-mining flex h-screen w-full text-slate-100 font-sans selection:bg-cyan-500/30 overflow-hidden">
+        <div className="dashboard-shell dashboard-shell-mining flex h-screen min-h-0 w-full overflow-hidden text-slate-100 font-sans selection:bg-cyan-500/30">
 
             {/* Main Content Area */}
-            <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
 
                 {/* Top Header / Tab Bar — misma familia visual que login (auth-screen) */}
                 <header className="relative px-4 lg:px-7 py-3.5 border-b border-cyan-500/25 bg-slate-950/75 backdrop-blur-xl overflow-hidden">
@@ -289,19 +304,10 @@ const DashboardApp = ({ session, onLogout }) => {
 
                     <div className="relative z-10 flex flex-wrap items-center gap-x-5 gap-y-3">
                         <div className="flex flex-1 min-w-[200px] items-center gap-4">
-                            <img
-                                src={aurixaLogo}
-                                alt="Logo empresa"
-                                className="enterprise-brand-logo"
+                            <PlatformBrandDashboardBlock
+                                linePrimary={platformCompanyName}
+                                lineSecondary={`${miningCompanyName} | ${miningUnitName}`}
                             />
-                            <div className="enterprise-brand-copy min-w-0">
-                                <div className="enterprise-brand-company truncate">
-                                    {platformCompanyName}
-                                </div>
-                                <div className="enterprise-brand-suite truncate">
-                                    {miningCompanyName} | {miningUnitName}
-                                </div>
-                            </div>
                         </div>
 
                         <div className="flex flex-wrap items-center justify-end gap-3 md:gap-4 ml-auto">
@@ -454,7 +460,7 @@ const DashboardApp = ({ session, onLogout }) => {
                 </header>
 
                 {/* Dynamic Visualization Bench */}
-                <main className="flex-1 relative flex min-h-0 overflow-hidden bg-transparent">
+                <main className="relative flex min-h-0 flex-1 overflow-hidden bg-transparent">
                     <div
                         ref={mainScrollRef}
                         onScroll={() => {
@@ -469,7 +475,7 @@ const DashboardApp = ({ session, onLogout }) => {
 
                             setMainScrollHints({ right: canScrollRight, bottom: canScrollBottom })
                         }}
-                        className="flex-1 min-w-0 min-h-0 overflow-auto dashboard-main-scroll relative"
+                        className="dashboard-main-scroll relative min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto overflow-x-hidden"
                     >
                         {mainScrollHints.right && (
                             <>
@@ -501,14 +507,31 @@ const DashboardApp = ({ session, onLogout }) => {
                         {activeTab === 'Map' && <MapViewer />}
                         {activeTab === 'Mapa Detallado' && <DetailedMap />}
                         { activeTab === 'Dashboard' && <MiningDashboard />}
-                        { activeTab === 'Sensores Técnicos' && <AdvancedSensors />}
-                        { activeTab === 'Surveillance' && <VideoDiagram src="" />}
+                        {activeTab === 'Sensores Técnicos' && (
+                            <AdvancedSensors
+                                miningCompanyName={telemetryScope.miningCompanyName}
+                                siteUnitName={telemetryScope.siteUnitName}
+                            />
+                        )}
+                        {activeTab === 'Surveillance' && (
+                            <VideoDiagram
+                                miningCompanyName={telemetryScope.miningCompanyName}
+                                siteUnitName={telemetryScope.siteUnitName}
+                            />
+                        )}
                         {activeTab === 'Displacement Cumulative' && (
                             <DisplacementCharts xRange={[xMin, xMax]} yRange={[yMin, yMax]} />
                         )}
                         {activeTab === 'Report' && <RichTextEditor />}
-                        {activeTab === "Report v2" && <ReportStudioV2 />}
-                        {activeTab === "Formula" && <FormulaEngineEmbed />}
+                        {activeTab === "Report v2" && (
+                            <ReportStudioV2 platformCompanyName={session?.platformCompany || session?.ownerCompany} miningCompanyName={session?.company} />
+                        )}
+                        {activeTab === "Formula" && (
+                            <FormulaEngineEmbed
+                                platformCompanyName={session?.platformCompany || session?.ownerCompany}
+                                miningCompanyName={session?.company}
+                            />
+                        )}
                     </div>
 
                     {/* Temporal Legend Sidebar (Inside Main View) */}
