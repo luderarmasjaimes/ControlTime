@@ -623,6 +623,27 @@ textarea {
     align-self: stretch;
 }
 
+/* Fila principal: gráficos + carril leyenda comparten altura del viewport */
+.dashboard-shell-mining main.flex {
+    align-items: stretch;
+    min-height: 0;
+}
+
+.dashboard-shell-mining .viz-route-host {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0%;
+    min-height: 0;
+    min-width: 0;
+    width: 100%;
+}
+
+.dashboard-shell-mining .viz-legend-rail {
+    flex-shrink: 0;
+    min-height: 0;
+    align-self: stretch;
+}
+
 .dashboard-main-scroll::-webkit-scrollbar {
     width: 12px;
     height: 12px;
@@ -819,7 +840,7 @@ textarea {
 
 .dashboard-shell-mining header,
 .dashboard-shell-mining aside,
-.dashboard-shell-mining .dashboard-main-scroll > *:not(.pointer-events-none):not(.mining-dashboard-root),
+.dashboard-shell-mining .dashboard-main-scroll > *:not(.pointer-events-none):not(.mining-dashboard-root):not(.viz-route-host),
 .auth-panel,
 .camera-card,
 .face-guidance-panel,

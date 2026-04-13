@@ -293,7 +293,7 @@ const DashboardApp = ({ session, onLogout }) => {
     const visibleTabs = tabs.filter((tab) => activeGroup.items.includes(tab.name))
 
     return (
-        <div className="dashboard-shell dashboard-shell-mining flex h-screen min-h-0 w-full overflow-hidden text-slate-100 font-sans selection:bg-cyan-500/30">
+        <div className="dashboard-shell dashboard-shell-mining relative flex h-screen min-h-0 w-full overflow-hidden text-slate-100 font-sans selection:bg-cyan-500/30">
 
             {/* Main Content Area */}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -460,7 +460,7 @@ const DashboardApp = ({ session, onLogout }) => {
                 </header>
 
                 {/* Dynamic Visualization Bench */}
-                <main className="relative flex min-h-0 flex-1 overflow-hidden bg-transparent">
+                <main className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-transparent">
                     <div
                         ref={mainScrollRef}
                         onScroll={() => {
@@ -475,7 +475,7 @@ const DashboardApp = ({ session, onLogout }) => {
 
                             setMainScrollHints({ right: canScrollRight, bottom: canScrollBottom })
                         }}
-                        className="dashboard-main-scroll relative min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto overflow-x-hidden"
+                        className="dashboard-main-scroll relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-y-auto overflow-x-hidden"
                     >
                         {mainScrollHints.right && (
                             <>
@@ -495,48 +495,50 @@ const DashboardApp = ({ session, onLogout }) => {
                             </>
                         )}
 
-                        {activeTab === 'Inclinometer' && (
-                            <InclinometerCharts
-                                xRange={[xMin, xMax]}
-                                yRange={[yMin, yMax]}
-                                azimuthAngle={azimuthAngle}
-                                installationAngle={installationAngle}
-                            />
-                        )}
-                        {activeTab === '3D' && <Viewer3D azimuthAngle={azimuthAngle} installationAngle={installationAngle} />}
-                        {activeTab === 'Map' && <MapViewer />}
-                        {activeTab === 'Mapa Detallado' && <DetailedMap />}
-                        { activeTab === 'Dashboard' && <MiningDashboard />}
-                        {activeTab === 'Sensores Técnicos' && (
-                            <AdvancedSensors
-                                miningCompanyName={telemetryScope.miningCompanyName}
-                                siteUnitName={telemetryScope.siteUnitName}
-                            />
-                        )}
-                        {activeTab === 'Surveillance' && (
-                            <VideoDiagram
-                                miningCompanyName={telemetryScope.miningCompanyName}
-                                siteUnitName={telemetryScope.siteUnitName}
-                            />
-                        )}
-                        {activeTab === 'Displacement Cumulative' && (
-                            <DisplacementCharts xRange={[xMin, xMax]} yRange={[yMin, yMax]} />
-                        )}
-                        {activeTab === 'Report' && <RichTextEditor />}
-                        {activeTab === "Report v2" && (
-                            <ReportStudioV2 platformCompanyName={session?.platformCompany || session?.ownerCompany} miningCompanyName={session?.company} />
-                        )}
-                        {activeTab === "Formula" && (
-                            <FormulaEngineEmbed
-                                platformCompanyName={session?.platformCompany || session?.ownerCompany}
-                                miningCompanyName={session?.company}
-                            />
-                        )}
+                        <div className="viz-route-host">
+                            {activeTab === 'Inclinometer' && (
+                                <InclinometerCharts
+                                    xRange={[xMin, xMax]}
+                                    yRange={[yMin, yMax]}
+                                    azimuthAngle={azimuthAngle}
+                                    installationAngle={installationAngle}
+                                />
+                            )}
+                            {activeTab === '3D' && <Viewer3D azimuthAngle={azimuthAngle} installationAngle={installationAngle} />}
+                            {activeTab === 'Map' && <MapViewer />}
+                            {activeTab === 'Mapa Detallado' && <DetailedMap />}
+                            {activeTab === 'Dashboard' && <MiningDashboard />}
+                            {activeTab === 'Sensores Técnicos' && (
+                                <AdvancedSensors
+                                    miningCompanyName={telemetryScope.miningCompanyName}
+                                    siteUnitName={telemetryScope.siteUnitName}
+                                />
+                            )}
+                            {activeTab === 'Surveillance' && (
+                                <VideoDiagram
+                                    miningCompanyName={telemetryScope.miningCompanyName}
+                                    siteUnitName={telemetryScope.siteUnitName}
+                                />
+                            )}
+                            {activeTab === 'Displacement Cumulative' && (
+                                <DisplacementCharts xRange={[xMin, xMax]} yRange={[yMin, yMax]} />
+                            )}
+                            {activeTab === 'Report' && <RichTextEditor />}
+                            {activeTab === "Report v2" && (
+                                <ReportStudioV2 platformCompanyName={session?.platformCompany || session?.ownerCompany} miningCompanyName={session?.company} />
+                            )}
+                            {activeTab === "Formula" && (
+                                <FormulaEngineEmbed
+                                    platformCompanyName={session?.platformCompany || session?.ownerCompany}
+                                    miningCompanyName={session?.company}
+                                />
+                            )}
+                        </div>
                     </div>
 
                     {/* Temporal Legend Sidebar (Inside Main View) */}
-                    {(activeTab === 'Inclinometer' || activeTab === '3D') && (
-                        <div className="w-48 border-l border-slate-100 bg-white p-4 flex flex-col gap-2 overflow-y-auto">
+                    {(activeTab === 'Inclinometer' || activeTab === '3D' || activeTab === 'Displacement Cumulative') && (
+                        <div className="viz-legend-rail flex h-full min-h-0 w-48 shrink-0 flex-col gap-2 overflow-y-auto border-l border-slate-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
                             {[
                                 '04/08/2025 06:00 PM', '09/01/2024 06:00 PM', '01/27/2024 12:00 AM',
                                 '08/13/2023 12:00 AM', '12/08/2022 09:52 AM', '05/04/2022 10:42 AM',
@@ -570,9 +572,9 @@ const DashboardApp = ({ session, onLogout }) => {
                         animate={{ x: 0, opacity: 1 }}
                         exit={{ x: 20, opacity: 0 }}
                         transition={{ duration: 0.24 }}
-                        className="w-80 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-y-auto sidebar-motion"
+                        className="sidebar-motion flex h-full min-h-0 w-80 shrink-0 flex-col overflow-hidden border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
                     >
-                        <div className="p-6 space-y-6">
+                        <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-6">
                             <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-tight">Edit profile</h2>
 
                             <div className="flex border-b border-slate-100 dark:border-slate-800">
@@ -633,17 +635,21 @@ const DashboardApp = ({ session, onLogout }) => {
                                 </div>
                             )}
 
-                            {sidebarTab !== 'Azimuth' && <div className="py-12 text-center text-slate-400 text-[11px] italic">Configuraciones de {sidebarTab}...</div>}
+                            {sidebarTab === 'Layers' && (
+                                <div className="py-12 text-center text-[11px] italic text-slate-400">Configuraciones de {sidebarTab}...</div>
+                            )}
                         </div>
 
-                        <div className="mt-auto p-6 border-t border-slate-100 dark:border-slate-800">
+                        <div className="shrink-0 border-t border-slate-100 p-6 dark:border-slate-800">
                             <AnimatedButton className="w-full justify-center" onClick={() => {}}>Save</AnimatedButton>
                         </div>
                     </motion.aside>
                 )}
             </AnimatePresence>
             {/* Database Status Indicator (Floating) */}
-            <div className="absolute bottom-4 right-84 z-50 flex items-center gap-2 px-3 py-1.5 bg-white/80 dark:bg-slate-900/80 backdrop-blur rounded-full border border-slate-200 dark:border-slate-800 shadow-sm text-[10px]">
+            <div
+                className={`absolute bottom-4 z-50 flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-[10px] shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/80 ${showRightSidebar ? 'right-[calc(20rem+1rem)]' : 'right-4'}`}
+            >
                 <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                 <span className="font-bold text-slate-600 dark:text-slate-400">DB: {dbStatus}</span>
             </div>

@@ -78,7 +78,7 @@ const MapViewer = () => {
     }, [lng, lat, zoom]);
 
     return (
-        <div className="map-full w-full h-full relative border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xl">
+        <div className="map-full relative h-full min-h-0 min-w-0 w-full flex-1 overflow-hidden rounded-xl border border-slate-200 shadow-2xl dark:border-slate-800">
             <div ref={mapContainer} className="absolute inset-0" />
 
             {/* Overlay UI for Map */}

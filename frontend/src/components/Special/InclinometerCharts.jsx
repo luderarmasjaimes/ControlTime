@@ -157,9 +157,9 @@ const InclinometerCharts = ({ xRange = [-40, 40], yRange = [0, 40], azimuthAngle
     }, [xRange, yRange, azimuthAngle]);
 
     return (
-        <div className="flex w-full h-full bg-white p-6 gap-8 select-none">
-            <div ref={chartRefX} className="flex-1 h-full" />
-            <div ref={chartRefY} className="flex-1 h-full border-l border-slate-50" />
+        <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col gap-4 bg-white p-4 select-none sm:flex-row sm:gap-8 sm:p-6">
+            <div ref={chartRefX} className="min-h-[260px] flex-1 sm:min-h-0" />
+            <div ref={chartRefY} className="min-h-[260px] flex-1 border-t border-slate-50 sm:min-h-0 sm:border-l sm:border-t-0" />
         </div>
     );
 };

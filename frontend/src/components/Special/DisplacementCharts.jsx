@@ -77,8 +77,10 @@ const DisplacementCharts = ({ xRange = [-50, 50], yRange = [0, 60] }) => {
     };
 
     return (
-        <div className="w-full h-full p-4 bg-slate-900/50">
-            <ReactECharts option={getOption()} style={{ height: '100%', width: '100%' }} />
+        <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-slate-900/50 p-4">
+            <div className="min-h-[280px] flex-1">
+                <ReactECharts option={getOption()} style={{ height: '100%', width: '100%' }} opts={{ renderer: 'canvas' }} />
+            </div>
         </div>
     );
 };

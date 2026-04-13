@@ -168,8 +168,8 @@ const TechnicalCage = () => {
 
 const Viewer3D = ({ azimuthAngle = 0, installationAngle = 0 }) => {
     return (
-        <div className="w-full h-full bg-white relative">
-            <Canvas camera={{ position: [40, 20, 40], fov: 45 }} gl={{ alpha: true, antialias: true }}>
+        <div className="relative flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-white">
+            <Canvas className="block min-h-0 flex-1 touch-none" style={{ minHeight: 0 }} camera={{ position: [40, 20, 40], fov: 45 }} gl={{ alpha: true, antialias: true }}>
                 <color attach="background" args={['#ffffff']} />
                 <ambientLight intensity={1.5} />
                 <pointLight position={[20, 20, 20]} intensity={1} />
