@@ -48,6 +48,7 @@ RUN apt-get update \
        ca-certificates \
        wget \
        curl \
+       ffmpeg \
        python3 \
        python3-opencv \
        python3-numpy \
@@ -65,6 +66,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=builder /app/build /app/build
+COPY --from=builder /app/scripts/surveillance_camera_snapshot.py /app/scripts/surveillance_camera_snapshot.py
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /opt/onnxruntime/lib/ /usr/local/lib/
 COPY --from=builder /opt/cartoon-models /opt/cartoon-models

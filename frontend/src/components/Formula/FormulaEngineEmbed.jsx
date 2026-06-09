@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlatformBrandDashboardBlock } from '../../brand/PlatformBrandMark';
+import { RefreshCw, ExternalLink } from 'lucide-react';
 
 /**
  * Editor FORMULA embebido desde /formula/index.html (public/formula).
@@ -11,18 +11,30 @@ export default function FormulaEngineEmbed({
 }) {
   return (
     <div className="flex flex-col h-full min-h-0 w-full bg-slate-950">
-      <header className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-cyan-500/25 bg-slate-950/90 backdrop-blur-xl">
-        <PlatformBrandDashboardBlock
-          linePrimary={platformCompanyName}
-          lineSecondary={`Motor de fórmula · ${miningCompanyName}`}
-        />
-      </header>
       <iframe
         title="FORMULA — Editor de reglas"
         src="/formula/index.html"
         className="flex-1 w-full min-h-0 border-0 bg-white"
         allow="clipboard-read; clipboard-write"
       />
+      <div className="shrink-0 flex items-center justify-end gap-2 border-t border-slate-800 bg-slate-950/95 px-3 py-2">
+        <button
+          type="button"
+          className="mining-workbench-action-btn inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-200 hover:bg-slate-800"
+          onClick={() => window.open('/formula/index.html', '_blank', 'noopener,noreferrer')}
+        >
+          <ExternalLink size={14} />
+          Abrir en ventana
+        </button>
+        <button
+          type="button"
+          className="mining-workbench-action-btn inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-200 hover:bg-slate-800"
+          onClick={() => window.location.reload()}
+        >
+          <RefreshCw size={14} />
+          Recargar
+        </button>
+      </div>
     </div>
   );
 }

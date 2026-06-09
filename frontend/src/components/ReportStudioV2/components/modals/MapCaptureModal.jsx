@@ -1,12 +1,17 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { X, MapPin, Check, Loader } from 'lucide-react';
 import DetailedMap from '../../../Special/DetailedMap';
+import { getMiningLocation } from '../../../../config/miningLocations';
 
-const MapCaptureModal = ({ onClose, onCaptureComplete }) => {
+const MapCaptureModal = ({ onClose, onCaptureComplete, companyName }) => {
   const [capturedImage, setCapturedImage] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
   const [isLoadingMap, setIsLoadingMap] = useState(true);
   const mapLoadTimeoutRef = useRef(null);
+
+  const miningLoc = getMiningLocation(companyName);
+  const initialCenter = miningLoc ? { lat: miningLoc.lat, lng: miningLoc.lng } : { lat: 4.711, lng: -74.0721 };
+  const initialZoom = miningLoc ? miningLoc.zoom : 6;
 
   useEffect(() => {
     // Optimistic: consider map loaded after 2.5s even if not ready
@@ -49,7 +54,10 @@ const MapCaptureModal = ({ onClose, onCaptureComplete }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-[1200] bg-slate-950/65 backdrop-blur-md flex items-center justify-center px-4 py-4">
+    <div
+      className="fixed inset-0 z-[20000] bg-slate-950/65 backdrop-blur-md flex items-center justify-center px-4 py-4"
+      style={{ zIndex: 20000 }}
+    >
       <div className="w-full max-w-6xl max-h-[90vh] rounded-2xl border border-slate-300/40 bg-white shadow-2xl overflow-hidden flex flex-col">
         
         {/* Header */}
@@ -77,13 +85,21 @@ const MapCaptureModal = ({ onClose, onCaptureComplete }) => {
                 <p className="text-xs text-slate-500 mt-1">Esto puede tomar unos segundos</p>
               </div>
             )}
-            <DetailedMap onCaptureMap={handleCaptureMap} captureButtonPlacement="top" />
+            <DetailedMap 
+              onCaptureMap={handleCaptureMap} 
+              captureButtonPlacement="top" 
+              initialCenter={initialCenter}
+              initialZoom={initialZoom}
+            />
           </div>
         </div>
       </div>
 
       {showPreview && capturedImage && (
-        <div className="fixed inset-0 z-[1210] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center px-4 py-4">
+        <div
+          className="fixed inset-0 z-[20010] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center px-4 py-4"
+          style={{ zIndex: 20010 }}
+        >
           <div className="w-full max-w-3xl max-h-[86vh] rounded-2xl border border-slate-300 bg-white shadow-2xl overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
               <h4 className="font-bold text-slate-800">Vista previa de la captura</h4>

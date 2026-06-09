@@ -1,13 +1,7 @@
 import { create } from 'zustand';
+import { getReportLayoutMetrics } from '../lib/reportLayoutMetrics';
+import { REPORT_IMAGE_PLACEHOLDER_SVG } from '../lib/reportImageSrc';
 
-const mmToPx = (mm) => mm * 3.7795275591;
-const A4_WIDTH = mmToPx(210);
-const A4_HEIGHT = mmToPx(297);
-const PAGE_HEADER_HEIGHT = 58;
-const PAGE_FOOTER_HEIGHT = 48;
-const CONTENT_TOP = PAGE_HEADER_HEIGHT + 14;
-const CONTENT_BOTTOM = A4_HEIGHT - PAGE_FOOTER_HEIGHT - 14;
-const CONTENT_LEFT = 40;
 const INSERT_GAP = 12;
 
 const optimizeSyntaxOrder = (rawText) => {
@@ -137,7 +131,7 @@ const buildDocumentReview = (doc) => {
 const defaultPropsByType = (type) => {
   if (type === 'text') {
     return {
-      text: 'Escribe aquí tu texto técnico...',
+      text: '',
       fontFamily: 'Arial',
       fontSize: 16,
       fontColor: '#0f172a',
@@ -176,42 +170,80 @@ const defaultPropsByType = (type) => {
 
   if (type === 'sensor') {
     return {
-      title: 'Sensor Real-time',
-      sensorId: 'sn-001',
+      title: 'Sensor tiempo real',
+      sensorId: 1,
+      sensorTypeId: null,
       sensorType: 'temperature',
     };
   }
 
+  if (type === 'image') {
+    return {
+      alt: 'Figura o fotografía técnica',
+    };
+  }
+
   return {
-    title: `${type.toUpperCase()} BLOCK`,
+    title: type === 'kpi' ? 'Tonelaje movido' : `${type.toUpperCase()} BLOCK`,
     value: '—',
+    kpiCode: type === 'kpi' ? 'tonelaje_movido' : undefined,
+    source: type === 'kpi' ? 'runtime_db' : undefined,
+    /** spark_bars | line | donut | none — informe compacto; donut requiere meta en BD */
+    trendViz: type === 'kpi' ? 'spark_bars' : undefined,
   };
 };
 
-const createElement = (type, pageNumber, nextIndex) => ({
-  id: `${type}-${pageNumber}-${Date.now()}-${nextIndex}`,
-  type,
-  x: CONTENT_LEFT,
-  y: CONTENT_TOP,
-  width: type === 'kpi' ? 180 : type === 'table' ? 420 : type === 'sensor' ? 240 : 320,
-  height: type === 'kpi' ? 110 : type === 'table' ? 200 : type === 'sensor' ? 140 : 180,
-  zIndex: nextIndex,
-  locked: false,
-  props: defaultPropsByType(type),
-});
+const createElement = (type, pageNumber, nextIndex, m) => {
+  const contentW = Math.max(80, m.CONTENT_RIGHT - m.CONTENT_LEFT);
 
-const createTextTemplateElement = (pageNumber, nextIndex, template) => ({
+  if (type === 'image') {
+    return {
+      id: `image-${pageNumber}-${Date.now()}-${nextIndex}`,
+      type: 'image',
+      x: m.CONTENT_LEFT,
+      y: m.CONTENT_TOP,
+      width: Math.min(360, contentW),
+      height: 220,
+      zIndex: nextIndex,
+      locked: false,
+      src: REPORT_IMAGE_PLACEHOLDER_SVG,
+      objectFit: 'cover',
+      props: defaultPropsByType('image'),
+    };
+  }
+
+  return {
+    id: `${type}-${pageNumber}-${Date.now()}-${nextIndex}`,
+    type,
+    x: m.CONTENT_LEFT,
+    y: m.CONTENT_TOP,
+    width:
+      type === 'kpi'
+        ? Math.min(180, contentW)
+        : type === 'table'
+          ? Math.min(420, contentW)
+          : type === 'sensor'
+            ? Math.min(240, contentW)
+            : Math.min(320, contentW),
+    height: type === 'kpi' ? 110 : type === 'table' ? 200 : type === 'sensor' ? 140 : 180,
+    zIndex: nextIndex,
+    locked: false,
+    props: defaultPropsByType(type),
+  };
+};
+
+const createTextTemplateElement = (pageNumber, nextIndex, template, m) => ({
   id: `text-template-${template}-${pageNumber}-${Date.now()}-${nextIndex}`,
   type: 'text',
-  x: CONTENT_LEFT,
-  y: CONTENT_TOP,
-  width: 320,
+  x: m.CONTENT_LEFT,
+  y: m.CONTENT_TOP,
+  width: Math.min(320, m.CONTENT_RIGHT - m.CONTENT_LEFT),
   height: 72,
   zIndex: nextIndex,
   locked: false,
   props: {
     ...defaultPropsByType('text'),
-    text: 'Escribe aquí tu texto técnico...',
+    text: '',
     fontSize: 14,
     lineHeight: 1.25,
   },
@@ -227,6 +259,7 @@ export const useEditorStore = create((set, get) => ({
       author: 'AGM Solutions',
       version: 1,
       updatedAt: new Date().toISOString(),
+      layoutMode: 'document',
     },
   },
   selectedPage: 1,
@@ -242,8 +275,13 @@ export const useEditorStore = create((set, get) => ({
   loadDocument: (contentJson, reportId, reportTitle) => {
     try {
       const parsed = typeof contentJson === 'string' ? JSON.parse(contentJson) : contentJson;
+      const layoutMode =
+        parsed?.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
       set({
-        doc: parsed,
+        doc: {
+          ...parsed,
+          meta: { ...(parsed.meta || {}), layoutMode },
+        },
         selectedPage: 1,
         selectedElementId: undefined,
         currentReportId: reportId || null,
@@ -253,6 +291,18 @@ export const useEditorStore = create((set, get) => ({
       console.error('useEditorStore.loadDocument: JSON inválido');
     }
   },
+  setLayoutMode: (layoutMode) =>
+    set((state) => ({
+      doc: {
+        ...state.doc,
+        meta: {
+          ...state.doc.meta,
+          layoutMode: layoutMode === 'presentation' ? 'presentation' : 'document',
+          version: state.doc.meta.version + 1,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    })),
   addPage: () =>
     set((state) => {
       const nextPage = state.doc.pages.length + 1;
@@ -272,13 +322,14 @@ export const useEditorStore = create((set, get) => ({
         return state;
       }
 
+      const m = getReportLayoutMetrics(state.doc.meta?.layoutMode || 'document');
       const copy = {
         page_number: state.doc.pages.length + 1,
         elements: page.elements.map((element, index) => ({
           ...element,
           id: `${element.id}-copy-${Date.now()}-${index}`,
-          x: Math.min(element.x + 20, A4_WIDTH - element.width - 10),
-          y: Math.min(element.y + 20, A4_HEIGHT - element.height - 10),
+          x: Math.min(element.x + 20, m.PAGE_WIDTH - element.width - 10),
+          y: Math.min(element.y + 20, m.PAGE_HEIGHT - element.height - 10),
         })),
       };
 
@@ -311,9 +362,15 @@ export const useEditorStore = create((set, get) => ({
         },
       };
     }),
-  selectPage: (pageNumber) => set({ selectedPage: pageNumber, selectedElementId: undefined }),
-  addElement: (type) =>
+  selectPage: (pageNumber) =>
+    set((state) =>
+      state.selectedPage === pageNumber
+        ? { selectedPage: pageNumber }
+        : { selectedPage: pageNumber, selectedElementId: undefined },
+    ),
+  addElement: (type, patch = {}) =>
     set((state) => {
+      const m = getReportLayoutMetrics(state.doc.meta?.layoutMode || 'document');
       const pages = [...state.doc.pages];
       const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
       const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
@@ -321,16 +378,45 @@ export const useEditorStore = create((set, get) => ({
       const placeElementInPage = (page, element) => {
         const maxBottom = page.elements.length
           ? Math.max(...page.elements.map((existing) => existing.y + existing.height))
-          : CONTENT_TOP - INSERT_GAP;
-        const nextY = Math.max(CONTENT_TOP, maxBottom + INSERT_GAP);
-        const positionedElement = { ...element, y: nextY, x: CONTENT_LEFT };
-        const fits = nextY + positionedElement.height <= CONTENT_BOTTOM;
+          : m.CONTENT_TOP - INSERT_GAP;
+        const nextY = Math.max(m.CONTENT_TOP, maxBottom + INSERT_GAP);
+        const positionedElement = { ...element, y: nextY, x: m.CONTENT_LEFT };
+        const fits = nextY + positionedElement.height <= m.CONTENT_BOTTOM;
         return { fits, element: positionedElement };
       };
 
+      const mergePatch = (base) => {
+        const next = { ...base };
+        if (patch.src != null) {
+          next.src = patch.src;
+        }
+        if (typeof patch.width === 'number' && Number.isFinite(patch.width)) {
+          next.width = patch.width;
+        }
+        if (typeof patch.height === 'number' && Number.isFinite(patch.height)) {
+          next.height = patch.height;
+        }
+        if (patch.objectFit != null) {
+          next.objectFit = patch.objectFit;
+        }
+        if (patch.props != null && typeof patch.props === 'object') {
+          next.props = { ...(base.props || {}), ...patch.props };
+        }
+        if (typeof patch.zIndex === 'number' && Number.isFinite(patch.zIndex)) {
+          next.zIndex = patch.zIndex;
+        }
+        if (typeof patch.x === 'number' && Number.isFinite(patch.x)) {
+          next.x = patch.x;
+        }
+        if (typeof patch.y === 'number' && Number.isFinite(patch.y)) {
+          next.y = patch.y;
+        }
+        return next;
+      };
+
       const activePage = pages[currentIndex];
-      const baseElement = createElement(type, activePage.page_number, activePage.elements.length);
-      const attempt = placeElementInPage(activePage, baseElement);
+      const baseElement = createElement(type, activePage.page_number, activePage.elements.length, m);
+      const attempt = placeElementInPage(activePage, mergePatch(baseElement));
 
       if (attempt.fits) {
         pages[currentIndex] = {
@@ -354,7 +440,7 @@ export const useEditorStore = create((set, get) => ({
         page_number: nextPageNumber,
         elements: [],
       };
-      const nextElement = createElement(type, nextPageNumber, 0);
+      const nextElement = mergePatch(createElement(type, nextPageNumber, 0, m));
       const nextPlacement = placeElementInPage(nextPage, nextElement);
       nextPage.elements.push(nextPlacement.element);
       pages.push(nextPage);
@@ -371,28 +457,33 @@ export const useEditorStore = create((set, get) => ({
     }),
   addTextTemplate: (template) =>
     set((state) => {
+      const layoutMode = state.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
+      const m = getReportLayoutMetrics(layoutMode);
       const pages = [...state.doc.pages];
       const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
       const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
       const activePage = pages[currentIndex];
       const nextIndex = activePage.elements.length;
 
-      const element = createTextTemplateElement(activePage.page_number, nextIndex, template);
+      const element = createTextTemplateElement(activePage.page_number, nextIndex, template, m);
 
       if (template === 'header') {
-        element.x = CONTENT_LEFT;
-        element.y = 10;
-        element.width = A4_WIDTH - CONTENT_LEFT * 2;
-        element.height = 34;
-        element.props.text = 'ENCABEZADO TÉCNICO: Informe de operación minera';
-        element.props.fontSize = 15;
+        element.x = m.CONTENT_LEFT;
+        element.y = layoutMode === 'presentation' ? 8 : 10;
+        element.width = m.PAGE_WIDTH - m.CONTENT_LEFT * 2;
+        element.height = layoutMode === 'presentation' ? 28 : 34;
+        element.props.text =
+          layoutMode === 'presentation'
+            ? 'TÍTULO DE DIAPOSITIVA'
+            : 'ENCABEZADO TÉCNICO: Informe de operación minera';
+        element.props.fontSize = layoutMode === 'presentation' ? 18 : 15;
         element.props.bold = true;
       }
 
       if (template === 'footer') {
-        element.x = CONTENT_LEFT;
-        element.y = A4_HEIGHT - FOOTER_HEIGHT + 6;
-        element.width = A4_WIDTH - CONTENT_LEFT * 2;
+        element.x = m.CONTENT_LEFT;
+        element.y = m.PAGE_HEIGHT - m.FOOTER_HEIGHT + 6;
+        element.width = m.PAGE_WIDTH - m.CONTENT_LEFT * 2;
         element.height = 28;
         element.props.text = 'PIE DE PÁGINA: Responsable | Fecha | Código de documento';
         element.props.fontSize = 12;
@@ -400,9 +491,9 @@ export const useEditorStore = create((set, get) => ({
       }
 
       if (template === 'findings') {
-        element.x = CONTENT_LEFT;
-        element.y = CONTENT_TOP + 24;
-        element.width = A4_WIDTH - CONTENT_LEFT * 2;
+        element.x = m.CONTENT_LEFT;
+        element.y = m.CONTENT_TOP + 24;
+        element.width = m.PAGE_WIDTH - m.CONTENT_LEFT * 2;
         element.height = 110;
         element.props.text = 'Hallazgos Técnicos:\n1.\n2.\n3.';
         element.props.fontSize = 14;
@@ -432,7 +523,23 @@ export const useEditorStore = create((set, get) => ({
         }
         return {
           ...page,
-          elements: page.elements.map((element) => (element.id === elementId ? { ...element, ...patch } : element)),
+          elements: page.elements.map((element) => {
+            if (element.id !== elementId) {
+              return element;
+            }
+            const merged = { ...element, ...patch };
+            if (
+              merged.type === 'image' &&
+              patch.src != null &&
+              merged.props &&
+              typeof merged.props === 'object' &&
+              Object.prototype.hasOwnProperty.call(merged.props, 'src')
+            ) {
+              const { src: _legacySrc, ...restProps } = merged.props;
+              merged.props = restProps;
+            }
+            return merged;
+          }),
         };
       });
       return {

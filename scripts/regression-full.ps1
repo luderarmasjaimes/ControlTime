@@ -83,7 +83,7 @@ if ($targets.Count -eq 0) {
 Invoke-CheckedDocker -Command { docker-compose -f $ComposeFile up -d @targets | Out-Host } -ErrorMessage "No se pudo levantar el stack con docker compose."
 
 Write-Host "[2/6] Verificando endpoints base..."
-Invoke-RestMethod -Uri "http://localhost:8081/health" -Method Get | ConvertTo-Json -Depth 5 | Out-Host
+Invoke-RestMethod -Uri "http://localhost:8082/health" -Method Get | ConvertTo-Json -Depth 5 | Out-Host
 if ($composeServices -contains "frontend") {
   Invoke-WebRequest -Uri "http://localhost:5173" -UseBasicParsing | Select-Object StatusCode | Out-Host
 } else {

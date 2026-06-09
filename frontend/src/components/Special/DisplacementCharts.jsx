@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
 
 const TIMESTAMPS = [
@@ -10,12 +10,11 @@ const TIMESTAMPS = [
 ];
 
 const COLORS = [
-    '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e',
-    '#06b6d4', '#84cc16', '#a855f7', '#6366f1', '#14b8a6', '#f97316', '#64748b'
+    '#f59e0b', '#10b981', '#38bdf8', '#8b5cf6', '#ec4899', '#f43f5e',
+    '#06b6d4', '#84cc16', '#a855f7', '#6366f1', '#14b8a6', '#f97316', '#94a3b8'
 ];
 
 const DisplacementCharts = ({ xRange = [-50, 50], yRange = [0, 60] }) => {
-
     const generateSyntheticData = (index) => {
         const points = [];
         let currentVal = 0;
@@ -29,41 +28,57 @@ const DisplacementCharts = ({ xRange = [-50, 50], yRange = [0, 60] }) => {
         return points;
     };
 
-    const getOption = () => {
+    const option = useMemo(() => {
+        const depthMin = Math.min(yRange[0], 0);
+        const depthMax = Math.max(yRange[1], 40);
         return {
             backgroundColor: 'transparent',
+            title: {
+                text: 'Curvas acumuladas vs profundidad',
+                left: 'center',
+                top: 6,
+                textStyle: { color: '#cbd5e1', fontSize: 12, fontWeight: 'bold' },
+            },
             tooltip: {
                 trigger: 'axis',
-                backgroundColor: 'rgba(15, 23, 42, 0.9)',
-                borderColor: 'rgba(255, 255, 255, 0.1)',
+                backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                borderColor: 'rgba(56, 189, 248, 0.22)',
                 textStyle: { color: '#f8fafc', fontSize: 11 },
                 formatter: (params) => {
-                    let html = `<div style="font-weight: bold; margin-bottom: 4px;">Depth: ${params[0].value[0]}m</div>`;
+                    let html = `<div style="font-weight: bold; margin-bottom: 4px; color:#f8fafc;">Profundidad: ${params[0].value[0]} m</div>`;
                     params.forEach(p => {
                         html += `<div style="display: flex; justify-content: space-between; gap: 12px;">
-                            <span>${p.seriesName}:</span>
+                            <span style="color:#94a3b8">${p.seriesName}</span>
                             <span style="font-weight: bold; color: ${p.color}">${p.value[1].toFixed(2)} mm</span>
                         </div>`;
                     });
                     return html;
                 }
             },
-            grid: { top: 40, right: 30, bottom: 40, left: 50, containLabel: true },
+            grid: { top: 44, right: 28, bottom: 44, left: 52, containLabel: true },
             xAxis: {
                 type: 'value',
-                name: 'Depth (m)',
+                name: 'Profundidad (m)',
                 nameLocation: 'middle',
                 nameGap: 30,
-                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } },
-                axisLabel: { color: '#94a3b8' }
+                min: depthMin,
+                max: depthMax,
+                nameTextStyle: { color: '#cbd5e1', fontSize: 11 },
+                axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.35)' } },
+                splitLine: { lineStyle: { color: 'rgba(51, 65, 85, 0.45)' } },
+                axisLabel: { color: '#94a3b8', fontSize: 10 }
             },
             yAxis: {
                 type: 'value',
-                name: 'Cumulative Disp. (mm)',
+                name: 'Desplaz. acum. (mm)',
                 nameLocation: 'middle',
-                nameGap: 40,
-                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } },
-                axisLabel: { color: '#94a3b8' }
+                nameGap: 48,
+                min: xRange[0],
+                max: xRange[1],
+                nameTextStyle: { color: '#cbd5e1', fontSize: 11 },
+                axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.35)' } },
+                splitLine: { lineStyle: { color: 'rgba(51, 65, 85, 0.45)' } },
+                axisLabel: { color: '#94a3b8', fontSize: 10 }
             },
             series: TIMESTAMPS.map((t, i) => ({
                 name: t,
@@ -74,12 +89,12 @@ const DisplacementCharts = ({ xRange = [-50, 50], yRange = [0, 60] }) => {
                 data: generateSyntheticData(i)
             }))
         };
-    };
+    }, [xRange, yRange]);
 
     return (
-        <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-slate-900/50 p-4">
-            <div className="min-h-[280px] flex-1">
-                <ReactECharts option={getOption()} style={{ height: '100%', width: '100%' }} opts={{ renderer: 'canvas' }} />
+        <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col p-3 md:p-4">
+            <div className="min-h-[220px] flex-1">
+                <ReactECharts option={option} style={{ height: '100%', width: '100%' }} opts={{ renderer: 'canvas' }} />
             </div>
         </div>
     );

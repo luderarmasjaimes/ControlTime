@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "description": "Catálogo WMS por región. Perú MINAM (GeoServer 1.1.1), INGEMMET/MINEM ArcGIS (1.3.0). Compruebe GetCapabilities si una capa deja de responder.",
+  "regions": [
+    {
+      "id": "PER",
+      "label": "Perú · MINAM / Gobierno",
+      "sources": [
+        {
+          "id": "minam-geoserver",
+          "name": "MINAM Geoservidor (plantilla)",
+          "url": "https://geoservidor.minam.gob.pe/geoserver/wms",
+          "defaultLayer": "",
+          "category": "ambiental",
+          "docUrl": "https://geoservidor.minam.gob.pe/"
+        },
+        {
+          "id": "minam-riesgo-ejemplo",
+          "name": "MINAM — riesgo (rellenar capa desde GetCapabilities)",
+          "url": "https://geoservidor.minam.gob.pe/geoserver/wms",
+          "defaultLayer": "",
+          "category": "riesgo",
+          "docUrl": "https://geoservidor.minam.gob.pe/"
+        }
+      ]
+    },
+    {
+      "id": "PERMIN",
+      "label": "Perú · Catastro e información minera (WMS públicos)",
+      "sources": [
+        {
+          "id": "ingemmet-catastro",
+          "name": "INGEMMET Geocatmin — Catastro minero (capa 1)",
+          "url": "https://geocatmin.ingemmet.gob.pe/arcgis/services/SERV_CATASTRO_MINERO/MapServer/WMSServer",
+          "defaultLayer": "1",
+          "wmsVersion": "1.3.0",
+          "category": "catastro",
+          "docUrl": "https://geocatmin.ingemmet.gob.pe/geocatmin/"
+        },
+        {
+          "id": "ingemmet-catastro-dgm",
+          "name": "INGEMMET Geocatmin — Catastro DGM/MINEM (capa 0)",
+          "url": "https://geocatmin.ingemmet.gob.pe/arcgis/services/SERV_CATASTRO_MINERO/MapServer/WMSServer",
+          "defaultLayer": "0",
+          "wmsVersion": "1.3.0",
+          "category": "catastro",
+          "docUrl": "https://geocatmin.ingemmet.gob.pe/geocatmin/"
+        },
+        {
+          "id": "ingemmet-geologia",
+          "name": "INGEMMET Geocatmin — Geología auxiliar",
+          "url": "https://geocatmin.ingemmet.gob.pe/arcgis/services/SERV_GEOLOGIA_AUX/MapServer/WMSServer",
+          "defaultLayer": "0",
+          "wmsVersion": "1.3.0",
+          "category": "geologia",
+          "docUrl": "https://geocatmin.ingemmet.gob.pe/geocatmin/"
+        },
+        {
+          "id": "minem-estamin",
+          "name": "MINEM Geoportal — ESTAMIN (declaraciones / concesiones)",
+          "url": "https://geoportal.minem.gob.pe/minem/rest/services/WMS/ESTAMIN/MapServer/WMSServer",
+          "defaultLayer": "0",
+          "wmsVersion": "1.3.0",
+          "category": "operacion",
+          "docUrl": "https://geoportal.minem.gob.pe/"
+        },
+        {
+          "id": "minem-dgfm",
+          "name": "MINEM Geoportal — Formalización minera (DGFM)",
+          "url": "https://geoportal.minem.gob.pe/minem/rest/services/WMS/DGFM_FORMAL/MapServer/WMSServer",
+          "defaultLayer": "0",
+          "wmsVersion": "1.3.0",
+          "category": "institucional",
+          "docUrl": "https://geoportal.minem.gob.pe/"
+        }
+      ]
+    },
+    {
+      "id": "CHL",
+      "label": "Chile · referencia institucional",
+      "sources": [
+        {
+          "id": "plantilla-chile",
+          "name": "Plantilla WMS regional (configurar URL)",
+          "url": "",
+          "defaultLayer": "",
+          "category": "plantilla",
+          "docUrl": ""
+        }
+      ]
+    },
+    {
+      "id": "MEX",
+      "label": "México · referencia institucional",
+      "sources": [
+        {
+          "id": "plantilla-mexico",
+          "name": "Plantilla CONAGUA / estatal (configurar URL)",
+          "url": "",
+          "defaultLayer": "",
+          "category": "plantilla",
+          "docUrl": ""
+        }
+      ]
+    },
+    {
+      "id": "USA",
+      "label": "Estados Unidos · USGS (referencia)",
+      "sources": [
+        {
+          "id": "usgs-topo-wms",
+          "name": "USGS National Map Topo (WMS)",
+          "url": "https://basemap.nationalmap.gov/arcgis/services/USGSTopo/MapServer/WMSServer",
+          "defaultLayer": "0",
+          "wmsVersion": "1.3.0",
+          "category": "topografia",
+          "docUrl": "https://www.usgs.gov/"
+        }
+      ]
+    }
+  ]
+}

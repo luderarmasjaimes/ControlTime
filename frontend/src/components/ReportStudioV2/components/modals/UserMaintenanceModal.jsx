@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ShieldCheck, Users, X, Lock, UserX, UserCog, Clock3 } from 'lucide-react';
+import { USER_ROLES } from '../../../../auth/roleConstants';
 import { getSession } from '../../../../auth/authStorage';
 import {
   applyUserMaintenanceUnified,
@@ -15,11 +16,7 @@ const ACTIONS = [
   { value: 'change_profile', label: 'Cambio de perfil', icon: UserCog },
 ];
 
-const ROLE_OPTIONS = [
-  { value: 'operator', label: 'Operator - Jefe de area' },
-  { value: 'supervisor', label: 'Supervisor - Gerente de planta' },
-  { value: 'admin', label: 'Admin' },
-];
+const ROLE_OPTIONS = USER_ROLES;
 
 function statusLabel(status) {
   if (status === 'blocked') return 'Bloqueado';

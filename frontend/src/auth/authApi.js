@@ -53,16 +53,34 @@ async function parseJsonResponse(response) {
     return payload
 }
 
-async function postJson(path, body) {
-    const response = await fetch(`${backendBaseUrl()}${path}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-    })
-
-    return parseJsonResponse(response)
+async function postJson(path, body, options = {}) {
+    const timeoutMs =
+        Number.isFinite(options?.timeoutMs) && Number(options.timeoutMs) > 0
+            ? Number(options.timeoutMs)
+            : 30000
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+        const response = await fetch(`${backendBaseUrl()}${path}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...authHeaders(),
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        })
+        return parseJsonResponse(response)
+    } catch (err) {
+        if (err?.name === 'AbortError') {
+            throw new Error(
+                `Tiempo de espera agotado (${Math.round(timeoutMs / 1000)}s). Verifique red/servidor e intente de nuevo.`
+            )
+        }
+        throw err
+    } finally {
+        clearTimeout(timeoutId)
+    }
 }
 
 function authHeaders() {
@@ -116,9 +134,13 @@ export async function registerUser(payload) {
     }
 
     const t0 = typeof performance !== 'undefined' ? performance.now() : 0
-    const out = await postJson('/api/auth/register', {
-        ...body,
-    })
+    const out = await postJson(
+        '/api/auth/register',
+        {
+            ...body,
+        },
+        { timeoutMs: 45000 }
+    )
     if (t0 && typeof performance !== 'undefined') {
         const ms = Math.round(performance.now() - t0)
         console.info('[AUTH_API] /api/auth/register OK', {
@@ -219,9 +241,11 @@ export async function loginWithFace(payload) {
 
     if (payload.imageBase64) {
         body.face_image_base64 = payload.imageBase64
-    } else if (payload.template) {
+    }
+    if (payload.template) {
         body.face_template = payload.template
-    } else {
+    }
+    if (!body.face_image_base64 && !body.face_template) {
         throw new Error('No se capturó imagen o plantilla facial para validar.')
     }
 
@@ -357,4 +381,55 @@ export async function validateCompany(company, ruc) {
     const response = await fetch(`${backendBaseUrl()}/api/auth/validate-company?${query.toString()}`)
     const payload = await parseJsonResponse(response)
     return payload.valid === true
+}
+
+const FALLBACK_PLATFORM_COUNTRIES = [
+    { iso2: 'US', label: 'Estados Unidos', phone_prefix: '1', region: 'north_america' },
+    { iso2: 'CA', label: 'Canadá', phone_prefix: '1', region: 'north_america' },
+    { iso2: 'MX', label: 'México', phone_prefix: '52', region: 'north_america' },
+    { iso2: 'PE', label: 'Perú', phone_prefix: '51', region: 'latam' },
+    { iso2: 'CL', label: 'Chile', phone_prefix: '56', region: 'latam' },
+    { iso2: 'CO', label: 'Colombia', phone_prefix: '57', region: 'latam' },
+    { iso2: 'BR', label: 'Brasil', phone_prefix: '55', region: 'latam' },
+    { iso2: 'AR', label: 'Argentina', phone_prefix: '54', region: 'latam' },
+    { iso2: 'EC', label: 'Ecuador', phone_prefix: '593', region: 'latam' },
+    { iso2: 'BO', label: 'Bolivia', phone_prefix: '591', region: 'latam' },
+    { iso2: 'GT', label: 'Guatemala', phone_prefix: '502', region: 'latam' },
+    { iso2: 'CU', label: 'Cuba', phone_prefix: '53', region: 'caribbean' },
+    { iso2: 'DO', label: 'República Dominicana', phone_prefix: '1', region: 'caribbean' },
+]
+
+const FALLBACK_UI_LANGUAGES = [
+    { code: 'es', label_es: 'Español', label_native: 'Español', sort_order: 10 },
+    { code: 'en', label_es: 'Inglés', label_native: 'English', sort_order: 20 },
+    { code: 'pt', label_es: 'Portugués', label_native: 'Português', sort_order: 30 },
+    { code: 'fr', label_es: 'Francés', label_native: 'Français', sort_order: 40 },
+]
+
+export async function fetchPlatformCountries() {
+    try {
+        const response = await fetch(`${backendBaseUrl()}/api/platform/countries`)
+        if (!response.ok) {
+            return [...FALLBACK_PLATFORM_COUNTRIES]
+        }
+        const payload = await response.json()
+        const list = Array.isArray(payload.countries) ? payload.countries : []
+        return list.length > 0 ? list : [...FALLBACK_PLATFORM_COUNTRIES]
+    } catch {
+        return [...FALLBACK_PLATFORM_COUNTRIES]
+    }
+}
+
+export async function fetchPlatformUiLanguages() {
+    try {
+        const response = await fetch(`${backendBaseUrl()}/api/platform/ui-languages`)
+        if (!response.ok) {
+            return [...FALLBACK_UI_LANGUAGES]
+        }
+        const payload = await response.json()
+        const list = Array.isArray(payload.languages) ? payload.languages : []
+        return list.length > 0 ? list : [...FALLBACK_UI_LANGUAGES]
+    } catch {
+        return [...FALLBACK_UI_LANGUAGES]
+    }
 }

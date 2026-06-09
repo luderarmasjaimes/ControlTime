@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { Activity, Thermometer, Droplets, Wind, Gauge } from 'lucide-react';
+import { telemetryTenantIdFromSession } from '../../../../auth/telemetryTenant';
+import { getSession } from '../../../../auth/authStorage';
 import { fetchMineSensors } from '../../lib/api';
 
 const SENSOR_ICONS = {
@@ -20,16 +22,24 @@ export default function SensorWidget({ sensorId, type = 'temperature', title = '
     try {
       // For a report, we might want historical data or the last N points
       // Using fetchMineSensors as a proxy for real-time/recent telemetry
-      const allSensors = await fetchMineSensors();
-      const sensor = allSensors.find(s => s.id === sensorId) || allSensors[0];
-      
+      const allSensors = await fetchMineSensors(telemetryTenantIdFromSession(getSession()));
+      const sid = Number(sensorId);
+      const sensor = allSensors.find((s) => Number(s.id) === sid) || allSensors[0];
+
       if (sensor) {
-        setData(prev => {
-          const newData = [...prev, {
-            time: new Date().toLocaleTimeString(),
-            value: sensor.value || (Math.random() * 100).toFixed(2)
-          }];
-          return newData.slice(-10); // Keep last 10 points
+        const v =
+          sensor.current_value != null && !Number.isNaN(Number(sensor.current_value))
+            ? Number(sensor.current_value).toFixed(2)
+            : (Math.random() * 100).toFixed(2);
+        setData((prev) => {
+          const newData = [
+            ...prev,
+            {
+              time: new Date().toLocaleTimeString(),
+              value: v,
+            },
+          ];
+          return newData.slice(-10);
         });
       }
     } catch (err) {
@@ -101,7 +111,7 @@ export default function SensorWidget({ sensorId, type = 'temperature', title = '
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {loading ? (
-          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyCenter: 'center', fontSize: 10, color: '#94a3b8' }}>
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#94a3b8' }}>
             Cargando telemetría...
           </div>
         ) : (

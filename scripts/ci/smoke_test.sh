@@ -17,8 +17,9 @@ else
   echo "Backend FAILED"; exit 1
 fi
 
-echo "Checking tileserver (http://localhost:8000/)"
-if curl -sSf http://localhost:8000/ >/dev/null; then
+echo "Checking tileserver (http://localhost:8000/services)"
+# mbtileserver's root returns 404; use /services as defined in docker-compose healthcheck
+if curl -sSf http://localhost:8000/services >/dev/null; then
   echo "Tileserver OK"
 else
   echo "Tileserver FAILED"; exit 1

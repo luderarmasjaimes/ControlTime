@@ -1,21 +1,21 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Reconstruye la imagen del servicio frontend (Vite + nginx) sin caché de build y recrea el contenedor.
+  Reconstruye la imagen del servicio frontend (Vite + nginx) sin cache de build y recrea el contenedor.
 
 .DESCRIPTION
-  Úsalo cuando los cambios de UI no se ven en http://localhost:5173: fuerza build limpio,
+  Usalo cuando los cambios de UI no se ven en http://localhost:5173: fuerza build limpio,
   recrea el contenedor y opcionalmente comprueba que index.html sirva el bundle nuevo.
-  Tras ejecutar: Ctrl+Shift+R o ventana de incógnito (caché del navegador).
+  Tras ejecutar: Ctrl+Shift+R o ventana de incognito (cache del navegador).
 
 .PARAMETER ComposeFile
-  Archivo compose alternativo (ruta absoluta o relativa al repo). Por defecto docker-compose.yml en la raíz.
+  Archivo compose alternativo (ruta absoluta o relativa al repo). Por defecto docker-compose.yml en la raiz.
 
 .PARAMETER Service
   Nombre del servicio en Compose (por defecto: frontend).
 
 .PARAMETER SkipPull
-  No ejecutar --pull en las imágenes base (node, nginx).
+  No ejecutar --pull en las imagenes base (node, nginx).
 
 .PARAMETER SkipHttpCheck
   No intentar GET a http://127.0.0.1:5173 tras el arranque.
@@ -41,7 +41,7 @@ $root = Split-Path -Parent $scriptDir
 
 $defaultCompose = Join-Path $root "docker-compose.yml"
 if (-not (Test-Path $defaultCompose)) {
-    Write-Error "No se encontró docker-compose.yml en la raíz del repo: $root"
+    Write-Error "No se encontro docker-compose.yml en la raiz del repo: $root"
 }
 
 Set-Location $root
@@ -55,13 +55,13 @@ if ($ComposeFile) {
     $composeArgs += @("-f", $cf)
 }
 
-# BuildKit explícito (Windows/Docker Desktop a veces hereda entornos raros)
+# BuildKit explicito (Windows/Docker Desktop a veces hereda entornos raros)
 $env:DOCKER_BUILDKIT = "1"
 $env:COMPOSE_DOCKER_CLI_BUILD = "1"
 
 Write-Host ""
-Write-Host "=== InformeCliente — rebuild frontend Docker" -ForegroundColor Cyan
-Write-Host "    Raíz repo: $root" -ForegroundColor Gray
+Write-Host "=== InformeCliente - rebuild frontend Docker" -ForegroundColor Cyan
+Write-Host "    Raiz repo: $root" -ForegroundColor Gray
 Write-Host "    Servicio : $Service" -ForegroundColor Gray
 Write-Host ""
 
@@ -73,7 +73,7 @@ if (-not $SkipPull) {
 Write-Host ('>>> docker ' + ($buildCmd -join ' ')) -ForegroundColor Yellow
 docker @buildCmd
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Fallo en docker compose build (código $LASTEXITCODE)."
+    Write-Error "Fallo en docker compose build (codigo $LASTEXITCODE)."
 }
 
 Write-Host ""
@@ -81,7 +81,7 @@ Write-Host '>>> Recreando contenedor (sin reutilizar el anterior)...' -Foregroun
 $upCmd = @("compose") + $composeArgs + @("up", "-d", "--force-recreate", "--remove-orphans", $Service)
 docker @upCmd
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Fallo en docker compose up (código $LASTEXITCODE)."
+    Write-Error "Fallo en docker compose up (codigo $LASTEXITCODE)."
 }
 
 if (-not $SkipHttpCheck) {
@@ -103,12 +103,12 @@ if (-not $SkipHttpCheck) {
 
     if ($ok) {
         if ($r.Content -like '*SENSOR3D*Acceso ICAO*') {
-            Write-Host "    OK: título en index.html (build reciente)." -ForegroundColor Green
+            Write-Host "    OK: titulo en index.html (build reciente)." -ForegroundColor Green
         }
         if ($r.Content -match '/assets/index-[A-Za-z0-9_-]+\.js') {
             Write-Host "    OK: referencia a bundle /assets/index-*.js en HTML." -ForegroundColor Green
         } else {
-            Write-Host "    ADVERTENCIA: no se vio /assets/index-*.js en index.html (¿dev server?)." -ForegroundColor DarkYellow
+            Write-Host "    ADVERTENCIA: no se vio /assets/index-*.js en index.html (dev server?)." -ForegroundColor DarkYellow
         }
     } else {
         Write-Host "    No hubo respuesta HTTP en :5173 a tiempo. Compruebe: docker compose ps" -ForegroundColor DarkYellow
@@ -118,6 +118,6 @@ if (-not $SkipHttpCheck) {
 Write-Host ""
 Write-Host "=== Listo" -ForegroundColor Green
 Write-Host "    Abra: http://localhost:5173" -ForegroundColor White
-Write-Host "    Recarga forzada: Ctrl+Shift+R  |  Mejor: ventana de incógnito" -ForegroundColor Gray
-Write-Host "    Si sigue igual: cierre pestañas antiguas y vuelva a abrir la URL." -ForegroundColor Gray
+Write-Host '    Recarga forzada: Ctrl+Shift+R  |  Mejor: ventana de incognito' -ForegroundColor Gray
+Write-Host '    Si sigue igual: cierre pestanas antiguas y vuelva a abrir la URL.' -ForegroundColor Gray
 Write-Host ""

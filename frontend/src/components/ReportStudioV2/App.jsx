@@ -1,30 +1,50 @@
-import React, { useMemo, useState } from 'react';
-import TopToolbar from './components/layout/TopToolbar';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import RibbonToolbar from './components/layout/RibbonToolbar';
 import LeftLibrary from './components/layout/LeftLibrary';
 import RightInspector from './components/layout/RightInspector';
 import MultipageView from './components/document/MultipageView';
+import TableOfContents from './components/document/TableOfContents';
+import WorkflowPanel, { createWorkflowEntry, WorkflowStatusBadge } from './components/document/WorkflowPanel';
+import VersionHistory, { createSnapshot } from './components/document/VersionHistory';
+import VersionComparator from './components/document/VersionComparator';
+import VoiceDictation from './components/document/VoiceDictation';
+import PerformanceDashboard from './components/dashboard/PerformanceDashboard';
 import { useEditorStore } from './store/useEditorStore';
 import ReportsAdminModal from './components/modals/ReportsAdminModal';
 import ReadOnlyViewer from './components/viewers/ReadOnlyViewer';
 import ShareReportModal from './components/modals/ShareReportModal';
 import DeleteReportConfirm from './components/modals/DeleteReportConfirm';
 import MapCaptureModal from './components/modals/MapCaptureModal';
+import ImageInsertModal from './components/modals/ImageInsertModal';
 import FormulaAnalysisModal from './components/modals/FormulaAnalysisModal';
 import { saveReportAsync } from './lib/reportsStorage';
-import { fetchReportById } from './lib/api';
+import { startAutosave, stopAutosave, subscribeAutosave } from './lib/autosaveEngine';
+import { downloadMiningReport, importMiningReport, reconcileDocuments } from './lib/miningReportFormat';
+import { exportPDF, exportDOCX, exportPPTX } from './lib/exportEngine';
+import { initAccessibility, destroyAccessibility } from './lib/accessibility';
+import {
+  fetchReportById,
+  syncMiningKpisFromDashboard,
+  syncMiningKpisFromExternal,
+} from './lib/api';
 import { getSession } from '../../auth/authStorage';
+import { telemetryTenantIdFromSession } from '../../auth/telemetryTenant';
 import './styles.css';
+import './ribbon.css';
 
 export default function App({
   openFormulaOnLoad = false,
   platformCompanyName,
-  miningCompanyName,
+  telemetryTenantId: telemetryTenantIdProp,
 }) {
   const session = getSession();
+  const telemetryTenantId = telemetryTenantIdProp ?? telemetryTenantIdFromSession(session);
   const loggedAuthor = session?.fullName || session?.username || 'Usuario';
 
   const doc = useEditorStore((s) => s.doc);
   const addElement = useEditorStore((s) => s.addElement);
+  const updateElement = useEditorStore((s) => s.updateElement);
   const addTextTemplate = useEditorStore((s) => s.addTextTemplate);
   const addPage = useEditorStore((s) => s.addPage);
   const duplicatePage = useEditorStore((s) => s.duplicatePage);
@@ -60,13 +80,76 @@ export default function App({
   const [isSaving, setIsSaving] = useState(false);
   const [saveLabel, setSaveLabel] = useState('Guardar');
   const [showMapCapture, setShowMapCapture] = useState(false);
+  const [showImageInsertModal, setShowImageInsertModal] = useState(false);
+  const [imageInsertReplaceTarget, setImageInsertReplaceTarget] = useState(null);
+  const [imageInsertInitialTab, setImageInsertInitialTab] = useState('file');
+  const [imageInsertOpenSeq, setImageInsertOpenSeq] = useState(0);
+  /** Evita cierre con estado obsoleto al completar desde el portal (ref sincronizado al abrir). */
+  const imageInsertIntentRef = useRef(null);
   const [showFormulaAnalysis, setShowFormulaAnalysis] = useState(openFormulaOnLoad);
+  const [isSyncingKpis, setIsSyncingKpis] = useState(false);
+  const [kpiAutoSyncEnabled, setKpiAutoSyncEnabled] = useState(true);
+  const [syncToast, setSyncToast] = useState(null);
+
+  // ── Stage 1 new state ──
+  const [leftPanelVisible, setLeftPanelVisible] = useState(true);
+  const [rightPanelVisible, setRightPanelVisible] = useState(true);
+  const [showWorkflow, setShowWorkflow] = useState(false);
+  const [workflowStatus, setWorkflowStatus] = useState('draft');
+  const [auditLog, setAuditLog] = useState([]);
+  const [autosaveStatus, setAutosaveStatus] = useState('idle');
+
+  // Handle signal from floating toolbar to open inspector
+  useEffect(() => {
+    const handleOpenInspector = () => setRightPanelVisible(true);
+    window.addEventListener('mining-studio-open-inspector', handleOpenInspector);
+    return () => window.removeEventListener('mining-studio-open-inspector', handleOpenInspector);
+  }, []);
+
+  // Automatically open right panel when an element is selected
+  const selectedElementId = useEditorStore((s) => s.selectedElementId);
+  useEffect(() => {
+    if (selectedElementId) {
+      setRightPanelVisible(true);
+    }
+  }, [selectedElementId]);
+  const [showToc, setShowToc] = useState(false);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [snapshots, setSnapshots] = useState([]);
+  // ── Stage 2 state ──
+  const [showComparator, setShowComparator] = useState(false);
+  const [showVoiceDictation, setShowVoiceDictation] = useState(false);
+  const [showPerfDashboard, setShowPerfDashboard] = useState(false);
 
   const currentReportId = useEditorStore((s) => s.currentReportId);
   const currentReportTitle = useEditorStore((s) => s.currentReportTitle);
   const setCurrentReportId = useEditorStore((s) => s.setCurrentReportId);
   const setCurrentReportTitle = useEditorStore((s) => s.setCurrentReportTitle);
   const loadDocument = useEditorStore((s) => s.loadDocument);
+  const layoutMode = useEditorStore((s) =>
+    s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
+  );
+  const setLayoutMode = useEditorStore((s) => s.setLayoutMode);
+
+  const selectedElement = useMemo(() => {
+    if (!selectedElementId || !selectedPage) return null;
+    const page = doc.pages.find(p => p.page_number === selectedPage);
+    return page?.elements?.find(e => e.id === selectedElementId) || null;
+  }, [doc.pages, selectedPage, selectedElementId]);
+
+  const handleUpdateSelectedProps = useCallback((newProps) => {
+    if (!selectedElementId || !selectedPage || !selectedElement) return;
+    updateElement(selectedPage, selectedElementId, { props: { ...(selectedElement.props || {}), ...newProps } });
+  }, [selectedElementId, selectedPage, selectedElement, updateElement]);
+
+  const currentProps = selectedElement?.props || {};
+  const currentFontFamily = currentProps.fontFamily;
+  const currentFontSize = currentProps.fontSize;
+  const currentFontColor = currentProps.fontColor;
+  const currentAlignment = currentProps.textAlign;
+  const isBold = currentProps.bold;
+  const isItalic = currentProps.italic;
+  const isUnderline = currentProps.underline;
 
   // ── Guardar informe ────────────────────────────────────────────────────────
   const handleSaveReport = async () => {
@@ -264,6 +347,68 @@ export default function App({
     setAiStatus(`IA aplicó ${result.applied} mejora(s) de severidad alta.`);
   };
 
+  const bumpImageInsertModal = useCallback(() => {
+    setImageInsertOpenSeq((n) => n + 1);
+  }, []);
+
+  const openImageInsertForNew = useCallback(() => {
+    imageInsertIntentRef.current = null;
+    setImageInsertReplaceTarget(null);
+    setImageInsertInitialTab('file');
+    bumpImageInsertModal();
+    setShowImageInsertModal(true);
+    setAiStatus('Elija archivo local o cámara web; al confirmar se insertará la imagen en la página activa.');
+  }, [bumpImageInsertModal]);
+
+  const openImageInsertForReplace = useCallback(
+    (pageNumber, elementId, initialTab = 'file') => {
+      const tab = ['file', 'camera', 'network'].includes(initialTab) ? initialTab : 'file';
+      const payload = { pageNumber, elementId };
+      imageInsertIntentRef.current = payload;
+      setImageInsertReplaceTarget(payload);
+      setImageInsertInitialTab(tab);
+      bumpImageInsertModal();
+      setShowImageInsertModal(true);
+      setAiStatus(
+        tab === 'network'
+          ? 'Elija una cámara de la red minera y capture un fotograma.'
+          : tab === 'camera'
+            ? 'Use la cámara web de esta estación y confirme la foto.'
+            : 'Elija un archivo de imagen o use las otras pestañas del cuadro.',
+      );
+    },
+    [bumpImageInsertModal],
+  );
+
+  const handleImageInsertComplete = useCallback(
+    (imageDataUrl) => {
+      if (!imageDataUrl || imageDataUrl.length < 32) {
+        setAiStatus('Error: imagen vacía o inválida.');
+        return;
+      }
+      const target = imageInsertIntentRef.current;
+      if (target?.pageNumber != null && target?.elementId) {
+        updateElement(target.pageNumber, target.elementId, {
+          src: imageDataUrl,
+        });
+        setAiStatus('Imagen del bloque actualizada.');
+      } else {
+        addElement('image', { src: imageDataUrl });
+        setAiStatus('Imagen insertada en la página activa.');
+      }
+      imageInsertIntentRef.current = null;
+      setShowImageInsertModal(false);
+      setImageInsertReplaceTarget(null);
+    },
+    [addElement, updateElement],
+  );
+
+  const closeImageInsertModal = useCallback(() => {
+    imageInsertIntentRef.current = null;
+    setShowImageInsertModal(false);
+    setImageInsertReplaceTarget(null);
+  }, []);
+
   // ── Handler para insertar imagen capturada del mapa ──
   const handleMapCaptureComplete = (imageDataUrl) => {
     if (!imageDataUrl || imageDataUrl.length < 100) {
@@ -272,50 +417,19 @@ export default function App({
       return;
     }
 
-    // Cerramos el modal
     setShowMapCapture(false);
-    
-    // Creamos un elemento de imagen con la captura
-    const page = doc.pages.find((p) => p.page_number === selectedPage);
-    if (!page) {
-      console.error('Página actual no encontrada');
-      return;
-    }
 
-    const newElement = {
-      id: `map-image-${selectedPage}-${Date.now()}`,
-      type: 'image',
-      x: 40,
-      y: page.elements.length ? Math.max(...page.elements.map((e) => e.y + e.height)) + 12 : 90,
+    addElement('image', {
+      src: imageDataUrl,
       width: 350,
       height: 280,
-      zIndex: page.elements.length,
-      locked: false,
-      src: imageDataUrl,
       objectFit: 'cover',
       props: {
         alt: 'Captura del Mapa Detallado Pro',
         borderRadius: 8,
         borderColor: '#cbd5e1',
-        borderWidth: 2
-      }
-    };
-
-    // Insertamos el elemento en la página actual
-    const updatedPages = doc.pages.map((p) => {
-      if (p.page_number === selectedPage) {
-        return { ...p, elements: [...p.elements, newElement] };
-      }
-      return p;
-    });
-
-    useEditorStore.setState({
-      doc: {
-        ...doc,
-        pages: updatedPages,
-        meta: { ...doc.meta, version: doc.meta.version + 1, updatedAt: new Date().toISOString() }
+        borderWidth: 2,
       },
-      selectedElementId: newElement.id
     });
 
     setAiStatus('Imagen de mapa insertada correctamente en la página actual.');
@@ -344,50 +458,302 @@ export default function App({
 
   const handleZoomIn = () => setZoomPercent((prev) => Math.min(180, prev + 10));
   const handleZoomOut = () => setZoomPercent((prev) => Math.max(60, prev - 10));
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const handleSyncMiningKpis = async () => {
+    if (isSyncingKpis) {
+      return;
+    }
+    try {
+      setIsSyncingKpis(true);
+      let lastError;
+      const delays = [700, 1400, 2800];
+      for (let attempt = 0; attempt < delays.length; attempt += 1) {
+        try {
+          const external = await syncMiningKpisFromExternal();
+          let totalSynced = Number(external?.synced ?? 0);
+          let source = 'fuente externa';
+          let note = external?.message || '';
+          let runtimeCount = Number(external?.existing_runtime ?? 0);
+          if (totalSynced <= 0) {
+            const local = await syncMiningKpisFromDashboard();
+            totalSynced = Number(local?.synced ?? 0);
+            source = 'dashboard local';
+            note = local?.message || note;
+            runtimeCount = Number(local?.existing_runtime ?? runtimeCount ?? 0);
+          }
+          let msg = `Sin nuevos KPI para sincronizar (${source}). ${note}`.trim();
+          if (totalSynced > 0) {
+            msg = `KPI sincronizados (${source}): ${totalSynced}`;
+          } else if (/mantienen KPI runtime/i.test(String(note || '')) || runtimeCount > 0) {
+            msg = `KPI vigentes sin cambios (${source}). Activos: ${runtimeCount}`;
+          }
+          setAiStatus(msg);
+          setSyncToast({
+            type: totalSynced > 0 ? 'success' : 'warning',
+            message: msg,
+          });
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('report-kpi-sync-complete'));
+          }
+          return;
+        } catch (err) {
+          lastError = err;
+          if (attempt < delays.length - 1) {
+            await wait(delays[attempt]);
+          }
+        }
+      }
+      throw lastError || new Error('No se pudo sincronizar KPI');
+    } catch (err) {
+      const message = err?.message || 'No se pudo sincronizar KPI desde operación.';
+      setAiStatus(message);
+      setSyncToast({ type: 'error', message });
+    } finally {
+      setIsSyncingKpis(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!kpiAutoSyncEnabled) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      handleSyncMiningKpis();
+    }, 180000);
+    return () => clearInterval(timer);
+  }, [kpiAutoSyncEnabled]);
+
+  // ── Autosave engine ──
+  useEffect(() => {
+    const unsub = subscribeAutosave((state) => setAutosaveStatus(state.status));
+    startAutosave(
+      () => useEditorStore.getState().doc,
+      async (doc) => {
+        if (!session || !currentReportId) return;
+        await saveReportAsync({
+          id: currentReportId,
+          title: currentReportTitle,
+          contentJson: JSON.stringify(doc),
+          status: workflowStatus,
+          createdBy: session.username,
+          company: session.company || 'default',
+        });
+      },
+      currentReportId,
+    );
+    return () => { stopAutosave(); unsub(); };
+  }, [currentReportId, session?.username]);
+
+  // ── Workflow transitions ──
+  const handleWorkflowTransition = useCallback((nextStatus, comment) => {
+    const prevHash = auditLog.length > 0 ? auditLog[auditLog.length - 1].hash : '00000000';
+    const entry = createWorkflowEntry(
+      `${workflowStatus} → ${nextStatus}`,
+      loggedAuthor,
+      prevHash,
+      comment,
+    );
+    setAuditLog((prev) => [...prev, entry]);
+    setWorkflowStatus(nextStatus);
+    setAiStatus(`Workflow: ${nextStatus.toUpperCase()}`);
+  }, [workflowStatus, auditLog, loggedAuthor]);
+
+  // ── .miningreport export/import ──
+  const handleExportMiningReport = useCallback(async () => {
+    try {
+      await downloadMiningReport(doc, {
+        author: loggedAuthor,
+        company: session?.company,
+        unit: session?.miningUnit,
+        title: currentReportTitle,
+        auditLog,
+        workflow: { status: workflowStatus },
+      });
+      setAiStatus('Archivo .miningreport exportado exitosamente.');
+    } catch (err) {
+      console.error('Export .miningreport failed', err);
+      setAiStatus('Error al exportar .miningreport.');
+    }
+  }, [doc, loggedAuthor, session, currentReportTitle, auditLog, workflowStatus]);
+
+  const handleImportMiningReport = useCallback(async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.miningreport';
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const result = await importMiningReport(file);
+        if (!result.isValid) {
+          const proceed = confirm('⚠️ La firma SHA-256 no es válida. ¿Desea abrir el archivo de todas formas?');
+          if (!proceed) return;
+        }
+        loadDocument(result.document, null, result.manifest?.title);
+        setWorkflowStatus(result.workflow?.status || 'draft');
+        setAuditLog(result.auditLog || []);
+        setAiStatus(`Importado: ${result.manifest?.title || 'Informe'} (${result.isValid ? 'firma válida ✓' : 'firma inválida ⚠'})`);
+      } catch (err) {
+        console.error('Import .miningreport failed', err);
+        setAiStatus('Error al importar archivo .miningreport.');
+      }
+    };
+    input.click();
+  }, [loadDocument]);
+
+  // ── Export handlers ──
+  const handleExportPdf = useCallback(async () => {
+    setAiStatus('Exportando PDF...');
+    const result = await exportPDF(doc, { author: loggedAuthor });
+    setAiStatus(result.success ? `PDF exportado (${result.method})` : 'Error al exportar PDF');
+  }, [doc, loggedAuthor]);
+
+  const handleExportDocx = useCallback(async () => {
+    setAiStatus('Exportando DOCX...');
+    const result = await exportDOCX(doc, { author: loggedAuthor });
+    setAiStatus(result.success ? `DOCX exportado (${result.method})` : 'Error al exportar DOCX');
+  }, [doc, loggedAuthor]);
+
+  const handleExportPptx = useCallback(async () => {
+    setAiStatus('Exportando PPTX...');
+    const result = await exportPPTX(doc, { author: loggedAuthor });
+    setAiStatus(result.success ? 'PPTX exportado' : 'Error al exportar PPTX');
+  }, [doc, loggedAuthor]);
+
+  // ── Version snapshots ──
+  const handleCreateSnapshot = useCallback(() => {
+    const desc = prompt('Descripción del snapshot:', `Versión ${doc.meta?.version || 1}`);
+    if (desc === null) return;
+    const snap = createSnapshot(doc, loggedAuthor, desc);
+    setSnapshots((prev) => [...prev, snap]);
+    setAiStatus(`Snapshot v${snap.version} creado.`);
+  }, [doc, loggedAuthor]);
+
+  const handleRestoreSnapshot = useCallback((snap) => {
+    loadDocument(snap.documentData, currentReportId, currentReportTitle);
+    setAiStatus(`Restaurado a versión ${snap.version}.`);
+  }, [loadDocument, currentReportId, currentReportTitle]);
+
+  // ── Voice dictation insert ──
+  const handleVoiceInsert = useCallback((text) => {
+    addElement('text', {
+      props: { text, fontFamily: 'Inter', fontSize: 12, fontColor: '#1e293b' },
+    });
+    setAiStatus(`Dictado insertado (${text.length} caracteres)`);
+  }, [addElement]);
+
+  // ── Accessibility init ──
+  useEffect(() => {
+    initAccessibility();
+    return () => destroyAccessibility();
+  }, []);
+
+  const [designToolbarHost, setDesignToolbarHost] = useState(null);
+  useLayoutEffect(() => {
+    setDesignToolbarHost(document.getElementById('report-v2-design-toolbar-host'));
+  }, []);
+
+  const designToolbar = (
+    <RibbonToolbar
+      onExportPdf={handleExportPdf}
+      onExportVideo={handleExportVideo}
+      onPrint={() => window.print()}
+      onReviewDocument={handleReviewDocument}
+      onOptimizeDocument={handleOptimizeDocument}
+      onZoomIn={handleZoomIn}
+      onZoomOut={handleZoomOut}
+      gridEnabled={gridEnabled}
+      snapEnabled={snapEnabled}
+      onToggleGrid={() => setGridEnabled(!gridEnabled)}
+      onToggleSnap={() => setSnapEnabled(!snapEnabled)}
+      isRecording={isRecording}
+      isOptimizing={isOptimizing}
+      zoomPercent={zoomPercent}
+      onOpenReportsAdmin={() => setShowReportsAdmin(true)}
+      onSaveReport={handleSaveReport}
+      isSaving={isSaving}
+      saveLabel={saveLabel}
+      onOpenFormulaAnalysis={() => setShowFormulaAnalysis(true)}
+      onSyncMiningKpis={handleSyncMiningKpis}
+      isSyncingKpis={isSyncingKpis}
+      kpiAutoSyncEnabled={kpiAutoSyncEnabled}
+      onToggleKpiAutoSync={() => setKpiAutoSyncEnabled((prev) => !prev)}
+      layoutMode={layoutMode}
+      onLayoutModeChange={setLayoutMode}
+      onInsertElement={(type) => {
+        if (type === 'map') setShowMapCapture(true);
+        else if (type === 'image') openImageInsertForNew();
+        else addElement(type);
+      }}
+      onAddPage={addPage}
+      onDuplicatePage={() => duplicatePage(selectedPage)}
+      onAddTemplate={(tmpl) => addTextTemplate(tmpl)}
+      onInsertTOC={() => setShowToc((v) => !v)}
+      onStartWorkflow={() => setShowWorkflow((v) => !v)}
+      onToggleLeftPanel={() => setLeftPanelVisible((v) => !v)}
+      onToggleRightPanel={() => setRightPanelVisible((v) => !v)}
+      leftPanelVisible={leftPanelVisible}
+      rightPanelVisible={rightPanelVisible}
+      onExportMiningReport={handleExportMiningReport}
+      onImportMiningReport={handleImportMiningReport}
+      onExportDocx={handleExportDocx}
+      onExportPptx={handleExportPptx}
+      onCreateSnapshot={handleCreateSnapshot}
+      onShowVersionHistory={() => setShowVersionHistory((v) => !v)}
+      onShowComparator={() => setShowComparator((v) => !v)}
+      onToggleVoiceDictation={() => setShowVoiceDictation((v) => !v)}
+      onTogglePerfDashboard={() => setShowPerfDashboard((v) => !v)}
+      currentFontFamily={currentFontFamily}
+      currentFontSize={currentFontSize}
+      currentFontColor={currentFontColor}
+      currentAlignment={currentAlignment}
+      currentBold={isBold}
+      currentItalic={isItalic}
+      currentUnderline={isUnderline}
+      onApplyHeadingStyle={(style) => handleUpdateSelectedProps({ fontSize: style.fontSize, bold: style.fontWeight >= 600, fontColor: style.color })}
+      onToggleBold={() => handleUpdateSelectedProps({ bold: !isBold })}
+      onToggleItalic={() => handleUpdateSelectedProps({ italic: !isItalic })}
+      onToggleUnderline={() => handleUpdateSelectedProps({ underline: !isUnderline })}
+      onSetAlignment={(align) => handleUpdateSelectedProps({ textAlign: align })}
+      onSetFontFamily={(font) => handleUpdateSelectedProps({ fontFamily: font })}
+      onSetFontSize={(size) => handleUpdateSelectedProps({ fontSize: size })}
+      onSetFontColor={(color) => handleUpdateSelectedProps({ fontColor: color })}
+    />
+  );
 
   return (
     <div className="app-shell">
-      <TopToolbar
-        companyName={miningCompanyName || session?.company}
-        platformCompanyName={platformCompanyName || session?.platformCompany || session?.ownerCompany}
-        onExportPdf={() => window.print()}
-        onExportVideo={handleExportVideo}
-        onPrint={() => window.print()}
-        onReviewDocument={handleReviewDocument}
-        onOptimizeDocument={handleOptimizeDocument}
-        onZoomIn={handleZoomIn}
-        onZoomOut={handleZoomOut}
-        gridEnabled={gridEnabled}
-        snapEnabled={snapEnabled}
-        onToggleGrid={() => setGridEnabled(!gridEnabled)}
-        onToggleSnap={() => setSnapEnabled(!snapEnabled)}
-        isRecording={isRecording}
-        isOptimizing={isOptimizing}
-        zoomPercent={zoomPercent}
-        onOpenReportsAdmin={() => setShowReportsAdmin(true)}
-        onSaveReport={handleSaveReport}
-        isSaving={isSaving}
-        saveLabel={saveLabel}
-        onOpenFormulaAnalysis={() => setShowFormulaAnalysis(true)}
-      />
+      {designToolbarHost ? createPortal(designToolbar, designToolbarHost) : designToolbar}
+      {syncToast ? (
+        <div className={`sync-toast sync-toast--${syncToast.type}`}>
+          <span>{syncToast.message}</span>
+          <button type="button" onClick={() => setSyncToast(null)} aria-label="Cerrar">
+            ×
+          </button>
+        </div>
+      ) : null}
 
       <div className="studio-layout">
-        <LeftLibrary
-          onAdd={(type) => {
-            if (type === 'map') {
-              setShowMapCapture(true);
-            } else {
-              addElement(type);
-            }
-          }}
-          onAddPage={addPage}
-          onDuplicatePage={() => duplicatePage(selectedPage)}
-          onAddHeader={() => addTextTemplate('header')}
-          onAddFooter={() => addTextTemplate('footer')}
-          onAddFindings={() => addTextTemplate('findings')}
-          onExportVideo={handleExportVideo}
-          isRecording={isRecording}
-        />
+        {leftPanelVisible && (
+          <LeftLibrary
+            onAdd={(type) => {
+              if (type === 'map') {
+                setShowMapCapture(true);
+              } else if (type === 'image') {
+                openImageInsertForNew();
+              } else {
+                addElement(type);
+              }
+            }}
+            onAddPage={addPage}
+            onDuplicatePage={() => duplicatePage(selectedPage)}
+            onAddHeader={() => addTextTemplate('header')}
+            onAddFooter={() => addTextTemplate('footer')}
+            onAddFindings={() => addTextTemplate('findings')}
+            onExportVideo={handleExportVideo}
+            isRecording={isRecording}
+          />
+        )}
 
         <main className="studio-main">
           <div className="doc-header-meta">
@@ -396,6 +762,11 @@ export default function App({
             <span>Autor: <b>{loggedAuthor}</b></span>
             <span style={{ height: '14px', width: '1px', background: 'var(--border)' }}></span>
             <span>Versión: <b>{versionLabel}</b></span>
+            <span style={{ height: '14px', width: '1px', background: 'var(--border)' }}></span>
+            <WorkflowStatusBadge status={workflowStatus} />
+            <span className={`autosave-indicator autosave-indicator--${autosaveStatus}`}>
+              {autosaveStatus === 'saving' ? '● Guardando...' : autosaveStatus === 'saved' ? '✓ Guardado' : autosaveStatus === 'error' ? '✕ Error' : '○ Auto'}
+            </span>
             {aiStatus ? (
               <>
                 <span style={{ height: '14px', width: '1px', background: 'var(--border)' }}></span>
@@ -403,10 +774,55 @@ export default function App({
               </>
             ) : null}
           </div>
-          <MultipageView zoomPercent={zoomPercent} />
-        </main>
 
-        <RightInspector />
+          {showToc && <TableOfContents doc={doc} onRefresh={() => setShowToc(true)} />}
+          {showWorkflow && (
+            <WorkflowPanel
+              reportId={currentReportId}
+              currentStatus={workflowStatus}
+              auditLog={auditLog}
+              onTransition={handleWorkflowTransition}
+              onClose={() => setShowWorkflow(false)}
+              currentUser={loggedAuthor}
+            />
+          )}
+          {showVersionHistory && (
+            <VersionHistory
+              snapshots={snapshots}
+              currentVersion={doc.meta?.version}
+              onRestore={handleRestoreSnapshot}
+              onPreview={(snap) => setAiStatus(`Vista previa: v${snap.version} — ${snap.description}`)}
+              onClose={() => setShowVersionHistory(false)}
+            />
+          )}
+          {showComparator && (
+            <VersionComparator
+              snapshots={snapshots}
+              currentDoc={doc}
+              onClose={() => setShowComparator(false)}
+            />
+          )}
+          {showVoiceDictation && (
+            <VoiceDictation
+              onInsertText={handleVoiceInsert}
+              onTranscriptUpdate={(t) => setAiStatus(`🎤 ${t.slice(0, 40)}…`)}
+              language="es-PE"
+            />
+          )}
+          {showPerfDashboard && (
+            <PerformanceDashboard
+              visible={showPerfDashboard}
+              onClose={() => setShowPerfDashboard(false)}
+            />
+          )}
+
+          <MultipageView zoomPercent={zoomPercent} onRequestImageReplace={openImageInsertForReplace} />
+        </main>
+        <div id="aria-live-region" aria-live="polite" />
+
+        {rightPanelVisible && (
+          <RightInspector onRequestImageReplace={openImageInsertForReplace} />
+        )}
       </div>
 
       {showReview && reviewResult ? (
@@ -599,12 +1015,30 @@ export default function App({
         />
       )}
 
-      {showMapCapture && (
-        <MapCaptureModal
-          onClose={() => setShowMapCapture(false)}
-          onCaptureComplete={handleMapCaptureComplete}
-        />
-      )}
+      {typeof document !== 'undefined' && showMapCapture
+        ? createPortal(
+            <MapCaptureModal
+              onClose={() => setShowMapCapture(false)}
+              onCaptureComplete={handleMapCaptureComplete}
+              companyName={session?.company}
+            />,
+            document.body,
+          )
+        : null}
+
+      {typeof document !== 'undefined' && showImageInsertModal
+        ? createPortal(
+            <ImageInsertModal
+              key={`img-insert-${imageInsertOpenSeq}`}
+              onClose={closeImageInsertModal}
+              onComplete={handleImageInsertComplete}
+              telemetryTenantId={telemetryTenantId}
+              initialTab={imageInsertInitialTab}
+              openSequence={imageInsertOpenSeq}
+            />,
+            document.body,
+          )
+        : null}
 
       {showFormulaAnalysis && (
         <FormulaAnalysisModal onClose={() => setShowFormulaAnalysis(false)} />

@@ -1,0 +1,5 @@
+﻿{
+    "backend":  true,
+    "frontend":  true,
+    "tileserver":  true
+}

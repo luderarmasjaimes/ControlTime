@@ -105,7 +105,7 @@ const TechnicalCage = () => {
                 <Line
                     key={`vert-${i}`}
                     points={[[x, 0, z], [x, -15, z]]} // 3x depth
-                    color="#cbd5e1"
+                    color="#64748b"
                     lineWidth={1}
                 />
             ))}
@@ -115,12 +115,12 @@ const TechnicalCage = () => {
                 <group key={`h-${y}`} position={[0, y, 0]}>
                     <Line
                         points={[[-15, 0, 15], [15, 0, 15], [15, 0, -15], [-15, 0, -15], [-15, 0, 15]]}
-                        color="#cbd5e1"
+                        color="#475569"
                         lineWidth={0.5}
                         transparent
-                        opacity={0.5}
+                        opacity={0.55}
                     />
-                    <gridHelper args={[30, 8, 0xe2e8f0, 0xf8fafc]} />
+                    <gridHelper args={[30, 8, 0x334155, 0x1e293b]} />
                 </group>
             ))}
 
@@ -130,7 +130,7 @@ const TechnicalCage = () => {
                     key={l}
                     position={[-16.5, -d * 0.375, 15]} // multiplied by 3
                     fontSize={1.2}
-                    color="#64748b"
+                    color="#94a3b8"
                     anchorX="right"
                 >
                     {l}
@@ -143,7 +143,7 @@ const TechnicalCage = () => {
                     key={`x-v-${val}`}
                     position={[val * 0.375, 1.5, 15]} // multiplied by 3
                     fontSize={0.9}
-                    color="#94a3b8"
+                    color="#cbd5e1"
                 >
                     {val === 0 ? "0.00" : val.toFixed(2)}
                 </Text>
@@ -155,7 +155,7 @@ const TechnicalCage = () => {
                     key={`y-v-${val}`}
                     position={[16.5, 1.5, (val - 20) * 0.75]} // multiplied by 3
                     fontSize={0.9}
-                    color="#94a3b8"
+                    color="#cbd5e1"
                     rotation={[-Math.PI / 2, 0, Math.PI / 2]}
                 >
                     {val.toFixed(2)}
@@ -168,15 +168,16 @@ const TechnicalCage = () => {
 
 const Viewer3D = ({ azimuthAngle = 0, installationAngle = 0 }) => {
     return (
-        <div className="relative flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-white">
-            <Canvas className="block min-h-0 flex-1 touch-none" style={{ minHeight: 0 }} camera={{ position: [40, 20, 40], fov: 45 }} gl={{ alpha: true, antialias: true }}>
-                <color attach="background" args={['#ffffff']} />
-                <ambientLight intensity={1.5} />
-                <pointLight position={[20, 20, 20]} intensity={1} />
+        <div className="relative flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-slate-950">
+            <Canvas className="block min-h-0 flex-1 touch-none" style={{ minHeight: 0 }} camera={{ position: [40, 20, 40], fov: 45 }} gl={{ alpha: false, antialias: true }}>
+                <color attach="background" args={['#0b1220']} />
+                <ambientLight intensity={0.85} />
+                <pointLight position={[20, 20, 20]} intensity={1.1} />
+                <pointLight position={[-18, 8, -12]} intensity={0.35} color="#38bdf8" />
 
                 <Suspense fallback={null}>
                     <group position={[0, 9, 0]}> {/* Centered for 15-unit height prism */}
-                        <Trajectories azimuthAngle={azimuthAngle} />
+                        <Trajectories azimuthAngle={azimuthAngle} installationAngle={installationAngle} />
                         <TechnicalCage />
                         {/* Ideal Center Reference */}
                         <Line
@@ -193,16 +194,16 @@ const Viewer3D = ({ azimuthAngle = 0, installationAngle = 0 }) => {
             </Canvas>
 
             {/* Fixed UI Overlays */}
-            <div className="absolute left-10 top-1/2 -translate-y-1/2 -rotate-90 text-[10px] text-slate-400 font-bold uppercase tracking-[0.2em] whitespace-nowrap pointer-events-none">
-                Depth m
+            <div className="pointer-events-none absolute left-3 top-1/2 z-10 max-w-[8rem] -translate-y-1/2 -rotate-90 text-[9px] font-bold uppercase tracking-[0.18em] text-slate-400 sm:left-6 sm:text-[10px]">
+                Profundidad (m)
             </div>
 
-            <div className="absolute bottom-10 left-[45%] text-[10px] text-slate-400 font-bold uppercase tracking-[0.2em] pointer-events-none">
-                Displacement X mm
+            <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 max-w-[40%] -translate-x-1/2 text-center text-[9px] font-bold uppercase tracking-[0.15em] text-slate-400 sm:bottom-4 sm:text-[10px]">
+                Desplazamiento X (mm)
             </div>
 
-            <div className="absolute bottom-10 right-[25%] text-[10px] text-slate-400 font-bold uppercase tracking-[0.2em] pointer-events-none">
-                Displacement Y mm
+            <div className="pointer-events-none absolute bottom-3 right-[12%] z-10 hidden max-w-[30%] text-[9px] font-bold uppercase tracking-[0.15em] text-slate-400 sm:block sm:text-[10px] md:right-[18%]">
+                Desplazamiento Y (mm)
             </div>
         </div>
     )

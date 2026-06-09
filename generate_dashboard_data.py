@@ -33,7 +33,7 @@ sql.append("CREATE TABLE surveillance_cameras (id SERIAL PRIMARY KEY, name VARCH
 sql.append("INSERT INTO surveillance_cameras (name, location, rtmp_url, status, lat, lng) VALUES ('Cam 01', 'Tajo', '', 'online', -17.245, -70.61);")
 
 sql.append("DROP TABLE IF EXISTS map_markers;")
-sql.append("CREATE TABLE map_markers (id SERIAL PRIMARY KEY, type VARCHAR(50), lat NUMERIC, lng NUMERIC, name VARCHAR(100), status VARCHAR(20));")
+sql.append("CREATE TABLE map_markers (id SERIAL PRIMARY KEY, type VARCHAR(50), lat NUMERIC, lng NUMERIC, name VARCHAR(100), status VARCHAR(20), updated_at TIMESTAMPTZ DEFAULT now());")
 sql.append("INSERT INTO map_markers (type, lat, lng, name, status) VALUES ('sensor', -17.245, -70.61, 'Inclinometer 01', 'active');")
 
 # --- New Advanced Sensor Tables ---

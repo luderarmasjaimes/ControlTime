@@ -1,19 +1,30 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
+import { Activity, AlertTriangle, RefreshCw, Radio, MapPin } from 'lucide-react';
+import MiningWorkbenchHeader from './MiningWorkbenchHeader.jsx';
+import { TELEMETRY_DEFAULT_TENANT_ID } from '../../auth/telemetryTenant';
 
 const defaultScope = {
-    miningCompanyName: 'ACTIVOS MINEROS',
-    siteUnitName: 'UNIDAD PRINCIPAL',
+    telemetryTenantId: TELEMETRY_DEFAULT_TENANT_ID,
 };
 
-const AdvancedSensors = ({
-    miningCompanyName = defaultScope.miningCompanyName,
-    siteUnitName = defaultScope.siteUnitName,
-}) => {
+function statusBadgeClass(status) {
+    const s = String(status || '').toLowerCase();
+    if (s === 'online' || s === 'ok') return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/35';
+    if (s === 'warning' || s === 'degraded') return 'bg-amber-500/15 text-amber-200 border-amber-500/35';
+    if (s === 'critical' || s === 'alarm') return 'bg-rose-500/15 text-rose-200 border-rose-500/35';
+    if (s === 'offline' || s === 'down') return 'bg-slate-700 text-slate-400 border-slate-600';
+    return 'bg-slate-800 text-slate-400 border-slate-700';
+}
+
+const AdvancedSensors = ({ telemetryTenantId = defaultScope.telemetryTenantId }) => {
     const [data, setData] = useState({ categories: [], sensor_types: [], sensors: [], history: [] });
     const [selectedCategoryId, setSelectedCategoryId] = useState(1);
     const [selectedSensorId, setSelectedSensorId] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [loadError, setLoadError] = useState(null);
+    const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -23,14 +34,37 @@ const AdvancedSensors = ({
                 if (typeof process !== 'undefined' && process.env?.VITEST) {
                     return;
                 }
+                setLoadError(null);
                 const url = new URL('/api/sensors/data', window.location.origin);
-                url.searchParams.set('mining_company', miningCompanyName);
-                url.searchParams.set('site_unit', siteUnitName);
+                if (telemetryTenantId) url.searchParams.set('tenant_id', telemetryTenantId);
                 const res = await fetch(url.toString());
-                if (!res.ok) return;
-                const json = await res.json();
+                const text = await res.text();
+                let json = {};
+                try {
+                    json = text ? JSON.parse(text) : {};
+                } catch {
+                    if (!cancelled) {
+                        setLoadError('Respuesta no válida del servidor');
+                        setLoading(false);
+                        setRefreshing(false);
+                    }
+                    return;
+                }
+                if (!res.ok) {
+                    if (!cancelled) {
+                        setLoadError(json.error || `Error HTTP ${res.status}`);
+                        setData({ categories: [], sensor_types: [], sensors: [], history: [] });
+                    }
+                    return;
+                }
                 if (cancelled) return;
-                setData(json);
+                setData({
+                    categories: json.categories || [],
+                    sensor_types: json.sensor_types || [],
+                    sensors: json.sensors || [],
+                    history: json.history || [],
+                });
+                setHasLoadedOnce(true);
                 setSelectedSensorId((prev) => {
                     const ids = (json.sensors || []).map((s) => s.id);
                     if (prev != null && ids.includes(prev)) return prev;
@@ -38,19 +72,59 @@ const AdvancedSensors = ({
                 });
             } catch (err) {
                 console.error('Error fetching sensor data:', err);
+                if (!cancelled) setLoadError('No se pudo conectar con /api/sensors/data');
             } finally {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) {
+                    setLoading(false);
+                    setRefreshing(false);
+                }
             }
         };
 
         setLoading(true);
         fetchData();
-        const interval = setInterval(fetchData, 5000);
+        const interval = setInterval(fetchData, 15000);
         return () => {
             cancelled = true;
             clearInterval(interval);
         };
-    }, [miningCompanyName, siteUnitName]);
+    }, [telemetryTenantId]);
+
+    const manualRefresh = () => {
+        setRefreshing(true);
+        const url = new URL('/api/sensors/data', window.location.origin);
+        if (telemetryTenantId) url.searchParams.set('tenant_id', telemetryTenantId);
+        fetch(url.toString())
+            .then(async (res) => {
+                const text = await res.text();
+                let json = {};
+                try {
+                    json = text ? JSON.parse(text) : {};
+                } catch {
+                    setLoadError('Respuesta no válida del servidor');
+                    return;
+                }
+                if (!res.ok) {
+                    setLoadError(json.error || `Error HTTP ${res.status}`);
+                    return;
+                }
+                setLoadError(null);
+                setData({
+                    categories: json.categories || [],
+                    sensor_types: json.sensor_types || [],
+                    sensors: json.sensors || [],
+                    history: json.history || [],
+                });
+                setHasLoadedOnce(true);
+                setSelectedSensorId((prev) => {
+                    const ids = (json.sensors || []).map((s) => s.id);
+                    if (prev != null && ids.includes(prev)) return prev;
+                    return json.sensors?.[0]?.id ?? null;
+                });
+            })
+            .catch(() => setLoadError('Error de red al actualizar'))
+            .finally(() => setRefreshing(false));
+    };
 
     useEffect(() => {
         const types = data.sensor_types;
@@ -89,7 +163,7 @@ const AdvancedSensors = ({
             return cat?.name === 'Geotecnia';
         });
         const geoRisk =
-            geo.some((s) => s.status === 'warning' || s.status === 'critical') ? 'Atención' : 'Bajo Riesgo';
+            geo.some((s) => s.status === 'warning' || s.status === 'critical') ? 'Atención' : 'Bajo riesgo';
         return { total, lastHour, alerts, geoRisk };
     }, [data.history, data.sensors, data.sensor_types, data.categories]);
 
@@ -98,14 +172,17 @@ const AdvancedSensors = ({
             return {
                 backgroundColor: 'transparent',
                 title: {
-                    text: 'Seleccione un sensor',
+                    text: 'Seleccione un sensor en la lista',
                     left: 'center',
                     top: 'middle',
                     textStyle: { color: '#64748b', fontSize: 14 },
                 },
             };
         }
-        const sensorHistory = data.history.filter((h) => h.sensor_id === selectedSensorId);
+        const sensorHistory = data.history
+            .filter((h) => h.sensor_id === selectedSensorId)
+            .slice()
+            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
         const sensor = data.sensors.find((s) => s.id === selectedSensorId);
         const type = data.sensor_types.find((t) => t.id === sensor?.type_id);
 
@@ -113,76 +190,76 @@ const AdvancedSensors = ({
             return {
                 backgroundColor: 'transparent',
                 title: {
-                    text: 'Sin series en el período (7 días)',
+                    text: 'Sin historial en los últimos 7 días',
+                    subtext: 'Tabla mining_sensor_history · mismo ámbito mina/unidad',
                     left: 'center',
                     top: 'middle',
                     textStyle: { color: '#64748b', fontSize: 14 },
+                    subtextStyle: { color: '#475569', fontSize: 11 },
                 },
             };
         }
 
-        const safeValue = type?.name === 'pH' ? 7.0 : type?.unit === 'kPa' ? 200 : 50;
-        const warningThreshold = safeValue * 1.2;
-        const criticalThreshold = safeValue * 1.4;
+        const values = sensorHistory.map((h) => Number(h.value));
+        const minV = Math.min(...values);
+        const maxV = Math.max(...values);
+        const span = Math.max(maxV - minV, 1e-6);
+        const pad = span * 0.12;
+
+        const seriesData = sensorHistory.map((h) => [h.timestamp, h.value]);
 
         return {
             backgroundColor: 'transparent',
+            title: {
+                text: `${sensor?.name || 'Sensor'}`,
+                subtext: `${type?.name || 'Magnitud'} (${type?.unit || '—'}) · ${sensorHistory.length} puntos`,
+                left: 'center',
+                top: 4,
+                textStyle: { color: '#e2e8f0', fontSize: 15 },
+                subtextStyle: { color: '#64748b', fontSize: 11 },
+            },
             tooltip: {
                 trigger: 'axis',
-                backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                backgroundColor: 'rgba(15, 23, 42, 0.95)',
                 borderColor: '#334155',
                 textStyle: { color: '#fff' },
                 formatter: (params) => {
                     const p = params[0];
-                    return `<div class="p-2">
-                        <div class="text-slate-400 text-xs">${p.name}</div>
-                        <div class="font-bold text-lg">${p.value} <span class="text-sm font-normal">${type?.unit || ''}</span></div>
+                    const ts = p.value[0];
+                    const val = p.value[1];
+                    const tlabel = new Date(ts).toLocaleString();
+                    return `<div class="p-1">
+                        <div class="text-slate-400 text-xs">${tlabel}</div>
+                        <div class="font-bold text-lg">${Number(val).toLocaleString(undefined, { maximumFractionDigits: 3 })} <span class="text-sm font-normal">${type?.unit || ''}</span></div>
                     </div>`;
                 },
             },
-            grid: { top: 60, bottom: 40, left: 60, right: 30 },
+            grid: { top: 72, bottom: 48, left: 56, right: 24 },
             xAxis: {
-                type: 'category',
-                data: sensorHistory.map((h) =>
-                    new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                ),
+                type: 'time',
                 axisLine: { lineStyle: { color: '#334155' } },
-                axisLabel: { color: '#94a3b8', fontSize: 10, interval: Math.floor(sensorHistory.length / 6) },
+                axisLabel: { color: '#94a3b8', fontSize: 10 },
+                splitLine: { show: false },
             },
             yAxis: {
                 type: 'value',
                 name: type?.unit || '',
+                min: minV - pad,
+                max: maxV + pad,
                 nameTextStyle: { color: '#64748b', fontSize: 10 },
                 axisLine: { show: false },
                 axisLabel: { color: '#94a3b8' },
-                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } },
-                scale: true,
-            },
-            visualMap: {
-                show: false,
-                dimension: 1,
-                pieces: [
-                    { gt: 0, lte: warningThreshold, color: '#38bdf8' },
-                    { gt: warningThreshold, lte: criticalThreshold, color: '#f59e0b' },
-                    { gt: criticalThreshold, color: '#f43f5e' },
-                ],
+                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
             },
             series: [
                 {
                     name: sensor?.name,
-                    data: sensorHistory.map((h) => h.value),
                     type: 'line',
-                    smooth: 0.3,
-                    showSymbol: false,
-                    lineStyle: { width: 3 },
-                    animationDurationUpdate: 1000,
-                    markLine: {
-                        silent: true,
-                        symbol: ['none', 'none'],
-                        label: { position: 'end', color: '#f43f5e', fontSize: 10, formatter: 'LIMITE CRÍTICO' },
-                        lineStyle: { color: 'rgba(244, 63, 94, 0.3)', type: 'dashed' },
-                        data: [{ yAxis: criticalThreshold }],
-                    },
+                    smooth: 0.25,
+                    showSymbol: sensorHistory.length < 48,
+                    symbolSize: 4,
+                    data: seriesData,
+                    lineStyle: { width: 2, color: '#38bdf8' },
                     areaStyle: {
                         color: {
                             type: 'linear',
@@ -191,7 +268,7 @@ const AdvancedSensors = ({
                             x2: 0,
                             y2: 1,
                             colorStops: [
-                                { offset: 0, color: 'rgba(56, 189, 248, 0.2)' },
+                                { offset: 0, color: 'rgba(56, 189, 248, 0.22)' },
                                 { offset: 1, color: 'rgba(56, 189, 248, 0)' },
                             ],
                         },
@@ -204,141 +281,192 @@ const AdvancedSensors = ({
     const samplesLabel =
         kpiStats.total >= 1000 ? `${(kpiStats.total / 1000).toFixed(1)}k` : String(kpiStats.total);
 
-    if (loading) return <div className="p-8 text-slate-400">Cargando telemetría avanzada...</div>;
+    if (loading && !hasLoadedOnce && !loadError) {
+        return (
+            <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center bg-[#020617] p-8 text-slate-400">
+                <Activity className="mb-3 animate-pulse text-sky-500" size={40} />
+                <span className="mining-workbench-page-subtitle text-center !text-slate-500">Cargando sensores…</span>
+            </div>
+        );
+    }
 
     return (
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[#020617] p-6 font-sans text-slate-200">
-            <header className="mb-6 shrink-0 border-b border-slate-800 pb-4">
-                <h1 className="bg-gradient-to-r from-sky-400 to-indigo-400 bg-clip-text text-3xl font-bold text-transparent">
-                    Monitoreo Técnico Especializado
-                </h1>
-                <p className="mt-1 text-slate-500">Telemetría de sensores en tiempo real - Time Telemetry v2.5</p>
-                <p className="mt-2 text-xs font-medium uppercase tracking-wide text-sky-500/90">
-                    Minera: <span className="text-slate-200">{miningCompanyName}</span>
-                    <span className="mx-2 text-slate-600">·</span>
-                    Unidad: <span className="text-slate-200">{siteUnitName}</span>
-                </p>
-            </header>
-
-            <div className="mb-6 flex shrink-0 gap-2 overflow-x-auto pb-2 adv-scroll-hide">
-                {data.categories.map((cat) => (
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[#020617] p-4 font-sans text-slate-200 sm:p-6">
+            <MiningWorkbenchHeader
+                title="Sensores de mina"
+                subtitle="Telemetría e historial por categoría. Los datos se actualizan automáticamente."
+                icon={Radio}
+                actions={
                     <button
-                        key={cat.id}
                         type="button"
-                        onClick={() => setSelectedCategoryId(cat.id)}
-                        className={`whitespace-nowrap rounded-xl px-6 py-3 font-medium transition-all ${
-                            selectedCategoryId === cat.id
-                                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30'
-                                : 'border border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-800'
-                        }`}
+                        onClick={manualRefresh}
+                        disabled={refreshing}
+                        className="mining-workbench-action-btn inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-slate-200 hover:bg-slate-800 disabled:opacity-50"
                     >
-                        {cat.name}
+                        <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                        Actualizar
                     </button>
-                ))}
-            </div>
+                }
+            />
 
-            <div className="grid min-h-0 flex-1 grid-cols-12 gap-6 pb-4">
-                <div className="col-span-12 flex min-h-[280px] flex-col rounded-2xl border border-slate-800 bg-slate-950/50 shadow-xl backdrop-blur-sm lg:col-span-4">
-                    <div className="border-b border-slate-800 bg-slate-900/50 p-4">
-                        <h2 className="text-lg font-bold uppercase tracking-wider text-indigo-300">
-                            Sensores Detallados
-                        </h2>
-                        <span className="text-xs text-slate-500">{filteredSensors.length} unidades activas</span>
+            {loadError && (
+                <div className="mb-5 flex items-start gap-3 rounded-xl border border-rose-500/35 bg-rose-950/40 p-4 text-sm text-rose-100">
+                    <AlertTriangle className="mt-0.5 shrink-0 text-rose-400" size={20} />
+                    <div>
+                        <div className="font-bold">No se pudo cargar la telemetría</div>
+                        <div className="mt-1 text-rose-200/85">{loadError}</div>
                     </div>
-                    <div className="adv-scroll flex-1 space-y-3 overflow-y-auto p-4">
-                        {filteredSensors.length === 0 && (
-                            <p className="text-sm text-slate-500">
-                                No hay sensores en esta categoría para el ámbito seleccionado.
-                            </p>
-                        )}
-                        {filteredSensors.map((s) => (
+                </div>
+            )}
+
+            {!loadError && data.sensors.length === 0 && (
+                <div className="mb-5 rounded-xl border border-dashed border-slate-700 bg-slate-950/50 p-8 text-center">
+                    <Radio className="mx-auto mb-3 text-slate-600" size={36} />
+                    <p className="text-sm font-semibold text-slate-300">No hay sensores para este ámbito</p>
+                    <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-slate-500">
+                        No hay sensores configurados para su unidad. Contacte al administrador de la plataforma.
+                    </p>
+                </div>
+            )}
+
+            {data.categories.length > 0 && data.sensors.length > 0 && (
+                <>
+                    <div className="mb-5 flex shrink-0 gap-2 overflow-x-auto pb-1 adv-scroll-hide">
+                        {data.categories.map((cat) => (
                             <button
-                                key={s.id}
+                                key={cat.id}
                                 type="button"
-                                onClick={() => setSelectedSensorId(s.id)}
-                                className={`w-full rounded-xl border p-4 text-left transition-all ${
-                                    selectedSensorId === s.id
-                                        ? 'border-indigo-500/50 bg-indigo-600/10 shadow-inner'
-                                        : 'border-slate-800 bg-slate-900/30 hover:border-slate-700'
+                                onClick={() => setSelectedCategoryId(cat.id)}
+                                className={`whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-semibold transition-all ${
+                                    selectedCategoryId === cat.id
+                                        ? 'bg-sky-600 text-white shadow-lg shadow-sky-900/40'
+                                        : 'border border-slate-800 bg-slate-900/80 text-slate-400 hover:border-slate-700 hover:bg-slate-800'
                                 }`}
                             >
-                                <div className="flex items-start justify-between">
-                                    <div>
-                                        <div className="font-bold text-slate-100">{s.name}</div>
-                                        <div className="mt-1 text-xs text-slate-500">
-                                            ID: S-{s.id.toString().padStart(4, '0')}
-                                        </div>
-                                    </div>
-                                    <div className="rounded-md bg-slate-800 px-2 py-1 text-[10px] font-bold uppercase text-slate-400">
-                                        {s.status}
-                                    </div>
-                                </div>
-                                <div className="mt-3 flex items-baseline gap-2">
-                                    <span className="font-mono text-2xl font-bold text-sky-400">{s.current_value}</span>
-                                    <span className="text-sm text-slate-500">
-                                        {data.sensor_types.find((t) => t.id === s.type_id)?.unit}
-                                    </span>
-                                </div>
+                                {cat.name}
                             </button>
                         ))}
                     </div>
-                </div>
 
-                <div className="col-span-12 flex min-h-0 flex-col gap-6 lg:col-span-8">
-                    <div className="relative min-h-[320px] flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/50 p-6 backdrop-blur-sm">
-                        <div className="pointer-events-none absolute right-0 top-0 h-64 w-64 bg-indigo-500/5 blur-[120px]" />
-                        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                                <h2 className="text-xl font-bold">Análisis Histórico de Tendencia</h2>
-                                <p className="text-sm text-slate-500">
-                                    Registro de los últimos 7 días con muestreo automático
-                                </p>
+                    <div className="grid min-h-0 flex-1 grid-cols-12 gap-5 pb-4">
+                        <div className="col-span-12 flex min-h-[300px] flex-col rounded-2xl border border-slate-800 bg-slate-950/50 shadow-xl backdrop-blur-sm lg:col-span-4">
+                            <div className="border-b border-slate-800 bg-slate-900/40 p-4">
+                                <h2 className="text-sm font-bold tracking-wide text-sky-300" style={{ fontFamily: 'var(--font-mining-ui)' }}>
+                                    Inventario por categoría
+                                </h2>
+                                <span className="text-xs text-slate-500" style={{ fontFamily: 'var(--font-mining-ui)' }}>
+                                    {filteredSensors.length} sensores en esta vista
+                                </span>
                             </div>
-                            <div className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
-                                <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-                                Transmisión Live
+                            <div className="adv-scroll flex-1 space-y-2 overflow-y-auto p-3 sm:p-4">
+                                {filteredSensors.length === 0 && (
+                                    <p className="text-sm text-slate-500">
+                                        No hay sensores en esta categoría para el ámbito seleccionado.
+                                    </p>
+                                )}
+                                {filteredSensors.map((s) => {
+                                    const ty = data.sensor_types.find((t) => t.id === s.type_id);
+                                    return (
+                                        <button
+                                            key={s.id}
+                                            type="button"
+                                            onClick={() => setSelectedSensorId(s.id)}
+                                            className={`w-full rounded-xl border p-4 text-left transition-all ${
+                                                selectedSensorId === s.id
+                                                    ? 'border-sky-500/50 bg-sky-950/40 shadow-inner ring-1 ring-sky-500/20'
+                                                    : 'border-slate-800 bg-slate-900/30 hover:border-slate-700'
+                                            }`}
+                                        >
+                                            <div className="flex items-start justify-between gap-2">
+                                                <div className="min-w-0">
+                                                    <div className="truncate font-bold text-slate-100">{s.name}</div>
+                                                    <div className="mt-0.5 text-[11px] text-slate-500">
+                                                        {ty?.name || 'Tipo'} {ty?.unit ? `· ${ty.unit}` : ''}
+                                                    </div>
+                                                    <div className="mt-1 font-mono text-[10px] text-slate-600">
+                                                        ID {s.id}
+                                                    </div>
+                                                </div>
+                                                <div
+                                                    className={`shrink-0 rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase ${statusBadgeClass(s.status)}`}
+                                                >
+                                                    {s.status || '—'}
+                                                </div>
+                                            </div>
+                                            <div className="mt-3 flex items-baseline gap-2">
+                                                <span className="font-mono text-2xl font-bold text-sky-400">
+                                                    {Number(s.current_value).toLocaleString(undefined, {
+                                                        maximumFractionDigits: 2,
+                                                    })}
+                                                </span>
+                                                <span className="text-sm text-slate-500">{ty?.unit || ''}</span>
+                                            </div>
+                                            {Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng)) && (
+                                                <div className="mt-2 flex items-center gap-1 text-[10px] text-slate-600">
+                                                    <MapPin size={10} className="shrink-0" />
+                                                    {Number(s.lat).toFixed(4)}, {Number(s.lng).toFixed(4)}
+                                                </div>
+                                            )}
+                                        </button>
+                                    );
+                                })}
                             </div>
                         </div>
-                        <div className="h-[min(52vh,420px)] min-h-[240px] w-full">
-                            <ReactECharts option={chartOption} style={{ height: '100%', width: '100%' }} />
+
+                        <div className="col-span-12 flex min-h-0 flex-col gap-5 lg:col-span-8">
+                            <div className="relative flex min-h-[340px] flex-1 flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/50 p-4 backdrop-blur-sm sm:p-5">
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <h2 className="text-lg font-bold text-slate-100" style={{ fontFamily: 'var(--font-mining-ui)' }}>
+                                            Historial reciente
+                                        </h2>
+                                        <p className="text-xs text-slate-500" style={{ fontFamily: 'var(--font-mining-ui)' }}>
+                                            Últimos 7 días
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 text-emerald-400" style={{ fontFamily: 'var(--font-mining-ui)', fontSize: '0.75rem', fontWeight: 600 }}>
+                                        <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+                                        En vivo
+                                    </div>
+                                </div>
+                                <div className="h-[min(50vh,400px)] min-h-[220px] w-full flex-1">
+                                    <ReactECharts option={chartOption} style={{ height: '100%', width: '100%' }} />
+                                </div>
+                            </div>
+
+                            <div className="grid shrink-0 grid-cols-1 gap-4 sm:grid-cols-3">
+                                <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-5 backdrop-blur-sm">
+                                    <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                                        Riesgo geotecnia
+                                    </div>
+                                    <div className="text-xl font-bold text-slate-100">{kpiStats.geoRisk}</div>
+                                    <div className="mt-2 text-[11px] text-slate-500">
+                                        Basado en estado de sensores de categoría Geotecnia.
+                                    </div>
+                                </div>
+                                <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-5 backdrop-blur-sm">
+                                    <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                                        Muestras en historial
+                                    </div>
+                                    <div className="text-xl font-bold text-slate-100">{samplesLabel}</div>
+                                    <div className="mt-2 text-[11px] text-sky-500">
+                                        +{kpiStats.lastHour} registradas en la última hora
+                                    </div>
+                                </div>
+                                <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-5 backdrop-blur-sm">
+                                    <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                                        Sensores no “online”
+                                    </div>
+                                    <div className="text-xl font-bold text-rose-400">{kpiStats.alerts}</div>
+                                    <div className="mt-2 text-[11px] text-slate-500">
+                                        Cuenta estados distintos de <span className="font-mono">online</span>.
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
-
-                    <div className="grid shrink-0 grid-cols-1 gap-6 md:grid-cols-3">
-                        <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-6 backdrop-blur-sm">
-                            <div className="mb-1 text-xs font-bold uppercase tracking-widest text-slate-500">
-                                Impacto Geotécnico
-                            </div>
-                            <div className="text-2xl font-bold text-slate-100">{kpiStats.geoRisk}</div>
-                            <div className="mt-2 text-xs text-emerald-500">
-                                {kpiStats.geoRisk === 'Bajo Riesgo'
-                                    ? 'Dentro de parámetros nominales'
-                                    : 'Revisar sensores geotécnicos'}
-                            </div>
-                        </div>
-                        <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-6 backdrop-blur-sm">
-                            <div className="mb-1 text-xs font-bold uppercase tracking-widest text-slate-500">
-                                Muestras Acumuladas
-                            </div>
-                            <div className="text-2xl font-bold text-slate-100">{samplesLabel}</div>
-                            <div className="mt-2 text-xs text-sky-500">
-                                +{kpiStats.lastHour} en la última hora
-                            </div>
-                        </div>
-                        <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-6 backdrop-blur-sm">
-                            <div className="mb-1 text-xs font-bold uppercase tracking-widest text-slate-500">
-                                Alertas Sistémicas
-                            </div>
-                            <div className="text-2xl font-bold text-rose-500">{kpiStats.alerts}</div>
-                            <div className="mt-2 text-xs text-slate-500">
-                                {kpiStats.alerts === 0
-                                    ? 'No se detectan discrepancias'
-                                    : 'Sensores fuera de estado online'}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+                </>
+            )}
 
             <style>{`
                 .adv-scroll::-webkit-scrollbar { width: 5px; }

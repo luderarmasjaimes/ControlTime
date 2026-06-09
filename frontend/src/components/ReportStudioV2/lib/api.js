@@ -23,9 +23,76 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-export async function fetchMineSensors() {
-  const response = await api.get('/sensors/data');
+export async function fetchMineSensors(tenantId) {
+  const response = await api.get('/sensors/data', {
+    params: tenantId ? { tenant_id: tenantId } : undefined,
+  });
   return response.data?.sensors ?? [];
+}
+
+/** Catálogo completo para informe técnico: categorías, tipos, zonas, sensores, historial. */
+export async function fetchSensorDashboardCatalog(params = {}) {
+  const response = await api.get('/sensors/data', {
+    params: {
+      ...(params.tenant_id ? { tenant_id: params.tenant_id } : {}),
+    },
+  });
+  return response.data ?? {};
+}
+
+export async function fetchMiningKpis({ category } = {}) {
+  const response = await api.get('/mining/kpis', {
+    params: category ? { category } : undefined,
+  });
+  return response.data?.kpis ?? [];
+}
+
+export async function upsertMiningKpis(items) {
+  const payload = {
+    items: Array.isArray(items) ? items : [],
+  };
+  const response = await api.post('/mining/kpis/upsert', payload, { timeout: 30000 });
+  return response.data ?? { status: 'error', upserted: 0 };
+}
+
+export async function syncMiningKpisFromDashboard() {
+  try {
+    const response = await api.post('/mining/kpis/sync-from-dashboard', {}, { timeout: 30000 });
+    return response.data ?? { status: 'error', synced: 0 };
+  } catch (error) {
+    const backendError = error?.response?.data?.error;
+    const backendMessage = error?.response?.data?.message;
+    const status = error?.response?.status;
+    if (status === 401) {
+      throw new Error('Sesión expirada. Vuelve a iniciar sesión para sincronizar KPI.');
+    }
+    throw new Error(backendMessage || backendError || 'No se pudo sincronizar KPI desde operación.');
+  }
+}
+
+export async function syncMiningKpisFromExternal() {
+  try {
+    const response = await api.post('/mining/kpis/sync-from-external', {}, { timeout: 45000 });
+    return response.data ?? { status: 'error', synced: 0 };
+  } catch (error) {
+    const backendError = error?.response?.data?.error;
+    const backendMessage = error?.response?.data?.message;
+    const status = error?.response?.status;
+    if (status === 401) {
+      throw new Error('Sesión expirada. Vuelve a iniciar sesión para sincronizar KPI.');
+    }
+    throw new Error(backendMessage || backendError || 'No se pudo sincronizar KPI desde fuente externa.');
+  }
+}
+
+export async function fetchMiningKpiPoints(code, days = 7) {
+  const response = await api.get('/mining/kpis/points', {
+    params: {
+      code,
+      days,
+    },
+  });
+  return response.data?.points ?? [];
 }
 
 export async function fetchProjects() {
@@ -92,4 +159,39 @@ export async function deleteReport(id) {
 export async function validateCompany(company, ruc) {
   const response = await api.get('/auth/validate-company', { params: { company, ruc } });
   return response.data?.valid ?? false;
+}
+
+const TEXT_SPELL_TIMEOUT_MS = 120000;
+
+/** Corrección rápida local en backend (regex + normalización). */
+export async function textCorrectQuick(text) {
+  const response = await api.post(
+    '/text/correct/quick',
+    { text: String(text ?? '') },
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+/** Sugerencias LanguageTool vía backend (on-premise). */
+export async function textCorrectAdvanced(text, { language = 'es-PE', level = 'picky' } = {}) {
+  const response = await api.post(
+    '/text/correct/advanced',
+    { text: String(text ?? ''), language, level },
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+/** Pasada segura LT + rápido + reescritura Ollama opcional (on-premise). */
+export async function textRewriteOnPremise(
+  text,
+  { language = 'es-PE', level = 'picky', use_llm = true } = {},
+) {
+  const response = await api.post(
+    '/text/rewrite',
+    { text: String(text ?? ''), language, level, use_llm },
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
 }

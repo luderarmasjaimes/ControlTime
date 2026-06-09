@@ -312,8 +312,8 @@ textarea {
     color: #e2e8f0;
     font-family: var(--font-mining-ui);
     font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 0.04em;
+    font-weight: 900;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     box-shadow: 0 10px 24px rgba(2, 6, 23, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     transition: all 0.2s ease;
@@ -345,8 +345,8 @@ textarea {
     color: #fffbeb;
     font-family: var(--font-mining-ui);
     font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 0.06em;
+    font-weight: 900;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     transition: all 0.2s ease;
     box-shadow:
@@ -447,10 +447,13 @@ textarea {
     border-color: rgba(251, 146, 60, 0.26);
     background: linear-gradient(145deg, rgba(30, 41, 59, 0.96), rgba(15, 23, 42, 0.94));
     color: #e2e8f0;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
     box-shadow:
-        0 10px 22px rgba(2, 6, 23, 0.35),
+        0 5px 12px rgba(2, 6, 23, 0.35),
         inset 0 1px 0 rgba(255, 255, 255, 0.08);
-}
+ }
 
 .tab-button--3d:hover {
     border-color: rgba(251, 146, 60, 0.76);
@@ -629,6 +632,18 @@ textarea {
     min-height: 0;
 }
 
+/* Geotecnia: evitar ancho 0 del panel central cuando leyenda + sidebar fijan ~32rem; permite scroll horizontal suave */
+.dashboard-shell-mining main.flex.mining-main--geotech {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+}
+
+.dashboard-shell-mining main.flex.mining-main--geotech > .dashboard-main-scroll {
+    flex: 1 1 0%;
+    min-width: min(100%, 18rem);
+}
+
 .dashboard-shell-mining .viz-route-host {
     display: flex;
     flex-direction: column;
@@ -638,10 +653,218 @@ textarea {
     width: 100%;
 }
 
+/* Report Studio v2: llenar alto útil del panel central (evita 100vh + scroll que oculta la cinta de herramientas) */
+.dashboard-shell-mining .viz-route-host > .app-shell {
+    flex: 1 1 0%;
+    min-height: 0;
+    min-width: 0;
+    max-height: 100%;
+}
+
+/* Cinta de diseño: ancho completo; en modo Informe técnico el slot define el fondo */
+#report-v2-design-toolbar-host .top-toolbar {
+    width: 100%;
+    border-radius: 0;
+    min-height: 48px;
+    padding: 0 12px;
+    box-shadow: 0 4px 14px rgba(2, 6, 23, 0.28), 0 1px 0 rgba(248, 250, 252, 0.06) inset;
+}
+
+#report-v2-design-toolbar-host .toolbar-actions button {
+    min-height: 30px;
+    padding: 5px 9px;
+    font-size: 0.74rem;
+}
+
+#report-v2-design-toolbar-host .zoom-chip {
+    min-height: 30px;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+}
+
+/*
+ * Informe técnico (Report v2): cinta superior unificada — mismo lenguaje que tab-button--active
+ * (cian + ámbar). Separación por líneas y brillo interior, no por huecos grandes.
+ */
+.dashboard-shell-mining.report-studio-chrome-compact > div.flex.min-h-0.flex-1.flex-col > header.chrome-informe-header {
+    padding: 0.42rem 0.7rem 0 !important;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.38) !important;
+    background: linear-gradient(
+        168deg,
+        rgba(15, 23, 42, 0.9) 0%,
+        rgba(2, 6, 23, 0.96) 42%,
+        rgba(15, 23, 42, 0.88) 100%
+    ) !important;
+    box-shadow:
+        0 10px 28px rgba(2, 6, 23, 0.42),
+        inset 0 1px 0 rgba(255, 255, 255, 0.07),
+        inset 0 -1px 0 rgba(56, 189, 248, 0.08) !important;
+}
+
+@media (min-width: 1024px) {
+    .dashboard-shell-mining.report-studio-chrome-compact > div.flex.min-h-0.flex-1.flex-col > header.chrome-informe-header {
+        padding-left: 0.9rem !important;
+        padding-right: 0.9rem !important;
+    }
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact .chrome-subnav-row {
+    margin-top: 0 !important;
+    padding-top: 0.32rem !important;
+    border-top: 1px solid rgba(56, 189, 248, 0.16);
+    box-shadow:
+        inset 0 1px 0 rgba(251, 191, 36, 0.07),
+        0 1px 0 rgba(2, 6, 23, 0.35);
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact #report-v2-design-toolbar-host.chrome-report-toolbar-slot {
+    margin-top: 0 !important;
+    padding: 0.28rem 0 0.12rem !important;
+    min-height: 40px !important;
+    border-top: 1px solid rgba(56, 189, 248, 0.28);
+    background: linear-gradient(
+        90deg,
+        rgba(2, 6, 23, 0.65) 0%,
+        rgba(30, 41, 59, 0.82) 45%,
+        rgba(2, 6, 23, 0.65) 100%
+    );
+    box-shadow:
+        inset 0 1px 0 rgba(56, 189, 248, 0.12),
+        inset 0 -1px 0 rgba(245, 158, 11, 0.06);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact #report-v2-design-toolbar-host .top-toolbar {
+    min-height: 38px !important;
+    padding: 0 8px !important;
+    border-top: none !important;
+    border-bottom: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact #report-v2-design-toolbar-host .toolbar-actions button {
+    min-height: 28px;
+    padding: 4px 8px;
+    font-size: 0.7rem;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact #report-v2-design-toolbar-host .zoom-chip {
+    min-height: 28px;
+    padding: 3px 6px;
+    font-size: 0.68rem;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact #report-v2-design-toolbar-host .toolbar-layout-select {
+    min-width: 7.5rem;
+    padding: 3px 8px;
+    font-size: 0.66rem;
+    border-radius: 6px;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact #report-v2-design-toolbar-host .toolbar-layout-label {
+    font-size: 0.58rem;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact .top-nav-shell {
+    padding: 4px 6px;
+    gap: 6px 8px;
+    border-radius: 11px;
+    border-color: rgba(56, 189, 248, 0.22) !important;
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.65), rgba(30, 41, 59, 0.42)) !important;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        0 4px 18px rgba(2, 6, 23, 0.28) !important;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact .top-nav-shell--sub {
+    gap: 6px 8px;
+    align-items: center;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact .subnav-back-btn {
+    min-height: 30px;
+    padding: 5px 10px;
+    font-size: 10px;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact .tab-button.tab-button--premium {
+    padding: 5px 9px;
+    min-height: 30px;
+    gap: 5px;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact .tab-button.tab-button--active {
+    box-shadow:
+        0 0 0 1px rgba(56, 189, 248, 0.35),
+        0 6px 20px rgba(14, 165, 233, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+}
+
+.dashboard-shell-mining.report-studio-chrome-compact .enterprise-main-btn {
+    min-height: 30px;
+    padding: 5px 9px;
+    font-size: 10px;
+}
+
 .dashboard-shell-mining .viz-legend-rail {
     flex-shrink: 0;
     min-height: 0;
     align-self: stretch;
+}
+
+/* Mapas / Leaflet: sin scroll en el contenedor padre (evita doble scroll y áreas “negras” vacías). */
+.dashboard-shell-mining .dashboard-main-scroll.dashboard-main-scroll--viewport-lock {
+    overflow: hidden;
+    overflow-y: hidden;
+}
+
+.dashboard-shell-mining main.flex > .mining-geotech-edit-aside {
+    align-self: stretch;
+    min-height: 0;
+}
+
+.dashboard-shell-mining .top-nav-shell--sub {
+    align-items: center;
+    gap: 10px 10px;
+}
+
+.subnav-context-label {
+    flex: 1 1 8rem;
+    min-width: 0;
+    padding: 0 4px 0 10px;
+    margin-left: 2px;
+    border-left: 1px solid rgba(56, 189, 248, 0.2);
+    font-family: var(--font-mining-ui);
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(148, 211, 250, 1);
+    line-height: 1.25;
+}
+
+@media (max-width: 520px) {
+    .subnav-context-label {
+        display: none;
+    }
+}
+
+.dashboard-shell-mining .geotech-workbench-root {
+    min-height: 0;
+}
+
+.dashboard-shell-mining .geotech-workbench-stage > * {
+    flex: 1 1 0%;
+    min-height: 0;
+    min-width: 0;
+}
+
+.dashboard-shell-mining .viz-route-host .mining-geoportal-root {
+    flex: 1 1 0%;
+    min-height: 0;
+    min-width: 0;
 }
 
 .dashboard-main-scroll::-webkit-scrollbar {
@@ -748,6 +971,235 @@ textarea {
     min-height: 0;
 }
 
+.auth-screen-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    align-items: start;
+    gap: 12px;
+    min-height: 0;
+}
+
+.auth-screen-sideprefs {
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* Preferencias globales (país / idioma) — login y cabecera autenticada */
+.auth-platform-prefs {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 10px;
+    margin: 0;
+    padding: 10px;
+    width: min(300px, 100%);
+    border-radius: 14px;
+    border: 1px solid rgba(56, 189, 248, 0.34);
+    background: linear-gradient(165deg, rgba(15, 23, 42, 0.9), rgba(2, 6, 23, 0.86));
+    box-shadow:
+        0 14px 34px rgba(2, 6, 23, 0.52),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.auth-platform-prefs__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    width: 100%;
+    padding: 6px 6px 4px;
+    border-radius: 10px;
+    border: 1px solid rgba(56, 189, 248, 0.18);
+    background: rgba(15, 23, 42, 0.5);
+}
+
+.auth-platform-prefs__icon {
+    color: rgba(125, 211, 252, 0.95);
+    margin-bottom: 6px;
+    flex-shrink: 0;
+}
+
+.auth-platform-prefs__label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+    font-size: 0.58rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #94a3b8;
+}
+
+.auth-platform-prefs__label span {
+    line-height: 1.1;
+}
+
+.auth-platform-prefs__select {
+    width: 100%;
+    margin: 0;
+    padding: 10px 10px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    border-radius: 9px;
+    border: 1px solid rgba(100, 116, 139, 0.55);
+    background: rgba(2, 6, 23, 0.75);
+    color: #e2e8f0;
+    font-family: var(--font-mining-ui);
+}
+
+.mining-platform-prefs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px 12px;
+}
+
+.mining-platform-prefs--header {
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    border-radius: 10px;
+    padding: 6px 10px;
+    background: rgba(15, 23, 42, 0.55);
+}
+
+.mining-platform-prefs--header .auth-platform-prefs__item {
+    min-width: 0;
+    flex: 0 1 auto;
+}
+
+.mining-platform-prefs--header .auth-platform-prefs__label {
+    font-size: 0.55rem;
+}
+
+.mining-platform-prefs--header .auth-platform-prefs__select {
+    padding: 5px 8px;
+    font-size: 0.68rem;
+    min-width: 7.5rem;
+}
+
+.field-tel-wrap {
+    display: flex;
+    align-items: stretch;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(100, 116, 139, 0.5);
+    background: rgba(7, 20, 38, 0.88);
+}
+
+.field-tel-prefix {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    font-size: 0.9rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    color: #7dd3fc;
+    background: rgba(15, 23, 42, 0.95);
+    border-right: 1px solid rgba(100, 116, 139, 0.45);
+    font-family: var(--font-mining-ui);
+}
+
+.field-tel-wrap input {
+    border: none !important;
+    border-radius: 0 !important;
+    flex: 1 1 auto;
+    min-width: 0;
+    box-shadow: none !important;
+}
+
+.auth-screen .auth-action--login,
+.auth-screen .auth-action--register,
+.auth-screen .auth-action--ghost {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 12px;
+    min-height: 44px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-family: var(--font-mining-ui);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-sizing: border-box;
+    transform: translateY(0);
+    transition:
+        transform 0.16s ease,
+        box-shadow 0.18s ease,
+        border-color 0.18s ease,
+        background 0.18s ease,
+        color 0.18s ease;
+}
+
+.auth-screen .auth-action--login:active,
+.auth-screen .auth-action--register:active,
+.auth-screen .auth-action--ghost:active,
+.auth-screen .primary-face-button:active,
+.auth-screen .secondary-button:active,
+.auth-screen .auth-login-password-button:active {
+    transform: translateY(2px);
+    box-shadow:
+        0 4px 10px rgba(2, 6, 23, 0.35),
+        inset 0 2px 4px rgba(2, 6, 23, 0.38);
+}
+
+.auth-action--login {
+    border: 1px solid rgba(103, 232, 249, 0.55) !important;
+    background: linear-gradient(160deg, #0891b2 0%, #0e7490 55%, #155e75 100%) !important;
+    color: #ecfeff !important;
+    box-shadow:
+        0 10px 22px rgba(14, 165, 233, 0.26),
+        0 2px 0 rgba(207, 250, 254, 0.24) inset,
+        0 -2px 0 rgba(8, 47, 73, 0.65) inset;
+}
+
+.auth-action--login:hover:not(:disabled) {
+    border-color: rgba(165, 243, 252, 0.75) !important;
+    background: linear-gradient(160deg, #22d3ee 0%, #0891b2 56%, #0e7490 100%) !important;
+    box-shadow:
+        0 14px 28px rgba(8, 145, 178, 0.34),
+        0 2px 0 rgba(207, 250, 254, 0.3) inset,
+        0 -2px 0 rgba(8, 47, 73, 0.7) inset;
+}
+
+.auth-action--register {
+    border: 1px solid rgba(52, 211, 153, 0.55) !important;
+    background: linear-gradient(160deg, #059669 0%, #047857 58%, #0f766e 100%) !important;
+    color: #ecfdf5 !important;
+    box-shadow:
+        0 10px 22px rgba(5, 150, 105, 0.3),
+        0 2px 0 rgba(209, 250, 229, 0.22) inset,
+        0 -2px 0 rgba(6, 78, 59, 0.7) inset;
+}
+
+.auth-action--register:hover:not(:disabled) {
+    border-color: rgba(167, 243, 208, 0.85) !important;
+    background: linear-gradient(160deg, #34d399 0%, #10b981 56%, #047857 100%) !important;
+    box-shadow:
+        0 14px 28px rgba(16, 185, 129, 0.34),
+        0 2px 0 rgba(209, 250, 229, 0.3) inset,
+        0 -2px 0 rgba(6, 78, 59, 0.72) inset;
+}
+
+.auth-action--ghost {
+    border: 1px dashed rgba(148, 163, 184, 0.45) !important;
+    background: rgba(15, 23, 42, 0.55) !important;
+    color: #cbd5e1 !important;
+    box-shadow: none !important;
+}
+
+.auth-action--ghost:hover:not(:disabled) {
+    border-color: rgba(148, 163, 184, 0.75) !important;
+    background: rgba(30, 41, 59, 0.75) !important;
+    color: #f1f5f9 !important;
+}
+
 /* Dashboard autenticado: mismo lenguaje visual que login (auth-screen) */
 .dashboard-shell-mining {
     background:
@@ -781,6 +1233,41 @@ textarea {
     color: #94d4f5;
     margin-top: 2px;
     opacity: 0.95;
+}
+
+/* Títulos unificados: Centro de control, Sensores de mina, Videovigilancia */
+.mining-workbench-header-row {
+    margin-bottom: 1.25rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid rgba(51, 65, 85, 0.72);
+}
+
+.mining-workbench-page-title {
+    font-family: var(--font-mining-display);
+    font-weight: 800;
+    font-size: clamp(1.28rem, 1.05rem + 0.85vw, 1.8rem);
+    line-height: 1.22;
+    letter-spacing: 0.03em;
+    color: #f8fafc;
+    margin: 0;
+}
+
+.mining-workbench-page-subtitle {
+    font-family: var(--font-mining-ui);
+    font-size: 0.9375rem;
+    line-height: 1.55;
+    font-weight: 500;
+    color: #94a3b8;
+    margin: 0.5rem 0 0;
+    max-width: 42rem;
+}
+
+.mining-workbench-action-btn {
+    font-family: var(--font-mining-ui);
+    font-weight: 700;
+    font-size: 0.8125rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
 }
 
 .dashboard-shell-mining .dashboard-main-scroll {
@@ -1099,8 +1586,9 @@ textarea {
 }
 
 /* Centrar el panel(s) respecto al fondo; la marca sigue arriba a la izquierda */
-.auth-screen-content > .auth-shell {
+.auth-screen-layout > .auth-shell {
     align-self: center;
+    width: min(980px, 100%);
 }
 
 /* Formulario registro persona/empresa solo panel: ancho fijo como tarjeta, no 100% viewport */
@@ -1241,14 +1729,16 @@ textarea {
 }
 
 .auth-shell[data-auth-layout='single'] .register-mode-tabs button {
-    padding: 4px 5px;
-    font-size: 0.54rem;
+    padding: 8px 6px;
+    font-size: 10px;
+    min-height: 40px;
 }
 
 .auth-shell[data-auth-layout='single'] .register-back-login-btn {
     margin-bottom: 3px;
-    padding: 4px 7px;
-    font-size: 0.54rem;
+    padding: 8px 10px;
+    font-size: 10px;
+    min-height: 40px;
 }
 
 .auth-shell[data-auth-layout='single'] .auth-register-section-heading {
@@ -1301,6 +1791,11 @@ textarea {
 .auth-panel-form--auth-compact .logout-demo {
     padding: 7px 10px;
     font-size: 10px;
+}
+
+.auth-login-tab-row button {
+    min-height: 44px;
+    font-size: 11px;
 }
 
 .auth-login-tab-row {
@@ -1660,6 +2155,8 @@ textarea {
     color: #e2e8f0;
     border-radius: 10px;
     padding: 10px 12px;
+    min-height: 44px;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1667,6 +2164,7 @@ textarea {
     cursor: pointer;
     font-family: var(--font-mining-ui);
     font-weight: 700;
+    font-size: 11px;
     letter-spacing: 0.05em;
     text-transform: uppercase;
     transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, color 0.2s ease;
@@ -1675,10 +2173,16 @@ textarea {
         0 1px 0 rgba(255, 255, 255, 0.08) inset;
 }
 
-.mode-switch button.active {
-    background: linear-gradient(135deg, #fb923c, #f97316);
-    color: #ffffff;
-    border-color: rgba(254, 215, 170, 0.95);
+.mode-switch button.mode-tab--login.active {
+    background: linear-gradient(135deg, #0e7490, #155e75);
+    color: #ecfeff;
+    border-color: rgba(103, 232, 249, 0.65);
+}
+
+.mode-switch button.mode-tab--register.active {
+    background: linear-gradient(135deg, #047857, #0f766e);
+    color: #ecfdf5;
+    border-color: rgba(52, 211, 153, 0.65);
 }
 
 .auth-panel-form h2 {
@@ -1736,6 +2240,8 @@ textarea {
     justify-content: center;
     gap: 7px;
     font-size: 11px;
+    min-height: 44px;
+    box-sizing: border-box;
     box-shadow:
         0 10px 24px rgba(2, 6, 23, 0.24),
         0 1px 0 rgba(255, 255, 255, 0.08) inset;
@@ -1749,6 +2255,50 @@ textarea {
     color: #fff7ed;
 }
 
+/* Login / registro: colores diferenciados (login cian, registro verde) */
+.auth-screen .primary-face-button {
+    background: linear-gradient(160deg, #0891b2 0%, #0e7490 55%, #155e75 100%);
+    border-color: rgba(103, 232, 249, 0.55);
+    color: #ecfeff;
+    box-shadow:
+        0 12px 24px rgba(14, 165, 233, 0.24),
+        0 2px 0 rgba(207, 250, 254, 0.22) inset,
+        0 -2px 0 rgba(8, 47, 73, 0.65) inset;
+}
+
+.auth-screen .primary-face-button:hover:not(:disabled) {
+    background: linear-gradient(160deg, #22d3ee 0%, #0891b2 56%, #0e7490 100%);
+    border-color: rgba(165, 243, 252, 0.75);
+}
+
+.auth-screen .secondary-button {
+    background: linear-gradient(160deg, #059669 0%, #047857 58%, #0f766e 100%);
+    border-color: rgba(52, 211, 153, 0.55);
+    color: #ecfdf5;
+    box-shadow:
+        0 12px 24px rgba(5, 150, 105, 0.28),
+        0 2px 0 rgba(209, 250, 229, 0.22) inset,
+        0 -2px 0 rgba(6, 78, 59, 0.7) inset;
+}
+
+.auth-screen .secondary-button:hover:not(:disabled) {
+    background: linear-gradient(160deg, #34d399 0%, #10b981 56%, #047857 100%);
+    border-color: rgba(167, 243, 208, 0.85);
+}
+
+.auth-screen .logout-demo {
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px dashed rgba(148, 163, 184, 0.45);
+    color: #cbd5e1;
+    box-shadow: none;
+}
+
+.auth-screen .logout-demo:hover:not(:disabled) {
+    border-color: rgba(148, 163, 184, 0.75);
+    background: rgba(30, 41, 59, 0.75);
+    color: #f1f5f9;
+}
+
 .primary-face-button:disabled,
 .secondary-button:disabled,
 .auth-login-password-button:disabled {
@@ -1759,10 +2309,14 @@ textarea {
 /* Ingreso por contraseña: distinto del naranja facial/secundario */
 .auth-login-password-button {
     width: 100%;
-    background: linear-gradient(135deg, #0e7490, #155e75);
+    background: linear-gradient(160deg, #0891b2 0%, #0e7490 55%, #155e75 100%);
     border-color: rgba(103, 232, 249, 0.55);
     color: #ecfeff;
     text-shadow: 0 1px 0 rgba(2, 6, 23, 0.35);
+    box-shadow:
+        0 12px 24px rgba(14, 165, 233, 0.24),
+        0 2px 0 rgba(207, 250, 254, 0.22) inset,
+        0 -2px 0 rgba(8, 47, 73, 0.65) inset;
 }
 
 .auth-login-password-button:hover:not(:disabled) {
@@ -1868,15 +2422,20 @@ textarea {
 
 .register-mode-tabs button {
     flex: 1;
-    padding: 5px 6px;
-    font-size: 0.58rem;
+    padding: 10px 12px;
+    font-size: 11px;
+    min-height: 44px;
+    box-sizing: border-box;
 }
 
 .register-back-login-btn {
     width: 100%;
     margin-bottom: 4px;
-    padding: 5px 8px;
-    font-size: 0.58rem;
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    font-weight: 700;
 }
 
 .stack-form--register-person {
@@ -2191,6 +2750,26 @@ textarea {
 }
 
 @media (max-width: 980px) {
+    .auth-screen-layout {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .auth-screen-sideprefs {
+        order: -1;
+        justify-content: stretch;
+    }
+
+    .auth-platform-prefs {
+        width: 100%;
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    .auth-platform-prefs__item {
+        flex: 1 1 220px;
+    }
+
     .auth-shell {
         grid-template-columns: 1fr;
     }

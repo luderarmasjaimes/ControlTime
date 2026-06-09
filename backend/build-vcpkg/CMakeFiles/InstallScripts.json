@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/InformeCliente/backend/build-vcpkg/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

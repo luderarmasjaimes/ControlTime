@@ -91,7 +91,7 @@ docker exec $webContainerId sh -lc "gdalinfo /data/incoming/input.ecw 2>&1 | sed
 
 Write-Host "[8/8] Consultando capacidades de API..."
 try {
-  $cap = Invoke-RestMethod -Uri "http://localhost:8081/api/capabilities" -Method Get
+  $cap = Invoke-RestMethod -Uri "http://localhost:8082/api/capabilities" -Method Get
   $cap | ConvertTo-Json -Depth 5 | Out-Host
   if ($cap.ecw_supported -eq $true) {
     Write-Host "✅ ECW disponible en runtime"

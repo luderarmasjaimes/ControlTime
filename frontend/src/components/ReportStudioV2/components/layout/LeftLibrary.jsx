@@ -1,3 +1,4 @@
+import React from 'react';
 import { 
   Type, 
   BarChart3, 
@@ -16,13 +17,13 @@ import {
 } from 'lucide-react';
 
 const items = [
-  { type: 'text', label: 'Texto Técnico', icon: <Type size={18} />, short: 'Texto' },
-  { type: 'chart', label: 'Gráfico Dinámico', icon: <BarChart3 size={18} />, short: 'Gráfico' },
-  { type: 'kpi', label: 'Indicador KPI', icon: <Target size={18} />, short: 'KPI' },
-  { type: 'image', label: 'Imagen / Figura', icon: <ImageIcon size={18} />, short: 'Imagen' },
-  { type: 'table', label: 'Tabla de Datos', icon: <TableIcon size={18} />, short: 'Tabla' },
-  { type: 'map', label: 'Mapa Detallado Pro', icon: <MapIcon size={18} />, short: 'Mapa' },
-  { type: 'sensor', label: 'Sensor Real-time', icon: <Activity size={18} />, short: 'Sensor' },
+  { type: 'text', label: 'Párrafo y listas', icon: <Type size={16} />, short: 'Texto' },
+  { type: 'chart', label: 'Series y ejes', icon: <BarChart3 size={16} />, short: 'Gráfico' },
+  { type: 'kpi', label: 'Indicador numérico', icon: <Target size={16} />, short: 'KPI' },
+  { type: 'image', label: 'Figura o foto', icon: <ImageIcon size={16} />, short: 'Imagen' },
+  { type: 'table', label: 'Filas y columnas', icon: <TableIcon size={16} />, short: 'Tabla' },
+  { type: 'map', label: 'Mapa detallado', icon: <MapIcon size={16} />, short: 'Mapa' },
+  { type: 'sensor', label: 'Dato en tiempo real', icon: <Activity size={16} />, short: 'Sensor' },
 ];
 
 export default function LeftLibrary({
@@ -35,88 +36,96 @@ export default function LeftLibrary({
   onExportVideo,
   isRecording,
 }) {
+  const [isHovered, setIsHovered] = React.useState(false);
+
   return (
-    <aside className="panel" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-      {/* ─── Título ─── */}
-      <h3 className="panel-title">
-        <Box size={17} color="#6366f1" />
-        Librería de Bloques
+    <aside 
+      className={`panel panel--library ${isHovered ? 'panel--library-expanded' : ''}`}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <h3 className="panel-title panel-title--library" title="Insertar bloques en la página activa del informe">
+        <Box size={15} color="var(--accent)" aria-hidden />
+        {isHovered && <span>Contenidos</span>}
       </h3>
 
-      {/* ─── Bloques arrastrables ─── */}
-      <span className="inspector-section-label" style={{ marginBottom: 10 }}>Insertar en página activa</span>
-      <button
-        className="lib-item"
-        title="Insertar: Mapa Detallado Pro"
-        onClick={() => onAdd('map')}
-        style={{ marginBottom: 10, borderColor: 'rgba(245, 158, 11, 0.35)', background: '#fff7ed' }}
-      >
-        <div className="lib-item-icon" style={{ background: '#fffbeb', color: '#d97706', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
-          <MapIcon size={18} />
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1 }}>
-          <span className="lib-item-text" style={{ color: '#92400e' }}>MAPA</span>
-          <span style={{ fontSize: '0.7rem', color: '#92400e', fontWeight: 500 }}>Mapa Detallado Pro</span>
-        </div>
-      </button>
-      <div className="library-grid">
-        {items.filter((item) => item.type !== 'map').map((item) => (
-          <button
-            key={item.type}
-            className="lib-item"
-            title={`Insertar: ${item.label}`}
-            onClick={() => onAdd(item.type)}
-          >
-            <div className="lib-item-icon">{item.icon}</div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1 }}>
-              <span className="lib-item-text">{item.short}</span>
-              <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 400 }}>{item.label}</span>
+      {isHovered && (
+        <span className="inspector-section-label library-insert-hint" title="Los elementos se insertan en la hoja seleccionada">
+          Añadir a la página
+        </span>
+      )}
+
+      <div className="panel-library-scroll">
+        <button
+          type="button"
+          className="lib-item lib-item--map"
+          title="Insertar mapa detallado (alta resolución)"
+          onClick={() => onAdd('map')}
+        >
+          <div className="lib-item-icon lib-item-icon--map">
+            <MapIcon size={16} />
+          </div>
+          {isHovered && (
+            <div className="lib-item-copy">
+              <span className="lib-item-text">Mapa</span>
+              <span className="lib-item-sub lib-item-sub--map">Alta definición</span>
             </div>
-          </button>
-        ))}
+          )}
+        </button>
+        <div className="library-grid">
+          {items.filter((item) => item.type !== 'map').map((item) => (
+            <button
+              key={item.type}
+              type="button"
+              className="lib-item"
+              title={`Insertar: ${item.label}`}
+              onClick={() => onAdd(item.type)}
+            >
+              <div className="lib-item-icon">{item.icon}</div>
+              {isHovered && (
+                <div className="lib-item-copy">
+                  <span className="lib-item-text">{item.short}</span>
+                  <span className="lib-item-sub">{item.label}</span>
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* ─── Herramientas ─── */}
-      <div className="toolbox-section" style={{ marginTop: 24, paddingTop: 20 }}>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          marginBottom: 12, padding: '6px 10px',
-          background: '#eef2ff', borderRadius: 8,
-          border: '1px solid rgba(99,102,241,0.2)'
-        }}>
-          <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-            Herramientas del Informe
-          </span>
+      <div className="toolbox-section panel-library-tools">
+        <div className="library-tools-heading" title="Operaciones sobre páginas y plantillas">
+          Acciones del informe
         </div>
         <div className="toolbox-grid">
-          <button className="tool-action" onClick={onAddPage} title="Agregar nueva página al informe">
-            <FilePlus2 size={15} />
-            Nueva Página
+          <button type="button" className="tool-action" onClick={onAddPage} title="Agregar una nueva página al documento">
+            <FilePlus2 size={14} aria-hidden />
+            Nueva página
           </button>
-          <button className="tool-action" onClick={onDuplicatePage} title="Duplicar la página activa con todo su contenido">
-            <Copy size={15} />
-            Duplicar Página
+          <button type="button" className="tool-action" onClick={onDuplicatePage} title="Duplicar la página actual con su contenido">
+            <Copy size={14} aria-hidden />
+            Duplicar página
           </button>
-          <button className="tool-action" onClick={onAddHeader} title="Insertar bloque de encabezado técnico">
-            <Heading size={15} />
-            Encabezado Técnico
+          <button type="button" className="tool-action" onClick={onAddHeader} title="Bloque de encabezado técnico">
+            <Heading size={14} aria-hidden />
+            Encabezado
           </button>
-          <button className="tool-action" onClick={onAddFooter} title="Insertar bloque de pie de página">
-            <PanelBottom size={15} />
-            Pie de Página
+          <button type="button" className="tool-action" onClick={onAddFooter} title="Bloque de pie de página">
+            <PanelBottom size={14} aria-hidden />
+            Pie de página
           </button>
-          <button className="tool-action" onClick={onAddFindings} title="Insertar plantilla de hallazgos técnicos">
-            <ClipboardList size={15} />
-            Hallazgos Técnicos
+          <button type="button" className="tool-action" onClick={onAddFindings} title="Plantilla de hallazgos técnicos">
+            <ClipboardList size={14} aria-hidden />
+            Hallazgos
           </button>
           <button
-            className="tool-action"
+            type="button"
+            className={`tool-action${isRecording ? ' tool-action--recording' : ''}`}
             onClick={onExportVideo}
-            title="Grabar video de pantalla del informe (máx. 30s)"
-            style={isRecording ? { borderColor: '#ef4444', color: '#dc2626', background: '#fef2f2' } : {}}
+            title="Grabar un vídeo corto del lienzo (máx. 30 s)"
           >
-            <Video size={15} />
-            {isRecording ? '● Grabando…' : 'Exportar Video'}
+            <Video size={14} aria-hidden />
+            {isRecording ? 'Grabando…' : 'Grabar vídeo'}
           </button>
         </div>
       </div>

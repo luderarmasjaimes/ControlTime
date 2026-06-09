@@ -1,0 +1,3 @@
+C:/InformeCliente/backend/build-vcpkg/CMakeFiles/mapas_backend.dir
+C:/InformeCliente/backend/build-vcpkg/CMakeFiles/ALL_BUILD.dir
+C:/InformeCliente/backend/build-vcpkg/CMakeFiles/ZERO_CHECK.dir

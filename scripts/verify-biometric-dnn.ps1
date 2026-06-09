@@ -1,5 +1,5 @@
 param(
-    [string]$BackendUrl = "http://localhost:8081",
+    [string]$BackendUrl = "http://localhost:8082",
     [string]$ComposeFile = "docker-compose.yml",
     [switch]$EnableDnn,
     [string]$ModelHostDir = "./biometric-models",

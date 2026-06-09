@@ -227,7 +227,7 @@ async function main() {
   await runSegment(page, 'Asistencia IA: correccion ortografica y mejora de redaccion del contenido tecnico.', 30000, async () => {
     await clickIfVisible(page, 'button', /Corregir Ortograf/i);
     await sleep(2000);
-    await clickIfVisible(page, 'button', /Mejorar Redacci/i);
+    await clickIfVisible(page, 'button', /REDACCION \(IA\)|Redacci[oó]n \(IA\)/i);
   });
 
   await runSegment(page, 'Evidencia cartografica: captura de MAPA, previsualizacion e insercion en el informe.', 40000, async () => {

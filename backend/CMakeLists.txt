@@ -7,19 +7,52 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(WIN32)
   # User-requested local Windows paths for deterministic development builds.
-  set(BOOST_ROOT "C:/boost_1_90_0" CACHE PATH "Boost root path")
-  set(Boost_ROOT "C:/boost_1_90_0" CACHE PATH "Boost root path")
-  set(OpenCV_DIR "C:/opencv/build" CACHE PATH "OpenCV config path")
-  set(Python3_ROOT_DIR "C:/Python/Python314" CACHE PATH "Python root path")
+  if(NOT DEFINED BOOST_ROOT)
+    set(BOOST_ROOT "C:/boost_1_90_0" CACHE PATH "Boost root path")
+  endif()
+  if(NOT DEFINED Boost_ROOT)
+    set(Boost_ROOT "C:/boost_1_90_0" CACHE PATH "Boost root path")
+  endif()
+  if(NOT DEFINED OpenCV_DIR)
+    set(OpenCV_DIR "C:/opencv/build" CACHE PATH "OpenCV config path")
+  endif()
+  if(NOT DEFINED OpenCV_RUNTIME)
+    set(OpenCV_RUNTIME "vc16" CACHE STRING "OpenCV runtime toolset")
+  endif()
+  if(NOT DEFINED OPENSSL_ROOT_DIR)
+    set(OPENSSL_ROOT_DIR "C:/Program Files/OpenSSL-Win64" CACHE PATH "OpenSSL root path")
+  endif()
+  if(NOT DEFINED Python3_ROOT_DIR)
+    set(Python3_ROOT_DIR "C:/Python/Python314" CACHE PATH "Python root path")
+  endif()
 
   list(PREPEND CMAKE_PREFIX_PATH
-    "C:/boost_1_90_0"
-    "C:/opencv/build"
-    "C:/Python/Python314"
+    "${Boost_ROOT}"
+    "${OpenCV_DIR}"
+    "${OPENSSL_ROOT_DIR}"
+    "${Python3_ROOT_DIR}"
   )
 endif()
 
-find_package(Boost REQUIRED COMPONENTS system json)
+set(_use_boost_header_only OFF)
+if(WIN32)
+  # If Boost binaries are not present on host, allow header-only fallback.
+  if(NOT EXISTS "${Boost_ROOT}/lib" AND NOT EXISTS "${BOOST_ROOT}/lib")
+    set(_use_boost_header_only ON)
+  endif()
+endif()
+
+if(_use_boost_header_only)
+  if(EXISTS "${Boost_ROOT}/boost")
+    set(Boost_INCLUDE_DIRS "${Boost_ROOT}")
+  elseif(EXISTS "${BOOST_ROOT}/boost")
+    set(Boost_INCLUDE_DIRS "${BOOST_ROOT}")
+  else()
+    message(FATAL_ERROR "Boost headers not found in Boost_ROOT/BOOST_ROOT for header-only mode")
+  endif()
+else()
+  find_package(Boost REQUIRED COMPONENTS system json)
+endif()
 find_package(OpenCV REQUIRED)
 find_package(Python3 QUIET COMPONENTS Interpreter)
 find_package(Threads REQUIRED)
@@ -42,13 +75,83 @@ else()
   set(_onnx_def "")
 endif()
 
+# Módulos base (seguridad, servidor, visión)
+set(BASE_MODULES
+  src/security/api_auth.cpp
+  src/server/connection_pool.cpp
+  src/vision/opencv_raii.cpp
+)
+
+# Módulos de infraestructura
+set(INFRA_MODULES
+  src/config/app_config.cpp
+  src/http/http_utils.cpp
+  src/http/router.cpp
+)
+
+# Módulos de autenticación
+set(AUTH_MODULES
+  src/auth/auth_session.cpp
+  src/auth/auth_storage_file.cpp
+  src/auth/auth_storage_pg.cpp
+  src/auth/auth_routes.cpp
+)
+
+# Módulos biométricos
+set(BIOMETRIC_MODULES
+  src/biometric/biometric_types.cpp
+  src/biometric/face_analysis.cpp
+  src/biometric/ai_engine_client.cpp
+  src/biometric/biometric_routes.cpp
+)
+
+# Módulos de minería
+set(MINING_MODULES
+  src/mining/kpi_service.cpp
+  src/mining/sensor_service.cpp
+  src/mining/surveillance_service.cpp
+  src/mining/mining_gateway.cpp
+  src/mining/mining_routes.cpp
+)
+
+# Módulos de reportes y fórmulas
+set(REPORTS_MODULES
+  src/reports/report_service.cpp
+  src/reports/report_routes.cpp
+  src/formula/formula_service.cpp
+  src/formula/formula_routes.cpp
+)
+
+# Módulos de plataforma, mapa, GDAL, texto
+set(PLATFORM_MODULES
+  src/platform/platform_routes.cpp
+  src/map/map_routes.cpp
+  src/gdal/conversion_service.cpp
+  src/gdal/gdal_routes.cpp
+  src/text/text_routes.cpp
+)
+
 add_executable(mapas_backend
   src/main.cpp
+  src/map_geo_intersect.cpp
+  src/text_spell_service.cpp
   ${_onnx_cartoon_src}
+  ${BASE_MODULES}
+  ${INFRA_MODULES}
+  ${AUTH_MODULES}
+  ${BIOMETRIC_MODULES}
+  ${MINING_MODULES}
+  ${REPORTS_MODULES}
+  ${PLATFORM_MODULES}
 )
 
 target_include_directories(mapas_backend PRIVATE
+  ${Boost_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  src
+  src/security
+  src/server
+  src/vision
 )
 
 if(ONNXRUNTIME_ROOT AND EXISTS "${_onnx_hdr}")
@@ -59,21 +162,33 @@ if(ONNXRUNTIME_ROOT AND EXISTS "${_onnx_hdr}")
   else()
     target_link_libraries(mapas_backend PRIVATE
       "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so")
-  endif()
+endif()
 endif()
 
 if(_onnx_def)
   target_compile_definitions(mapas_backend PRIVATE ${_onnx_def})
 endif()
 
+if(_use_boost_header_only)
+  target_compile_definitions(mapas_backend PRIVATE
+    BOOST_ERROR_CODE_HEADER_ONLY=1
+    BOOST_JSON_HEADER_ONLY=1
+  )
+endif()
+
 target_link_libraries(mapas_backend PRIVATE
-  Boost::system
-  Boost::json
   ${OpenCV_LIBS}
   Threads::Threads
   OpenSSL::SSL
   OpenSSL::Crypto
 )
+
+if(TARGET Boost::system)
+  target_link_libraries(mapas_backend PRIVATE Boost::system)
+endif()
+if(TARGET Boost::json)
+  target_link_libraries(mapas_backend PRIVATE Boost::json)
+endif()
 
 find_library(PQ_LIBRARY pq)
 if(PQ_LIBRARY)
@@ -83,3 +198,4 @@ endif()
 if(Python3_Interpreter_FOUND)
   message(STATUS "Python3 interpreter: ${Python3_EXECUTABLE}")
 endif()
+

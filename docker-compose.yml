@@ -26,6 +26,12 @@ services:
       - ./db_scripts/20_audit_traceability_enforcement.sql:/docker-entrypoint-initdb.d/20_audit_traceability_enforcement.sql:ro
       - ./db_scripts/21_audit_context_from_login.sql:/docker-entrypoint-initdb.d/21_audit_context_from_login.sql:ro
       - ./db_scripts/22_mining_demo_telemetry_surveillance.sql:/docker-entrypoint-initdb.d/22_mining_demo_telemetry_surveillance.sql:ro
+      - ./db_scripts/23_telemetry_surveillance_safe_update.sql:/docker-entrypoint-initdb.d/23_telemetry_surveillance_safe_update.sql:ro
+      - ./db_scripts/24_map_markers_official_geo.sql:/docker-entrypoint-initdb.d/24_map_markers_official_geo.sql:ro
+      - ./db_scripts/25_platform_ui_countries_languages.sql:/docker-entrypoint-initdb.d/25_platform_ui_countries_languages.sql:ro
+      - ./db_scripts/26_mining_runtime_kpis.sql:/docker-entrypoint-initdb.d/26_mining_runtime_kpis.sql:ro
+      - ./db_scripts/27_mining_sensor_zones.sql:/docker-entrypoint-initdb.d/27_mining_sensor_zones.sql:ro
+      - ./db_scripts/28_mining_telemetry_uuid_tenant.sql:/docker-entrypoint-initdb.d/28_mining_telemetry_uuid_tenant.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
       interval: 10s
@@ -40,7 +46,12 @@ services:
       - "8443:8443"
     environment:
       - DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=sensors_pass
+      # Fuente externa opcional para ETL KPI (si no se define, usa sync dashboard local)
+      - KPI_EXTERNAL_DATABASE_URL=${KPI_EXTERNAL_DATABASE_URL:-}
+      - KPI_EXTERNAL_QUERY=${KPI_EXTERNAL_QUERY:-}
       - MAPAS_PORT=8081
+      # Mapas / GIS (backend C++ mapas_backend): GeoJSON en MAPAS_DATA_ROOT/map_official_polygons.geojson
+      # (volumen ./data:/data). APIs: GET /api/map/markers, /api/map/official-zones, /api/map/compliance-intersections
       - MAPAS_DATA_ROOT=/data
       - BIOMETRIC_PROVIDER=dermalog_cli
       - DERMALOG_REQUIRED=false
@@ -51,6 +62,14 @@ services:
       - BIOMETRIC_DNN_LABELS=${BIOMETRIC_DNN_LABELS:-glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal}
       - BIOMETRIC_DNN_THRESHOLD=${BIOMETRIC_DNN_THRESHOLD:-0.72}
       - AI_ENGINE_URL=http://ai_engine:5000
+      # LanguageTool on-premise (servicio Docker). El backend centraliza /api/text/*.
+      - LANGUAGETOOL_URL=http://languagetool:8010
+      - LANGUAGETOOL_TIMEOUT_MS=60000
+      # Ollama opcional: reescritura local en /api/text/rewrite. Ejecutar: scripts/ensure-ollama-model.ps1
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-tinyllama}
+      - OLLAMA_TIMEOUT_MS=180000
+      - TEXT_SPELL_MAX_CHARS=30000
       - CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
       - OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
       - AI_ENGINE_TIMEOUT_MS=3000
@@ -69,6 +88,8 @@ services:
       db:
         condition: service_healthy
       ai_engine:
+        condition: service_healthy
+      languagetool:
         condition: service_healthy
     networks:
       default:
@@ -195,6 +216,21 @@ services:
 
   # Si el login no refleja cambios de UI: .\scripts\rebuild-frontend-docker.ps1
   # (o: docker compose build --no-cache frontend && docker compose up -d frontend)
+  # LLM local opcional para redacción premium (POST /api/text/rewrite).
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    expose:
+      - "11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
   frontend:
     build:
       context: ./frontend
@@ -225,10 +261,25 @@ services:
           cpus: '0.2'
           memory: 128M
 
+  # Corrector ortográfico/gramatical (self-hosted) para es-PE.
+  # Evita depender de api.languagetool.org y asegura disponibilidad en Docker.
+  languagetool:
+    image: erikvl87/languagetool:latest
+    restart: unless-stopped
+    expose:
+      - "8010"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8010/v2/languages || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+
 volumes:
   db_data: {}
   formula_db_data: {}
   insightface_models: {}
+  ollama_data: {}
 
 networks:
   default:

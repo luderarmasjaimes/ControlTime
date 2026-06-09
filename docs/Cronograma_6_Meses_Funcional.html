@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cronograma Maestro 6 Meses | Arquitectura VPS Lima</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.dhtmlx.com/gantt/edge/dhtmlxgantt.js"></script>
+    <link href="https://cdn.dhtmlx.com/gantt/edge/dhtmlxgantt.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg-deep: #020617;
+            --bg-card: rgba(15, 23, 42, 0.7);
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.4);
+            --text-main: #f8fafc;
+            --text-dim: #94a3b8;
+            --success: #10b981;
+            --border: rgba(255, 255, 255, 0.08);
+            --glass: rgba(15, 23, 42, 0.8);
+        }
+
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-deep);
+            font-family: 'Outfit', sans-serif;
+            color: var(--text-main);
+            overflow: hidden;
+        }
+
+        .header {
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 20px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 1000;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .logo-box {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent), #a855f7);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        .title-text h1 {
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .title-text p {
+            margin: 0;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .status-badge {
+            padding: 6px 12px;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        #gantt_here {
+            width: 100%;
+            height: calc(100vh - 85px);
+            background: var(--bg-deep);
+        }
+
+        /* Premium DHTMLX Overrides */
+        .gantt_container { background-color: transparent !important; border: none !important; }
+        .gantt_grid_scale, .gantt_task_scale { 
+            background: #0f172a !important; 
+            color: var(--text-dim) !important;
+            border-bottom: 1px solid var(--border) !important;
+            height: 60px !important;
+            line-height: 30px !important;
+        }
+        .gantt_grid_data .gantt_row, .gantt_task_row {
+            background-color: transparent !important;
+            border-bottom: 1px solid var(--border) !important;
+        }
+        .gantt_grid_data .gantt_row.gantt_selected, .gantt_task_row.gantt_selected {
+            background-color: rgba(99, 102, 241, 0.1) !important;
+        }
+        .gantt_cell { 
+            color: var(--text-main) !important; 
+            border-right: 1px solid var(--border) !important; 
+            font-size: 13px;
+        }
+        .gantt_task_line {
+            border-radius: 8px !important;
+            border: none !important;
+            height: 24px !important;
+            margin-top: 8px !important;
+        }
+        .gantt_task_line.project-task {
+            background: linear-gradient(90deg, #6366f1, #8b5cf6) !important;
+        }
+        .gantt_task_line.regular-task {
+            background: linear-gradient(90deg, #3b82f6, #06b6d4) !important;
+        }
+        .gantt_task_content { color: white; font-weight: 600; padding-left: 10px; }
+        .gantt_side_content { color: var(--text-dim) !important; font-weight: 500; }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-deep); }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo-container">
+            <div class="logo-box">⚙️</div>
+            <div class="title-text">
+                <h1>Cronograma de Ejecución 2026: Proyecto AURIXA</h1>
+                <p>Infraestructura Soberana VPS Lima | Software Libre & IA</p>
+            </div>
+        </div>
+        <div class="status-badge">SENIOR ARCHITECT LATAM v3.0</div>
+    </div>
+    <div id="gantt_here"></div>
+    <script>
+        gantt.config.date_format = "%d-%m-%Y";
+        gantt.config.scale_height = 60;
+        gantt.config.row_height = 45;
+        gantt.config.scales = [
+            {unit: "month", step: 1, format: "%F %Y"},
+            {unit: "week", step: 1, format: "S%W"}
+        ];
+
+        gantt.templates.task_class = function(start, end, task){
+            return task.type === "project" ? "project-task" : "regular-task";
+        };
+
+        gantt.config.columns = [
+            {name: "text", label: "Fase / Actividad Funcional", tree: true, width: 400},
+            {name: "duration", label: "Días", align: "center", width: 60},
+            {name: "users", label: "Responsables", width: 160, template: function(task) {
+                if(!task.users) return "";
+                const users = Array.isArray(task.users) ? task.users : [task.users];
+                return users.map(u => `<span style="background:rgba(99,102,241,0.15); color:#c7d2fe; padding:3px 8px; border-radius:6px; font-size:10px; margin-right:5px; font-weight:700; border:1px solid rgba(99,102,241,0.2);">${u}</span>`).join('');
+            }}
+        ];
+
+        gantt.config.readonly = true;
+        gantt.config.open_tree_initially = true;
+        gantt.init("gantt_here");
+
+        const tasksData = {
+            data: [{"id": 1, "text": "ETAPA 1: N\u00daCLEO OPERATIVO Y DISE\u00d1O (MESES 1-4)", "type": "project", "open": true}, {"id": 2, "text": "1. An\u00e1lisis y Planificaci\u00f3n Estrat\u00e9gica", "type": "project", "parent": 1, "open": true}, {"id": 21, "text": "Alineamiento con Gerencia y Alcance (SOW)", "start_date": "20-05-2026", "duration": 10, "parent": 2, "users": ["ARQ"]}, {"id": 22, "text": "Dise\u00f1o del Almac\u00e9n de Datos Industrial", "duration": 10, "parent": 2, "users": ["SYS", "DBA"]}, {"id": 23, "text": "Dise\u00f1o Visual de Experiencia Pro Max", "duration": 12, "parent": 2, "users": ["UX"]}, {"id": 3, "text": "2. Infraestructura en Lima y Conexi\u00f3n", "type": "project", "parent": 1, "open": true}, {"id": 31, "text": "Configuraci\u00f3n de Servidores Linux VPS en Lima", "duration": 10, "parent": 3, "users": ["SYS"]}, {"id": 32, "text": "Conexi\u00f3n Segura con Sistemas Antiguos (Legacy)", "duration": 12, "parent": 3, "users": ["BE1", "DBA"]}, {"id": 4, "text": "3. Cerebro Digital e Inteligencia Artificial", "type": "project", "parent": 1, "open": true}, {"id": 41, "text": "Recolector Central de Datos de Sensores (RT)", "duration": 15, "parent": 4, "users": ["BE1"]}, {"id": 42, "text": "Motor IA de Redacci\u00f3n y An\u00e1lisis de Texto", "duration": 15, "parent": 4, "users": ["BE2", "IA"]}, {"id": 43, "text": "Detector Autom\u00e1tico de Alarmas y Anomal\u00edas", "duration": 12, "parent": 4, "users": ["BE2"]}, {"id": 5, "text": "4. Interfaz Maestra ReportStudio", "type": "project", "parent": 1, "open": true}, {"id": 51, "text": "Portal de Edici\u00f3n Documental Tipo Word", "duration": 20, "parent": 5, "users": ["FE1"]}, {"id": 52, "text": "Mapa Satelital Din\u00e1mico y Sensores en Vivo", "duration": 15, "parent": 5, "users": ["FE2"]}, {"id": 53, "text": "Sistema de Archivo Portable (.miningreport)", "duration": 12, "parent": 5, "users": ["FE1", "BE1"]}, {"id": 6, "text": "ETAPA 2: BLINDAJE, IA AVANZADA Y LANZAMIENTO (MESES 5-6)", "type": "project", "open": true}, {"id": 7, "text": "5. Blindaje y Seguridad de Grado Militar", "type": "project", "parent": 6, "open": true}, {"id": 71, "text": "Configuraci\u00f3n de Candados Digitales y Accesos", "duration": 10, "parent": 7, "users": ["SYS"]}, {"id": 72, "text": "Libro de Actas Digital (Historial Inalterable)", "duration": 10, "parent": 7, "users": ["BE2"]}, {"id": 73, "text": "Plan de Recuperaci\u00f3n ante Desastres LATAM", "duration": 8, "parent": 7, "users": ["ARQ", "SYS"]}, {"id": 8, "text": "6. IA de Visi\u00f3n y Biometr\u00eda en Campo", "type": "project", "parent": 6, "open": true}, {"id": 81, "text": "Identificaci\u00f3n Facial con Casco y EPP", "duration": 15, "parent": 8, "users": ["IA", "BE2"]}, {"id": 82, "text": "Dictado por Voz Inteligente (Voz a Texto)", "duration": 12, "parent": 8, "users": ["IA", "FE1"]}, {"id": 83, "text": "Detecci\u00f3n Autom\u00e1tica de Casco y Chaleco (Video)", "duration": 15, "parent": 8, "users": ["BE2", "IA"]}, {"id": 9, "text": "7. Lanzamiento y Control de Operaciones", "type": "project", "parent": 6, "open": true}, {"id": 91, "text": "Pruebas de Resistencia (10,000 Sensores)", "duration": 12, "parent": 9, "users": ["QA", "SYS"]}, {"id": 92, "text": "Marcha Blanca y Soporte en Unidad Minera", "duration": 15, "parent": 9, "users": ["ARQ", "FE1", "BE1"]}, {"id": 93, "text": "Entrenamiento, Entrega de Llaves y Go-Live", "duration": 8, "parent": 9, "users": ["ARQ"]}],
+            links: [{"id": 1, "source": 21, "target": 31, "type": "0"}, {"id": 2, "source": 31, "target": 41, "type": "0"}, {"id": 3, "source": 41, "target": 51, "type": "0"}, {"id": 4, "source": 51, "target": 71, "type": "0"}, {"id": 5, "source": 71, "target": 81, "type": "0"}, {"id": 6, "source": 81, "target": 91, "type": "0"}, {"id": 7, "source": 91, "target": 92, "type": "0"}, {"id": 8, "source": 92, "target": 93, "type": "0"}]
+        };
+
+        gantt.parse(tasksData);
+    </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, Download, Eye } from 'lucide-react';
+import { resolveReportImageSrc } from '../../lib/reportImageSrc';
 
 /**
  * ReadOnlyViewer — muestra el contenido de un informe en modo solo lectura.
@@ -157,6 +158,7 @@ function ReadOnlyElement({ element }) {
   }
 
   if (element.type === 'image') {
+    const src = resolveReportImageSrc(element);
     return (
       <div style={{
         width: '100%', height: '100%',
@@ -164,11 +166,7 @@ function ReadOnlyElement({ element }) {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         color: '#94a3b8', fontSize: 12,
       }}>
-        {props.src ? (
-          <img src={props.src} alt={props.alt || ''} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
-        ) : (
-          <span>Imagen</span>
-        )}
+        <img src={src} alt={props.alt || ''} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: element.objectFit || 'contain' }} />
       </div>
     );
   }

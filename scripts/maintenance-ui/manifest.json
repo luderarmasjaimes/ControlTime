@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "scripts": [
+    {
+      "id": "rebuild-frontend-docker",
+      "file": "rebuild-frontend-docker.ps1",
+      "category": "Docker",
+      "title": "Reconstruir imagen frontend",
+      "description": "Build sin caché del servicio frontend y recrea el contenedor (útil si la UI no refleja cambios).",
+      "warn": false
+    },
+    {
+      "id": "rebuild-backend-onnx-docker",
+      "file": "rebuild-backend-onnx-docker.ps1",
+      "category": "Docker",
+      "title": "Reconstruir backend / ONNX",
+      "description": "Rebuild de la imagen del backend relacionada con ONNX/modelos.",
+      "warn": false
+    },
+    {
+      "id": "rebuild-docker-stack-clean",
+      "file": "rebuild-docker-stack-clean.ps1",
+      "category": "Docker",
+      "title": "Stack Docker limpio",
+      "description": "Limpieza y reconstrucción más agresiva del stack (revisar script antes).",
+      "warn": true
+    },
+    {
+      "id": "apply-telemetry-db-patch",
+      "file": "apply-telemetry-db-patch.ps1",
+      "category": "Base de datos",
+      "title": "Parche telemetría (DB)",
+      "description": "Aplica el parche SQL de telemetría contra Postgres del stack.",
+      "warn": false
+    },
+    {
+      "id": "apply-db-formula-dictionary",
+      "file": "apply-db-formula-dictionary.ps1",
+      "category": "Base de datos",
+      "title": "Diccionario fórmulas (DB)",
+      "description": "Aplica scripts del diccionario de fórmulas en la base correspondiente.",
+      "warn": false
+    },
+    {
+      "id": "apply-db-auth-login",
+      "file": "apply-db-auth-login.ps1",
+      "category": "Base de datos",
+      "title": "Auth / login (DB)",
+      "description": "Aplica scripts de autenticación y login en la base de datos.",
+      "warn": false
+    },
+    {
+      "id": "reset-auth-users-docker",
+      "file": "reset-auth-users-docker.ps1",
+      "category": "Base de datos",
+      "title": "Reset usuarios auth (Docker)",
+      "description": "Vacía auth_users y auditoría auth en Postgres del stack; reinicia web. ¡Destructivo para cuentas!",
+      "warn": true
+    },
+    {
+      "id": "smoke-test",
+      "file": "smoke-test.ps1",
+      "category": "Pruebas",
+      "title": "Smoke test",
+      "description": "Comprobaciones rápidas del entorno / servicios.",
+      "warn": false
+    },
+    {
+      "id": "smoke-auth-e2e",
+      "file": "smoke-auth-e2e.ps1",
+      "category": "Pruebas",
+      "title": "Smoke auth E2E",
+      "description": "Pruebas end-to-end del flujo de autenticación.",
+      "warn": false
+    },
+    {
+      "id": "regression-full",
+      "file": "regression-full.ps1",
+      "category": "Pruebas",
+      "title": "Regresión completa",
+      "description": "Suite de regresión amplia (puede tardar).",
+      "warn": false
+    },
+    {
+      "id": "verify-ecw",
+      "file": "verify-ecw.ps1",
+      "category": "ECW / GDAL",
+      "title": "Verificar ECW",
+      "description": "Verificación de soporte ECW en el host.",
+      "warn": false
+    },
+    {
+      "id": "convert-ecw-host",
+      "file": "convert-ecw-host.ps1",
+      "category": "ECW / GDAL",
+      "title": "Convertir ECW (host)",
+      "description": "Conversión ECW en el host (según parámetros del script).",
+      "warn": false
+    },
+    {
+      "id": "install-ecw-sdk-host",
+      "file": "install-ecw-sdk-host.ps1",
+      "category": "ECW / GDAL",
+      "title": "Instalar SDK ECW (host)",
+      "description": "Instalación del SDK ECW en el equipo host.",
+      "warn": true
+    },
+    {
+      "id": "test-ecw-now",
+      "file": "test-ecw-now.ps1",
+      "category": "ECW / GDAL",
+      "title": "Test ECW ahora",
+      "description": "Prueba rápida ECW.",
+      "warn": false
+    },
+    {
+      "id": "verify-biometric-dnn",
+      "file": "verify-biometric-dnn.ps1",
+      "category": "Biometría / IA",
+      "title": "Verificar DNN biométrico",
+      "description": "Comprueba modelo ONNX / DNN de biométrico.",
+      "warn": false
+    },
+    {
+      "id": "install_glasses_training",
+      "file": "install_glasses_training.ps1",
+      "category": "Biometría / IA",
+      "title": "Instalar entorno glasses training",
+      "description": "Prepara entorno para entrenamiento relacionado con gafas.",
+      "warn": false
+    },
+    {
+      "id": "cicd-auto-heal",
+      "file": "cicd-auto-heal.ps1",
+      "category": "CI / mantenimiento",
+      "title": "CI/CD auto-heal",
+      "description": "Automatización de recuperación en pipeline (revisar uso).",
+      "warn": false
+    }
+  ]
+}

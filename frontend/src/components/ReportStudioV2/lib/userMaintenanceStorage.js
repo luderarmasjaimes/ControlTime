@@ -64,6 +64,12 @@ export function listCompanyUsers(company) {
       isActive: user.is_active !== false,
       suspensionUntil: user.suspension_until || null,
       company: user.company || '',
+      firstName: user.first_name || user.firstName || '',
+      lastName: user.last_name || user.lastName || '',
+      email: user.email || '',
+      phone: user.phone || '',
+      mobile: user.mobile || '',
+      dni: user.dni || '',
     }))
     .sort((a, b) => a.fullName.localeCompare(b.fullName, 'es', { sensitivity: 'base' }));
 }
@@ -72,28 +78,37 @@ export async function listCompanyUsersUnified(company) {
   try {
     const api = await getAuthApi();
     const result = await api.fetchCompanyUsers(company);
-    const users = Array.isArray(result?.users) ? result.users : [];
+    if (Array.isArray(result?.users)) {
+      const users = result.users
+        .filter((user) => !company || (user.company === company || user.company_name === company))
+        .map((user) => ({
+          id: user.id || user.username,
+          username: user.username || '',
+          fullName: fullName(user),
+          role: user.role || 'operator',
+          status: normalizeStatus(user),
+          isActive: user.is_active !== false,
+          suspensionUntil: user.suspension_until || null,
+          company: user.company || user.company_name || '',
+          firstName: user.first_name || user.firstName || '',
+          lastName: user.last_name || user.lastName || '',
+          email: user.email || '',
+          phone: user.phone || '',
+          mobile: user.mobile || '',
+          dni: user.dni || '',
+        }))
+        .sort((a, b) => a.fullName.localeCompare(b.fullName, 'es', { sensitivity: 'base' }));
 
-    if (users.length > 0) {
+      // Sincronizamos con el storage local como cache para el fallback
+      writeUsers(users);
+
       return {
         source: 'backend',
-        users: users
-          .filter((user) => !company || (user.company || '') === company)
-          .map((user) => ({
-            id: user.id || user.username,
-            username: user.username || '',
-            fullName: fullName(user),
-            role: user.role || 'operator',
-            status: normalizeStatus(user),
-            isActive: user.is_active !== false,
-            suspensionUntil: user.suspension_until || null,
-            company: user.company || '',
-          }))
-          .sort((a, b) => a.fullName.localeCompare(b.fullName, 'es', { sensitivity: 'base' })),
+        users,
       };
     }
-  } catch {
-    // fallback local
+  } catch (err) {
+    console.warn("[MAINTENANCE_STORAGE] Backend list failed, using local fallback", err);
   }
 
   return {
@@ -215,6 +230,13 @@ export function applyUserMaintenance({
       target.blocked_reason = details?.reason || '';
       detail = 'Usuario bloqueado.';
       success = true;
+    } else if (action === 'unblock') {
+      target.is_active = true;
+      target.account_status = 'active';
+      target.suspension_until = null;
+      target.maintenance_reason = details?.reason || '';
+      detail = 'Usuario desbloqueado / activado.';
+      success = true;
     } else if (action === 'suspend') {
       target.is_active = false;
       target.account_status = 'suspended';
@@ -227,6 +249,19 @@ export function applyUserMaintenance({
       target.profile_updated_at = now;
       target.profile_observation = details?.observation || '';
       detail = `Perfil cambiado a ${target.role}.`;
+      success = true;
+    } else if (action === 'edit_data') {
+      target.first_name = details?.firstName || target.first_name;
+      target.last_name = details?.lastName || target.last_name;
+      target.email = details?.email || target.email;
+      target.phone = details?.phone || target.phone;
+      target.mobile = details?.mobile || target.mobile;
+      detail = 'Información personal actualizada.';
+      success = true;
+    } else if (action === 'reset_password') {
+      target.password = details?.newPassword || 'Mining123*';
+      target.plain_password = details?.newPassword || 'Mining123*';
+      detail = 'Contraseña reseteada correctamente.';
       success = true;
     } else {
       detail = 'Accion no soportada.';
@@ -273,21 +308,29 @@ export async function applyUserMaintenanceUnified(payload) {
   try {
     const api = await getAuthApi();
     const response = await api.executeUserMaintenance(payload);
+    
     if (response?.status === 'ok' || response?.ok === true || response?.success === true) {
       return {
         ok: true,
         source: 'backend',
-        message: response?.message || 'Mantenimiento aplicado correctamente en backend.',
+        message: response?.message || 'Mantenimiento aplicado correctamente en servidor.',
         auditEntry: response?.audit || null,
       };
     }
-  } catch {
-    // fallback local
+    
+    // Si el servidor respondió explícitamente pero con error (ej: 400 Bad Request)
+    if (response?.error) {
+       return { ok: false, source: 'backend', message: response.error };
+    }
+  } catch (err) {
+    console.error("[MAINTENANCE_STORAGE] Backend apply error:", err);
+    // Solo si el error es de conexión o similar, intentamos fallback local
+    if (err.message?.includes('failed') || err.message?.includes('network')) {
+       const local = applyUserMaintenance(payload);
+       return { ...local, source: 'local' };
+    }
+    return { ok: false, source: 'backend', message: err.message };
   }
 
-  const local = applyUserMaintenance(payload);
-  return {
-    ...local,
-    source: 'local',
-  };
+  return { ok: false, source: 'backend', message: 'Error de comunicación con el servidor.' };
 }

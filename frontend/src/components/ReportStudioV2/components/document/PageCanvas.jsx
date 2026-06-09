@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Layer, Rect, Stage, Text, Transformer } from 'react-konva';
 import { Html } from 'react-konva-utils';
 import { 
@@ -19,23 +19,24 @@ import {
   Pencil
 } from 'lucide-react';
 import { useEditorStore } from '../../store/useEditorStore';
+import { getReportLayoutMetrics } from '../../lib/reportLayoutMetrics';
+import {
+  textCorrectQuick,
+  textCorrectAdvanced,
+  textRewriteOnPremise,
+} from '../../lib/api';
+import { LEGACY_TEXT_PLACEHOLDER, textForSpellOrRewrite } from '../../lib/textSpellUtils';
+import { resolveReportImageSrc } from '../../lib/reportImageSrc';
 import LiveChartBlock from '../dashboard/LiveChartBlock';
 import TableBlock from './TableBlock';
 import SensorWidget from './SensorWidget';
+import MiningKpiWidget from './MiningKpiWidget';
+import FloatingContextualToolbar from './FloatingContextualToolbar';
 
-const MM_TO_PX = 3.7795275591;
-const PAGE_WIDTH = 210 * MM_TO_PX;
-const PAGE_HEIGHT = 297 * MM_TO_PX;
 const GRID = 12;
-const HEADER_HEIGHT = 58;
-const FOOTER_HEIGHT = 48;
-const CONTENT_TOP = HEADER_HEIGHT + 14;
-const CONTENT_BOTTOM = PAGE_HEIGHT - FOOTER_HEIGHT - 14;
-const CONTENT_LEFT = 36;
-const CONTENT_RIGHT = PAGE_WIDTH - 36;
 
 const DEFAULT_TEXT_PROPS = {
-  text: 'Escribe aquí tu texto técnico...',
+  text: '',
   fontFamily: 'Arial',
   fontSize: 16,
   fontColor: '#0f172a',
@@ -50,7 +51,7 @@ const DEFAULT_TEXT_PROPS = {
 function getTextProps(element) {
   const props = element.props || {};
   return {
-    text: String(props.text ?? DEFAULT_TEXT_PROPS.text),
+    text: props.text == null ? '' : String(props.text),
     fontFamily: String(props.fontFamily ?? DEFAULT_TEXT_PROPS.fontFamily),
     fontSize: Number(props.fontSize ?? DEFAULT_TEXT_PROPS.fontSize),
     fontColor: String(props.fontColor ?? DEFAULT_TEXT_PROPS.fontColor),
@@ -278,47 +279,9 @@ function getAutoSizedTextBox(
   };
 }
 
-function applyQuickSpanishCorrections(rawText) {
-  const replacements = [
-    [/\bcprregido\b/gi, 'corregido'],
-    [/\bigiual\b/gi, 'igual'],
-    [/\botograficas\b/gi, 'ortográficas'],
-    [/\bcamboa\b/gi, 'cambia'],
-    [/\badiconalmente\b/gi, 'adicionalmente'],
-    [/\besscriba\b/gi, 'escriba'],
-    [/\bautimaticmante\b/gi, 'automáticamente'],
-    [/\besscribir\b/gi, 'escribir'],
-    [/\bseccion\b/gi, 'sección'],
-    [/\bpérmita\b/gi, 'permita'],
-    [/\bcorreciones\b/gi, 'correcciones'],
-    [/\bgrabado\b/gi, 'grabación'],
-    [/\btextp\b/gi, 'texto'],
-  ];
-
-  let corrected = rawText;
-  for (const [pattern, replacement] of replacements) {
-    corrected = corrected.replace(pattern, replacement);
-  }
-
-  corrected = corrected
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\s+\n/g, '\n')
-    .replace(/\n\s+/g, '\n')
-    .replace(/\s+([,.;:!?])/g, '$1')
-    .replace(/([,.;:!?])(?![\s\n]|$)/g, '$1 ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-  corrected = corrected.replace(/(^|[.!?]\s+|\n)([a-záéíóúñ])/g, (match, prefix, letter) => {
-    return `${prefix}${letter.toUpperCase()}`;
-  });
-
-  return corrected;
-}
-
 function getSpellcheckLang() {
   if (typeof navigator === 'undefined') {
-    return 'es';
+    return 'es-PE';
   }
 
   const preferred = [navigator.language, ...(navigator.languages || [])]
@@ -326,10 +289,10 @@ function getSpellcheckLang() {
     .map((value) => value.toLowerCase());
 
   if (preferred.some((value) => value.startsWith('es'))) {
-    return 'es';
+    return 'es-PE';
   }
 
-  return 'es';
+  return 'es-PE';
 }
 
 function getSpeechCtor() {
@@ -348,14 +311,28 @@ function snap(value, enabled) {
   return Math.round(value / GRID) * GRID;
 }
 
-export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
+export default function PageCanvas({ page, viewportScale = 1, totalPages, onRequestImageReplace }) {
   const transformerRef = useRef(null);
   const layerRef = useRef(null);
   const stageRef = useRef(null);
   const dragInProgressRef = useRef(false);
+  const wasSelectedRef = useRef(false);
   const scale = Math.min(1.8, Math.max(0.5, Number(viewportScale) || 1));
   const recognitionRef = useRef(null);
   const dictationTargetRef = useRef(null);
+  const layoutMode = useEditorStore((s) =>
+    s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
+  );
+  const {
+    PAGE_WIDTH,
+    PAGE_HEIGHT,
+    HEADER_HEIGHT,
+    FOOTER_HEIGHT,
+    CONTENT_TOP,
+    CONTENT_BOTTOM,
+    CONTENT_LEFT,
+    CONTENT_RIGHT,
+  } = useMemo(() => getReportLayoutMetrics(layoutMode), [layoutMode]);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
   const selectElement = useEditorStore((s) => s.selectElement);
   const selectPage = useEditorStore((s) => s.selectPage);
@@ -363,67 +340,50 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
   const gridEnabled = useEditorStore((s) => s.gridEnabled);
   const snapEnabled = useEditorStore((s) => s.snapEnabled);
   const [openTextEditorId, setOpenTextEditorId] = useState(null);
+  /** Tabla: edición en lienzo solo tras doble clic; si no, el DOM bloquea selección como con KPI. */
+  const [canvasTableEditId, setCanvasTableEditId] = useState(null);
   const [isDictating, setIsDictating] = useState(false);
   const [speechError, setSpeechError] = useState(null);
   const [correctionInfo, setCorrectionInfo] = useState(null);
   const [isImproving, setIsImproving] = useState(false);
 
-  // SIMULATED AI IMPROVEMENT (ChatGPT-like prompt logic)
+  /** Redacción on-premise: backend (LanguageTool + rápido + Ollama opcional). */
   const runAIImprovement = async (currentText, updateFn) => {
-    if (!currentText.trim()) return;
-    
+    const sourceText = textForSpellOrRewrite(currentText);
+    if (!sourceText) {
+      setCorrectionInfo('Escribe primero el texto técnico (el cuadro no puede estar vacío ni ser solo el texto de ayuda).');
+      setTimeout(() => setCorrectionInfo(null), 5000);
+      return;
+    }
+
     setIsImproving(true);
-    setCorrectionInfo('🤖 Inteligencia Artificial analizando redacción técnica...');
-    
-    // Simulate network delay
-    await new Promise(r => setTimeout(r, 2000));
-    
-    const originalText = currentText;
-    let improvedText = originalText;
-    
-    // Technical transformation dictionary (Mock AI)
-    const techMap = {
-      'mucha': 'elevada',
-      'poca': 'mínima',
-      'roto': 'comprometido estructuralmente',
-      'mal': 'en condiciones subestándar',
-      'bien': 'según los estándares operativos',
-      'arreglar': 'subsanar',
-      'mirar': 'monitorear',
-      'limpiar': 'sanitizar/despejar',
-      'peligro': 'riesgo geomecánico crítico',
-      'humedad': 'saturación hídrica',
-      'agua': 'recurso hídrico',
-      'sitio': 'emplazamiento/labor',
-      'minas': 'unidades mineras',
-      'trabajo': 'operaciones tácticas',
-      'gente': 'personal operario',
-      'maquina': 'equipo de línea amarilla',
-      'camion': 'dumper de bajo perfil',
-      'hacer': 'ejecutar',
-      'ir': 'desplazarse',
-      'ver': 'inspeccionar'
-    };
+    setCorrectionInfo('Servidor: ortografía, gramática y redacción asistida…');
 
-    // Apply some sophisticated regex rules to simulate "smart" rewriting
-    Object.keys(techMap).forEach(key => {
-      const regex = new RegExp(`\\b${key}\\b`, 'gi');
-      improvedText = improvedText.replace(regex, techMap[key]);
-    });
-
-    // Add technical headers/footers if missing
-    if (!improvedText.includes('Se informa que')) {
-      improvedText = `Se informa que: ${improvedText}`;
+    try {
+      const data = await textRewriteOnPremise(sourceText, {
+        language: 'es-PE',
+        level: 'picky',
+        use_llm: true,
+      });
+      if (data?.error) {
+        if (data.error === 'empty_text') {
+          setCorrectionInfo('No hay texto válido para reescribir.');
+        } else {
+          setCorrectionInfo(typeof data.error === 'string' ? data.error : 'Error en el servidor.');
+        }
+        return;
+      }
+      const improvedText = String(data?.text ?? sourceText);
+      updateFn({ text: improvedText });
+      const llm = data?.llm_applied ? ' IA local (Ollama) aplicada.' : ' Solo corrección automática (LanguageTool + reglas); la IA no devolvió un resultado válido.';
+      setCorrectionInfo(improvedText !== sourceText ? `Listo.${llm}` : `Sin cambios automáticos.${llm}`);
+    } catch (e) {
+      const msg = e?.response?.data?.error || e?.message || 'error';
+      setCorrectionInfo(`No se pudo mejorar el texto: ${msg}`);
+    } finally {
+      setIsImproving(false);
+      setTimeout(() => setCorrectionInfo(null), 5000);
     }
-    
-    if (!improvedText.endsWith('.')) {
-      improvedText += '. Se recomienda seguimiento continuo según protocolo SSOMA.';
-    }
-
-    updateFn({ text: improvedText });
-    setIsImproving(false);
-    setCorrectionInfo('✅ Redacción optimizada por IA exitosamente.');
-    setTimeout(() => setCorrectionInfo(null), 4000);
   };
   const [advancedSuggestions, setAdvancedSuggestions] = useState([]);
   const [isAnalyzingSpelling, setIsAnalyzingSpelling] = useState(false);
@@ -436,13 +396,14 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
     }
 
     const node = layerRef.current.findOne(`#${selectedElementId}`);
-    if (node) {
+    // Hide transformer if we are editing text in place
+    if (node && openTextEditorId !== selectedElementId) {
       transformerRef.current.nodes([node]);
     } else {
       transformerRef.current.nodes([]);
     }
     layerRef.current.batchDraw();
-  }, [selectedElementId, page.elements]);
+  }, [selectedElementId, page.elements, openTextEditorId]);
 
   const stopDictation = () => {
     const recognition = recognitionRef.current;
@@ -474,6 +435,29 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
   }, []);
 
   useEffect(() => {
+    if (!selectedElementId) {
+      setCanvasTableEditId(null);
+      return;
+    }
+    if (canvasTableEditId && selectedElementId !== canvasTableEditId) {
+      setCanvasTableEditId(null);
+    }
+  }, [selectedElementId, canvasTableEditId]);
+
+  useEffect(() => {
+    if (!canvasTableEditId) {
+      return undefined;
+    }
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        setCanvasTableEditId(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canvasTableEditId]);
+
+  useEffect(() => {
     const clearDrag = () => {
       dragInProgressRef.current = false;
       try {
@@ -497,15 +481,18 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
 
   useEffect(() => {
     const selectedElement = page.elements.find((element) => element.id === selectedElementId);
-    const canMoveWithKeyboard =
-      selectedElement && selectedElement.type === 'text' && !selectedElement.locked && openTextEditorId !== selectedElement.id;
-
-    if (!canMoveWithKeyboard) {
+    if (!selectedElement || selectedElement.locked) {
+      return;
+    }
+    if (selectedElement.type === 'text' && openTextEditorId === selectedElement.id) {
+      return;
+    }
+    if (selectedElement.type === 'table' && canvasTableEditId === selectedElement.id) {
       return;
     }
 
-      const handleKeyDown = (event) => {
-        const target = event.target;
+    const handleKeyDown = (event) => {
+      const target = event.target;
       if (target) {
         const tag = target.tagName?.toLowerCase();
         if (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable) {
@@ -524,14 +511,11 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
       const deltaX = key === 'ArrowLeft' ? -step : key === 'ArrowRight' ? step : 0;
       const deltaY = key === 'ArrowUp' ? -step : key === 'ArrowDown' ? step : 0;
 
-      const boundedX = Math.min(
-        Math.max((selectedElement?.x ?? CONTENT_LEFT) + deltaX, CONTENT_LEFT),
-        CONTENT_RIGHT - (selectedElement?.width ?? 120),
-      );
-      const boundedY = Math.min(
-        Math.max((selectedElement?.y ?? CONTENT_TOP) + deltaY, CONTENT_TOP),
-        CONTENT_BOTTOM - (selectedElement?.height ?? 56),
-      );
+      const w = Math.max(20, selectedElement.width ?? 120);
+      const h = Math.max(20, selectedElement.height ?? 56);
+
+      const boundedX = Math.min(Math.max((selectedElement.x ?? CONTENT_LEFT) + deltaX, CONTENT_LEFT), CONTENT_RIGHT - w);
+      const boundedY = Math.min(Math.max((selectedElement.y ?? CONTENT_TOP) + deltaY, CONTENT_TOP), CONTENT_BOTTOM - h);
 
       updateElement(page.page_number, selectedElement.id, {
         x: snap(boundedX, snapEnabled),
@@ -543,15 +527,41 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [openTextEditorId, page.elements, page.page_number, selectedElementId, snapEnabled, updateElement]);
+  }, [
+    openTextEditorId,
+    canvasTableEditId,
+    page.elements,
+    page.page_number,
+    selectedElementId,
+    snapEnabled,
+    updateElement,
+    layoutMode,
+    CONTENT_LEFT,
+    CONTENT_RIGHT,
+    CONTENT_TOP,
+    CONTENT_BOTTOM,
+  ]);
 
   const pageLabel =
-    totalPages != null && totalPages > 1
-      ? `Página ${page.page_number} de ${totalPages}`
-      : `Página ${page.page_number}`;
+    layoutMode === 'presentation'
+      ? totalPages != null && totalPages > 1
+        ? `Diapositiva ${page.page_number} de ${totalPages}`
+        : `Diapositiva ${page.page_number}`
+      : totalPages != null && totalPages > 1
+        ? `Página ${page.page_number} de ${totalPages}`
+        : `Página ${page.page_number}`;
+
+  const headerBandText =
+    layoutMode === 'presentation' ? 'PRESENTACIÓN 16:9' : 'ENCABEZADO TÉCNICO • INFORME A4';
 
   return (
-    <div className="page-wrapper" style={{ width: PAGE_WIDTH * scale, maxWidth: '100%' }}>
+    <div
+      className="page-wrapper"
+      style={{
+        width: PAGE_WIDTH * scale,
+        minWidth: PAGE_WIDTH * scale,
+      }}
+    >
       <div className="page-meta">{pageLabel}</div>
       <Stage
         ref={stageRef}
@@ -560,7 +570,10 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
         onMouseDown={(event) => {
           selectPage(page.page_number);
           if (event.target === event.target.getStage()) {
+            wasSelectedRef.current = useEditorStore.getState().selectedElementId != null || openTextEditorId != null || canvasTableEditId != null;
+            setCanvasTableEditId(null);
             selectElement(undefined);
+            setOpenTextEditorId(null);
           }
         }}
         onMouseUp={() => {
@@ -569,10 +582,59 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
         onMouseLeave={() => {
           dragInProgressRef.current = false;
         }}
+        onClick={(event) => {
+          if (event.target === event.target.getStage() && !dragInProgressRef.current) {
+            if (!wasSelectedRef.current) {
+              const pos = event.target.getStage().getPointerPosition();
+              if (pos) {
+                const x = snap(pos.x / scale, snapEnabled);
+                const y = snap(pos.y / scale, snapEnabled);
+                
+                // Si ya habia un editor abierto, lo cerramos
+                if (openTextEditorId) {
+                  setOpenTextEditorId(null);
+                }
+
+                useEditorStore.getState().addElement('text', { 
+                  width: 350, 
+                  height: 40,
+                  props: { text: '' } 
+                });
+                const newId = useEditorStore.getState().selectedElementId;
+                useEditorStore.getState().updateElement(page.page_number, newId, { x, y });
+                setOpenTextEditorId(newId);
+              }
+            }
+          }
+        }}
+        onDblClick={(event) => {
+          if (event.target === event.target.getStage()) {
+            const pos = event.target.getStage().getPointerPosition();
+            if (pos) {
+              const x = snap(pos.x / scale, snapEnabled);
+              const y = snap(pos.y / scale, snapEnabled);
+
+              if (openTextEditorId) {
+                setOpenTextEditorId(null);
+              }
+
+              useEditorStore.getState().addElement('text', { 
+                width: 350, 
+                height: 40,
+                props: { text: '' }
+              });
+              const newId = useEditorStore.getState().selectedElementId;
+              useEditorStore.getState().updateElement(page.page_number, newId, { x, y });
+              setOpenTextEditorId(newId);
+            }
+          }
+        }}
       >
         <Layer ref={layerRef} scaleX={scale} scaleY={scale}>
-          <Rect x={0} y={0} width={PAGE_WIDTH} height={PAGE_HEIGHT} fill="#fff" stroke="#dbe3f1" strokeWidth={1} />
-          <Rect x={0} y={0} width={PAGE_WIDTH} height={HEADER_HEIGHT} fill="#f8fbff" stroke="#dbe3f1" strokeWidth={1} />
+          <Rect x={0} y={0} width={PAGE_WIDTH} height={PAGE_HEIGHT} fill="#fff" stroke="#dbe3f1" strokeWidth={1} perfectDrawEnabled={false} listening={false} />
+          
+          {/* Header & Footer reference areas (optional light background, no text blocking) */}
+          <Rect x={0} y={0} width={PAGE_WIDTH} height={HEADER_HEIGHT} fill="#f8fbff" stroke="#dbe3f1" strokeWidth={1} perfectDrawEnabled={false} listening={false} />
           <Rect
             x={0}
             y={PAGE_HEIGHT - FOOTER_HEIGHT}
@@ -581,16 +643,12 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
             fill="#f8fbff"
             stroke="#dbe3f1"
             strokeWidth={1}
-          />
-          <Text x={20} y={18} text="ENCABEZADO TÉCNICO • INFORME A4" fontSize={12} fill="#1f3f7a" fontStyle="bold" listening={false} />
-          <Text
-            x={20}
-            y={PAGE_HEIGHT - 30}
-            text={`PIE DE PÁGINA • Hoja ${page.page_number}`}
-            fontSize={11}
-            fill="#475569"
+            perfectDrawEnabled={false}
             listening={false}
           />
+
+          {/* Editable headers and footers should be inserted by the user via the left panel */}
+
           <Rect
             x={CONTENT_LEFT}
             y={CONTENT_TOP}
@@ -603,11 +661,11 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
 
           {gridEnabled &&
             Array.from({ length: Math.floor(PAGE_WIDTH / GRID) }).map((_, index) => (
-              <Rect key={`gv-${index}`} x={index * GRID} y={0} width={1} height={PAGE_HEIGHT} fill="#f2f5fb" />
+              <Rect key={`gv-${index}`} x={index * GRID} y={0} width={1} height={PAGE_HEIGHT} fill="#f2f5fb" listening={false} perfectDrawEnabled={false} />
             ))}
           {gridEnabled &&
             Array.from({ length: Math.floor(PAGE_HEIGHT / GRID) }).map((_, index) => (
-              <Rect key={`gh-${index}`} x={0} y={index * GRID} width={PAGE_WIDTH} height={1} fill="#f2f5fb" />
+              <Rect key={`gh-${index}`} x={0} y={index * GRID} width={PAGE_WIDTH} height={1} fill="#f2f5fb" listening={false} perfectDrawEnabled={false} />
             ))}
 
           {[...page.elements]
@@ -630,6 +688,43 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
                 setOpenTextEditorId(element.id);
               };
 
+              const openTableEditorOnDoubleClick = () => {
+                if (element.type !== 'table') {
+                  return;
+                }
+                if (element.locked) {
+                  return;
+                }
+                if (dragInProgressRef.current) {
+                  return;
+                }
+                selectElement(element.id);
+                setCanvasTableEditId(element.id);
+              };
+
+              const openImageReplaceOnDoubleClick = () => {
+                if (element.type !== 'image') {
+                  return;
+                }
+                if (element.locked) {
+                  return;
+                }
+                if (dragInProgressRef.current) {
+                  return;
+                }
+                if (typeof onRequestImageReplace !== 'function') {
+                  return;
+                }
+                selectElement(element.id);
+                onRequestImageReplace(page.page_number, element.id);
+              };
+
+              const onRectDoubleClick = () => {
+                openTextEditorOnDoubleClick();
+                openTableEditorOnDoubleClick();
+                openImageReplaceOnDoubleClick();
+              };
+
               return (
               <Rect
                 key={element.id}
@@ -647,12 +742,15 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
                 }
                 stroke={
                   selectedElementId === element.id
-                    ? '#2d6cdf'
+                    ? 'var(--accent)'
                     : isTextElement
-                      ? '#a9b8d3'
+                      ? 'rgba(99, 102, 241, 0.2)'
                       : '#a9b8d3'
                 }
                 strokeWidth={selectedElementId === element.id ? 2 : 1}
+                shadowColor={selectedElementId === element.id ? 'var(--accent)' : 'transparent'}
+                shadowBlur={selectedElementId === element.id ? 8 : 0}
+                shadowOpacity={0.3}
                 cornerRadius={8}
                 dash={isTextElement && selectedElementId !== element.id ? [4, 4] : undefined}
                 draggable={!element.locked && !isEditingText}
@@ -670,14 +768,15 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
                   }
                   selectElement(element.id);
                 }}
-                onDblClick={openTextEditorOnDoubleClick}
-                onDblTap={openTextEditorOnDoubleClick}
+                onDblClick={onRectDoubleClick}
+                onDblTap={onRectDoubleClick}
                 onContextMenu={(event) => {
                   event.evt.preventDefault();
                   selectElement(element.id);
                 }}
                 onDragStart={() => {
                   dragInProgressRef.current = true;
+                  selectElement(element.id);
                   if (openTextEditorId) {
                     stopDictation();
                     setOpenTextEditorId(null);
@@ -771,9 +870,31 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
           {page.elements
             .filter((element) => element.type === 'chart')
             .map((element) => (
-              <Html key={`${element.id}-chart`} groupProps={{ x: element.x + 4, y: element.y + 28 }}>
-                <div style={{ pointerEvents: 'none' }}>
+              <Html key={`${element.id}-chart`} groupProps={{ x: element.x + 4, y: element.y + 28, listening: false }}>
+                <div
+                  className="report-canvas-html-shield"
+                  style={{
+                    width: Math.max(120, element.width - 8),
+                    height: Math.max(80, element.height - 34),
+                  }}
+                >
                   <LiveChartBlock width={Math.max(120, element.width - 8)} height={Math.max(80, element.height - 34)} />
+                </div>
+              </Html>
+            ))}
+
+          {page.elements
+            .filter((element) => element.type === 'kpi')
+            .map((element) => (
+              <Html key={`${element.id}-kpi`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+                <div className="report-canvas-html-shield" style={{ width: element.width - 8, height: element.height - 8 }}>
+                  <MiningKpiWidget
+                    kpiCode={element.props?.kpiCode}
+                    title={element.props?.title}
+                    trendViz={element.props?.trendViz}
+                    width={Math.max(90, element.width - 8)}
+                    height={Math.max(60, element.height - 8)}
+                  />
                 </div>
               </Html>
             ))}
@@ -781,13 +902,18 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
           {page.elements
             .filter((element) => element.type === 'table')
             .map((element) => (
-              <Html key={`${element.id}-table`} groupProps={{ x: element.x + 4, y: element.y + 4 }}>
-                <div style={{ width: element.width - 8, height: element.height - 8 }}>
-                  <TableBlock 
-                    {...element.props} 
+              <Html key={`${element.id}-table`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+                <div
+                  className={
+                    canvasTableEditId === element.id ? 'report-canvas-table-edit-host' : 'report-canvas-html-shield'
+                  }
+                  style={{ width: element.width - 8, height: element.height - 8 }}
+                >
+                  <TableBlock
+                    {...element.props}
                     onUpdateCells={(newRows) => {
                       updateElement(page.page_number, element.id, {
-                        props: { ...element.props, rows: newRows }
+                        props: { ...element.props, rows: newRows },
                       });
                     }}
                   />
@@ -798,25 +924,24 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
           {page.elements
             .filter((element) => element.type === 'image')
             .map((element) => (
-              <Html key={`${element.id}-image`} groupProps={{ x: element.x + 4, y: element.y + 4 }}>
+              <Html key={`${element.id}-image`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
                 <div
+                  className="report-canvas-html-shield"
                   style={{
                     width: element.width - 8,
                     height: element.height - 8,
                     overflow: 'hidden',
                     borderRadius: '4px',
-                    pointerEvents: 'none',
                   }}
                 >
-                  <img 
-                    src={element.src} 
-                    alt={element.id}
-                    style={{ 
-                      width: '100%', 
-                      height: '100%', 
+                  <img
+                    src={resolveReportImageSrc(element)}
+                    alt={element.props?.alt || element.id}
+                    style={{
+                      width: '100%',
+                      height: '100%',
                       objectFit: element.objectFit || 'cover',
                       display: 'block',
-                      pointerEvents: 'none',
                     }}
                   />
                 </div>
@@ -826,14 +951,16 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
           {page.elements
             .filter((element) => element.type === 'sensor')
             .map((element) => (
-              <Html key={`${element.id}-sensor`} groupProps={{ x: element.x, y: element.y }}>
-                <SensorWidget 
-                  sensorId={element.props?.sensorId}
-                  type={element.props?.sensorType}
-                  title={element.props?.title || 'Telemetría Real-time'}
-                  width={element.width}
-                  height={element.height}
-                />
+              <Html key={`${element.id}-sensor`} groupProps={{ x: element.x, y: element.y, listening: false }}>
+                <div className="report-canvas-html-shield" style={{ width: element.width, height: element.height }}>
+                  <SensorWidget
+                    sensorId={element.props?.sensorId}
+                    type={element.props?.sensorType}
+                    title={element.props?.title || 'Telemetría Real-time'}
+                    width={element.width}
+                    height={element.height}
+                  />
+                </div>
               </Html>
             ))}
 
@@ -1020,74 +1147,90 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
                 await startDictation();
               };
 
-              const runQuickCorrection = () => {
-                const correctedText = applyQuickSpanishCorrections(textProps.text);
-                updateTextProps({ text: correctedText });
-                if (correctedText !== textProps.text) {
-                  setCorrectionInfo('Se aplicaron correcciones rápidas en español.');
-                } else {
-                  setCorrectionInfo('No se detectaron correcciones rápidas pendientes.');
+              const runQuickCorrection = async () => {
+                const payload = textForSpellOrRewrite(textProps.text);
+                if (!payload) {
+                  setCorrectionInfo('Escribe o pega el texto a corregir (no uses solo el texto de ayuda vacío).');
+                  setTimeout(() => setCorrectionInfo(null), 4000);
+                  return;
+                }
+                setCorrectionInfo('Servidor: corrección rápida…');
+                try {
+                  const data = await textCorrectQuick(payload);
+                  if (data?.error) {
+                    if (data.error === 'empty_text') {
+                      setCorrectionInfo('No hay texto válido para corregir.');
+                    } else {
+                      setCorrectionInfo(typeof data.error === 'string' ? data.error : 'Error en servidor.');
+                    }
+                    setTimeout(() => setCorrectionInfo(null), 4000);
+                    return;
+                  }
+                  const correctedText = String(data?.text ?? payload);
+                  updateTextProps({ text: correctedText });
+                  if (correctedText !== payload) {
+                    setCorrectionInfo('Se aplicaron correcciones rápidas (backend).');
+                  } else {
+                    setCorrectionInfo('No se detectaron correcciones rápidas pendientes.');
+                  }
+                } catch (e) {
+                  const msg = e?.response?.data?.error || e?.message || '';
+                  setCorrectionInfo(msg ? `Error: ${msg}` : 'No se pudo contactar al servidor.');
+                } finally {
+                  setTimeout(() => setCorrectionInfo(null), 4000);
                 }
               };
 
               const runAdvancedCorrection = async () => {
-                const sourceText = String(textProps.text || '').trim();
+                const sourceText = textForSpellOrRewrite(textProps.text);
                 if (!sourceText) {
                   setAdvancedSuggestions([]);
-                  setCorrectionInfo('No hay texto para analizar.');
+                  setCorrectionInfo('No hay texto para analizar (escribe contenido real, no solo la ayuda).');
                   return;
                 }
 
                 setIsAnalyzingSpelling(true);
-                setCorrectionInfo('Analizando ortografía y gramática avanzada...');
+                setCorrectionInfo('Servidor: análisis ortográfico y gramatical…');
 
                 try {
-                  const payload = new URLSearchParams({
-                    text: sourceText,
-                    language: 'es',
-                    enabledOnly: 'false',
+                  const data = await textCorrectAdvanced(sourceText, {
+                    language: 'es-PE',
                     level: 'picky',
                   });
-
-                  const response = await fetch('https://api.languagetool.org/v2/check', {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: payload.toString(),
-                  });
-
-                  if (!response.ok) {
-                    throw new Error('SPELLCHECK_HTTP_ERROR');
+                  if (data?.error) {
+                    setAdvancedSuggestions([]);
+                    setCorrectionInfo(
+                      data.error === 'languagetool_unavailable'
+                        ? 'LanguageTool no disponible en el servidor.'
+                        : data.error === 'empty_text'
+                          ? 'No hay texto válido para analizar.'
+                          : String(data.error),
+                    );
+                    return;
                   }
-
-                  const data = await response.json();
-                  const matches = Array.isArray(data?.matches) ? data.matches : [];
-
-                  const suggestions = matches
-                    .map((match) => ({
-                      offset: Number(match?.offset ?? 0),
-                      length: Number(match?.length ?? 0),
-                      message: String(match?.message ?? 'Posible corrección'),
-                      replacements: Array.isArray(match?.replacements)
-                        ? match.replacements
-                            .map((replacement) => String(replacement?.value ?? '').trim())
-                            .filter(Boolean)
-                            .slice(0, 5)
+                  const raw = Array.isArray(data?.suggestions) ? data.suggestions : [];
+                  const suggestions = raw
+                    .map((row) => ({
+                      offset: Number(row?.offset ?? 0),
+                      length: Number(row?.length ?? 0),
+                      message: String(row?.message ?? 'Posible corrección'),
+                      replacements: Array.isArray(row?.replacements)
+                        ? row.replacements.map((r) => String(r ?? '').trim()).filter(Boolean).slice(0, 5)
                         : [],
-                      context: String(match?.context?.text ?? ''),
+                      context: String(row?.context ?? ''),
                     }))
                     .filter((item) => item.length > 0);
 
                   setAdvancedSuggestions(suggestions);
                   if (suggestions.length > 0) {
-                    setCorrectionInfo(`Se detectaron ${suggestions.length} sugerencias avanzadas.`);
+                    setCorrectionInfo(`Se detectaron ${suggestions.length} sugerencias (backend).`);
                   } else {
                     setCorrectionInfo('No se detectaron errores ortográficos/gramaticales relevantes.');
                   }
-                } catch {
+                } catch (e) {
                   setAdvancedSuggestions([]);
-                  setCorrectionInfo('No se pudo ejecutar el corrector avanzado ahora.');
+                  const msg = e?.response?.data?.error || e?.message || '';
+                  setCorrectionInfo(msg ? `Corrector avanzado: ${msg}` : 'No se pudo ejecutar el corrector avanzado.');
                 } finally {
                   setIsAnalyzingSpelling(false);
                 }
@@ -1162,254 +1305,117 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages }) {
                   fontStyle={`${textProps.bold ? 'bold ' : ''}${textProps.italic ? 'italic' : ''}`.trim() || 'normal'}
                   listening={false}
                   hitStrokeWidth={0}
+                  visible={!isEditorOpen}
                 />,
                 !isEditorOpen && isElementSelected ? (
-                    <Html key={`${element.id}-quick-actions`} groupProps={{ x: element.x + 4, y: element.y - 38 }}>
-                      <div
-                        className="text-quick-actions"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <button
-                          type="button"
-                          className={isCurrentDictationTarget ? 'active' : ''}
-                          title={speechSupported ? 'Activa o detiene voz a texto' : 'No soportado en este navegador'}
-                          disabled={!speechSupported}
-                          onClick={toggleDictation}
-                        >
-                          {isCurrentDictationTarget ? <MicOff size={13} /> : <Mic size={13} />}
-                          {isCurrentDictationTarget ? 'Detener voz' : 'Voz'}
-                        </button>
-                        <button
-                          type="button"
-                          title="Abrir editor de texto"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            setSpeechError(null);
+                    <Html key={`${element.id}-floating-toolbar`} groupProps={{ x: element.x, y: element.y - 48 }}>
+                      <FloatingContextualToolbar
+                        element={element}
+                        onUpdate={(patch) => updateElement(selectedPage, element.id, patch)}
+                        onRemove={() => removeElement(selectedPage, element.id)}
+                        onOpenInspector={() => {
+                          // Signal to App.jsx to ensure right panel is visible
+                          window.dispatchEvent(new CustomEvent('mining-studio-open-inspector'));
+                        }}
+                        onAction={(action) => {
+                          if (action === 'edit' && element.type === 'text') {
                             setOpenTextEditorId(element.id);
-                          }}
-                        >
-                          <Pencil size={13} />
-                          Editar
-                        </button>
-                      </div>
+                          }
+                          if (action === 'replace' && element.type === 'image') {
+                            onRequestImageReplace(selectedPage, element.id, 'file');
+                          }
+                          // Add more actions as needed
+                        }}
+                      />
                     </Html>
                   ) : null,
                 isEditorOpen ? (
-                    <Html key={`${element.id}-text`} groupProps={{ x: element.x + 4, y: element.y + 4 }}>
+                    <Html key={`${element.id}-text`} groupProps={{ x: element.x + 8, y: element.y + 8 }}>
                       <div
-                        className="text-editor-popover"
+                        className="text-editor-seamless-container"
                         onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => event.stopPropagation()}
                       >
-                        <div className="text-editor-toolbar">
-                          <select
-                            value={textProps.fontFamily}
-                            onChange={(event) => updateTextProps({ fontFamily: event.target.value })}
-                          >
-                            <option value="Arial">Arial</option>
-                            <option value="Calibri">Calibri</option>
-                            <option value="Times New Roman">Times New Roman</option>
-                            <option value="Verdana">Verdana</option>
-                          </select>
-                          <input
-                            type="number"
-                            min={10}
-                            max={60}
-                            value={Math.round(textProps.fontSize)}
-                            onChange={(event) => updateTextProps({ fontSize: Math.max(10, Number(event.target.value)) })}
-                          />
-                          <label>
-                            A
-                            <input
-                              type="color"
-                              value={textProps.fontColor}
-                              onChange={(event) => updateTextProps({ fontColor: event.target.value })}
-                            />
-                          </label>
-                          <label>
-                            F
-                            <input
-                              type="color"
-                              value={textProps.backgroundColor}
-                              onChange={(event) => updateTextProps({ backgroundColor: event.target.value })}
-                            />
-                          </label>
+                        {/* Floating mini-toolbar for AI and Speech - non-intrusive */}
+                        <div className="text-editor-mini-actions">
                           <button
                             type="button"
-                            className={textProps.bold ? 'active' : ''}
-                            title="Negrita (Ctrl+B)"
-                            onClick={() => updateTextProps({ bold: !textProps.bold })}
+                            className={isCurrentDictationTarget ? 'active' : ''}
+                            title="Dictado por voz"
+                            disabled={!speechSupported}
+                            onClick={toggleDictation}
                           >
-                            <Bold size={14} />
+                            {isCurrentDictationTarget ? <MicOff size={12} /> : <Mic size={12} />}
                           </button>
                           <button
                             type="button"
-                            className={textProps.italic ? 'active' : ''}
-                            title="Cursiva (Ctrl+I)"
-                            onClick={() => updateTextProps({ italic: !textProps.italic })}
-                          >
-                            <Italic size={14} />
-                          </button>
-                          <div className="toolbar-align-group">
-                            <button
-                              type="button"
-                              className={textProps.textAlign === 'left' ? 'active' : ''}
-                              title="Alinear izquierda"
-                              onClick={() => updateTextProps({ textAlign: 'left' })}
-                            >
-                              <AlignLeft size={14} />
-                            </button>
-                            <button
-                              type="button"
-                              className={textProps.textAlign === 'center' ? 'active' : ''}
-                              title="Centrar"
-                              onClick={() => updateTextProps({ textAlign: 'center' })}
-                            >
-                              <AlignCenter size={14} />
-                            </button>
-                            <button
-                              type="button"
-                              className={textProps.textAlign === 'right' ? 'active' : ''}
-                              title="Alinear derecha"
-                              onClick={() => updateTextProps({ textAlign: 'right' })}
-                            >
-                              <AlignRight size={14} />
-                            </button>
-                          </div>
-                          <label>
-                            Interlineado
-                            <input
-                              type="number"
-                              min={1}
-                              max={2.5}
-                              step={0.05}
-                              value={Number(textProps.lineHeight.toFixed(2))}
-                              onChange={(event) =>
-                                updateTextProps({ lineHeight: Math.min(2.5, Math.max(1, Number(event.target.value))) })
-                              }
-                            />
-                          </label>
-                          <select
-                            value={textProps.listType}
-                            onChange={(event) => {
-                              const listType = event.target.value;
-                              updateTextProps({ listType, text: applyListToText(textProps.text, listType) });
+                            title="Corregir ortografía"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void runQuickCorrection();
                             }}
                           >
-                            <option value="none">Sin lista</option>
-                            <option value="bullet">Viñetas</option>
-                            <option value="number">Numeración</option>
-                          </select>
+                            <CheckCheck size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            title="Mejorar con IA"
+                            className={isImproving ? 'loading' : ''}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              runAIImprovement(String(textProps.text || ''), (patch) => updateTextProps(patch));
+                            }}
+                          >
+                            <Wand2 size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-close-seamless"
+                            onClick={closeAndProcess}
+                          >
+                            <Save size={12} />
+                          </button>
                         </div>
+
                         <textarea
-                          className="text-editor-area"
-                          value={textProps.text}
-                          onChange={(event) => updateTextProps({ text: event.target.value })}
-                          onKeyDown={handleTextShortcuts}
-                          onContextMenu={(event) => {
-                            event.stopPropagation();
-                          }}
-                          spellCheck={true}
-                          lang={spellcheckLang}
-                          autoCorrect="on"
-                          autoCapitalize="sentences"
-                          autoComplete="on"
+                          className="text-editor-area-seamless"
                           style={{
                             fontFamily: textProps.fontFamily,
                             fontSize: `${textProps.fontSize}px`,
                             color: textProps.fontColor,
                             textAlign: textProps.textAlign,
-                            lineHeight: String(textProps.lineHeight),
+                            lineHeight: textProps.lineHeight,
                             fontWeight: textProps.bold ? 700 : 400,
                             fontStyle: textProps.italic ? 'italic' : 'normal',
-                            background: textProps.backgroundColor,
+                            width: `${Math.max(120, element.width - 16)}px`,
+                            height: `${Math.max(40, element.height - 16)}px`,
+                            background: 'transparent',
+                            outline: 'none',
+                            border: 'none',
+                            resize: 'none',
+                            padding: 0,
+                            margin: 0,
+                            display: 'block',
+                            overflow: 'hidden'
                           }}
+                          autoFocus
+                          value={textProps.text}
+                          placeholder="Empieza a escribir..."
+                          onBlur={closeAndProcess}
+                          onChange={(event) => updateTextProps({ text: event.target.value })}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Escape') {
+                              closeAndProcess();
+                            }
+                            handleTextShortcuts(event);
+                          }}
+                          spellCheck={true}
+                          lang={spellcheckLang}
                         />
-                        <div className="text-editor-actions">
-                          <div className="text-editor-assist">
-                            <span className="text-editor-hint">
-                              <SpellCheck size={12} style={{display: 'inline', marginRight: '4px'}} />
-                              Corrector ortográfico activo (es-ES).
-                            </span>
-                            <span className="text-editor-hint">
-                              <Mic size={12} style={{display: 'inline', marginRight: '4px'}} />
-                              Voz a texto: {isCurrentDictationTarget ? 'Activa' : 'Detenida'}
-                            </span>
-                          </div>
-                          <div className="text-editor-actions-right">
-                            <button
-                              type="button"
-                              className={`btn-editor ${isCurrentDictationTarget ? 'active' : ''}`}
-                              title={speechSupported ? 'Dictado por voz (Micrófono)' : 'No soportado'}
-                              disabled={!speechSupported}
-                              onClick={toggleDictation}
-                            >
-                              {isCurrentDictationTarget ? <MicOff size={14} /> : <Mic size={14} />}
-                              <span>{isCurrentDictationTarget ? 'Detener Voz' : 'Voz a Texto'}</span>
-                            </button>
 
-                            <button
-                              type="button"
-                              className="btn-editor"
-                              title="Corrección ortográfica rápida"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                runQuickCorrection();
-                              }}
-                            >
-                              <CheckCheck size={14} />
-                              <span>Corregir Ortografía</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              className={`btn-editor btn-ai ${isImproving ? 'loading' : ''}`}
-                              disabled={isImproving}
-                              title="Mejorar redacción con IA (ChatGPT)"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                runAIImprovement();
-                              }}
-                            >
-                              {isImproving ? <Sparkles size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                              <span>Mejorar Redacción (AI)</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              className="btn-editor btn-primary"
-                              title="Aplicar cambios y guardar"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                closeAndProcess();
-                              }}
-                            >
-                              <Save size={14} />
-                              <span>Procesar y Aplicar</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              className="btn-editor btn-danger"
-                              title="Cerrar sin guardar"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                stopDictation();
-                                setOpenTextEditorId(null);
-                                selectElement(undefined);
-                              }}
-                            >
-                              <X size={14} />
-                              <span>Cerrar</span>
-                            </button>
-                          </div>
-                        </div>
                         {advancedSuggestions.length > 0 && (
                           <div className="text-advanced-list">
                             {advancedSuggestions.slice(0, 6).map((suggestion, index) => (

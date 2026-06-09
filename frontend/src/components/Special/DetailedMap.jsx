@@ -3,15 +3,20 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Camera, Layers, RefreshCw } from 'lucide-react';
 
-const DetailedMap = ({ onCaptureMap, captureButtonPlacement = 'bottom' }) => {
+const DetailedMap = ({ 
+    onCaptureMap, 
+    captureButtonPlacement = 'bottom',
+    initialCenter = { lat: 4.711, lng: -74.0721 },
+    initialZoom = 6
+}) => {
     const mapContainer = useRef(null);
     const map = useRef(null);
     const scrollShellRef = useRef(null);
     const resizeRafRef = useRef(null);
     const tileJsonCacheRef = useRef({});
-    const [lng, setLng] = useState(-74.0721);
-    const [lat, setLat] = useState(4.711);
-    const [zoom, setZoom] = useState(6);
+    const [lng, setLng] = useState(initialCenter.lng);
+    const [lat, setLat] = useState(initialCenter.lat);
+    const [zoom, setZoom] = useState(initialZoom);
     const [tilesets, setTilesets] = useState([]);
     const [currentTileset, setCurrentTileset] = useState(null);
     const [loading, setLoading] = useState(false);
@@ -29,7 +34,7 @@ const DetailedMap = ({ onCaptureMap, captureButtonPlacement = 'bottom' }) => {
         map.current = L.map(mapContainer.current, {
             maxZoom: 22,
             zoomControl: true
-        }).setView([lat, lng], zoom);
+        }).setView([initialCenter.lat, initialCenter.lng], initialZoom);
 
         // Google Satellite Base Layer
         L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
@@ -51,6 +56,16 @@ const DetailedMap = ({ onCaptureMap, captureButtonPlacement = 'bottom' }) => {
             }
         };
     }, []);
+
+    // Reactive view update when props change
+    useEffect(() => {
+        if (map.current) {
+            map.current.setView([initialCenter.lat, initialCenter.lng], initialZoom);
+            setLat(initialCenter.lat);
+            setLng(initialCenter.lng);
+            setZoom(initialZoom);
+        }
+    }, [initialCenter.lat, initialCenter.lng, initialZoom]);
 
     // Load available tilesets
     useEffect(() => {

@@ -40,7 +40,7 @@ Assert-DockerAvailable
 Invoke-CheckedDocker -Command { docker-compose -f $ComposeFile up -d web tileserver frontend | Out-Host } -ErrorMessage "No se pudieron levantar los servicios con docker-compose."
 
 Write-Host "[2/6] Verificando capacidad ECW..."
-$cap = Invoke-RestMethod -Uri "http://localhost:8081/api/capabilities" -Method Get
+$cap = Invoke-RestMethod -Uri "http://localhost:8082/api/capabilities" -Method Get
 $cap | ConvertTo-Json -Depth 5 | Out-Host
 if (-not $cap.ecw_supported) {
   throw "ECW no habilitado. Copia plugin .so en ecw-plugin y vuelve a ejecutar."
@@ -58,7 +58,7 @@ $body = @{
   resampling = "BILINEAR"
 } | ConvertTo-Json
 
-$resp = Invoke-RestMethod -Uri "http://localhost:8081/api/convert" -Method Post -ContentType "application/json" -Body $body
+$resp = Invoke-RestMethod -Uri "http://localhost:8082/api/convert" -Method Post -ContentType "application/json" -Body $body
 $jobId = $resp.job_id
 if (-not $jobId) { throw "No se recibió job_id" }
 Write-Host "Job: $jobId"
@@ -67,7 +67,7 @@ Write-Host "[4/6] Esperando finalización..."
 $job = $null
 for ($i = 0; $i -lt 240; $i++) {
   Start-Sleep -Seconds 2
-  $j = Invoke-RestMethod -Uri "http://localhost:8081/api/jobs/$jobId" -Method Get
+  $j = Invoke-RestMethod -Uri "http://localhost:8082/api/jobs/$jobId" -Method Get
   if ($i % 10 -eq 0) { Write-Host ("Estado: " + $j.status) }
   if ($j.status -in @("completed", "failed")) { $job = $j; break }
 }

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -n "${API_KEYS:-}" ]]; then
+  echo "[entrypoint] API Keys configured"
+fi
+
 if [[ -n "${CARTOON_ONNX_MODEL:-}" ]]; then
   if [[ -f "${CARTOON_ONNX_MODEL}" ]]; then
     sz=$(stat -c%s "${CARTOON_ONNX_MODEL}" 2>/dev/null || wc -c < "${CARTOON_ONNX_MODEL}")
@@ -29,4 +33,5 @@ if [[ -d "${SDK_DIR}" ]]; then
   fi
 fi
 
+echo "[entrypoint] Starting mapas_backend"
 exec /app/build/mapas_backend

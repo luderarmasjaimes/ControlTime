@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS surveillance_cameras (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100),
     location VARCHAR(100),
-    rtmp_url VARCHAR(255),
+    rtmp_url VARCHAR(512),
     status VARCHAR(20),
     lat NUMERIC,
     lng NUMERIC,
@@ -132,8 +132,36 @@ WHERE
     s.mining_company = 'ACTIVOS MINEROS'
     AND s.site_unit = 'UNIDAD PRINCIPAL';
 
+-- rtmp_url almacena cualquier URL de stream: HTTP(S) MP4 o HLS (.m3u8) reproducibles en navegador; RTMP solo informativo.
 INSERT INTO surveillance_cameras (name, location, rtmp_url, status, lat, lng, mining_company, site_unit)
 VALUES
-    ('Talud NE Sector 4', 'Rampa 12', '', 'online', -17.2455, -70.6105, 'ACTIVOS MINEROS', 'UNIDAD PRINCIPAL'),
-    ('Acceso Planta', 'Caseta norte', '', 'online', -17.2440, -70.6110, 'ACTIVOS MINEROS', 'UNIDAD PRINCIPAL'),
-    ('Depósito Reactivos', 'Módulo B', '', 'online', -17.2472, -70.6085, 'ACTIVOS MINEROS', 'UNIDAD PRINCIPAL');
+    (
+        'Talud NE Sector 4',
+        'Rampa 12',
+        'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+        'online',
+        -17.2455,
+        -70.6105,
+        'ACTIVOS MINEROS',
+        'UNIDAD PRINCIPAL'
+    ),
+    (
+        'Acceso Planta',
+        'Caseta norte',
+        'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+        'online',
+        -17.2440,
+        -70.6110,
+        'ACTIVOS MINEROS',
+        'UNIDAD PRINCIPAL'
+    ),
+    (
+        'Depósito Reactivos',
+        'Módulo B',
+        'rtmp://demo.invalido/mina/cam03',
+        'offline',
+        -17.2472,
+        -70.6085,
+        'ACTIVOS MINEROS',
+        'UNIDAD PRINCIPAL'
+    );

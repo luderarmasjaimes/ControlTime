@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
+import MiningWorkbenchHeader from './MiningWorkbenchHeader.jsx'
 
 const MiningDashboard = () => {
     const [heatmapData, setHeatmapData] = useState([]);
@@ -242,21 +243,16 @@ const MiningDashboard = () => {
                 .mining-dashboard-root .glow-text-rose { text-shadow: 0 0 12px rgba(244, 63, 94, 0.45); }
             `}} />
 
-            <div className="mb-4 flex min-w-0 flex-col justify-between gap-3 border-b border-slate-800 pb-3 md:flex-row md:items-center">
-                <div className="min-w-0">
-                    <h2 className="text-xl sm:text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-emerald-400 to-emerald-300 tracking-tight drop-shadow-md leading-tight">
-                        Centro de Control Operacional
-                    </h2>
-                    <p className="text-slate-400 text-[11px] sm:text-xs mt-1 font-medium flex items-center gap-2 flex-wrap">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px_#10b981] animate-pulse shrink-0"></span>
-                        <span className="min-w-0">Análisis en tiempo real · Compañía Minera de Metales del Perú</span>
-                    </p>
-                </div>
-                <div className="shrink-0 flex items-center gap-2 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700 shadow-lg backdrop-blur-md">
-                    <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider">Status General:</span>
-                    <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">Óptimo</span>
-                </div>
-            </div>
+            <MiningWorkbenchHeader
+                title="Centro de control operacional"
+                subtitle="Análisis en tiempo real · Compañía Minera de Metales del Perú"
+                actions={
+                    <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/50 px-3 py-2 shadow-lg backdrop-blur-md">
+                        <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]" />
+                        <span className="mining-workbench-action-btn text-emerald-400">Estado general óptimo</span>
+                    </div>
+                }
+            />
 
             {/* KPI Cards — min-w-0 evita desborde horizontal en grillas */}
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4 min-w-0">

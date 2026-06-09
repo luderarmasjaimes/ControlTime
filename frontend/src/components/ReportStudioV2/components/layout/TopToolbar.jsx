@@ -12,9 +12,8 @@ import {
   FolderOpen,
   Save,
   Sigma,
+  RefreshCw,
 } from 'lucide-react';
-import { getSession } from '../../../../auth/authStorage';
-import { PlatformBrandToolbarBlock } from '../../../../brand/PlatformBrandMark';
 
 export default function TopToolbar({
   onExportPdf,
@@ -36,27 +35,15 @@ export default function TopToolbar({
   isSaving,
   saveLabel,
   onOpenFormulaAnalysis,
-  companyName,
-  platformCompanyName,
+  onSyncMiningKpis,
+  isSyncingKpis,
+  kpiAutoSyncEnabled,
+  onToggleKpiAutoSync,
+  layoutMode = 'document',
+  onLayoutModeChange,
 }) {
-  const session = getSession();
-  const platformLabel =
-    platformCompanyName ||
-    session?.platformCompany ||
-    session?.ownerCompany ||
-    'AURIXA';
-  const miningLabel =
-    companyName || session?.company || session?.miningCompany || 'Empresa minera';
-
   return (
     <header className="top-toolbar">
-      <div className="top-toolbar-title">
-        <PlatformBrandToolbarBlock
-          titleLine={platformLabel}
-          subtitleLine={`Informe corporativo · ${miningLabel}`}
-        />
-      </div>
-
       {/* Acciones agrupadas */}
       <div className="toolbar-actions">
 
@@ -67,7 +54,7 @@ export default function TopToolbar({
           title={gridEnabled ? 'Desactivar cuadrícula' : 'Activar cuadrícula'}
         >
           <Grid size={15} />
-          {gridEnabled ? 'Cuadrícula ON' : 'Cuadrícula'}
+          Grid
         </button>
         <button
           onClick={onToggleSnap}
@@ -75,20 +62,35 @@ export default function TopToolbar({
           title={snapEnabled ? 'Desactivar ajuste a cuadrícula' : 'Activar ajuste a cuadrícula'}
         >
           <MousePointer2 size={15} />
-          {snapEnabled ? 'Ajuste ON' : 'Ajuste'}
+          Snap
         </button>
+
+        <div className="toolbar-separator" />
+
+        <label className="toolbar-layout-field">
+          <span className="toolbar-layout-label">Formato</span>
+          <select
+            className="toolbar-layout-select"
+            value={layoutMode === 'presentation' ? 'presentation' : 'document'}
+            onChange={(e) => onLayoutModeChange?.(e.target.value)}
+            title="Documento (Word) o presentación (PowerPoint): cambia el tamaño del lienzo"
+          >
+            <option value="document">Documento</option>
+            <option value="presentation">Presentación</option>
+          </select>
+        </label>
 
         <div className="toolbar-separator" />
 
         {/* Grupo 2 — Zoom */}
         <button onClick={onZoomOut} title="Alejar (Zoom -)">
           <ZoomOut size={15} />
-          Alejar
+          -
         </button>
         <div className="zoom-chip" title={`Zoom actual: ${zoomPercent}%`}>{zoomPercent}%</div>
         <button onClick={onZoomIn} title="Acercar (Zoom +)">
           <ZoomIn size={15} />
-          Acercar
+          +
         </button>
 
         <div className="toolbar-separator" />
@@ -96,11 +98,11 @@ export default function TopToolbar({
         {/* Grupo 3 — Documento */}
         <button onClick={onPrint} title="Imprimir informe">
           <Printer size={15} />
-          Imprimir
+          Impr.
         </button>
         <button onClick={onReviewDocument} title="Revisar consistencia del documento">
           <ScanSearch size={15} />
-          Revisar Todo
+          Revisar
         </button>
 
         {/* ===== Mis Informes ===== */}
@@ -113,12 +115,29 @@ export default function TopToolbar({
           FORMULA
         </button>
         <button
+          onClick={onSyncMiningKpis}
+          disabled={isSyncingKpis}
+          className={`toolbar-btn-variant${isSyncingKpis ? ' is-busy' : ''}`}
+          title="Sincronizar KPI runtime desde datos operativos (dashboard)"
+        >
+          <RefreshCw size={15} />
+          {isSyncingKpis ? 'Sync KPI...' : 'Sync KPI'}
+        </button>
+        <button
+          onClick={onToggleKpiAutoSync}
+          className={`toolbar-btn-variant${kpiAutoSyncEnabled ? ' btn-active' : ''}`}
+          title="Activar/desactivar sincronización KPI automática (cada 3 minutos)"
+        >
+          <RefreshCw size={15} />
+          {kpiAutoSyncEnabled ? 'Auto KPI ON' : 'Auto KPI OFF'}
+        </button>
+        <button
           onClick={onOpenReportsAdmin}
           className="toolbar-btn-variant toolbar-btn-variant--reports"
           title="Administrar informes técnicos grabados"
         >
           <FolderOpen size={15} />
-          Mis Informes
+          Informes
         </button>
 
         <button
@@ -138,7 +157,7 @@ export default function TopToolbar({
           title="Optimizar sintaxis y redacción con IA"
         >
           <Sparkles size={15} />
-          {isOptimizing ? 'Analizando…' : 'Optimizar IA'}
+          {isOptimizing ? 'Analizando…' : 'Optimizar'}
         </button>
 
         <div className="toolbar-separator" />
@@ -150,11 +169,11 @@ export default function TopToolbar({
           title="Grabar video del informe (máx. 30s)"
         >
           <Video size={15} />
-          {isRecording ? '● Grabando…' : 'Grabar Video'}
+          {isRecording ? '● REC' : 'Grabar'}
         </button>
         <button className="primary" onClick={onExportPdf} title="Exportar como PDF">
           <Download size={15} />
-          Exportar PDF
+          PDF
         </button>
 
       </div>

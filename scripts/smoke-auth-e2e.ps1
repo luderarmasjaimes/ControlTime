@@ -1,5 +1,5 @@
 param(
-    [string]$BackendUrl = "http://localhost:8081",
+    [string]$BackendUrl = "http://localhost:8082",
     [string]$Company = "Minera Raura",
     [switch]$DryRun
 )
@@ -112,6 +112,7 @@ $authToken = if (-not $DryRun) { $loginPassword.user.token } else { "" }
 Write-Section "STEP 3 - LOGIN FACE"
 $loginFace = Invoke-Api -Method POST -Path "/api/auth/login/face" -Body @{
     company = $Company
+    identity_login = $username
     face_template = $faceTemplate
     threshold = 0.89
 }

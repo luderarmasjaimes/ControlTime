@@ -25,6 +25,7 @@ export function createSession(user, loginType = 'user') {
         username: user.username,
         fullName: user.full_name || user.fullName || '',
         company: user.company,
+        tenantId: typeof user.tenant_id === 'string' ? user.tenant_id : typeof user.tenantId === 'string' ? user.tenantId : '',
         role,
         loginType: loginType, // 'user' or 'company'
         token: typeof user.token === 'string' ? user.token : '',

@@ -15,7 +15,7 @@ const MenuBar = ({ editor }) => {
     const activeClass = "bg-sky-500/10 text-sky-400 border border-sky-500/20 shadow-[0_0_15px_rgba(14,165,233,0.1)]"
 
     return (
-        <div className="flex flex-wrap items-center gap-1.5 p-3 border-b border-white/5 bg-slate-900/60 backdrop-blur-xl sticky top-0 z-10">
+        <div className="flex flex-wrap items-center gap-1.5 p-3 border-t border-white/5 bg-slate-900/90 backdrop-blur-xl sticky bottom-0 z-10">
             <div className="flex items-center gap-1 bg-slate-950/40 p-1 rounded-xl border border-white/5 mr-2">
                 <button onClick={() => editor.chain().focus().toggleBold().run()} className={`${btnClass} ${editor.isActive('bold') ? activeClass : ''}`} title="Negrita"><Bold size={18} /></button>
                 <button onClick={() => editor.chain().focus().toggleItalic().run()} className={`${btnClass} ${editor.isActive('italic') ? activeClass : ''}`} title="Cursiva"><Italic size={18} /></button>
@@ -97,7 +97,6 @@ const RichTextEditor = () => {
 
     return (
         <div className="flex flex-col h-full glass overflow-hidden border-white/5 shadow-2xl group/editor">
-            <MenuBar editor={editor} />
             <div className="flex-1 overflow-y-auto bg-slate-900/30 custom-editor p-4">
                 <div className="max-w-4xl mx-auto py-10">
                     <EditorContent editor={editor} />
@@ -122,6 +121,7 @@ const RichTextEditor = () => {
                     </div>
                 </div>
             </div>
+            <MenuBar editor={editor} />
         </div>
     )
 }

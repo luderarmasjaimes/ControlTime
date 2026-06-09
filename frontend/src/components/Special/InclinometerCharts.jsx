@@ -10,9 +10,14 @@ const TIMESTAMPS = [
 ];
 
 const COLORS = [
-    '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e',
-    '#06b6d4', '#84cc16', '#a855f7', '#6366f1', '#14b8a6', '#f97316', '#64748b'
+    '#f59e0b', '#10b981', '#38bdf8', '#8b5cf6', '#ec4899', '#f43f5e',
+    '#06b6d4', '#84cc16', '#a855f7', '#6366f1', '#14b8a6', '#f97316', '#94a3b8'
 ];
+
+const axisLine = { lineStyle: { color: 'rgba(148, 163, 184, 0.35)' } };
+const splitLine = { lineStyle: { color: 'rgba(51, 65, 85, 0.45)' } };
+const axisLabel = { color: '#94a3b8', fontSize: 10 };
+const nameTextStyle = { color: '#cbd5e1', fontSize: 11 };
 
 const InclinometerCharts = ({ xRange = [-40, 40], yRange = [0, 40], azimuthAngle = 0, installationAngle = 0 }) => {
     const chartRefX = useRef(null);
@@ -27,10 +32,8 @@ const InclinometerCharts = ({ xRange = [-40, 40], yRange = [0, 40], azimuthAngle
         const baseCurveX = (index % 3) - 1;
         const baseCurveY = (index % 2) - 0.5;
 
-        // First pass: Generate and rotate steps
         const tempPoints = Array.from({ length: 41 }, (_, depth) => {
             if (depth > 2) {
-                // Use deterministic seed for stability during rotation
                 const seed = (depth * 0.123 + index * 0.456);
                 const stepX = (Math.sin(seed) * 0.3) + baseCurveX * 0.2;
                 const stepY = (Math.cos(seed * 0.8) * 0.3) + baseCurveY * 0.2;
@@ -44,7 +47,6 @@ const InclinometerCharts = ({ xRange = [-40, 40], yRange = [0, 40], azimuthAngle
             return { depth, x: currentX, y: currentY };
         });
 
-        // Second pass: Shift all points so the bottom (depth=40) is the anchor (0,0)
         const anchorX = tempPoints[40].x;
         const anchorY = tempPoints[40].y;
 
@@ -59,57 +61,60 @@ const InclinometerCharts = ({ xRange = [-40, 40], yRange = [0, 40], azimuthAngle
         const fullData = TIMESTAMPS.map((_, i) => generateRotatedData(i));
 
         const commonOption = {
+            backgroundColor: 'transparent',
             animation: false,
             tooltip: {
                 trigger: 'axis',
-                backgroundColor: '#ffffff',
-                borderColor: '#e2e8f0',
+                backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                borderColor: 'rgba(56, 189, 248, 0.25)',
                 borderWidth: 1,
-                padding: [10, 15],
-                shadowBlur: 10,
-                shadowColor: 'rgba(0,0,0,0.05)',
-                textStyle: { color: '#475569', fontSize: 11 },
-                extraCssText: 'border-radius: 8px;',
+                padding: [10, 14],
+                textStyle: { color: '#e2e8f0', fontSize: 11 },
+                extraCssText: 'border-radius: 10px;',
                 formatter: (params) => {
                     const depth = params[0].value[1];
-                    let html = `<div style="font-weight: 800; margin-bottom: 5px; color: #1e293b;">Depth: ${depth} m</div>`;
+                    let html = `<div style="font-weight: 800; margin-bottom: 6px; color: #f8fafc;">Profundidad: ${depth} m</div>`;
                     params.forEach(p => {
                         html += `<div style="display: flex; justify-content: space-between; gap: 20px; align-items: center; margin-bottom: 2px;">
                        <div style="display: flex; align-items: center; gap: 6px;">
                          <div style="width: 8px; height: 2px; background: ${p.color}; border-radius: 1px;"></div>
-                         <span style="font-size: 10px; color: #64748b;">${p.seriesName}</span>
+                         <span style="font-size: 10px; color: #94a3b8;">${p.seriesName}</span>
                        </div>
-                       <span style="font-weight: 700; color: #1e293b;">${p.value[0].toFixed(2)} mm</span>
+                       <span style="font-weight: 700; color: #f1f5f9;">${p.value[0].toFixed(2)} mm</span>
                      </div>`;
                     });
                     return html;
                 }
             },
-            grid: { top: 60, bottom: 60, left: 50, right: 30, containLabel: true },
+            grid: { top: 52, bottom: 48, left: 52, right: 28, containLabel: true },
             xAxis: {
                 type: 'value',
-                name: 'Displacement mm',
+                name: 'Desplazamiento (mm)',
                 nameLocation: 'middle',
-                nameGap: 35,
-                splitLine: { lineStyle: { color: '#f1f5f9' } },
-                axisLabel: { color: '#94a3b8', fontSize: 10 },
+                nameGap: 32,
+                nameTextStyle,
+                splitLine,
+                axisLine,
+                axisLabel,
                 min: xRange[0],
                 max: xRange[1]
             },
             yAxis: {
                 type: 'value',
-                name: 'Depth m',
+                name: 'Profundidad (m)',
                 nameLocation: 'middle',
-                nameGap: 40,
+                nameGap: 44,
+                nameTextStyle,
                 inverse: true,
                 min: yRange[0],
                 max: yRange[1],
-                splitLine: { lineStyle: { color: '#f1f5f9' } },
-                axisLabel: { color: '#94a3b8', fontSize: 10 }
+                splitLine,
+                axisLine,
+                axisLabel
             },
         };
 
-        const chartX = echarts.init(chartRefX.current);
+        const chartX = echarts.init(chartRefX.current, null, { renderer: 'canvas' });
         const seriesX = TIMESTAMPS.map((t, i) => ({
             name: t,
             type: 'line',
@@ -121,11 +126,16 @@ const InclinometerCharts = ({ xRange = [-40, 40], yRange = [0, 40], azimuthAngle
 
         chartX.setOption({
             ...commonOption,
-            title: { text: 'Inclinometer X axis', left: 'center', top: 10, textStyle: { color: '#64748b', fontSize: 12, fontWeight: 'bold' } },
+            title: {
+                text: 'Eje X — inclinómetro',
+                left: 'center',
+                top: 8,
+                textStyle: { color: '#cbd5e1', fontSize: 12, fontWeight: 'bold' }
+            },
             series: seriesX
         });
 
-        const chartY = echarts.init(chartRefY.current);
+        const chartY = echarts.init(chartRefY.current, null, { renderer: 'canvas' });
         const seriesY = TIMESTAMPS.map((t, i) => ({
             name: t,
             type: 'line',
@@ -137,7 +147,12 @@ const InclinometerCharts = ({ xRange = [-40, 40], yRange = [0, 40], azimuthAngle
 
         chartY.setOption({
             ...commonOption,
-            title: { text: 'Inclinometer Y axis', left: 'center', top: 10, textStyle: { color: '#64748b', fontSize: 12, fontWeight: 'bold' } },
+            title: {
+                text: 'Eje Y — inclinómetro',
+                left: 'center',
+                top: 8,
+                textStyle: { color: '#cbd5e1', fontSize: 12, fontWeight: 'bold' }
+            },
             series: seriesY
         });
 
@@ -149,17 +164,21 @@ const InclinometerCharts = ({ xRange = [-40, 40], yRange = [0, 40], azimuthAngle
         };
 
         window.addEventListener('resize', handleResize);
+        handleResize();
         return () => {
             window.removeEventListener('resize', handleResize);
             chartX.dispose();
             chartY.dispose();
         };
-    }, [xRange, yRange, azimuthAngle]);
+    }, [xRange, yRange, azimuthAngle, installationAngle]);
 
     return (
-        <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col gap-4 bg-white p-4 select-none sm:flex-row sm:gap-8 sm:p-6">
-            <div ref={chartRefX} className="min-h-[260px] flex-1 sm:min-h-0" />
-            <div ref={chartRefY} className="min-h-[260px] flex-1 border-t border-slate-50 sm:min-h-0 sm:border-l sm:border-t-0" />
+        <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col gap-0 select-none md:flex-row md:gap-0">
+            <div ref={chartRefX} className="min-h-[240px] flex-1 p-3 md:min-h-0 md:p-4" />
+            <div
+                ref={chartRefY}
+                className="min-h-[240px] flex-1 border-t border-slate-600/40 p-3 md:min-h-0 md:border-l md:border-t-0 md:p-4"
+            />
         </div>
     );
 };
