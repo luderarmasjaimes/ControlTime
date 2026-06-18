@@ -13,14 +13,11 @@ VERSION 2 — Revision completa de Arquitecto Senior TI LATAM:
     de texto/fuentes, color de fondo, TipTap core, toolbar, tablas, imagenes,
     print preview, templates, offline, keyboard shortcuts, comparador versiones,
     portada, headers/footers, listas, paginacion, responsive tablet)
-  - Se agregan tareas BACKEND BE1 (auto-save delta, versionado, PDF, locking,
-    JSONB schema rich text, search indexing, templates engine, cache, upload,
-    comments API, clonacion, numeracion secuencial, rate limiter)
-  - Se agregan tareas BACKEND BE2 (encriptacion at rest, firma digital, NLP
-    corrector, AI sumarizacion, reconocimiento facial API, deteccion anomalias,
-    AI scoring, RBAC middleware)
-  - Se agregan tareas BACKEND BE3 (email SMTP, push notifications, webhooks,
-    conversion formatos, offline sync conflict, legacy mapping, API gateway)
+  - Se agregan tareas BACKEND BE1 (core C++ Boost.Asio, OpenCV, sockets/WebSocket telemetria,
+    integraciones internas, APIs paridad frontend)
+  - Se agregan tareas BACKEND BE2 (seguridad JWT/RBAC, biometria facial, usuarios/perfiles/accesos,
+    IA aplicada local VPS + cloud via Servicios Web)
+  - Se agregan tareas BACKEND BE3 (DBA PostgreSQL, AWS, ETL, sync BD, recovery/DR)
   - Se verifica correspondencia frontend ↔ backend para cada funcionalidad
 """
 
@@ -42,9 +39,9 @@ SPRINT_DURATION = 14
 SPACE = "PLATAFORMA MINERA IA"
 
 RESOURCES = {
-    "BE1": "DBA / Arquitecto de Datos Senior — Diseno de BD, scripts SQL, triggers, backups, replicacion, integracion datos con frontend y servicios core",
-    "BE2": "Especialista en Ciberseguridad Backend — JWT/RBAC, cifrado, OWASP, pentesting, hardening de APIs y cumplimiento normativo (NO modelos ML)",
-    "BE3": "Ingeniero de Comunicaciones — Notificaciones, dictado por voz, integracion entre servicios y conectividad con sistemas externos (sin liderazgo DBA)",
+    "BE1": "Backend Senior — Nucleo C++ tiempo real: Boost.Asio, OpenCV, sockets/WebSocket telemetria, integraciones internas entre servicios y APIs core mineras",
+    "BE2": "Backend Senior — Seguridad, identidad e IA aplicada: biometria facial, usuarios/perfiles/accesos, JWT/RBAC/OWASP, IA local VPS e IA cloud (pagada/gratuita) via Servicios Web",
+    "BE3": "Backend Semi-Senior — DBA PostgreSQL, integracion plataforma Amazon (AWS), ETL, sincronizacion de bases de datos, recovery y continuidad del sistema y BD",
     "FE1": "Experto en Interfaces Senior — Unico frontend mes 1; lidera UI/APIs con backend y DBA desde junio hasta cierre",
     "FE2": "Especialista en UX y Soporte — Activo desde mes 2 (julio): pruebas con usuarios, tablets de campo y salida a produccion",
     "ARQ": "Arquitecto Senior LATAM — Plan de Recuperación ante Desastres, supervisión técnica, pruebas de usuario y aprobación final",
@@ -202,9 +199,9 @@ TAG_CONSOLIDATION = {
 # Asi se muestran COMPLETOS en la pantalla, sin truncarse a 1 letra
 # ══════════════════════════════════════════════════════════════════════════════
 RESOURCE_DISPLAY = {
-    "BE1": "BACKEND 1 — DBA / Arq. Datos y Core",
-    "BE2": "BACKEND 2 — Ciberseguridad Backend (JWT/RBAC/OWASP)",
-    "BE3": "BACKEND 3 — Integraciones",
+    "BE1": "BACKEND 1 — Core C++ / OpenCV / Sockets Tiempo Real",
+    "BE2": "BACKEND 2 — Seguridad, Biometria, Usuarios e IA Aplicada",
+    "BE3": "BACKEND 3 — Semi-Senior DBA / AWS / ETL / Recovery",
     "FE1": "FRONTEND 1 — Interfaces (mes 1 al 6)",
     "FE2": "FRONTEND 2 — UX y Soporte (desde mes 2)",
     "ARQ": "ARQ-Arquitecto TI / PMO",
@@ -604,15 +601,18 @@ def resource_totals(tasks):
 
 # Reglas para repartir carga entre pares del mismo stream (minimo 1 recurso por tarea)
 COASSIGN_RULES = [
-    ("BE1", "BE3", ("INTEGRACION", "NOTIF", "WEBHOOK", "LEGACY", "COMUNIC")),
-    ("BE1", "BE3", ("SENSOR",)),  # telemetria/IoT — BE3 apoya; DBA queda en BE1
-    ("BE1", "BE2", ("SEGURIDAD", "SECURITY", "CRITICO")),
-    ("BE2", "BE3", ("INTEGRACION", "API", "WEBHOOK")),
+    ("BE1", "BE3", ("INTEGRACION", "SIN_CONEXION", "DATOS")),  # sync offline: core + datos
+    ("BE1", "BE2", ("SEGURIDAD", "SECURITY", "CRITICO", "SENSOR")),
+    ("BE1", "BE3", ("SENSOR",)),  # telemetria tiempo real + persistencia
+    ("BE2", "BE1", ("CORE", "SENSOR", "CRITICO")),
+    ("BE2", "IA",  ("INTELIGENCIA", "IA", "EDITOR")),
+    ("BE3", "BE1", ("INTEGRACION", "API", "CORE")),
     ("BE3", "BE2", ("SEGURIDAD", "SECURITY")),
+    ("BE3", "SYS", ("DEVOPS", "INFRAESTRUCTURA", "DR")),
     ("SYS", "BE2", ("DEVOPS", "SEGURIDAD", "SEG_INFRA", "BLINDAJE")),
-    ("SYS", "BE3", ("INTEGRACION", "DEVOPS")),
-    ("SYS", "BE1", ("DEVOPS", "CORE")),  # DBA apoya despliegues de BD
-    ("IA", "BE3",  ("INTEGRACION", "API")),
+    ("SYS", "BE3", ("DEVOPS", "DATOS", "INTEGRACION")),
+    ("SYS", "BE1", ("DEVOPS", "CORE")),
+    ("IA", "BE2",  ("INTEGRACION", "API", "INTELIGENCIA", "SEGURIDAD")),
     ("FE1", "FE2", ("UX", "EXPERIENCIA", "EDITOR", "GIS")),
     ("FE2", "FE1", ("CORE", "CRITICO", "EDITOR")),
     ("ARQ", "BE2", ("SEGURIDAD", "ARQUITECTURA", "CRITICO")),
@@ -794,9 +794,9 @@ def boost_paf_load(tasks):
     return [tuple(t) for t in mutable]
 
 COASSIGN_TAGS_FOR = {
-    "BE1": ("CORE", "DB", "DATOS", "EDITOR", "SENSOR", "CRITICO"),
-    "BE2": ("SEGURIDAD", "SECURITY", "CRITICO", "CORE"),
-    "BE3": ("INTEGRACION", "API", "NOTIF", "WEBHOOK", "CORE", "SENSOR", "COMUNIC"),
+    "BE1": ("CORE", "SENSOR", "EDITOR", "MAPAS", "EXPORT", "NOTIF", "WEBHOOK", "CRITICO", "COMUNIC"),
+    "BE2": ("SEGURIDAD", "SECURITY", "CRITICO", "INTELIGENCIA", "IA", "FACIAL", "RECONOCIMIENTO"),
+    "BE3": ("DATOS", "DB", "INTEGRACION", "API", "SIN_CONEXION", "INFRAESTRUCTURA", "DR"),
     "FE1": ("UX", "CORE", "EDITOR", "GIS", "EXPORT", "FRONTEND"),
     "FE2": ("UX", "EXPERIENCIA", "SOPORTE", "OFFLINE", "TABLETS"),
     "ARQ": ("ARQUITECTURA", "PMO", "CRITICO", "DOCUMENTACION"),
@@ -882,9 +882,9 @@ def inject_monthly_floor_tasks(tasks, monthly_load, floor_pct=TARGET_LOAD_PCT):
     new_tasks = list(tasks)
     totals = resource_totals(new_tasks)
     floor_titles = {
-        "BE1": "Refuerzo modelo datos PostgreSQL/Timescale y APIs core mineras",
-        "BE2": "Revision continua OWASP, RBAC y hardening APIs operativas",
-        "BE3": "Soporte integraciones legacy, notificaciones y sync offline",
+        "BE1": "Refuerzo nucleo C++ tiempo real, sockets telemetria y APIs core mineras",
+        "BE2": "Refuerzo biometria, usuarios/accesos, IA aplicada y hardening OWASP",
+        "BE3": "Refuerzo DBA PostgreSQL, ETL AWS, sincronizacion y simulacros de recovery",
         "FE1": "Refuerzo ReportStudio, accesibilidad industrial y deuda UI",
         "FE2": "Validacion UX en tablet de campo y pruebas con operadores mina",
         "ARQ": "Gobierno arquitectonico, gates de release y alineamiento TI",
@@ -1037,21 +1037,117 @@ DBA_TEXT_KEYWORDS = (
     "DISEÑAR ESQUEMA", "DISENAR ESQUEMA", "SCRIPTS SQL", "TRIGGER",
 )
 
+BE3_DATA_KEYWORDS = DBA_TEXT_KEYWORDS + (
+    "AWS", "AMAZON", "ETL", "SINCRONIZ", "RECOVERY", "RECUPERACION",
+    "DISASTER", " RESTAUR", "REPLIC", "MIGRACION DE DATOS", "DATOS EXTERNOS",
+    "LEGACY", "IMPORTACION", "RETENCION", "ARCHIVADO",
+)
+
+BE2_DOMAIN_KEYWORDS = (
+    "BIOMETR", "FACIAL", "ICAO", "LIVENESS", "RECONOCIMIENTO FACIAL",
+    "USUARIO", "PERFIL", " PERMISO", "ROLES", "RBAC", "ACCESO",
+    "JWT", "AUTH", "MFA", "2FA", "OWASP", "CIFRADO", "SEGURIDAD",
+    "PENTEST", "VAULT", "CREDENCIAL", "AUDITORIA DE ACCESO",
+    "GATEWAY IA", "IA CLOUD", "IA LOCAL", "SERVICIO WEB",
+    "LANGUAGE TOOL", "CORRECTOR", "INFERENCIA", "OPENAI", "GEMINI",
+    "ANTIFRAUDE", "SESION", "LOGIN", "REGISTRO DE USUARIO",
+)
+
+BE1_CORE_KEYWORDS = (
+    "BOOST", "ASIO", "SOCKET", "WEBSOCKET", "OPENCV", "TIEMPO REAL",
+    "TELEMETR", "CORE", "SERVIDOR HTTP", "ROUTER", "CONEXION EN VIVO",
+    "FORMULA", "MOTOR", "NOTIFICACION", "WEBHOOK", "KAFKA", "REDIS",
+    "CACHE", "GDAL", "MAPAS", "EXPORT", "PDF", "WORD", "SENSOR",
+    "STREAM", "REAL-TIME", "REAL TIME", "DICTADO", "WHISPER",
+)
+
 def is_dba_task(task):
-    """Tareas de diseno/gestion/integracion de base de datos (responsable: BE1)."""
+    """Tareas de diseno/gestion/integracion de base de datos (responsable: BE3)."""
     tags = consolidate_tags(task[6]).upper()
     tag_parts = {p.strip() for p in tags.split(",")}
-    if tag_parts & {"DB", "BASE_DATOS"}:
-        return True
+    if tag_parts & {"DB", "BASE_DATOS", "DATOS"} and not tag_parts & {"SENSOR", "SENSORES"}:
+        blob = f"{task[3]} {task[4]}".upper()
+        if any(k in blob for k in DBA_TEXT_KEYWORDS):
+            return True
     blob = f"{task[3]} {task[4]}".upper()
     return any(k in blob for k in DBA_TEXT_KEYWORDS)
 
+def is_be3_data_task(task):
+    """Tareas DBA, AWS, ETL, sincronizacion y recovery (responsable: BE3)."""
+    if is_dba_task(task):
+        return True
+    blob = f"{task[3]} {task[4]}".upper()
+    return any(k in blob for k in BE3_DATA_KEYWORDS)
+
+def classify_backend_lead(task):
+    """Determina el backend lider segun dominio funcional reestructurado."""
+    blob = f"{task[3]} {task[4]}".upper()
+    tags = consolidate_tags(task[6]).upper()
+    tag_parts = {p.strip() for p in tags.split(",") if p.strip()}
+
+    if is_be3_data_task(task):
+        return "BE3"
+    if tag_parts & {"SEGURIDAD"}:
+        return "BE2"
+    if any(k in blob for k in BE2_DOMAIN_KEYWORDS):
+        return "BE2"
+    if tag_parts & {"INTELIGENCIA_ARTIFICIAL"} and "IA" in parse_assignees(task[5]):
+        if any(k in blob for k in ("INTEGR", "SERVIR", "GATEWAY", "CORRECTOR", "INFEREN", "VPS", "CLOUD")):
+            return "BE2"
+        if tag_parts & {"SEGURIDAD"}:
+            return "BE2"
+    if tag_parts & {"SENSORES", "MAPAS", "EXPORTACION", "EDITOR_INFORMES", "NOTIFICACIONES"}:
+        return "BE1"
+    if any(k in blob for k in BE1_CORE_KEYWORDS):
+        return "BE1"
+    if _tags_match(task[6], ("INTEGRACION", "NOTIF", "WEBHOOK", "API", "COMUNIC", "LEGACY")):
+        if is_be3_data_task(task):
+            return "BE3"
+        return "BE1"
+    assignees = parse_assignees(task[5])
+    if "BE2" in assignees and "BE1" not in assignees and not is_be3_data_task(task):
+        return "BE2"
+    if "BE3" in assignees and "BE1" not in assignees and "BE2" not in assignees:
+        return "BE3"
+    return "BE1"
+
+def apply_backend_role_map(tasks):
+    """Reasigna BE1/BE2/BE3 segun nuevos dominios: core, seguridad/IA aplicada, datos/AWS."""
+    out = []
+    for task in tasks:
+        t = list(task)
+        assignees = parse_assignees(t[5])
+        backends = [a for a in assignees if a in ("BE1", "BE2", "BE3")]
+        if not backends:
+            out.append(tuple(t))
+            continue
+        lead = classify_backend_lead(task)
+        non_backend = [a for a in assignees if a not in ("BE1", "BE2", "BE3")]
+        supports = []
+        if lead == "BE3" and is_integration_led_task(task):
+            supports.append("BE1")
+        elif lead == "BE2" and "IA" in assignees and "IA" not in non_backend:
+            non_backend = ["IA"] + non_backend
+        elif lead == "BE1" and is_be3_data_task(task):
+            lead = "BE3"
+            supports = ["BE1"]
+        if is_dba_task(task) and not is_integration_led_task(task):
+            supports = ["BE1"] if _tags_match(task[6], ("CORE", "EDITOR", "EDITOR_INFORMES")) else []
+            others = [b for b in backends if b not in ("BE1", "BE2", "BE3")]
+            t[5] = ",".join(dict.fromkeys(["BE3"] + supports + non_backend + others))
+            out.append(tuple(t))
+            continue
+        remaining = [b for b in backends if b != lead and b not in supports]
+        t[5] = ",".join(dict.fromkeys([lead] + supports + remaining + non_backend))
+        out.append(tuple(t))
+    return out
+
 def is_integration_led_task(task):
-    """Integraciones/API/mensajeria donde BE3 lidera o co-lidera con BE1."""
+    """Integraciones/API/mensajeria donde BE1 (core) o BE3 (datos externos) co-lideran."""
     return _tags_match(task[6], ("INTEGRACION", "WEBHOOK", "KAFKA", "API", "NOTIF", "LEGACY", "COMUNIC"))
 
-def consolidate_dba_to_be1(tasks):
-    """Centraliza liderazgo DBA en BE1; BE3 conserva integraciones/API en co-desarrollo."""
+def consolidate_dba_to_be3(tasks):
+    """Centraliza liderazgo DBA en BE3; BE1 apoya APIs core en co-desarrollo."""
     out = []
     for task in tasks:
         t = list(task)
@@ -1061,20 +1157,24 @@ def consolidate_dba_to_be1(tasks):
             continue
         non_backend = [a for a in assignees if a not in ("BE1", "BE2", "BE3")]
         backends = [a for a in assignees if a in ("BE1", "BE2", "BE3")]
-        if is_integration_led_task(task) and "BE3" in backends:
-            ordered = ["BE1", "BE3"] + [a for a in backends if a not in ("BE1", "BE3")]
+        if is_integration_led_task(task) and "BE1" in backends:
+            ordered = ["BE3", "BE1"] + [a for a in backends if a not in ("BE1", "BE3")]
             t[5] = ",".join(dict.fromkeys(ordered + non_backend))
             out.append(tuple(t))
             continue
-        if "BE1" not in backends:
-            backends = ["BE1" if a == "BE3" else a for a in backends] if backends else ["BE1"]
-            if "BE1" not in backends:
-                backends = ["BE1"] + backends
+        if "BE3" not in backends:
+            backends = ["BE3" if a == "BE1" else a for a in backends] if backends else ["BE3"]
+            if "BE3" not in backends:
+                backends = ["BE3"] + backends
         else:
-            backends = [a for a in backends if a != "BE3"]
-        t[5] = ",".join(dict.fromkeys(["BE1"] + [a for a in backends if a != "BE1"] + non_backend))
+            backends = [a for a in backends if a != "BE1"] if len(backends) > 1 and "BE1" not in non_backend else backends
+        t[5] = ",".join(dict.fromkeys(["BE3"] + [a for a in backends if a != "BE3"] + non_backend))
         out.append(tuple(t))
     return out
+
+def consolidate_dba_to_be1(tasks):
+    """Compatibilidad: delega en consolidate_dba_to_be3."""
+    return consolidate_dba_to_be3(tasks)
 
 def strip_sys_from_early_tasks(tasks):
     """Quita SYS de tareas planificadas solo en junio (mes 1)."""
@@ -1089,7 +1189,7 @@ def strip_sys_from_early_tasks(tasks):
     return out
 
 def rebalance_backend_after_dba(tasks):
-    """Equilibra BE1 (DBA) y BE3 (integraciones): mueve integraciones puras a BE3."""
+    """Equilibra BE1 (core) y BE3 (datos): mueve integraciones puras a BE1; DBA permanece en BE3."""
     mutable = [list(t) for t in tasks]
     for _ in range(80):
         totals = resource_totals(mutable)
@@ -1101,22 +1201,31 @@ def rebalance_backend_after_dba(tasks):
             assignees = parse_assignees(task[5])
             if is_dba_task(task):
                 continue
-            if be1 > MAX_TOTAL_HOURS and "BE1" in assignees and is_integration_led_task(task):
+            if be3 > MAX_TOTAL_HOURS and "BE3" in assignees and is_integration_led_task(task) and not is_be3_data_task(task):
                 if len(assignees) == 1:
-                    task[5] = "BE3"
-                elif "BE3" in assignees:
-                    task[5] = ",".join(a for a in assignees if a != "BE1")
+                    task[5] = "BE1"
+                elif "BE1" in assignees:
+                    task[5] = ",".join(a for a in assignees if a != "BE3")
                 else:
-                    task[5] = ",".join("BE3" if a == "BE1" else a for a in assignees)
+                    task[5] = ",".join("BE1" if a == "BE3" else a for a in assignees)
                 moved = True
             elif (
                 be3 < MAX_TOTAL_HOURS * 0.82
                 and "BE1" in assignees
                 and "BE3" not in assignees
-                and is_integration_led_task(task)
+                and is_be3_data_task(task)
             ):
                 task[5] = "BE3" if len(assignees) == 1 else ",".join(
                     a for a in assignees if a != "BE1"
+                )
+                moved = True
+            elif (
+                be1 > MAX_TOTAL_HOURS
+                and "BE1" in assignees
+                and is_be3_data_task(task)
+            ):
+                task[5] = "BE3" if len(assignees) == 1 else ",".join(
+                    "BE3" if a == "BE1" else a for a in assignees
                 )
                 moved = True
             if moved:
@@ -1196,7 +1305,9 @@ def rebalance_assignments(tasks):
                         continue
                     if tgt == "IA" and not ia_allowed_for_task(task):
                         continue
-                    if tgt == "BE3" and is_dba_task(task) and not is_integration_led_task(task):
+                    if tgt == "BE1" and is_dba_task(task) and not is_integration_led_task(task):
+                        continue
+                    if tgt == "BE3" and not is_be3_data_task(task) and not is_integration_led_task(task):
                         continue
                     if totals.get(tgt, 0) >= max_hours_for_resource(tgt) - 4:
                         continue
@@ -3859,10 +3970,10 @@ TASKS = [
     ("PASO 2", "MES5_OCTUBRE_Optimizacion", "P2-ALC-IA1",
      "IA: clasificacion automatica de imagenes pegadas en informe tecnico",
      "Auto-tag de imagenes importadas (equipo, zona, EPP, incidente) para enriquecer metadata y busqueda del informe.",
-     "IA,BE3", "IA,EDITOR", "Normal", 18, 20, "R5", "P1-ALC-C2", "Alta", "Medio", "IA", 40),
+     "IA,BE2", "IA,EDITOR", "Normal", 18, 20, "R5", "P1-ALC-C2", "Alta", "Medio", "IA", 40),
 
     ("PASO 1", "MES1_JUNIO_Analisis_Arquitectura", "P1-ALC-FE1-M1",
-     "FE1 mes 1: setup React/Vite, contratos API con BE1/DBA y shell ReportStudio",
+     "FE1 mes 1: setup React/Vite, contratos API con BE1 (core) y shell ReportStudio",
      "Unico frontend activo en junio: levantar arquitectura Vite, routing base, contratos REST/WebSocket con backend y shell navegable del ReportStudio para validacion temprana con ARQ.",
      "FE1,BE1", "UX,CORE,EDITOR,ARQUITECTURA", "Urgent", 1, 4, "R1", "P1-M1-005", "Alta", "Alto", "Frontend", 48),
 
@@ -3982,18 +4093,105 @@ TASKS = [
     ("PASO 1", "MES3_AGOSTO_UX_Sensores", "P1-LOAD-IA-02",
      "IA: pipeline STT Whisper con acento regional y ruido de socavon",
      "Entrenamiento/fine-tuning de vocabulario minero para dictado por voz en condiciones ruidosas.",
-     "IA,BE3", "INTELIGENCIA_ARTIFICIAL,EDITOR", "High", 9, 12, "R3", "P1-LOAD-IA-01", "Alta", "Alto", "IA", 32),
+     "IA,BE2", "INTELIGENCIA_ARTIFICIAL,EDITOR", "High", 9, 12, "R3", "P1-LOAD-IA-01", "Alta", "Alto", "IA", 32),
 
     ("PASO 1", "MES5_OCTUBRE_Optimizacion", "P1-LOAD-IA-03",
      "IA: modelos ONNX biometria y deteccion EPP en stream CCTV",
      "Despliegue de inferencia facial liveness y vision EPP integrada a alertas operativas.",
      "IA,BE2", "INTELIGENCIA_ARTIFICIAL,SEGURIDAD,SENSOR", "High", 17, 21, "R5", "P1-LOAD-IA-02", "Alta", "Alto", "IA", 36),
+
+    # ── Nuevos alcances post-reestructuracion roles backend (paridad FE-BE + balance) ──
+    ("PASO 1", "MES2_JULIO_Core_Seguridad", "BE1-C01",
+     "Canal en vivo para recibir datos de sensores de la mina",
+     "Servicio en el servidor que mantiene la conexion directa con los equipos de la mina y entrega la informacion en tiempo real al resto del sistema.",
+     "BE1,SYS", "SENSORES,CRITICO", "Urgent", 5, 8, "R2", "P1-M2-001", "Alta", "Alto", "Backend", 36),
+
+    ("PASO 1", "MES2_JULIO_Core_Seguridad", "BE1-C02",
+     "Motor del editor de informes en el servidor (equivalente a pantalla del usuario)",
+     "Implementar en el servidor las funciones que el usuario ve en el editor: guardado, versiones, tablas, imagenes y formato del informe minero.",
+     "BE1,FE1", "EDITOR_INFORMES,CORE", "High", 5, 10, "R2", "P1-M2-019", "Alta", "Medio", "Backend", 40),
+
+    ("PASO 1", "MES3_AGOSTO_UX_Sensores", "BE1-C03",
+     "Servicios del mapa minero en el servidor (puntos, zonas y capas)",
+     "Backend que alimenta el mapa interactivo: marcadores, zonas oficiales, capas geograficas y datos en tiempo real para la pantalla de mapas.",
+     "BE1,FE1", "MAPAS,CORE", "High", 9, 12, "R3", "P1-M3-002", "Alta", "Medio", "Backend", 36),
+
+    ("PASO 1", "MES3_AGOSTO_UX_Sensores", "BE1-C04",
+     "Generacion de PDF y Word al exportar informes desde el servidor",
+     "Servicio que convierte el informe del usuario a archivos descargables (PDF, Word) con el mismo formato que se ve en pantalla.",
+     "BE1,FE1", "EXPORTACION,EDITOR_INFORMES", "High", 10, 13, "R3", "P1-M3-001", "Media", "Medio", "Backend", 32),
+
+    ("PASO 1", "MES4_SEPTIEMBRE_Integracion_QA", "BE1-C05",
+     "Servicios del panel gerencial en el servidor (indicadores y alertas)",
+     "Backend que entrega los datos del dashboard ejecutivo: KPIs, alertas criticas, informes pendientes y estado de operacion minera.",
+     "BE1,FE1", "GERENCIA,CORE", "High", 13, 16, "R4", "P1-M4-001", "Media", "Medio", "Backend", 32),
+
+    ("PASO 1", "MES4_SEPTIEMBRE_Integracion_QA", "BE1-C06",
+     "Cola de sincronizacion cuando no hay internet en la mina",
+     "Servicio en el servidor que recibe datos guardados sin conexion y los sincroniza de forma ordenada al recuperar la red.",
+     "BE1,BE3", "SIN_CONEXION,INTEGRACION", "High", 13, 16, "R4", "P1-ALC-A1", "Alta", "Alto", "Backend", 36),
+
+    ("PASO 1", "MES2_JULIO_Core_Seguridad", "BE2-I01",
+     "Acceso a la plataforma por reconocimiento facial con verificacion de persona real",
+     "Integrar en el servidor la validacion facial para ingreso seguro, incluyendo prueba de vida y registro de intentos fallidos.",
+     "BE2,IA", "SEGURIDAD,INTELIGENCIA_ARTIFICIAL", "Urgent", 5, 9, "R2", "P1-M2-019", "Alta", "Alto", "Backend", 40),
+
+    ("PASO 1", "MES2_JULIO_Core_Seguridad", "BE2-I02",
+     "Administracion de usuarios, perfiles y niveles de acceso al sistema",
+     "Servicios para crear y mantener usuarios, asignar perfiles, definir que puede ver o modificar cada rol y registrar cambios de permisos.",
+     "BE2", "SEGURIDAD,CORE", "Urgent", 5, 8, "R2", "P1-M1-005", "Alta", "Medio", "Backend", 36),
+
+    ("PASO 1", "MES3_AGOSTO_UX_Sensores", "BE2-I03",
+     "Conexion con servicios de inteligencia artificial en la nube (pagados y gratuitos)",
+     "Gateway en el servidor que envia consultas a proveedores de IA en internet con plan de respaldo, limites de uso y registro de costos.",
+     "BE2,IA", "INTELIGENCIA_ARTIFICIAL,INTEGRACION", "High", 9, 12, "R3", "P1-LOAD-IA-01", "Alta", "Medio", "Backend", 36),
+
+    ("PASO 1", "MES3_AGOSTO_UX_Sensores", "BE2-I04",
+     "Motor de inteligencia artificial instalado en el servidor de la mina (VPS)",
+     "Desplegar en el VPS los modelos de IA para uso local sin depender de internet: correccion de texto, voz y asistencia en informes.",
+     "BE2,IA", "INTELIGENCIA_ARTIFICIAL,SEGURIDAD", "High", 10, 13, "R3", "P1-LOAD-IA-02", "Alta", "Alto", "Backend", 40),
+
+    ("PASO 1", "MES4_SEPTIEMBRE_Integracion_QA", "BE2-I05",
+     "Registro de auditoria: quien entro, que modifico y cuando",
+     "Servicio que guarda un historial claro de accesos y cambios sensibles para cumplimiento minero y revision de seguridad.",
+     "BE2", "SEGURIDAD,DOCUMENTACION", "High", 13, 15, "R4", "BE2-I02", "Media", "Medio", "Backend", 28),
+
+    ("PASO 1", "MES2_JULIO_Core_Seguridad", "BE3-D01",
+     "Diseno y creacion de la base de datos principal del sistema",
+     "Definir tablas, relaciones y reglas de la base PostgreSQL que almacena usuarios, informes, sensores y configuracion de la mina.",
+     "BE3", "DATOS,CRITICO", "Urgent", 3, 7, "R2", "P1-M1-005", "Alta", "Alto", "Backend", 44),
+
+    ("PASO 1", "MES3_AGOSTO_UX_Sensores", "BE3-D02",
+     "Sincronizacion de datos con la plataforma Amazon (AWS)",
+     "Conectar la base del proyecto con los datos existentes en AWS: lectura segura, mapeo de campos y control de errores de transferencia.",
+     "BE3,SYS", "DATOS,INTEGRACION", "High", 9, 12, "R3", "BE3-D01", "Alta", "Alto", "Backend", 40),
+
+    ("PASO 1", "MES3_AGOSTO_UX_Sensores", "BE3-D03",
+     "Procesos automaticos de transferencia y limpieza de datos (ETL)",
+     "Trabajos programados que mueven y transforman datos entre sistemas, eliminan duplicados y preparan informacion para reportes.",
+     "BE3", "DATOS,INTEGRACION", "High", 10, 14, "R3", "BE3-D02", "Alta", "Medio", "Backend", 36),
+
+    ("PASO 1", "MES4_SEPTIEMBRE_Integracion_QA", "BE3-D04",
+     "Copias de seguridad automaticas y restauracion de la base de datos",
+     "Configurar respaldos diarios, prueba de restauracion y procedimiento documentado si falla la base de datos.",
+     "BE3,SYS", "DATOS,INFRAESTRUCTURA", "High", 13, 16, "R4", "BE3-D01", "Alta", "Alto", "Backend", 36),
+
+    ("PASO 2", "MES5_OCTUBRE_Optimizacion", "BE3-D05",
+     "Simulacro de recuperacion del sistema completo y de la base de datos",
+     "Ejercicio controlado de disaster recovery: restaurar servicios y datos en el VPS Lima y medir tiempo de recuperacion.",
+     "BE3,SYS,ARQ", "DATOS,INFRAESTRUCTURA,CRITICO", "Urgent", 17, 20, "R5", "BE3-D04", "Alta", "Alto", "Backend", 40),
+
+    ("PASO 2", "MES5_OCTUBRE_Optimizacion", "BE3-D06",
+     "Monitoreo de replicacion, retencion y archivo de datos historicos",
+     "Supervisar que la copia de datos este al dia, aplicar politicas de retencion legal minera y archivar periodos cerrados.",
+     "BE3", "DATOS,INTEGRACION", "High", 18, 21, "R5", "BE3-D03", "Media", "Medio", "Backend", 32),
 ]
 
 # ── Pipeline: ajuste de horas, rebalanceo de recursos, programacion con tope 100% mensual ──
 TASKS = apply_hour_overrides(TASKS)
 TASKS = consolidate_pmo_to_paf(TASKS)
-TASKS = consolidate_dba_to_be1(TASKS)
+TASKS = apply_backend_role_map(TASKS)
+TASKS = consolidate_dba_to_be3(TASKS)
 TASKS = rebalance_backend_after_dba(TASKS)
 TASKS = strip_sys_from_early_tasks(TASKS)
 TASKS = strip_fe2_from_june_tasks(TASKS)
@@ -4020,7 +4218,8 @@ if LOAD_VIOLATIONS or any(h > max_hours_for_resource(c) + 0.5 for c, h in resour
     TASKS = strip_qa_from_june_tasks(TASKS)
     TASKS = strip_ia_from_june_tasks(TASKS)
     TASKS = consolidate_pmo_to_paf(TASKS)
-    TASKS = consolidate_dba_to_be1(TASKS)
+    TASKS = apply_backend_role_map(TASKS)
+    TASKS = consolidate_dba_to_be3(TASKS)
     TASKS = rebalance_backend_after_dba(TASKS)
     TASKS = boost_qa_ia_active_load(TASKS)
     TASKS = boost_paf_load(TASKS)
@@ -5242,7 +5441,10 @@ for i, w in enumerate([18, 28, 65, 22, 18, 28], 1):
 
 output_path = r"c:\InformeCliente\Plataforma_Minera_ClickUp_v19.xlsx"
 csv_path = r"c:\InformeCliente\Plataforma_Minera_ClickUp_v19_Import.csv"
-wb.save(output_path)
+try:
+    wb.save(output_path)
+except PermissionError:
+    print(f"AVISO: no se pudo guardar {output_path} (archivo abierto en Excel). Datos en memoria disponibles.")
 
 with open(csv_path, "w", newline="", encoding="utf-8-sig") as cf:
     writer = csv.writer(cf)

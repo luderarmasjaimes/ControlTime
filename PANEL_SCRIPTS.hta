@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html><head><title>PANEL SCRIPTS AURIXA</title>
+<HTA:APPLICATION ID="aurixa" APPLICATIONNAME="PanelScriptsAurixa"
+  BORDER="thin" INNERBORDER="no" SCROLL="yes" SINGLEINSTANCE="yes"
+  MAXIMIZEBUTTON="yes" ICON="" />
+<style>
+body{font-family:Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;margin:0}
+header{padding:18px 24px;background:linear-gradient(135deg,#14532d,#0f766e)}
+h1{margin:0;font-size:19px}
+.sub{font-size:12px;opacity:.85;margin-top:3px}
+.wrap{padding:18px 24px}
+input{padding:8px 12px;width:340px;border-radius:8px;border:1px solid #334155;background:#1e293b;color:#e2e8f0}
+table{width:100%;border-collapse:collapse;margin-top:14px}
+td{padding:9px 10px;border-bottom:1px solid #1e293b;font-size:13px;vertical-align:middle}
+.t{color:#16a34a;font-weight:800;width:40px}
+.f{font-size:11px;opacity:.5}
+button{background:#16a34a;color:#fff;border:0;padding:6px 12px;border-radius:7px;cursor:pointer;font-size:12px}
+button:hover{background:#15803d}
+button.sec{background:#334155}
+button.sec:hover{background:#475569}
+#log{margin-top:14px;font-size:12px;opacity:.7;min-height:18px}
+</style>
+<script language="JScript">
+var PYEXE="C:\\InformeCliente\\.venv\\Scripts\\python.exe";
+var ROOT="C:\\InformeCliente";
+function runScript(p){
+  try{
+    var sh=new ActiveXObject("WScript.Shell");
+    sh.CurrentDirectory=ROOT;
+    sh.Run('cmd /k ""'+PYEXE+'" "'+p+'""',1,false);
+    document.getElementById('log').innerHTML='Ejecutando: '+p;
+  }catch(e){document.getElementById('log').innerHTML='Error: '+e.message;}
+}
+function openFolder(f){
+  try{new ActiveXObject("WScript.Shell").Run('explorer "'+f+'"',1,false);}catch(e){}
+}
+function filt(){
+  var q=document.getElementById('q').value.toLowerCase();
+  var rows=document.getElementById('tb').getElementsByTagName('tr');
+  for(var i=0;i<rows.length;i++){
+    var tx=rows[i].innerText.toLowerCase();
+    rows[i].style.display=(tx.indexOf(q)>-1)?'':'none';
+  }
+}
+</script></head><body>
+<header><h1>&#9881; PANEL SCRIPTS AURIXA</h1>
+<div class="sub">Ejecuta los scripts Python de soporte con un clic &middot; 34 scripts &middot; generado 2026-06-18 18:13</div></header>
+<div class="wrap">
+<input id="q" placeholder="Buscar script..." onkeyup="filt()">
+<table><tbody id="tb">
+<tr><td class="t">PY</td><td><b>build_presentacion_gerencia_docx.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/build_presentacion_gerencia_docx.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>clickup_schedule_core.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/clickup_schedule_core.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>extract_sys_etapa1.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/extract_sys_etapa1.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_ai_portfolio_scoring_xlsx.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_ai_portfolio_scoring_xlsx.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_clickup_import.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_clickup_import.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_clickup_nueva_plataforma.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_clickup_nueva_plataforma.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_convocatorias_linkedin_docx.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_convocatorias_linkedin_docx.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_datacenter_comparison_xlsx.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_datacenter_comparison_xlsx.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_documento_gerencia_recursos.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_documento_gerencia_recursos.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_etapa1_clickup.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_etapa1_clickup.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_excel_etapas_detallado.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_excel_etapas_detallado.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_plan_gerencia_etapas_xlsx.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_plan_gerencia_etapas_xlsx.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_reportes_mensuales_y_convocatorias.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_reportes_mensuales_y_convocatorias.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_sow_docx.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/generate_sow_docx.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>validate_sprints_releases.py</b><div class="f">scripts</div></td><td><button onclick="runScript('C:\\InformeCliente\\scripts/validate_sprints_releases.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\scripts')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>actualizar_plan_v36.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/actualizar_plan_v36.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>detener_dockers.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/detener_dockers.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>estado_dockers.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/estado_dockers.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>fix_alloc.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/fix_alloc.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>fix_canvas.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/fix_canvas.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>gen_convocatoria_backend.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/gen_convocatoria_backend.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>gen_convocatoria_frontend.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/gen_convocatoria_frontend.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>gen_convocatoria_paf.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/gen_convocatoria_paf.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>gen_excel_etapas.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/gen_excel_etapas.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generar_paneles.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generar_paneles.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_convocatoria_word.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generate_convocatoria_word.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_dashboard_data.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generate_dashboard_data.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_html_gantt.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generate_html_gantt.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_linkedin_format_word.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generate_linkedin_format_word.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_matriz_costos_cronograma.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generate_matriz_costos_cronograma.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_msproject_xml.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generate_msproject_xml.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_portafolio_ia_ejecutivo_pptx.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generate_portafolio_ia_ejecutivo_pptx.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>generate_resumen_ejecutivo_pptx.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/generate_resumen_ejecutivo_pptx.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+<tr><td class="t">PY</td><td><b>levantar_dockers.py</b><div class="f">soporte_mantenimiento/scripts_python</div></td><td><button onclick="runScript('C:\\InformeCliente\\soporte_mantenimiento/scripts_python/levantar_dockers.py')">&#9654; Ejecutar</button> <button class="sec" onclick="openFolder('C:\\InformeCliente\\soporte_mantenimiento/scripts_python')">Carpeta</button></td></tr>
+</tbody></table>
+<div id="log"></div>
+</div></body></html>

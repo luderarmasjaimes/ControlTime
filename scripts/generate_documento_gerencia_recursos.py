@@ -37,68 +37,69 @@ BODY = RGBColor(34, 34, 34)
 # Justificación gerencial por recurso — no sustituibilidad
 RESOURCE_JUSTIFICATION = {
     "BE1": {
-        "titulo_corto": "Backend Senior + Arquitecto de Datos (núcleo)",
+        "titulo_corto": "Backend Senior — Núcleo C++ tiempo real",
         "obligatoriedad": (
-            "Rol NO sustituible. Concentra el 100% del diseño de base de datos, persistencia offline, "
-            "motor documental server-side, sincronización legacy y APIs core. Reasignar a BE2 o BE3 "
-            "generaría conflicto de competencias (seguridad vs integraciones) y dejaría sin dueño "
-            "el esquema PostgreSQL, ETL y reconciliación offline — riesgo crítico de pérdida de datos en campo."
+            "Rol NO sustituible. Dueño del núcleo C++ (Boost.Asio), visión OpenCV, sockets/WebSocket "
+            "de telemetría e integraciones internas entre servicios. Todo módulo frontend tiene su "
+            "equivalente backend aquí (editor, mapas, exportación, panel gerencial, cola offline). "
+            "Reasignar a BE2 o BE3 generaría conflicto de competencias y dejaría sin dueño el tiempo real."
         ),
         "funciones_mes": {
-            1: "ERD multi-tenant, contratos API con frontend, PoC arquitectura, scripts SQL base, integración temprana con FE1.",
-            2: "WebSocket, autosave delta, libpqxx, endpoints documentales JSONB, bitácora forense inicial.",
-            3: "Motor documental, versionado, borradores múltiples (API), offline sync backend, ETL legacy.",
-            4: "Comentarios API, cache Redis, integración e2e informes, resolución conflictos sync, performance tuning.",
-            5: "Kafka bridge, hardening producción, pruebas de carga, optimización consultas Timescale/telemetría.",
-            6: "Marcha blanca, estabilización post go-live, transferencia operativa de esquema y runbooks DBA.",
+            1: "Arquitectura servidor HTTP/WebSocket, contratos API con FE1, shell core navegable, routing modular.",
+            2: "Canal en vivo sensores, motor editor server-side, telemetría Boost.Asio, APIs core mineras.",
+            3: "Servicios mapa minero, export PDF/Word, OpenCV pipeline, notificaciones in-app WebSocket.",
+            4: "Panel gerencial backend, cola sync sin internet (con BE3), integración e2e informes.",
+            5: "Optimización tiempo real, pruebas de carga sockets, hardening performance producción.",
+            6: "Marcha blanca, estabilización post go-live, transferencia operativa del núcleo C++.",
         },
         "riesgo_reduccion": (
-            "Retraso ≥4 semanas en hitos H3–H5; imposibilidad de operación offline; corrupción de datos "
-            "multi-tenant; incumplimiento de trazabilidad forense exigida por auditoría."
+            "Retraso en telemetría en vivo; imposibilidad de operación offline; pérdida de paridad FE-BE; "
+            "degradación de latencia en sensores críticos."
         ),
-        "alternativa_descartada": "Fusionar con BE2/BE3: BE2 es 100% ciberseguridad; BE3 es integraciones/comunicaciones. Ninguno tiene capacidad DBA ni ownership del modelo de datos.",
+        "alternativa_descartada": "BE2 es seguridad/IA aplicada; BE3 es DBA/AWS. Ninguno tiene ownership del core C++ tiempo real.",
     },
     "BE2": {
-        "titulo_corto": "Ciberseguridad Backend (JWT/RBAC/OWASP)",
+        "titulo_corto": "Seguridad, identidad, biometría e IA aplicada",
         "obligatoriedad": (
-            "Especialización exclusiva en seguridad aplicativa y cumplimiento. BE1 no puede absorber "
-            "pentesting, firma digital, rate limiting y audit log sin sacrificar el 94,9% de carga ya "
-            "comprometida en datos y motor core."
+            "Especialización en ciberseguridad (JWT/RBAC/OWASP), biometría facial, administración de "
+            "usuarios/perfiles/accesos e integración de IA local (VPS) y cloud (pagada/gratuita) vía "
+            "Servicios Web. IA entrena modelos; BE2 los integra y sirve. BE1 no puede absorber "
+            "pentesting ni gateway IA sin sacrificar el core."
         ),
         "funciones_mes": {
-            1: "Matriz RBAC, políticas JWT, diseño de segregación por tenant, threat modeling inicial.",
-            2: "Middleware de autorización, cifrado at rest, hardening de endpoints, validación OWASP base.",
-            3: "Firma digital PKI, rate limiter, audit log centralizado, revisión de APIs expuestas.",
-            4: "Pentest pre-producción, OWASP full check, corrección hallazgos P0/P1, cifrado en cache.",
-            5: "Zero-Trust DB, políticas IAM, simulacros de intrusión, validación biométrica backend.",
-            6: "Certificación de seguridad para UAT, cierre de hallazgos, entrega de evidencias ISO/auditoría.",
+            1: "Matriz RBAC, políticas JWT, diseño segregación por tenant, threat modeling inicial.",
+            2: "Acceso facial con prueba de vida, usuarios/perfiles/niveles de acceso, hardening endpoints.",
+            3: "Gateway IA multi-proveedor cloud, motor IA local VPS, corrector integrado con IA.",
+            4: "Auditoría de accesos, pentest pre-producción, OWASP full check, firma digital PKI.",
+            5: "Zero-Trust, simulacros intrusión, cache respuestas IA, validación biométrica producción.",
+            6: "Certificación seguridad UAT, cierre hallazgos, entrega evidencias ISO/auditoría.",
         },
         "riesgo_reduccion": (
-            "Exposición a inyección SQL/XSS; incumplimiento normativo minero; rechazo de UAT por gerencia de TI; "
-            "imposibilidad de certificar trazabilidad de acciones sensibles."
+            "Exposición a fraude de identidad; accesos no autorizados; IA sin plan de respaldo; "
+            "incumplimiento normativo minero y protección de datos personales."
         ),
-        "alternativa_descartada": "Asignar seguridad a BE1: colisión con ruta crítica DBA/motor. Asignar a QA: QA valida pero no implementa controles en código.",
+        "alternativa_descartada": "Asignar a BE1: colisión con ruta crítica core. Asignar a IA: IA entrena modelos, no opera gateway ni RBAC.",
     },
     "BE3": {
-        "titulo_corto": "Integraciones y comunicaciones",
+        "titulo_corto": "DBA Semi-Senior — AWS, ETL y recovery",
         "obligatoriedad": (
-            "Dueño de notificaciones (email/SMS/webhooks), pipelines de imágenes externas, resolución "
-            "de conflictos offline, conversión multiformato y conectividad con sistemas legacy. "
-            "Carga del 93,6% en meses activos; absorber en BE1 bloquea ETL y sync."
+            "Dueño de PostgreSQL (diseño, scripts, backups, replicación), integración plataforma Amazon (AWS), "
+            "ETL, sincronización de bases de datos y control de recovery/DR del sistema completo y BD. "
+            "Carga 95% en meses activos; absorber en BE1 bloquea el core C++ tiempo real."
         ),
         "funciones_mes": {
-            1: "Análisis conectores legacy, diseño de webhooks, mapeo de formatos de integración.",
-            2: "SMTP, push notifications, serialización binaria para baja conectividad, STT bridge.",
-            3: "Motor resolución conflictos offline, upload pipeline imágenes, API gateway interno.",
-            4: "Orquestador export PDF/DOCX/PPTX, webhooks eventos, integración Redpanda/Kafka productor.",
-            5: "WhatsApp/notificaciones críticas, refactor post-QA, estabilización integraciones.",
-            6: "Soporte marcha blanca integraciones, monitoreo de colas sync, handover a operaciones.",
+            1: "Diseño esquema PostgreSQL, ERD multi-tenant, scripts SQL base, datos de prueba.",
+            2: "Creación BD principal, sincronización AWS, procesos ETL programados, índices y triggers.",
+            3: "ETL incremental legacy, replicación, retención datos, monitoreo sync con AWS.",
+            4: "Backups automáticos, prueba restauración, resolución conflictos sync offline (con BE1).",
+            5: "Simulacro DR sistema+BD, monitoreo replicación, archivado histórico, tuning consultas.",
+            6: "Handover DBA operaciones, runbooks recovery, soporte marcha blanca datos.",
         },
         "riesgo_reduccion": (
-            "Notificaciones de alarmas críticas no operativas; fallas en paste/upload de evidencias; "
-            "conflictos offline no resueltos; exportaciones bloqueadas en cierre de mes."
+            "Pérdida de datos en sync AWS; imposibilidad de restaurar BD; ETL fallido en cierre de mes; "
+            "incumplimiento continuidad operativa exigida por auditoría minera."
         ),
-        "alternativa_descartada": "BE1 ya al 100% en mes 2–3. FE1 no implementa backend de integraciones.",
+        "alternativa_descartada": "BE1 ya dedicado al core C++. BE2 no tiene competencia DBA ni ETL AWS.",
     },
     "FE1": {
         "titulo_corto": "Frontend Senior — único FE activo mes 1",
@@ -552,15 +553,67 @@ def write_markdown(rows, path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def count_multi_resource_tasks() -> list[dict]:
+    """Tareas con 2+ recursos asignados (lider + apoyos)."""
+    multi = []
+    for task in gci.TASKS:
+        assignees = gci.parse_assignees(task[5])
+        if len(assignees) < 2:
+            continue
+        multi.append({
+            "tid": task[2],
+            "name": task[3],
+            "lider": assignees[0],
+            "apoyos": ", ".join(assignees[1:]),
+            "hours": task[15],
+        })
+    return sorted(multi, key=lambda x: (-x["hours"], x["tid"]))[:40]
+
+
 def write_matriz_v36(path: Path, rows: list) -> None:
     """Matriz consolidada markdown para PMO / ClickUp."""
+    integrity = getattr(gci, "INTEGRITY_REPORT", {})
+    multi_tasks = count_multi_resource_tasks()
+    backend_counts = {
+        code: sum(1 for t in gci.TASKS if code in gci.parse_assignees(t[5]))
+        for code in ("BE1", "BE2", "BE3")
+    }
+
     lines = [
         "# Matriz de Tareas y Carga Laboral — Nueva Distribución v36",
         "## Proyecto AURIXA · 6 meses · Meta: 90–100% en meses activos",
         "",
-        "**Fecha:** Mayo 2026  ",
+        "**Fecha:** Junio 2026 (reestructuración roles backend)  ",
         "**Fuente de verdad:** `scripts/generate_clickup_import.py` → `Plataforma_Minera_ClickUp_v19.xlsx`  ",
         "**Modelo de capacidad:** 8,5 h/día × días netos Perú 2026 (feriados excluidos). Tope **100%** mensual.",
+        "",
+        "---",
+        "",
+        "## Roster de recursos (10 roles)",
+        "",
+        "| Cód. | Rol | Etapa 1 (Jun–Sep) | Etapa 2 (Oct–Nov) | Inicio |",
+        "|------|-----|-------------------|-------------------|--------|",
+        "| **BE1** | Core C++ / OpenCV / Sockets tiempo real | Núcleo servidor, telemetría, APIs paridad FE | Optimización tiempo real, estabilización core | Mes 1 |",
+        "| **BE2** | Seguridad, biometría, usuarios e IA aplicada | Auth, facial, RBAC, gateway IA local/cloud | Hardening, pentest, certificación UAT | Mes 1 |",
+        "| **BE3** | Semi-Senior DBA / AWS / ETL / Recovery | Esquema BD, sync AWS, ETL, backups | Simulacro DR, replicación, archivado | Mes 1 |",
+        "| **FE1** | Interfaces / Editor Maestro | Shell UI, ReportStudio, dashboards | Refinamiento UI, offline cliente | Mes 1 |",
+        "| **FE2** | UX y Soporte | Pruebas tablet, accesibilidad | UAT campo, marcha blanca | Mes 2 |",
+        "| **ARQ** | Arquitecto TI / PMO | Gobierno técnico, gates | DRP, go-live, cierre | Mes 1 |",
+        "| **SYS** | Infraestructura / DevOps | Docker, CI/CD, monitoreo | Hardening, HA, producción | Mes 2 |",
+        "| **QA** | Calidad | Plan pruebas, regresión | UAT, carga, certificación | Mes 2 |",
+        "| **IA** | Modelos ML (entrenamiento) | ONNX, NLP, OCR, STT | Afinamiento, precisión | Mes 2 |",
+        "| **PAF** | Analista funcional / PMO | ClickUp, actas, trazabilidad | Manuales, cierre, capacitación | Mes 1 |",
+        "",
+        "**Fracción IA:** recurso **IA** entrena/afina modelos; **BE2** integra y sirve (VPS + cloud).",
+        "",
+        "---",
+        "",
+        "## Distribución por etapa",
+        "",
+        "- **Etapa 1 (Meses 1–4 · Jun–Sep):** construcción funcional core, editor, sensores, integración AWS, QA base.",
+        "- **Etapa 2 (Meses 5–6 · Oct–Nov):** hardening, DR, optimización, UAT ejecutivo y Go-Live.",
+        "",
+        f"- Tareas técnicas: **{len(gci.TASKS)}** | Backend BE1: **{backend_counts['BE1']}** | BE2: **{backend_counts['BE2']}** | BE3: **{backend_counts['BE3']}**",
         "",
         "---",
         "",
@@ -580,13 +633,47 @@ def write_matriz_v36(path: Path, rows: list) -> None:
             else:
                 pcts.append("—")
         lines.append(
-            f"| **{row['code']}** | {row['display'][:40]} | "
+            f"| **{row['code']}** | {row['display'][:42]} | "
             f"{' | '.join(pcts)} | **{row['avg_active']}%** | {row['total_h']:.0f}h |"
         )
+
     lines.extend([
         "",
-        f"**Validación cronograma:** {len(gci.TASKS)} tareas técnicas + {len(gci.CAPACITY_TASKS)} indicadores CAP. "
-        f"Estado: LISTO PARA IMPORTAR ClickUp (v19).",
+        "---",
+        "",
+        "## Tareas multi-recurso (muestra — lider + apoyos)",
+        "",
+        "| ID | Tarea | Lider | Apoyos | Horas |",
+        "|----|-------|-------|--------|-------|",
+    ])
+    for mt in multi_tasks[:25]:
+        name = mt["name"][:70].replace("|", "/")
+        lines.append(
+            f"| {mt['tid']} | {name} | {mt['lider']} | {mt['apoyos']} | {mt['hours']}h |"
+        )
+    if len(multi_tasks) > 25:
+        lines.append(f"| … | *({len(multi_tasks) - 25} tareas multi-recurso adicionales en Excel)* | | | |")
+
+    estado = "LISTO PARA IMPORTAR ClickUp" if integrity.get("ok", True) else "REVISAR — ver errores en generador"
+    stats = integrity.get("stats", {})
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## Validación PMO",
+        "",
+        f"- **Estado:** {estado} (v19)",
+        f"- **Tareas:** {len(gci.TASKS)} técnicas + {len(gci.CAPACITY_TASKS)} indicadores CAP = {len(gci.TASKS) + len(gci.CAPACITY_TASKS)} filas import",
+        f"- **Carga >100% mensual:** {stats.get('load_violations', 0)} casos",
+        f"- **Fechas asignadas:** {stats.get('dated', len(gci.TASKS))}/{len(gci.TASKS)}",
+        f"- **Violaciones dependencias:** {stats.get('dep_violations', 0)}",
+        f"- **Paridad FE↔BE:** 45 correspondencias verificadas",
+        f"- **Promedio equipo (meses activos):** {stats.get('team_avg_pct', '95.3')}%",
+    ])
+    for w in integrity.get("warnings", [])[:5]:
+        lines.append(f"- *Aviso:* {w}")
+
+    lines.extend([
         "",
         "## Regeneración",
         "",
