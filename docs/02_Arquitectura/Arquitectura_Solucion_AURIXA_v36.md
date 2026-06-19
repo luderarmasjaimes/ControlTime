@@ -7,6 +7,8 @@
 **Audiencia:** Gerencia General, Líderes Técnicos y Gerencia TI
 **Fuente de verdad técnica:** código real del repositorio (`docker-compose.yml`, `backend/`, `ai_engine/`, `formula_engine/`, `db_scripts/`) + SOW v4
 
+> **Vista objetivo por capas (tiempo real, escalable, resiliente) + motor ML predictivo:** ver `Arquitectura_Objetivo_Capas_AURIXA_v36.md` y la topología desplegable `docker-compose.scale.yml` (raíz).
+
 > Este documento es la **vista maestra de arquitectura**. Reemplaza y consolida las versiones previas (branding "ControlTime", documentos de marzo–abril) que ya no reflejan el estado real de la solución. Los diagramas de detalle vigentes (BD, PlantUML del motor FORMULA y de login/biometría) se conservan como anexos técnicos en esta misma carpeta.
 
 ---

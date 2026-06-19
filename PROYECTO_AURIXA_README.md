@@ -46,7 +46,7 @@
 |---|---|
 | `docs/00_SOW/` | SOW maestro vigente y guía de exposición |
 | `docs/01_Planificacion/` | **Planes v36 (etapas/sprints)**, Cronograma Maestro, Cronograma VPS Lima, Resumen Ejecutivo y Matriz de Costos (1 versión vigente de cada uno) |
-| `docs/02_Arquitectura/` | **Arquitectura_Solucion_AURIXA_v36** (maestro + análisis de cambios), BD/diagramas/PlantUML, backend, datacenter Lima |
+| `docs/02_Arquitectura/` | **Arquitectura_Solucion_AURIXA_v36** (estado actual + cambios) y **Arquitectura_Objetivo_Capas_AURIXA_v36** (target por capas + ML predictivo); BD/diagramas/PlantUML, backend, datacenter Lima. Topología objetivo en `docker-compose.scale.yml` (raíz) |
 | `docs/03_Gerencia_Informes/` | Distribución de recursos v36, reportes mensuales, memos ejecutivos |
 | `docs/04_Convocatorias_RRHH/` | Convocatorias AURIXA + CVs de candidatos (`cv/`) |
 | `docs/05_RFQ_Infraestructura/` | RFQ datacenter (Cirion, Claro, GTD, Equinix, WIN), shortlist, comparativas |
@@ -69,6 +69,7 @@
 |---|---|
 | **`PANEL_PROYECTO.html`** | Explorador visual de toda la documentación, con buscador y filtros por tipo (MD · PY · DOCX · XLSX · PDF · PPTX · HTML). Abrir con doble clic. |
 | **`PANEL_SCRIPTS.hta`** | Panel Windows que lista los scripts `.py` y permite **ejecutarlos con doble clic** (botón ▶). |
+| **`API_AURIXA.html`** | Documentación navegable de las **81 APIs** (backend C++, formula, ai) con buscador y filtros por servicio/método — para compartir con el equipo. |
 
 **Regenerar los paneles** tras cambios en la documentación:
 ```

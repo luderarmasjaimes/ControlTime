@@ -27,7 +27,7 @@ INCLUDE_EXT = {
     ".md": "MD", ".py": "PY", ".docx": "DOCX", ".xlsx": "XLSX", ".xls": "XLSX",
     ".pdf": "PDF", ".pptx": "PPTX", ".ppt": "PPTX", ".html": "HTML", ".htm": "HTML",
     ".csv": "CSV", ".rtf": "RTF", ".svg": "SVG", ".ps1": "PS1", ".xml": "XML",
-    ".srt": "SRT", ".puml": "PUML", ".js": "PY",
+    ".srt": "SRT", ".puml": "PUML", ".js": "PY", ".sql": "SQL",
 }
 TYPE_COLORS = {
     "MD": "#2563eb", "PY": "#16a34a", "DOCX": "#1d4ed8", "XLSX": "#15803d",

@@ -1,0 +1,414 @@
+# =============================================================================
+#  AURIXA - TOPOLOGÍA OBJETIVO (Etapa 2) - tiempo real, escalable y resiliente
+# =============================================================================
+#  BLUEPRINT desplegable POR FASES. No reemplaza docker-compose.yml (dev actual).
+#  Detalle: docs/02_Arquitectura/Arquitectura_Objetivo_Capas_AURIXA_v36.md
+#
+#  Estándar de nombres: aurixa-<función>. Nombres = hostnames DNS en red.
+#
+#  Decisiones de consolidación / split (para miles de sensores en tiempo real):
+#   - aurixa-api  +  aurixa-telemetry : el backend C++ se DIVIDE en dos roles
+#       (REST de informes/mapas vs gateway TLS+WS+consumidor de telemetría),
+#       para escalar el camino de 10k sensores por separado. (misma imagen, APP_ROLE)
+#   - aurixa-gis-raster : worker de conversión GDAL (ECW/GeoTIFF) INDEPENDIENTE.
+#   - aurixa-ml-serving + aurixa-ml-training : inferencia online vs entrenamiento batch.
+#   - aurixa-db + aurixa-db-replica : HA + DR < 15 min.
+#   - ai-vision / llm / grammar : SEPARADOS (perfiles de recursos distintos).
+#   - redpanda : 1 broker para arranque; 3 brokers en producción.
+#
+#  Validar:  docker compose -f docker-compose.scale.yml config
+# =============================================================================
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-backend-image: &backend_image
+  image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-aurixa}/informe-backend:latest
+
+secrets:
+  pg_password:      { file: ./secrets/pg_password.txt }
+  formula_password: { file: ./secrets/formula_password.txt }
+  minio_password:   { file: ./secrets/minio_password.txt }
+
+networks:
+  edge: { driver: bridge }                 # expuesta (edge + frontend)
+  app:  { driver: bridge }                 # backend, formula, ml, gis
+  data: { driver: bridge, internal: true } # db, replica, minio (sin salida)
+  ai:   { driver: bridge }                 # ai-vision, ml, llm, grammar
+
+volumes:
+  db_data: {}
+  db_replica_data: {}
+  formula_db_data: {}
+  minio_data: {}
+  redpanda_data: {}
+  prometheus_data: {}
+  grafana_data: {}
+  loki_data: {}
+  insightface_models: {}
+  ollama_data: {}
+
+services:
+
+  # ======================= C1 · DATOS =======================
+  aurixa-db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: aurixa-db
+    <<: *restart
+    environment:
+      POSTGRES_USER: sensors
+      POSTGRES_DB: sensors_db
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db_scripts:/docker-entrypoint-initdb.d:ro
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    deploy:
+      resources:
+        limits: { cpus: '2.0', memory: 4G }
+        reservations: { cpus: '0.5', memory: 1G }
+
+  aurixa-db-replica:
+    image: timescale/timescaledb:latest-pg15
+    container_name: aurixa-db-replica
+    <<: *restart
+    environment:
+      POSTGRES_USER: sensors
+      POSTGRES_DB: sensors_db
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes:
+      - db_replica_data:/var/lib/postgresql/data
+    networks: [data]
+    depends_on:
+      aurixa-db: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: '1.5', memory: 3G }
+    # NOTA: configurar streaming replication / pgBackRest (DR < 15 min).
+
+  aurixa-store:
+    image: minio/minio:latest
+    container_name: aurixa-store
+    <<: *restart
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: aurixa
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_password
+    secrets: [minio_password]
+    volumes: [minio_data:/data]
+    networks: [data, app]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    deploy:
+      resources:
+        limits: { cpus: '1.0', memory: 1G }
+
+  # ======================= C2 · INGESTA TIEMPO REAL =======================
+  aurixa-ingest:
+    image: redpandadata/redpanda:latest
+    container_name: aurixa-ingest
+    <<: *restart
+    command:
+      - redpanda start
+      - --smp 1
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://aurixa-ingest:9092
+    volumes: [redpanda_data:/var/lib/redpanda/data]
+    networks: [app]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    deploy:
+      resources:
+        limits: { cpus: '2.0', memory: 2G }
+    # PROD: 3 brokers (aurixa-ingest-1/2/3) para resiliencia real.
+
+  aurixa-ingest-console:
+    image: redpandadata/console:latest
+    container_name: aurixa-ingest-console
+    <<: *restart
+    environment:
+      KAFKA_BROKERS: aurixa-ingest:9092
+    networks: [app, edge]
+    depends_on: [aurixa-ingest]
+
+  # ======================= C3 · BACKEND C++ (DIVIDIDO) =======================
+  # --- REST de negocio (auth, reports, maps, formula-proxy, gdal-api) ---
+  aurixa-api:
+    <<: [*backend_image, *restart]
+    environment:
+      - APP_ROLE=api
+      - DATABASE_URL=host=aurixa-db port=5432 dbname=sensors_db user=sensors password_file=/run/secrets/pg_password
+      - MAPAS_DATA_ROOT=/data
+      - AI_ENGINE_URL=http://aurixa-ai-vision:5000
+      - ML_ENGINE_URL=http://aurixa-ml-serving:5001
+      - LANGUAGETOOL_URL=http://aurixa-grammar:8010
+      - OLLAMA_URL=http://aurixa-llm:11434
+    secrets: [pg_password]
+    volumes:
+      - ./data:/data
+      - ./certs:/etc/mining-gateway/certs:ro
+    networks: [app, ai]
+    depends_on:
+      aurixa-db: { condition: service_healthy }
+      aurixa-ai-vision: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    deploy:
+      replicas: 3
+      resources:
+        limits: { cpus: '1.5', memory: 1536M }
+        reservations: { cpus: '0.25', memory: 384M }
+
+  # --- Gateway de telemetría: TLS + WebSockets + consumidor/productor Redpanda ---
+  aurixa-telemetry:
+    <<: [*backend_image, *restart]
+    environment:
+      - APP_ROLE=telemetry
+      - DATABASE_URL=host=aurixa-db port=5432 dbname=sensors_db user=sensors password_file=/run/secrets/pg_password
+      - REDPANDA_BROKERS=aurixa-ingest:9092
+      - MINING_GATEWAY_PORT=8443
+      - TLS_CERT_PATH=/etc/mining-gateway/certs/server.crt
+      - TLS_KEY_PATH=/etc/mining-gateway/certs/server.key
+    secrets: [pg_password]
+    volumes:
+      - ./certs:/etc/mining-gateway/certs:ro
+    networks: [app, edge]
+    depends_on:
+      aurixa-db: { condition: service_healthy }
+      aurixa-ingest: { condition: service_healthy }
+    deploy:
+      replicas: 3          # escala con la carga de sensores (10k+)
+      resources:
+        limits: { cpus: '2.0', memory: 1536M }
+        reservations: { cpus: '0.5', memory: 512M }
+
+  # --- Worker de conversión raster GDAL (independiente, CPU-intensivo) ---
+  aurixa-gis-raster:
+    <<: [*backend_image, *restart]
+    environment:
+      - APP_ROLE=raster_worker
+      - DATABASE_URL=host=aurixa-db port=5432 dbname=sensors_db user=sensors password_file=/run/secrets/pg_password
+    secrets: [pg_password]
+    volumes:
+      - ./data:/data
+    networks: [app]
+    depends_on:
+      aurixa-db: { condition: service_healthy }
+    deploy:
+      replicas: 1
+      resources:
+        limits: { cpus: '2.0', memory: 2G }
+
+  # ======================= MOTOR FORMULA =======================
+  aurixa-formula-db:
+    image: postgres:15
+    container_name: aurixa-formula-db
+    <<: *restart
+    environment:
+      POSTGRES_USER: formula
+      POSTGRES_DB: formula
+      POSTGRES_PASSWORD_FILE: /run/secrets/formula_password
+    secrets: [formula_password]
+    volumes:
+      - formula_db_data:/var/lib/postgresql/data
+      - ./formula_engine:/docker-entrypoint-initdb.d:ro
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U formula -d formula"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  aurixa-formula:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-aurixa}/formula-engine:latest
+    container_name: aurixa-formula
+    <<: *restart
+    environment:
+      DATABASE_URL: postgresql://formula:formula@aurixa-formula-db:5432/formula
+    networks: [app]
+    depends_on:
+      aurixa-formula-db: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: '0.75', memory: 512M }
+
+  # ======================= C4 · IA APLICADA (visión) =======================
+  aurixa-ai-vision:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-aurixa}/informe-ai-engine:latest
+    <<: *restart
+    environment:
+      - GLASSES_ONNX_PATH=/app/models/glasses_classifier.onnx
+    volumes:
+      - insightface_models:/app/.insightface
+    networks: [ai]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 120s
+    deploy:
+      replicas: 2
+      resources:
+        limits: { cpus: '2.0', memory: 2G }
+
+  # ======================= C5 · ML PREDICTIVO (DIVIDIDO) =======================
+  # --- Inferencia online (baja latencia) ---
+  aurixa-ml-serving:
+    build: { context: ./ml_engine, dockerfile: Dockerfile.ml }
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-aurixa}/aurixa-ml-engine:latest
+    <<: *restart
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5001"]
+    environment:
+      - ROLE=serving
+      - DATABASE_URL=postgresql://sensors@aurixa-db:5432/sensors_db
+      - REDPANDA_BROKERS=aurixa-ingest:9092
+      - MINIO_ENDPOINT=aurixa-store:9000
+      - OLLAMA_URL=http://aurixa-llm:11434
+      - MODEL_STORE=s3://aurixa-models
+    secrets: [pg_password]
+    networks: [ai, app, data]
+    depends_on:
+      aurixa-db: { condition: service_healthy }
+      aurixa-store: { condition: service_healthy }
+    expose: ["5001"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    deploy:
+      replicas: 2
+      resources:
+        limits: { cpus: '2.0', memory: 3G }
+
+  # --- Entrenamiento batch (jobs pesados, no en ruta de inferencia) ---
+  aurixa-ml-training:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-aurixa}/aurixa-ml-engine:latest
+    <<: *restart
+    command: ["python", "-m", "app.training_worker"]
+    environment:
+      - ROLE=training
+      - DATABASE_URL=postgresql://sensors@aurixa-db:5432/sensors_db
+      - MINIO_ENDPOINT=aurixa-store:9000
+      - MODEL_STORE=s3://aurixa-models
+    secrets: [pg_password]
+    networks: [ai, data]
+    depends_on:
+      aurixa-db: { condition: service_healthy }
+      aurixa-store: { condition: service_healthy }
+    deploy:
+      replicas: 1
+      resources:
+        limits: { cpus: '3.0', memory: 6G }
+
+  # ======================= IA TEXTO / LLM =======================
+  aurixa-llm:
+    image: ollama/ollama:latest
+    container_name: aurixa-llm
+    <<: *restart
+    volumes: [ollama_data:/root/.ollama]
+    networks: [ai]
+    expose: ["11434"]
+    deploy:
+      resources:
+        limits: { cpus: '2.0', memory: 4G }
+
+  aurixa-grammar:
+    image: erikvl87/languagetool:latest
+    container_name: aurixa-grammar
+    <<: *restart
+    networks: [ai]
+    expose: ["8010"]
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 768M }
+
+  # ======================= C7 · GIS =======================
+  aurixa-gis-tiles:
+    image: ghcr.io/consbio/mbtileserver:latest
+    container_name: aurixa-gis-tiles
+    <<: *restart
+    volumes: [./data:/tilesets:ro]
+    networks: [app]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8000/services || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 512M }
+
+  # ======================= C6 · FRONTEND =======================
+  aurixa-web:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-aurixa}/informe-frontend:latest
+    container_name: aurixa-web
+    <<: *restart
+    networks: [edge, app]
+    depends_on:
+      aurixa-api: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 512M }
+
+  # ======================= TRANSVERSAL · EDGE / SEGURIDAD =======================
+  aurixa-edge:
+    image: traefik:v3.1
+    container_name: aurixa-edge
+    <<: *restart
+    command:
+      - --providers.docker=true
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.address=:80
+    ports: ["80:80", "443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./certs:/certs:ro
+    networks: [edge]
+
+  # ======================= TRANSVERSAL · OBSERVABILIDAD =======================
+  aurixa-metrics:
+    image: prom/prometheus:latest
+    container_name: aurixa-metrics
+    <<: *restart
+    volumes: [prometheus_data:/prometheus]
+    networks: [app]
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 768M }
+
+  aurixa-dashboards:
+    image: grafana/grafana:latest
+    container_name: aurixa-dashboards
+    <<: *restart
+    volumes: [grafana_data:/var/lib/grafana]
+    networks: [app, edge]
+    depends_on: [aurixa-metrics, aurixa-logs]
+
+  aurixa-logs:
+    image: grafana/loki:latest
+    container_name: aurixa-logs
+    <<: *restart
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes: [loki_data:/loki]
+    networks: [app]

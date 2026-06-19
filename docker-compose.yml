@@ -1,5 +1,6 @@
 services:
   db:
+    container_name: aurixa-db
     image: timescale/timescaledb:latest-pg15
     environment:
       POSTGRES_USER: sensors
@@ -39,6 +40,7 @@ services:
       retries: 6
       start_period: 10s
   web:
+    container_name: aurixa-api
     build:
       context: ./backend
     ports:
@@ -119,6 +121,7 @@ services:
           memory: 384M
 
   tileserver:
+    container_name: aurixa-gis-tiles
     image: ghcr.io/consbio/mbtileserver:latest
     ports:
       - "8000:8000"
@@ -143,6 +146,7 @@ services:
 
   # Motor FORMULA: editor embebido (/formula) + API proxificada como /formula-api
   formula_db:
+    container_name: aurixa-formula-db
     image: postgres:15
     environment:
       POSTGRES_USER: formula
@@ -162,6 +166,7 @@ services:
       start_period: 25s
 
   formula_engine:
+    container_name: aurixa-formula
     build:
       context: ./formula_engine
     environment:
@@ -181,6 +186,7 @@ services:
     restart: unless-stopped
 
   ai_engine:
+    container_name: aurixa-ai-vision
     build:
       context: ./ai_engine
       dockerfile: Dockerfile.ai
@@ -218,6 +224,7 @@ services:
   # (o: docker compose build --no-cache frontend && docker compose up -d frontend)
   # LLM local opcional para redacción premium (POST /api/text/rewrite).
   ollama:
+    container_name: aurixa-llm
     image: ollama/ollama:latest
     restart: unless-stopped
     expose:
@@ -232,6 +239,7 @@ services:
       start_period: 20s
 
   frontend:
+    container_name: aurixa-web
     build:
       context: ./frontend
     ports:
@@ -264,6 +272,7 @@ services:
   # Corrector ortográfico/gramatical (self-hosted) para es-PE.
   # Evita depender de api.languagetool.org y asegura disponibilidad en Docker.
   languagetool:
+    container_name: aurixa-grammar
     image: erikvl87/languagetool:latest
     restart: unless-stopped
     expose:
