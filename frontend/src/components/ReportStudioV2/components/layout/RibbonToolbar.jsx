@@ -140,10 +140,10 @@ export default function RibbonToolbar({
         ))}
         <div className="ribbon-tab-spacer" />
         <div className="ribbon-quick-actions">
-          <RibbonBtn icon={Undo2} title="Deshacer (Ctrl+Z)" />
-          <RibbonBtn icon={Redo2} title="Rehacer (Ctrl+Y)" />
+          <RibbonBtn icon={Undo2} title="Deshacer el último cambio (Ctrl+Z)" />
+          <RibbonBtn icon={Redo2} title="Rehacer el cambio deshecho (Ctrl+Y)" />
           <RibbonBtn icon={Save} label={saveLabel || 'Guardar'} onClick={onSaveReport}
-            disabled={isSaving} variant="save" />
+            disabled={isSaving} variant="save" title="Guardar el informe en la base de datos" />
         </div>
       </div>
 
@@ -154,10 +154,10 @@ export default function RibbonToolbar({
           {activeTab === 'inicio' && (
             <>
               <RibbonGroup title="Portapapeles">
-                <RibbonBtn icon={Clipboard} label="Pegar" />
+                <RibbonBtn icon={Clipboard} label="Pegar" title="Pegar contenido del portapapeles" />
                 <div className="ribbon-btn-col">
-                  <RibbonBtn icon={Scissors} label="Cortar" />
-                  <RibbonBtn icon={Copy} label="Copiar" />
+                  <RibbonBtn icon={Scissors} label="Cortar" title="Cortar la selección al portapapeles" />
+                  <RibbonBtn icon={Copy} label="Copiar" title="Copiar la selección al portapapeles" />
                 </div>
               </RibbonGroup>
 
@@ -167,7 +167,7 @@ export default function RibbonToolbar({
                     className="ribbon-select ribbon-select--font"
                     value={currentFontFamily || 'Inter'}
                     onChange={(e) => onSetFontFamily?.(e.target.value)}
-                    title="Familia tipográfica"
+                    title="Elegir la familia tipográfica del texto"
                   >
                     {FONT_FAMILIES.map((f) => (
                       <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
@@ -177,7 +177,7 @@ export default function RibbonToolbar({
                     className="ribbon-select ribbon-select--size"
                     value={currentFontSize || 12}
                     onChange={(e) => onSetFontSize?.(Number(e.target.value))}
-                    title="Tamaño de fuente (pt)"
+                    title="Tamaño de la fuente en puntos"
                   >
                     {FONT_SIZES.map((s) => (
                       <option key={s} value={s}>{s}</option>
@@ -185,15 +185,15 @@ export default function RibbonToolbar({
                   </select>
                 </div>
                 <div className="ribbon-format-row">
-                  <RibbonBtn icon={Bold} title="Negrita (Ctrl+B)" onClick={onToggleBold} active={currentBold} />
-                  <RibbonBtn icon={Italic} title="Cursiva (Ctrl+I)" onClick={onToggleItalic} active={currentItalic} />
-                  <RibbonBtn icon={Underline} title="Subrayado (Ctrl+U)" onClick={onToggleUnderline} active={currentUnderline} />
+                  <RibbonBtn icon={Bold} title="Aplicar negrita al texto (Ctrl+B)" onClick={onToggleBold} active={currentBold} />
+                  <RibbonBtn icon={Italic} title="Aplicar cursiva al texto (Ctrl+I)" onClick={onToggleItalic} active={currentItalic} />
+                  <RibbonBtn icon={Underline} title="Subrayar el texto (Ctrl+U)" onClick={onToggleUnderline} active={currentUnderline} />
                   <div className="ribbon-color-btn-wrap">
                     <button
                       type="button"
                       className="ribbon-btn ribbon-btn--color"
                       onClick={() => setShowFontColorPicker((v) => !v)}
-                      title="Color de fuente"
+                      title="Elegir el color del texto"
                     >
                       <Type size={14} />
                       <div className="ribbon-color-indicator" style={{ background: currentFontColor || '#1e293b' }} />
@@ -219,19 +219,19 @@ export default function RibbonToolbar({
 
               <RibbonGroup title="Párrafo">
                 <div className="ribbon-format-row">
-                  <RibbonBtn icon={AlignLeft} title="Alinear izquierda" onClick={() => onSetAlignment?.('left')}
+                  <RibbonBtn icon={AlignLeft} title="Alinear párrafo a la izquierda" onClick={() => onSetAlignment?.('left')}
                     active={currentAlignment === 'left'} />
-                  <RibbonBtn icon={AlignCenter} title="Centrar" onClick={() => onSetAlignment?.('center')}
+                  <RibbonBtn icon={AlignCenter} title="Centrar el párrafo" onClick={() => onSetAlignment?.('center')}
                     active={currentAlignment === 'center'} />
-                  <RibbonBtn icon={AlignRight} title="Alinear derecha" onClick={() => onSetAlignment?.('right')}
+                  <RibbonBtn icon={AlignRight} title="Alinear párrafo a la derecha" onClick={() => onSetAlignment?.('right')}
                     active={currentAlignment === 'right'} />
-                  <RibbonBtn icon={AlignJustify} title="Justificar" onClick={() => onSetAlignment?.('justify')}
+                  <RibbonBtn icon={AlignJustify} title="Justificar el párrafo en todo el ancho" onClick={() => onSetAlignment?.('justify')}
                     active={currentAlignment === 'justify'} />
                 </div>
                 <div className="ribbon-format-row">
-                  <RibbonBtn icon={List} title="Lista con viñetas" />
-                  <RibbonBtn icon={ListOrdered} title="Lista numerada" />
-                  <RibbonBtn icon={Minus} title="Interlineado" />
+                  <RibbonBtn icon={List} title="Crear lista con viñetas" />
+                  <RibbonBtn icon={ListOrdered} title="Crear lista numerada" />
+                  <RibbonBtn icon={Minus} title="Ajustar el espacio entre líneas" />
                 </div>
               </RibbonGroup>
 
@@ -257,25 +257,25 @@ export default function RibbonToolbar({
           {activeTab === 'insertar' && (
             <>
               <RibbonGroup title="Páginas">
-                <RibbonBtn icon={FilePlus2} label="Nueva página" onClick={onAddPage} />
-                <RibbonBtn icon={Copy} label="Duplicar" onClick={onDuplicatePage} />
+                <RibbonBtn icon={FilePlus2} label="Nueva página" onClick={onAddPage} title="Añadir una página en blanco al informe" />
+                <RibbonBtn icon={Copy} label="Duplicar" onClick={onDuplicatePage} title="Duplicar la página actual con su contenido" />
               </RibbonGroup>
 
               <RibbonGroup title="Contenido">
-                <RibbonBtn icon={Type} label="Texto" onClick={() => onInsertElement?.('text')} />
-                <RibbonBtn icon={ImageIcon} label="Imagen" onClick={() => onInsertElement?.('image')} />
-                <RibbonBtn icon={TableIcon} label="Tabla" onClick={() => onInsertElement?.('table')} />
-                <RibbonBtn icon={BarChart3} label="Gráfico" onClick={() => onInsertElement?.('chart')} />
-                <RibbonBtn icon={Target} label="KPI" onClick={() => onInsertElement?.('kpi')} />
-                <RibbonBtn icon={MapIcon} label="Mapa" onClick={() => onInsertElement?.('map')} />
-                <RibbonBtn icon={Activity} label="Sensor" onClick={() => onInsertElement?.('sensor')} />
+                <RibbonBtn icon={Type} label="Texto" onClick={() => onInsertElement?.('text')} title="Insertar un bloque de texto" />
+                <RibbonBtn icon={ImageIcon} label="Imagen" onClick={() => onInsertElement?.('image')} title="Insertar una imagen en la página" />
+                <RibbonBtn icon={TableIcon} label="Tabla" onClick={() => onInsertElement?.('table')} title="Insertar una tabla de filas y columnas" />
+                <RibbonBtn icon={BarChart3} label="Gráfico" onClick={() => onInsertElement?.('chart')} title="Insertar un gráfico de datos" />
+                <RibbonBtn icon={Target} label="KPI" onClick={() => onInsertElement?.('kpi')} title="Insertar un indicador KPI" />
+                <RibbonBtn icon={MapIcon} label="Mapa" onClick={() => onInsertElement?.('map')} title="Insertar un mapa detallado de la mina" />
+                <RibbonBtn icon={Activity} label="Sensor" onClick={() => onInsertElement?.('sensor')} title="Insertar la lectura de un sensor en tiempo real" />
               </RibbonGroup>
 
               <RibbonGroup title="Documento">
-                <RibbonBtn icon={BookOpen} label="Índice" onClick={onInsertTOC} title="Insertar Índice (Tabla de Contenidos)" />
-                <RibbonBtn icon={Hash} label="Numeración" title="Numeración automática de páginas" />
+                <RibbonBtn icon={BookOpen} label="Índice" onClick={onInsertTOC} title="Insertar tabla de contenidos automática" />
+                <RibbonBtn icon={Hash} label="Numeración" title="Activar numeración automática de páginas" />
                 <div className="ribbon-cover-wrap">
-                  <RibbonBtn icon={LayoutTemplate} label="Carátula" onClick={() => setShowCoverDropdown((v) => !v)} />
+                  <RibbonBtn icon={LayoutTemplate} label="Carátula" onClick={() => setShowCoverDropdown((v) => !v)} title="Insertar una carátula de informe" />
                   {showCoverDropdown && (
                     <div className="ribbon-cover-dropdown" onMouseLeave={() => setShowCoverDropdown(false)}>
                       {COVER_TEMPLATES.map((ct) => (
@@ -294,9 +294,9 @@ export default function RibbonToolbar({
               </RibbonGroup>
 
               <RibbonGroup title="Plantillas">
-                <RibbonBtn icon={Heading1} label="Encabezado" onClick={() => onAddTemplate?.('header')} />
-                <RibbonBtn icon={FileText} label="Pie página" onClick={() => onAddTemplate?.('footer')} />
-                <RibbonBtn icon={FileText} label="Hallazgos" onClick={() => onAddTemplate?.('findings')} />
+                <RibbonBtn icon={Heading1} label="Encabezado" onClick={() => onAddTemplate?.('header')} title="Insertar plantilla de encabezado de página" />
+                <RibbonBtn icon={FileText} label="Pie página" onClick={() => onAddTemplate?.('footer')} title="Insertar plantilla de pie de página" />
+                <RibbonBtn icon={FileText} label="Hallazgos" onClick={() => onAddTemplate?.('findings')} title="Insertar plantilla de hallazgos técnicos" />
               </RibbonGroup>
             </>
           )}
@@ -310,6 +310,7 @@ export default function RibbonToolbar({
                   <select className="ribbon-select"
                     value={layoutMode === 'presentation' ? 'presentation' : 'document'}
                     onChange={(e) => onLayoutModeChange?.(e.target.value)}
+                    title="Formato del lienzo: documento A4 o presentación 16:9"
                   >
                     <option value="document">Documento A4</option>
                     <option value="presentation">Presentación 16:9</option>
@@ -318,23 +319,23 @@ export default function RibbonToolbar({
               </RibbonGroup>
 
               <RibbonGroup title="Cuadrícula">
-                <RibbonBtn icon={Grid} label="Grid" onClick={onToggleGrid} active={gridEnabled} />
-                <RibbonBtn icon={MousePointer2} label="Snap" onClick={onToggleSnap} active={snapEnabled} />
-                <RibbonBtn icon={Gauge} label="Perf" title="Monitor rendimiento (Ctrl+Shift+P)" onClick={onTogglePerfDashboard} variant="ai" />
+                <RibbonBtn icon={Grid} label="Grid" onClick={onToggleGrid} active={gridEnabled} title={gridEnabled ? 'Ocultar cuadrícula del lienzo' : 'Mostrar cuadrícula de alineación'} />
+                <RibbonBtn icon={MousePointer2} label="Snap" onClick={onToggleSnap} active={snapEnabled} title={snapEnabled ? 'Desactivar ajuste a cuadrícula' : 'Ajustar bloques a la cuadrícula'} />
+                <RibbonBtn icon={Gauge} label="Perf" title="Abrir monitor de rendimiento (Ctrl+Shift+P)" onClick={onTogglePerfDashboard} variant="ai" />
               </RibbonGroup>
 
               <RibbonGroup title="Zoom">
-                <RibbonBtn icon={ZoomOut} onClick={onZoomOut} title="Alejar" />
-                <div className="ribbon-zoom-chip">{zoomPercent}%</div>
-                <RibbonBtn icon={ZoomIn} onClick={onZoomIn} title="Acercar" />
+                <RibbonBtn icon={ZoomOut} onClick={onZoomOut} title="Alejar la vista del lienzo" />
+                <div className="ribbon-zoom-chip" title={`Zoom actual: ${zoomPercent}%`}>{zoomPercent}%</div>
+                <RibbonBtn icon={ZoomIn} onClick={onZoomIn} title="Acercar la vista del lienzo" />
               </RibbonGroup>
 
               <RibbonGroup title="Paneles">
                 <RibbonBtn icon={PanelLeftClose} label="Izquierdo"
-                  onClick={onToggleLeftPanel} active={leftPanelVisible} />
+                  onClick={onToggleLeftPanel} active={leftPanelVisible} title="Mostrar u ocultar la biblioteca de contenidos" />
                 <RibbonBtn icon={PanelRightClose} label="Derecho"
-                  onClick={onToggleRightPanel} active={rightPanelVisible} />
-                <RibbonBtn icon={Maximize2} label="Foco" title="Maximizar lienzo" />
+                  onClick={onToggleRightPanel} active={rightPanelVisible} title="Mostrar u ocultar el panel de propiedades" />
+                <RibbonBtn icon={Maximize2} label="Foco" title="Maximizar el área de edición del lienzo" />
               </RibbonGroup>
             </>
           )}
@@ -343,31 +344,33 @@ export default function RibbonToolbar({
           {activeTab === 'revisar' && (
             <>
               <RibbonGroup title="Calidad">
-                <RibbonBtn icon={ScanSearch} label="Revisar" onClick={onReviewDocument} />
+                <RibbonBtn icon={ScanSearch} label="Revisar" onClick={onReviewDocument} title="Revisar ortografía, consistencia y calidad del informe" />
                 <RibbonBtn icon={Sparkles} label={isOptimizing ? 'Analizando…' : 'Optimizar IA'}
-                  onClick={onOptimizeDocument} disabled={isOptimizing} variant="ai" />
+                  onClick={onOptimizeDocument} disabled={isOptimizing} variant="ai"
+                  title="Mejorar redacción y claridad del texto con inteligencia artificial" />
               </RibbonGroup>
 
               <RibbonGroup title="Workflow">
                 <RibbonBtn icon={CheckSquare} label="Aprobar" onClick={onStartWorkflow}
-                  variant="workflow" title="Iniciar workflow de aprobación" />
-                <RibbonBtn icon={Shield} label="Bitácora" title="Ver bitácora forense" onClick={onStartWorkflow} />
-                <RibbonBtn icon={Clock} label="Versiones" title="Historial de versiones" onClick={onShowVersionHistory} />
-                <RibbonBtn icon={Camera} label="Snapshot" title="Crear snapshot de versión" onClick={onCreateSnapshot} />
-                <RibbonBtn icon={ArrowLeftRight} label="Comparar" title="Comparador visual versiones" onClick={onShowComparator} variant="primary" />
+                  variant="workflow" title="Iniciar el flujo de aprobación del informe" />
+                <RibbonBtn icon={Shield} label="Bitácora" title="Ver la bitácora forense de cambios" onClick={onStartWorkflow} />
+                <RibbonBtn icon={Clock} label="Versiones" title="Consultar el historial de versiones del informe" onClick={onShowVersionHistory} />
+                <RibbonBtn icon={Camera} label="Snapshot" title="Guardar una instantánea del informe en este momento" onClick={onCreateSnapshot} />
+                <RibbonBtn icon={ArrowLeftRight} label="Comparar" title="Comparar dos versiones del informe lado a lado" onClick={onShowComparator} variant="primary" />
               </RibbonGroup>
 
               <RibbonGroup title="Dictado">
-                <RibbonBtn icon={Mic} label="Voz" title="Dictado por voz (Ctrl+Shift+V)" onClick={onToggleVoiceDictation} variant="workflow" />
+                <RibbonBtn icon={Mic} label="Voz" title="Dictar texto con el micrófono (Ctrl+Shift+V)" onClick={onToggleVoiceDictation} variant="workflow" />
               </RibbonGroup>
 
               <RibbonGroup title="Motor IA">
                 <RibbonBtn icon={Sigma} label="FORMULA" onClick={onOpenFormulaAnalysis}
-                  variant="formula" />
+                  variant="formula" title="Ejecutar el motor FORMULA para generar reportes mineros" />
                 <RibbonBtn icon={RefreshCw} label={isSyncingKpis ? 'Sync...' : 'Sync KPI'}
-                  onClick={onSyncMiningKpis} disabled={isSyncingKpis} />
+                  onClick={onSyncMiningKpis} disabled={isSyncingKpis} title="Sincronizar indicadores KPI desde datos operativos" />
                 <RibbonBtn icon={RefreshCw} label={kpiAutoSyncEnabled ? 'Auto ON' : 'Auto OFF'}
-                  onClick={onToggleKpiAutoSync} active={kpiAutoSyncEnabled} />
+                  onClick={onToggleKpiAutoSync} active={kpiAutoSyncEnabled}
+                  title={kpiAutoSyncEnabled ? 'Desactivar sincronización automática de KPI' : 'Activar sincronización automática de KPI cada 3 minutos'} />
               </RibbonGroup>
             </>
           )}
@@ -377,16 +380,16 @@ export default function RibbonToolbar({
             <>
               <RibbonGroup title="Informes">
                 <RibbonBtn icon={FolderOpen} label="Mis Informes" onClick={onOpenReportsAdmin}
-                  variant="reports" />
+                  variant="reports" title="Abrir la biblioteca de informes técnicos guardados" />
                 <RibbonBtn icon={Save} label={saveLabel} onClick={onSaveReport}
-                  disabled={isSaving} variant="save" />
+                  disabled={isSaving} variant="save" title="Guardar el informe actual" />
               </RibbonGroup>
 
               <RibbonGroup title="Portabilidad">
                 <RibbonBtn icon={FileDown} label="Exportar .miningreport"
-                  onClick={onExportMiningReport} variant="portable" />
+                  onClick={onExportMiningReport} variant="portable" title="Exportar el informe en formato portable .miningreport" />
                 <RibbonBtn icon={FileUp} label="Importar .miningreport"
-                  onClick={onImportMiningReport} variant="portable" />
+                  onClick={onImportMiningReport} variant="portable" title="Importar un informe desde archivo .miningreport" />
               </RibbonGroup>
             </>
           )}
@@ -395,18 +398,19 @@ export default function RibbonToolbar({
           {activeTab === 'exportar' && (
             <>
               <RibbonGroup title="Documentos">
-                <RibbonBtn icon={Download} label="PDF" onClick={onExportPdf} variant="primary" />
-                <RibbonBtn icon={FileText} label="DOCX" onClick={onExportDocx} />
-                <RibbonBtn icon={Layers} label="PPTX" onClick={onExportPptx} />
+                <RibbonBtn icon={Download} label="PDF" onClick={onExportPdf} variant="primary" title="Exportar el informe como archivo PDF" />
+                <RibbonBtn icon={FileText} label="DOCX" onClick={onExportDocx} title="Exportar el informe como documento Word (DOCX)" />
+                <RibbonBtn icon={Layers} label="PPTX" onClick={onExportPptx} title="Exportar el informe como presentación PowerPoint" />
               </RibbonGroup>
 
               <RibbonGroup title="Impresión">
-                <RibbonBtn icon={Printer} label="Imprimir" onClick={onPrint} />
+                <RibbonBtn icon={Printer} label="Imprimir" onClick={onPrint} title="Imprimir el informe o abrir vista previa de impresión" />
               </RibbonGroup>
 
               <RibbonGroup title="Video">
                 <RibbonBtn icon={Video} label={isRecording ? '● REC' : 'Grabar'}
-                  onClick={onExportVideo} active={isRecording} />
+                  onClick={onExportVideo} active={isRecording}
+                  title={isRecording ? 'Detener la grabación del informe' : 'Grabar un vídeo del informe (máximo 30 segundos)'} />
               </RibbonGroup>
             </>
           )}

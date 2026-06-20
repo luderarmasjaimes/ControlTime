@@ -4,6 +4,17 @@
 #include <cstdlib>
 #include <string>
 
+// Detección de libpq para decidir el modo de almacenamiento.
+// Debe coincidir con auth_storage_pg.hpp; sin esto, app_config no "ve" libpq
+// y el backend cae a modo File aunque DATABASE_URL esté definida.
+#if !defined(HAS_LIBPQ)
+#  if __has_include(<libpq-fe.h>) || __has_include(<postgresql/libpq-fe.h>)
+#    define HAS_LIBPQ 1
+#  else
+#    define HAS_LIBPQ 0
+#  endif
+#endif
+
 namespace config {
 
 std::string getenvOr(const char *key, const std::string &fallback) {

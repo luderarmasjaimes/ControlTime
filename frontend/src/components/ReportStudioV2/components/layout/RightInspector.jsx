@@ -15,7 +15,41 @@ import {
   Camera,
   MonitorPlay,
   FolderOpen,
+  Move,
+  MousePointerClick,
+  Type,
+  BarChart3,
+  Target,
+  Table as TableIcon,
+  Map as MapIcon,
+  Activity,
+  Pin,
+  PinOff,
+  ChevronLeft,
 } from 'lucide-react';
+
+const ELEMENT_TYPE_META = {
+  text: { icon: Type, tip: 'Bloque de texto seleccionado' },
+  chart: { icon: BarChart3, tip: 'Gráfico seleccionado' },
+  kpi: { icon: Target, tip: 'Indicador KPI seleccionado' },
+  image: { icon: ImageIcon, tip: 'Imagen seleccionada' },
+  table: { icon: TableIcon, tip: 'Tabla seleccionada' },
+  map: { icon: MapIcon, tip: 'Mapa seleccionado' },
+  sensor: { icon: Activity, tip: 'Sensor en tiempo real seleccionado' },
+};
+
+function InspectorRailIcon({ icon: Icon, title, variant }) {
+  return (
+    <span
+      className={`inspector-rail-icon${variant ? ` inspector-rail-icon--${variant}` : ''}`}
+      title={title}
+      role="img"
+      aria-label={title}
+    >
+      <Icon size={18} aria-hidden />
+    </span>
+  );
+}
 
 /* ───────── TABLE INSPECTOR ───────── */
 function TableInspector({ element, onUpdate }) {
@@ -332,20 +366,83 @@ export default function RightInspector({ onRequestImageReplace }) {
   );
 
   const [isHovered, setIsHovered] = useState(false);
+  const [isPinned, setIsPinned] = useState(false);
+  const isExpanded = isHovered || isPinned;
+
+  const typeMeta = selected ? ELEMENT_TYPE_META[selected.type] : null;
+  const TypeIcon = typeMeta?.icon || Settings2;
+  const showStyleRail = selected && ['table', 'kpi', 'image'].includes(selected.type);
 
   return (
     <aside 
-      className={`panel panel--right ${isHovered ? 'panel--right-expanded' : ''}`}
+      className={`panel panel--right ${isExpanded ? 'panel--right-expanded' : ''}${isPinned ? ' panel--pinned' : ''}`}
       onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      onMouseLeave={() => { if (!isPinned) setIsHovered(false); }}
     >
-      <h3 className="panel-title">
-        <Settings2 size={17} color="var(--accent)" />
-        {isHovered && <span>Propiedades</span>}
-      </h3>
+      {!isExpanded && (
+        <span className="panel-edge-hint panel-edge-hint--left" title="Pase el cursor para expandir propiedades">
+          <ChevronLeft size={14} aria-hidden />
+        </span>
+      )}
+
+      <div className="panel-title-row">
+        <h3 className="panel-title panel-title--inspector" title="Propiedades del bloque seleccionado en el lienzo">
+          <Settings2 size={18} color="var(--accent)" aria-hidden />
+          {isExpanded && <span>Propiedades</span>}
+        </h3>
+        {isExpanded && (
+          <button
+            type="button"
+            className={`panel-pin-btn${isPinned ? ' panel-pin-btn--active' : ''}`}
+            onClick={() => setIsPinned((p) => !p)}
+            title={isPinned ? 'Soltar la barra (vuelve a contraerse al salir)' : 'Fijar la barra expandida (útil en tablet)'}
+            aria-pressed={isPinned}
+          >
+            {isPinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}
+          </button>
+        )}
+      </div>
+
+      {/* ── RIEL CONTRAÍDO: iconos representativos ── */}
+      {!isExpanded && (
+        <div className="inspector-rail">
+          {selected ? (
+            <>
+              <InspectorRailIcon
+                icon={TypeIcon}
+                title={typeMeta?.tip || 'Bloque seleccionado'}
+              />
+              <InspectorRailIcon
+                icon={Move}
+                title="Geometría: posición y tamaño del bloque"
+              />
+              {showStyleRail && (
+                <InspectorRailIcon
+                  icon={Palette}
+                  title="Estilo y apariencia del bloque"
+                />
+              )}
+              <InspectorRailIcon
+                icon={selected.locked ? Lock : Unlock}
+                title={selected.locked ? 'El bloque está bloqueado en el lienzo' : 'El bloque se puede mover y redimensionar'}
+              />
+              <InspectorRailIcon
+                icon={Trash2}
+                title="Eliminar el bloque seleccionado"
+                variant="danger"
+              />
+            </>
+          ) : (
+            <InspectorRailIcon
+              icon={MousePointerClick}
+              title="Seleccione un bloque en el lienzo para ver y editar sus propiedades"
+            />
+          )}
+        </div>
+      )}
 
       {/* ── ELEMENT INSPECTOR ── */}
-      {selected && isHovered && (
+      {selected && isExpanded && (
         <div className="inspector-content-scroll" style={{ marginTop: 4 }}>
           {selected.type === 'table' && (
             <TableInspector 
@@ -418,6 +515,7 @@ export default function RightInspector({ onRequestImageReplace }) {
                 className="btn-premium-outline"
                 style={{ flex: 1 }}
                 onClick={() => updateElement(selectedPage, selected.id, { locked: !selected.locked })}
+                title={selected.locked ? 'Desbloquear el bloque para moverlo en el lienzo' : 'Bloquear el bloque para evitar cambios accidentales'}
               >
                 {selected.locked ? <Unlock size={14} /> : <Lock size={14} />}
                 {selected.locked ? 'Desbloquear' : 'Bloquear'}
@@ -426,6 +524,7 @@ export default function RightInspector({ onRequestImageReplace }) {
                 className="btn-premium-outline btn-premium-outline--danger"
                 style={{ flex: 1 }}
                 onClick={() => removeElement(selectedPage, selected.id)}
+                title="Eliminar el bloque seleccionado del informe"
               >
                 <Trash2 size={14} /> Eliminar
               </button>
@@ -433,11 +532,11 @@ export default function RightInspector({ onRequestImageReplace }) {
           </div>
         </div>
       )}
-      {!selected && (
-        <div style={{ marginTop: 40, textAlign: 'center', opacity: 0.4 }}>
-           <Settings2 size={44} color="#94a3b8" style={{ marginBottom: 14 }} />
-           <p style={{ fontSize: '0.85rem', fontWeight: 600, color: '#64748b', margin: 0 }}>
-             Selecciona un bloque en el lienzo para editar sus propiedades
+      {!selected && isExpanded && (
+        <div className="inspector-empty-state">
+           <MousePointerClick size={44} color="#94a3b8" style={{ marginBottom: 14 }} aria-hidden />
+           <p title="Haga clic en cualquier bloque del lienzo para editarlo aquí">
+             Seleccione un bloque en el lienzo para editar sus propiedades
            </p>
         </div>
       )}

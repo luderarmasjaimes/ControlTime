@@ -51,7 +51,7 @@ export default function TopToolbar({
         <button
           onClick={onToggleGrid}
           className={gridEnabled ? 'btn-active' : ''}
-          title={gridEnabled ? 'Desactivar cuadrícula' : 'Activar cuadrícula'}
+          title={gridEnabled ? 'Ocultar la cuadrícula de alineación' : 'Mostrar cuadrícula de alineación en el lienzo'}
         >
           <Grid size={15} />
           Grid
@@ -59,7 +59,7 @@ export default function TopToolbar({
         <button
           onClick={onToggleSnap}
           className={snapEnabled ? 'btn-active' : ''}
-          title={snapEnabled ? 'Desactivar ajuste a cuadrícula' : 'Activar ajuste a cuadrícula'}
+          title={snapEnabled ? 'Desactivar ajuste automático a la cuadrícula' : 'Ajustar bloques automáticamente a la cuadrícula'}
         >
           <MousePointer2 size={15} />
           Snap
@@ -73,7 +73,7 @@ export default function TopToolbar({
             className="toolbar-layout-select"
             value={layoutMode === 'presentation' ? 'presentation' : 'document'}
             onChange={(e) => onLayoutModeChange?.(e.target.value)}
-            title="Documento (Word) o presentación (PowerPoint): cambia el tamaño del lienzo"
+            title="Elegir formato del lienzo: documento (Word) o presentación (PowerPoint)"
           >
             <option value="document">Documento</option>
             <option value="presentation">Presentación</option>
@@ -83,12 +83,12 @@ export default function TopToolbar({
         <div className="toolbar-separator" />
 
         {/* Grupo 2 — Zoom */}
-        <button onClick={onZoomOut} title="Alejar (Zoom -)">
+        <button onClick={onZoomOut} title="Alejar la vista del lienzo">
           <ZoomOut size={15} />
           -
         </button>
-        <div className="zoom-chip" title={`Zoom actual: ${zoomPercent}%`}>{zoomPercent}%</div>
-        <button onClick={onZoomIn} title="Acercar (Zoom +)">
+        <div className="zoom-chip" title={`Nivel de zoom actual: ${zoomPercent}%`}>{zoomPercent}%</div>
+        <button onClick={onZoomIn} title="Acercar la vista del lienzo">
           <ZoomIn size={15} />
           +
         </button>
@@ -96,11 +96,11 @@ export default function TopToolbar({
         <div className="toolbar-separator" />
 
         {/* Grupo 3 — Documento */}
-        <button onClick={onPrint} title="Imprimir informe">
+        <button onClick={onPrint} title="Imprimir el informe o abrir vista previa de impresión">
           <Printer size={15} />
           Impr.
         </button>
-        <button onClick={onReviewDocument} title="Revisar consistencia del documento">
+        <button onClick={onReviewDocument} title="Revisar ortografía, consistencia y calidad del documento">
           <ScanSearch size={15} />
           Revisar
         </button>
@@ -109,7 +109,7 @@ export default function TopToolbar({
         <button
           onClick={onOpenFormulaAnalysis}
           className="toolbar-btn-variant toolbar-btn-variant--formula"
-          title="Ejecutar FORMULA minera para generación de reportes"
+          title="Ejecutar el motor FORMULA para generación automática de reportes mineros"
         >
           <Sigma size={15} />
           FORMULA
@@ -118,7 +118,7 @@ export default function TopToolbar({
           onClick={onSyncMiningKpis}
           disabled={isSyncingKpis}
           className={`toolbar-btn-variant${isSyncingKpis ? ' is-busy' : ''}`}
-          title="Sincronizar KPI runtime desde datos operativos (dashboard)"
+          title="Sincronizar indicadores KPI con datos operativos del dashboard"
         >
           <RefreshCw size={15} />
           {isSyncingKpis ? 'Sync KPI...' : 'Sync KPI'}
@@ -126,7 +126,7 @@ export default function TopToolbar({
         <button
           onClick={onToggleKpiAutoSync}
           className={`toolbar-btn-variant${kpiAutoSyncEnabled ? ' btn-active' : ''}`}
-          title="Activar/desactivar sincronización KPI automática (cada 3 minutos)"
+          title={kpiAutoSyncEnabled ? 'Desactivar sincronización automática de KPI' : 'Activar sincronización automática de KPI cada 3 minutos'}
         >
           <RefreshCw size={15} />
           {kpiAutoSyncEnabled ? 'Auto KPI ON' : 'Auto KPI OFF'}
@@ -134,7 +134,7 @@ export default function TopToolbar({
         <button
           onClick={onOpenReportsAdmin}
           className="toolbar-btn-variant toolbar-btn-variant--reports"
-          title="Administrar informes técnicos grabados"
+          title="Abrir la biblioteca de informes técnicos guardados"
         >
           <FolderOpen size={15} />
           Informes
@@ -144,7 +144,7 @@ export default function TopToolbar({
           onClick={onSaveReport}
           disabled={isSaving}
           className={`toolbar-btn-variant toolbar-btn-variant--save${isSaving ? ' is-busy' : ''}`}
-          title="Guardar informe en la base de datos"
+          title="Guardar el informe en la base de datos"
         >
           <Save size={15} />
           {saveLabel || 'Guardar'}
@@ -154,7 +154,7 @@ export default function TopToolbar({
           onClick={onOptimizeDocument}
           disabled={isOptimizing}
           className={isOptimizing ? 'is-busy' : ''}
-          title="Optimizar sintaxis y redacción con IA"
+          title="Mejorar redacción y claridad del texto con inteligencia artificial"
         >
           <Sparkles size={15} />
           {isOptimizing ? 'Analizando…' : 'Optimizar'}
@@ -166,12 +166,12 @@ export default function TopToolbar({
         <button
           onClick={onExportVideo}
           className={isRecording ? 'btn-active' : ''}
-          title="Grabar video del informe (máx. 30s)"
+          title={isRecording ? 'Detener la grabación del informe' : 'Grabar un vídeo del informe (máximo 30 segundos)'}
         >
           <Video size={15} />
           {isRecording ? '● REC' : 'Grabar'}
         </button>
-        <button className="primary" onClick={onExportPdf} title="Exportar como PDF">
+        <button className="primary" onClick={onExportPdf} title="Exportar el informe como archivo PDF">
           <Download size={15} />
           PDF
         </button>

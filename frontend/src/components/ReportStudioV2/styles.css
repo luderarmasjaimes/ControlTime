@@ -2390,9 +2390,11 @@ button:active {
     font-size: 0.8rem;
   }
 
-  .studio-layout aside.panel.panel--library .tool-action {
-    padding: 6px 8px;
-    font-size: 0.68rem;
+  .panel--library:not(.panel--library-expanded) .tool-action {
+    width: 44px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+    padding: 0 !important;
   }
 
   .input-premium {
@@ -3604,4 +3606,245 @@ button:active {
   .ro-content     { overflow: visible !important; padding: 0 !important; }
   .ro-page-canvas { box-shadow: none !important; }
   .ro-meta        { display: none !important; }
+}
+
+/* ============================================================
+   UX — Barras laterales retráctiles: estado CONTRAÍDO con iconos
+   (sistema de diseño AURIXA · touch targets >=44px · sin texto partido)
+   ============================================================ */
+
+/* Etiqueta de texto de las acciones (solo se ve expandido) */
+.tool-action-label { white-space: nowrap; }
+
+/* --- Barra IZQUIERDA contraída: solo iconos centrados --- */
+.studio-layout aside.panel.panel--library:not(.panel--library-expanded) .toolbox-grid { gap: 8px; }
+
+.studio-layout aside.panel.panel--library:not(.panel--library-expanded) .tool-action {
+  justify-content: center !important;
+  align-items: center;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  margin: 0 auto;
+  padding: 0 !important;
+  gap: 0;
+  white-space: nowrap !important;
+  hyphens: none !important;
+  overflow: hidden;
+  border-radius: 10px;
+  font-size: 0 !important;
+}
+.studio-layout aside.panel.panel--library:not(.panel--library-expanded) .tool-action-label {
+  display: none !important;
+}
+.studio-layout aside.panel.panel--library:not(.panel--library-expanded) .tool-action svg {
+  width: 19px !important;
+  height: 19px !important;
+}
+.studio-layout aside.panel.panel--library:not(.panel--library-expanded) .lib-item {
+  justify-content: center;
+  padding: 7px;
+  min-height: 44px;
+}
+.studio-layout aside.panel.panel--library:not(.panel--library-expanded) .lib-item-icon {
+  width: 36px;
+  height: 36px;
+}
+.studio-layout aside.panel.panel--library:not(.panel--library-expanded) .lib-item-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* --- Barra IZQUIERDA expandida: acciones cómodas, sin guiones --- */
+.panel--library-expanded .tool-action {
+  white-space: nowrap;
+  hyphens: none;
+  min-height: 40px;
+}
+.panel--library-expanded .tool-action .tool-action-label { font-size: 0.74rem; }
+
+/* --- Barra DERECHA contraída: riel de iconos representativos --- */
+.inspector-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+.inspector-rail-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.06);
+  border: 1px solid var(--border-light);
+  cursor: default;
+  transition: background 0.2s, border-color 0.2s, transform 0.2s;
+}
+.inspector-rail-icon:hover {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.inspector-rail-icon--danger {
+  color: var(--error);
+  background: rgba(239, 68, 68, 0.06);
+}
+.inspector-rail-icon--danger:hover {
+  border-color: var(--error);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+/* Afford­ance: línea de acento en el borde interior de las barras contraídas */
+.panel--library:not(.panel--library-expanded),
+.panel--right:not(.panel--right-expanded) {
+  opacity: 1;
+}
+.panel--library:not(.panel--library-expanded):hover,
+.panel--right:not(.panel--right-expanded):hover {
+  background: rgba(99, 102, 241, 0.03);
+}
+
+/* Fila título + pin en barras laterales */
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.panel--library:not(.panel--library-expanded) .panel-title-row,
+.panel--right:not(.panel--right-expanded) .panel-title-row {
+  justify-content: center;
+}
+
+.panel-title--library,
+.panel-title--inspector {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+  border-bottom: none !important;
+  flex: 1;
+  min-width: 0;
+}
+
+.panel--library-expanded .panel-title--library,
+.panel--right-expanded .panel-title--inspector {
+  margin-bottom: 8px !important;
+  padding-bottom: 8px !important;
+  border-bottom: 2px solid #e2e8f0 !important;
+}
+
+.panel-pin-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
+  flex-shrink: 0;
+}
+
+.panel-pin-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.panel-pin-btn--active {
+  border-color: var(--warning, #F5A623);
+  color: var(--warning, #F5A623);
+  background: rgba(245, 166, 35, 0.12);
+  box-shadow: 0 0 0 2px rgba(245, 166, 35, 0.2);
+}
+
+.panel--pinned {
+  opacity: 1 !important;
+}
+
+/* Chevron de affordance en borde interior */
+.panel-edge-hint {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 36px;
+  color: rgba(100, 116, 139, 0.85);
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0.65;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.panel--library:not(.panel--library-expanded):hover .panel-edge-hint,
+.panel--right:not(.panel--right-expanded):hover .panel-edge-hint {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.panel-edge-hint--right {
+  right: 0;
+  border-radius: 6px 0 0 6px;
+  background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.08));
+}
+
+.panel-edge-hint--left {
+  left: 0;
+  border-radius: 0 6px 6px 0;
+  background: linear-gradient(270deg, transparent, rgba(99, 102, 241, 0.08));
+}
+
+.library-tools-divider {
+  width: 28px;
+  height: 1px;
+  margin: 8px auto 10px;
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 1px;
+}
+
+.inspector-empty-state {
+  margin-top: 40px;
+  text-align: center;
+  opacity: 0.55;
+  padding: 0 8px;
+}
+
+.inspector-empty-state p {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #64748b;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.panel--right:not(.panel--right-expanded) .panel-title--inspector {
+  justify-content: center;
+  margin-bottom: 4px !important;
+}
+
+.panel--right:not(.panel--right-expanded) .panel-title {
+  border-bottom: none !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.panel--library:not(.panel--library-expanded) .tool-action:focus-visible,
+.panel--right:not(.panel--right-expanded) .inspector-rail-icon:focus-visible,
+.lib-item:focus-visible,
+.panel-pin-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

@@ -240,6 +240,7 @@ services:
 
   frontend:
     container_name: aurixa-web
+    platform: linux/amd64
     build:
       context: ./frontend
     ports:
