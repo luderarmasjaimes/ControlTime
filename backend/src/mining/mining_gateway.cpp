@@ -3,17 +3,23 @@
 #include <filesystem>
 #include <iostream>
 
+// Incondicional: el header se auto-protege con #if HAS_LIBPQ y, vía __has_include,
+// DEFINE HAS_LIBPQ para esta TU (necesario para que el bloque de ingesta en
+// read_line no se compile fuera).
+#include "telemetry_ingest.hpp"
+
 namespace fs = std::filesystem;
 
 namespace mining {
 
 // --- MiningSession ---
 
-MiningSession::MiningSession(tcp::socket socket, ssl::context& ssl_ctx, int timeout_sec, std::size_t max_line_size)
+MiningSession::MiningSession(tcp::socket socket, ssl::context& ssl_ctx, int timeout_sec, std::size_t max_line_size, bool ingest_enabled)
     : stream_(std::move(socket), ssl_ctx),
       timer_(stream_.get_executor()),
       timeout_sec_(timeout_sec),
-      max_line_size_(max_line_size) {}
+      max_line_size_(max_line_size),
+      ingest_enabled_(ingest_enabled) {}
 
 void MiningSession::start() {
     refresh_timeout();
@@ -46,7 +52,18 @@ void MiningSession::read_line() {
             std::istream stream(&self->buffer_);
             std::string line;
             std::getline(stream, line);
+            // Quitar posible '\r' (clientes que envían CRLF)
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             if (!line.empty()) {
+#if HAS_LIBPQ
+                if (self->ingest_enabled_) {
+                    // Ingesta de alta tasa: parse + enqueue (no bloqueante,
+                    // sin log por mensaje para no contender stdout a 10K/s).
+                    bool ok = TelemetryIngestor::instance().ingestLine(line);
+                    self->write_response(ok ? "OK\n" : "ERR\n", false);
+                    return;
+                }
+#endif
                 std::cout << "[MINING-GATEWAY] RECEIVED: " << line << "\n";
             }
             self->write_response("OK\n", false);
@@ -92,7 +109,7 @@ void MiningServer::run() { do_accept(); }
 void MiningServer::do_accept() {
     acceptor_.async_accept([this](const boost::system::error_code& ec, tcp::socket socket) {
         if (!ec) {
-            std::make_shared<MiningSession>(std::move(socket), ssl_context_, config_.idle_timeout_sec, config_.max_line_size)->start();
+            std::make_shared<MiningSession>(std::move(socket), ssl_context_, config_.idle_timeout_sec, config_.max_line_size, config_.ingest_enabled)->start();
         }
         do_accept();
     });

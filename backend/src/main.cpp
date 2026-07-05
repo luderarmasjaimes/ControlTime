@@ -32,6 +32,7 @@
 #include "biometric/biometric_routes.hpp"
 #include "mining/mining_routes.hpp"
 #include "mining/mining_gateway.hpp"
+#include "mining/telemetry_ingest.hpp"
 #include "reports/report_routes.hpp"
 #include "formula/formula_service.hpp"
 #include "formula/formula_routes.hpp"
@@ -44,6 +45,10 @@
 #include "onnx_cartoon.hpp"
 #include "vision_pipeline.hpp"
 #include "websocket_session.hpp"
+#include "storage/pg_pool.hpp"
+#include "storage/pg_result.hpp"
+
+#include <sstream>
 
 // ── namespace aliases ──────────────────────────────────────────────────────
 namespace asio      = boost::asio;
@@ -78,6 +83,7 @@ using auth::AuditPageResult;
 using auth::resolveAuthSession;
 using auth::extractAuthTokenFromRequest;
 using auth::issueAuthSession;
+using auth::revokeAuthSession;
 using auth::resolveRoleForUsername;
 using auth::gAuthMutex;
 using auth::loadAuthUsers;
@@ -576,6 +582,84 @@ handleRegister(const http::request<http::string_body> &req,
     }
 }
 
+// ── T22 — Rate limiter de login (spec 006) ────────────────────────────────
+// Desliza ventana de 5 min; bloquea tras 5 fallos por clave company|username.
+namespace {
+struct LoginRateEntry { int fails = 0; std::chrono::steady_clock::time_point win{}; };
+std::mutex gLoginRateMtx;
+std::unordered_map<std::string, LoginRateEntry> gLoginRateMap;
+constexpr int kRateMaxFails  = 5;
+constexpr int kRateWindowSec = 300;  // ventana deslizante 5 min
+} // anonymous namespace
+
+static bool loginRateCheck(const std::string &key) {
+    std::lock_guard<std::mutex> lk(gLoginRateMtx);
+    auto &e = gLoginRateMap[key];
+    const auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - e.win).count()
+            > kRateWindowSec) {
+        e.fails = 0;
+        e.win   = now;
+    }
+    return e.fails < kRateMaxFails;
+}
+
+static void loginRateIncrement(const std::string &key) {
+    std::lock_guard<std::mutex> lk(gLoginRateMtx);
+    gLoginRateMap[key].fails++;
+}
+
+static void loginRateClear(const std::string &key) {
+    std::lock_guard<std::mutex> lk(gLoginRateMtx);
+    gLoginRateMap.erase(key);
+}
+
+// ── T21 — POST /api/auth/logout ───────────────────────────────────────────
+static http::response<http::string_body>
+handleLogout(const http::request<http::string_body> &req,
+             const std::unordered_map<std::string, std::string> &query) {
+    const auto session = resolveAuthSession(req, query);
+    if (!session)
+        return makeJsonResponse(http::status::unauthorized,
+                                json::object{{"error", "unauthorized"}});
+    auth::revokeAuthSession(session->token);
+    return makeJsonResponse(http::status::ok, json::object{{"status", "logged_out"}});
+}
+
+// ── T21 — POST /api/auth/refresh ──────────────────────────────────────────
+// Emite un token nuevo de 8 h si el actual es válido; el anterior expira naturalmente.
+static http::response<http::string_body>
+handleTokenRefresh(const http::request<http::string_body> &req,
+                   const std::unordered_map<std::string, std::string> &query) {
+    const auto session = resolveAuthSession(req, query);
+    if (!session)
+        return makeJsonResponse(http::status::unauthorized,
+                                json::object{{"error", "unauthorized"}});
+
+    AuthUser user;
+    user.id       = session->userId;
+    user.username = session->username;
+    user.company  = session->company;
+    user.role     = session->role;
+    user.tenantId = session->tenantId;
+
+    const auto newSess = issueAuthSession(user);
+    // Revocar el token anterior inmediatamente (rotación estricta)
+    auth::revokeAuthSession(session->token);
+
+    return makeJsonResponse(http::status::ok,
+        json::object{{"status",     "refreshed"},
+                     {"token",      newSess.token},
+                     {"expires_at", nowIso8601()},
+                     {"user",       json::object{
+                        {"id",        user.id},
+                        {"username",  user.username},
+                        {"company",   user.company},
+                        {"role",      user.role},
+                        {"tenant_id", user.tenantId}
+                     }}});
+}
+
 // ── POST /api/auth/login/password ───────────────────────────────────────
 static http::response<http::string_body>
 handleLoginPassword(const http::request<http::string_body> &req,
@@ -600,6 +684,14 @@ handleLoginPassword(const http::request<http::string_body> &req,
         const std::string username = json::value_to<std::string>(obj.at("username"));
         const std::string password = json::value_to<std::string>(obj.at("password"));
 
+        // T22 — Rate limiting: 5 fallos / 5 min por clave company|username
+        const std::string rateKey = company + "|" + username;
+        if (!loginRateCheck(rateKey)) {
+            return makeJsonResponse(http::status::too_many_requests,
+                json::object{{"error",  "too_many_failed_attempts"},
+                             {"detail", "Cuenta bloqueada 5 min. Intente más tarde."}});
+        }
+
         AuthUser found;
         bool ok = false;
         {
@@ -612,6 +704,7 @@ handleLoginPassword(const http::request<http::string_body> &req,
                                             hashPassword(password), dbError,
                                             &errCode);
                 if (!user) {
+                    loginRateIncrement(rateKey);
                     json::object jo{{"error", dbError}};
                     if (!errCode.empty()) {
                         jo["code"] = errCode;
@@ -637,6 +730,7 @@ handleLoginPassword(const http::request<http::string_body> &req,
                     }
                 }
                 if (matchCount == 0) {
+                    loginRateIncrement(rateKey);
                     appendAuthAuditLog(dataRoot, "login_password", company,
                                        username, false, "user_not_found");
                     return makeJsonResponse(
@@ -645,6 +739,7 @@ handleLoginPassword(const http::request<http::string_body> &req,
                                      {"code", "user_not_found"}});
                 }
                 if (matchCount > 1) {
+                    loginRateIncrement(rateKey);
                     appendAuthAuditLog(dataRoot, "login_password", company,
                                        username, false, "ambiguous_identity");
                     return makeJsonResponse(
@@ -653,6 +748,7 @@ handleLoginPassword(const http::request<http::string_body> &req,
                                      {"code", "ambiguous_identity"}});
                 }
                 if (match->passwordHash != hashPassword(password)) {
+                    loginRateIncrement(rateKey);
                     appendAuthAuditLog(dataRoot, "login_password", company,
                                        match->username, false, "invalid_password");
                     return makeJsonResponse(
@@ -668,10 +764,12 @@ handleLoginPassword(const http::request<http::string_body> &req,
         }
 
         if (!ok) {
+            loginRateIncrement(rateKey);
             return makeJsonResponse(http::status::unauthorized,
                                     json::object{{"error", "invalid credentials"}});
         }
 
+        loginRateClear(rateKey);  // login exitoso: reinicia contador
         const auto sessionToken = issueAuthSession(found);
         return makeJsonResponse(
             http::status::ok,
@@ -1052,16 +1150,192 @@ handleAuditExportCsv(const http::request<http::string_body> &req,
 // =========================================================================
 //  Route registration for remaining (non-module) routes
 // =========================================================================
+// /api/metrics — exposición Prometheus de pool PG, uptime y configuración.
+static http::response<http::string_body> handleMetrics(
+    const http::request<http::string_body>& req,
+    const std::unordered_map<std::string, std::string>& /*query*/) {
+
+    static const auto start_time = std::chrono::steady_clock::now();
+    const auto uptime_s = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - start_time).count();
+
+#if HAS_LIBPQ
+    auto s = storage::PgPool::instance().stats();
+#else
+    struct { std::size_t idle=0, active=0, max_size=0;
+             std::uint64_t acquires=0, bad_connections=0, waits=0; } s;
+#endif
+
+    const unsigned hw = std::thread::hardware_concurrency();
+    const int cv_threads = cv::getNumThreads();
+
+    std::ostringstream m;
+    m << "# HELP mapas_backend_uptime_seconds Seconds since backend start\n"
+      << "# TYPE mapas_backend_uptime_seconds counter\n"
+      << "mapas_backend_uptime_seconds " << uptime_s << "\n"
+      << "# HELP mapas_backend_pg_pool Connections in PG connection pool\n"
+      << "# TYPE mapas_backend_pg_pool gauge\n"
+      << "mapas_backend_pg_pool{state=\"idle\"} "   << s.idle   << "\n"
+      << "mapas_backend_pg_pool{state=\"active\"} " << s.active << "\n"
+      << "mapas_backend_pg_pool_max " << s.max_size << "\n"
+      << "# HELP mapas_backend_pg_pool_acquires_total Lifetime acquires\n"
+      << "# TYPE mapas_backend_pg_pool_acquires_total counter\n"
+      << "mapas_backend_pg_pool_acquires_total "         << s.acquires        << "\n"
+      << "mapas_backend_pg_pool_bad_connections_total "  << s.bad_connections << "\n"
+      << "mapas_backend_pg_pool_waits_total "            << s.waits           << "\n"
+      << "# HELP mapas_backend_hw_concurrency Host CPUs visible to process\n"
+      << "# TYPE mapas_backend_hw_concurrency gauge\n"
+      << "mapas_backend_hw_concurrency " << hw << "\n"
+      << "# HELP mapas_backend_opencv_threads OpenCV thread cap\n"
+      << "# TYPE mapas_backend_opencv_threads gauge\n"
+      << "mapas_backend_opencv_threads " << cv_threads << "\n";
+
+#if HAS_LIBPQ
+    {
+        auto ti = mining::TelemetryIngestor::instance().stats();
+        m << "# HELP mapas_backend_telemetry Telemetry ingestion counters\n"
+          << "# TYPE mapas_backend_telemetry counter\n"
+          << "mapas_backend_telemetry_received_total "        << ti.received        << "\n"
+          << "mapas_backend_telemetry_inserted_total "        << ti.inserted        << "\n"
+          << "mapas_backend_telemetry_dropped_full_total "    << ti.dropped_full    << "\n"
+          << "mapas_backend_telemetry_dropped_unknown_total " << ti.dropped_unknown << "\n"
+          << "mapas_backend_telemetry_flushes_total "         << ti.flushes         << "\n"
+          << "mapas_backend_telemetry_flush_errors_total "    << ti.flush_errors    << "\n"
+          << "# HELP mapas_backend_telemetry_queued Rows pending flush\n"
+          << "# TYPE mapas_backend_telemetry_queued gauge\n"
+          << "mapas_backend_telemetry_queued "        << ti.queued         << "\n"
+          << "mapas_backend_telemetry_batch_max "     << ti.batch_max      << "\n"
+          << "mapas_backend_telemetry_sensors_cached " << ti.sensors_cached << "\n"
+          << "# HELP mapas_backend_telemetry_kafka Kafka/Redpanda ingest counters\n"
+          << "# TYPE mapas_backend_telemetry_kafka counter\n"
+          << "mapas_backend_telemetry_produced_total "       << ti.produced       << "\n"
+          << "mapas_backend_telemetry_produce_errors_total " << ti.produce_errors << "\n"
+          << "mapas_backend_telemetry_consumed_total "       << ti.consumed       << "\n"
+          << "mapas_backend_telemetry_commits_total "        << ti.commits        << "\n"
+          << "mapas_backend_telemetry_mode{mode=\"" << ti.mode << "\"} 1\n";
+    }
+#endif
+
+    http::response<http::string_body> res{http::status::ok, req.version()};
+    res.set(http::field::content_type, "text/plain; version=0.0.4; charset=utf-8");
+    res.body() = m.str();
+    res.prepare_payload();
+    return res;
+}
+
 static void registerRemainingRoutes(router::Router &r) {
     r.post("/api/auth/register",          handleRegister);
     r.post("/api/auth/login/password",    handleLoginPassword);
     r.post("/api/auth/login/face",        handleLoginFace);
+    r.post("/api/auth/logout",            handleLogout);          // T21
+    r.post("/api/auth/refresh",           handleTokenRefresh);    // T21
     r.get("/api/auth/audit",              handleAudit);
     r.get("/api/auth/audit/export.csv",   handleAuditExportCsv);
     r.get("/api/reset_capture",           handleResetCapture);
     r.get("/api/captured_images",         handleCapturedImages);
     r.get("/api/users",                   handleLegacyUsers);
     r.post("/api/enroll",                 handleEnroll);
+    r.get("/api/metrics",                 handleMetrics);
+}
+
+// =========================================================================
+//  SSE: push de KPIs en tiempo real desde la RÉPLICA (sin polling del cliente)
+//  GET /api/live/kpi  → text/event-stream, evento cada N s.
+//  Requiere sesión autenticada; tenant_id viene del token (no del query string).
+//  Consulta mining_runtime_kpis (pre-calculados) sobre la réplica de lectura.
+// =========================================================================
+static void handleLiveKpiSse(beast::tcp_stream& stream,
+                             const http::request<http::string_body>& req) {
+    beast::error_code ec;
+
+    // 1. Parsear query string para resolución de sesión (auth_token, etc.)
+    std::string target(req.target());
+    std::unordered_map<std::string, std::string> query;
+    {
+        auto qpos = target.find('?');
+        if (qpos != std::string::npos)
+            query = parseQueryString(target.substr(qpos + 1));
+    }
+
+    // 2. Requerir sesión válida — tenant desde el token, no del query string
+    const auto session = resolveAuthSession(req, query);
+    if (!session || session->tenantId.empty()) {
+        static const std::string k401 =
+            "HTTP/1.1 401 Unauthorized\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 38\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"error\":\"auth_required_or_no_tenant\"}";
+        asio::write(stream, asio::buffer(k401), ec);
+        return;
+    }
+    const std::string tenant = session->tenantId;
+
+    // 3. Cabeceras SSE (escritura manual; conexión persistente)
+    static const std::string kHead =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: keep-alive\r\n"
+        "Access-Control-Allow-Origin: *\r\n\r\n";
+    asio::write(stream, asio::buffer(kHead), ec);
+    if (ec) return;
+
+#if HAS_LIBPQ
+    const std::string replicaUrl = getenvOr(
+        "REPLICA_DATABASE_URL",
+        "host=db_replica port=5432 dbname=sensors_db user=dashboard_ro "
+        "password=dash_pass");
+    int intervalMs = 2000;
+    try { intervalMs = std::stoi(getenvOr("LIVE_PUSH_INTERVAL_MS", "2000")); }
+    catch (...) {}
+
+    // Degradación graceful: si réplica no disponible, usar primario (Art.3 relajado).
+    PGconn* conn = PQconnectdb(replicaUrl.c_str());
+    bool usingFallback = false;
+    if (PQstatus(conn) != CONNECTION_OK) {
+        PQfinish(conn);
+        auto &cfg = AppConfig::instance();
+        if (cfg.gDatabaseUrl.empty()) return;
+        conn = PQconnectdb(cfg.gDatabaseUrl.c_str());
+        if (PQstatus(conn) != CONNECTION_OK) { PQfinish(conn); return; }
+        usingFallback = true;
+        std::cerr << "[SSE] replica unavailable, falling back to primary\n";
+    }
+
+    // 4. Query sobre mining_runtime_kpis (valores pre-calculados, sin full-scan
+    //    de telemetry_raw) scoped por tenant_id del token → elimina IDOR.
+    const std::string sql =
+        "SELECT name, value, unit, category "
+        "FROM mining_runtime_kpis "
+        "WHERE tenant_id = $1::uuid "
+        "ORDER BY category, name";
+    const char* params[1] = { tenant.c_str() };
+
+    while (true) {
+        storage::PgResult r{PQexecParams(conn, sql.c_str(), 1, nullptr, params,
+                                         nullptr, nullptr, 0)};
+        json::array kpis;
+        if (r.okTuples()) {
+            for (int i = 0; i < PQntuples(r.get()); ++i) {
+                kpis.push_back(json::object{
+                    {"name",     PQgetvalue(r.get(), i, 0)},
+                    {"value",    std::atof(PQgetvalue(r.get(), i, 1))},
+                    {"unit",     PQgetvalue(r.get(), i, 2)},
+                    {"category", PQgetvalue(r.get(), i, 3)}});
+            }
+        }
+        json::object envelope{{"tenant", tenant},
+                              {"ts", http_utils::nowIso8601()},
+                              {"kpis", kpis}};
+        if (usingFallback) envelope["degraded"] = true;
+        std::string payload = "data: " + json::serialize(envelope) + "\n\n";
+        asio::write(stream, asio::buffer(payload), ec);
+        if (ec) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+    }
+    PQfinish(conn);
+#endif
 }
 
 // =========================================================================
@@ -1079,6 +1353,13 @@ static void session(beast::tcp_stream stream) {
         return;
     }
 
+    // SSE de KPIs en vivo (push, sin polling)
+    if (req.target().starts_with("/api/live/kpi")) {
+        handleLiveKpiSse(stream, req);
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+        return;
+    }
+
     std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
     auto res = gRouter.dispatch(req, dataRoot);
     http::write(stream, res, ec);
@@ -1090,6 +1371,20 @@ static void session(beast::tcp_stream stream) {
 // =========================================================================
 int main() {
     try {
+        // OpenCV: cap de hilos para no robar CPU al I/O del backend bajo carga
+        // (10K sensores → priorizar Asio). OPENCV_THREADS sobreescribe (default 4).
+        {
+            int cv_threads = 4;
+            if (const char* e = std::getenv("OPENCV_THREADS")) {
+                try { cv_threads = std::max(1, std::stoi(e)); } catch (...) {}
+            }
+            cv::setNumThreads(cv_threads);
+            cv::setUseOptimized(true);
+            std::cout << "[OPENCV] threads=" << cv::getNumThreads()
+                      << " optimized=" << (cv::useOptimized() ? "yes" : "no")
+                      << " build=" << CV_VERSION << std::endl;
+        }
+
         auto &cfg = AppConfig::instance();
         cfg.loadFromEnv();
 
@@ -1161,8 +1456,43 @@ int main() {
                   << (cfg.gImageOptimizerEnabled ? "enabled" : "disabled")
                   << ", max_pixels: " << cfg.gBiometricMaxPixels << std::endl;
 
-        // Mining Gateway secondary listener
-        std::thread([]() {
+        // Ingestor de telemetría de alta tasa (10K+ sensores). Se arranca aquí
+        // para que la caché de sensores y el hilo flusher estén listos antes de
+        // aceptar conexiones en el gateway. Activable con TELEMETRY_INGEST_ENABLE.
+        const bool telemetryIngestEnabled =
+            getenvOr("TELEMETRY_INGEST_ENABLE", "true") != "false" &&
+            cfg.gAuthStorageMode == AuthStorageMode::Postgres &&
+            !cfg.gDatabaseUrl.empty();
+#if HAS_LIBPQ
+        if (telemetryIngestEnabled) {
+            std::size_t batch = 1000;
+            int flushMs = 200;
+            try { batch = std::stoul(getenvOr("TELEMETRY_BATCH_SIZE", "1000")); }
+            catch (...) {}
+            try { flushMs = std::stoi(getenvOr("TELEMETRY_FLUSH_MS", "200")); }
+            catch (...) {}
+            // El ingestor usa UNA conexión persistente para COPY → va DIRECTO a
+            // la BD (no por pgbouncer, que es para las conexiones cortas del
+            // backend). TELEMETRY_DATABASE_URL permite sobreescribir.
+            const std::string ingestUrl =
+                getenvOr("TELEMETRY_DATABASE_URL", cfg.gDatabaseUrl);
+            // Modo Kafka (ingesta durable vía Redpanda) si TELEMETRY_INGEST_MODE=kafka
+            if (getenvOr("TELEMETRY_INGEST_MODE", "direct") == "kafka") {
+                mining::TelemetryIngestor::instance().configureKafka(
+                    getenvOr("KAFKA_BROKERS", "redpanda:9092"),
+                    getenvOr("KAFKA_TOPIC", "telemetry"),
+                    getenvOr("KAFKA_CONSUMER_GROUP", "telemetry-writers"));
+            }
+            mining::TelemetryIngestor::instance().start(ingestUrl, batch,
+                                                        flushMs);
+        }
+#endif
+
+        // Mining Gateway secondary listener: ingesta telemétrica TLS de sensores.
+        // Pool de N hilos sobre el mismo io_context → paraleliza I/O para ~10K
+        // conexiones concurrentes. Configurable con MINING_GATEWAY_THREADS
+        // (default = min(hardware_concurrency, 8)).
+        std::thread([telemetryIngestEnabled]() {
             try {
                 std::cout << "[MINING-GATEWAY] Thread starting..." << std::endl;
                 asio::io_context mining_ioc;
@@ -1173,11 +1503,33 @@ int main() {
                     "/etc/mining-gateway/certs/server.crt");
                 mcfg.key_path = getenvOr("TLS_KEY_PATH",
                     "/etc/mining-gateway/certs/server.key");
+                mcfg.ingest_enabled = telemetryIngestEnabled;
                 std::cout << "[MINING-GATEWAY] Initializing on "
-                          << mcfg.bind_address << ":" << mcfg.port << std::endl;
+                          << mcfg.bind_address << ":" << mcfg.port
+                          << " ingest=" << (mcfg.ingest_enabled ? "on" : "off")
+                          << std::endl;
                 mining::MiningServer server(mining_ioc, mcfg);
                 server.run();
-                mining_ioc.run();
+
+                unsigned hw = std::thread::hardware_concurrency();
+                if (hw == 0) hw = 4;
+                unsigned n_workers = std::min(hw, 8u);
+                if (const char* e = std::getenv("MINING_GATEWAY_THREADS")) {
+                    try { n_workers = std::max(1u,
+                        static_cast<unsigned>(std::stoi(e))); }
+                    catch (...) {}
+                }
+                if (n_workers < 2) n_workers = 2;
+                std::cout << "[MINING-GATEWAY] Running on " << n_workers
+                          << " I/O worker threads" << std::endl;
+
+                std::vector<std::thread> workers;
+                workers.reserve(n_workers - 1);
+                for (unsigned i = 0; i + 1 < n_workers; ++i) {
+                    workers.emplace_back([&mining_ioc] { mining_ioc.run(); });
+                }
+                mining_ioc.run();  // este hilo también participa
+                for (auto& t : workers) if (t.joinable()) t.join();
             } catch (const std::exception &e) {
                 std::cerr << "[MINING-GATEWAY] Fatal: " << e.what() << std::endl;
             }

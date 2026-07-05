@@ -7,6 +7,9 @@
 #include <ctime>
 #include <string>
 
+#include "storage/pg_pool.hpp"
+#include "storage/pg_result.hpp"
+
 using http_utils::makeJsonResponse;
 using config::AppConfig;
 using config::AuthStorageMode;
@@ -20,30 +23,28 @@ handleMapMarkers(const http::request<http::string_body> & /*req*/,
     json::array markers;
     if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
-        PGconn *conn = PQconnectdb(cfg.gDatabaseUrl.c_str());
+        auto __pg_lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+        PGconn *conn = __pg_lease.get();
         if (PQstatus(conn) == CONNECTION_OK) {
-            PGresult *res = PQexec(
-                conn, "SELECT id, type, lat, lng, name, status, updated_at FROM map_markers");
-            if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
-                const int rows = PQntuples(res);
-                const int nfields = PQnfields(res);
+            storage::PgResult res{PQexec(
+                conn, "SELECT id, type, lat, lng, name, status, updated_at FROM map_markers")};
+            if (res.okTuples()) {
+                const int rows = PQntuples(res.get());
+                const int nfields = PQnfields(res.get());
                 for (int i = 0; i < rows; ++i) {
-                    json::object mo{{"id", std::stoi(PQgetvalue(res, i, 0))},
-                                    {"type", PQgetvalue(res, i, 1)},
-                                    {"lat", std::stod(PQgetvalue(res, i, 2))},
-                                    {"lng", std::stod(PQgetvalue(res, i, 3))},
-                                    {"name", PQgetvalue(res, i, 4)},
-                                    {"status", PQgetvalue(res, i, 5)}};
-                    if (nfields >= 7 && !PQgetisnull(res, i, 6))
-                        mo["updated_at"] = PQgetvalue(res, i, 6);
+                    json::object mo{{"id", std::stoi(PQgetvalue(res.get(), i, 0))},
+                                    {"type", PQgetvalue(res.get(), i, 1)},
+                                    {"lat", std::stod(PQgetvalue(res.get(), i, 2))},
+                                    {"lng", std::stod(PQgetvalue(res.get(), i, 3))},
+                                    {"name", PQgetvalue(res.get(), i, 4)},
+                                    {"status", PQgetvalue(res.get(), i, 5)}};
+                    if (nfields >= 7 && !PQgetisnull(res.get(), i, 6))
+                        mo["updated_at"] = PQgetvalue(res.get(), i, 6);
                     markers.push_back(std::move(mo));
                 }
             }
-            if (res) PQclear(res);
-            PQfinish(conn);
             return makeJsonResponse(http::status::ok, json::object{{"markers", markers}});
         }
-        PQfinish(conn);
 #endif
     }
     return makeJsonResponse(http::status::internal_server_error,
@@ -98,28 +99,26 @@ handleComplianceIntersections(const http::request<http::string_body> & /*req*/,
     std::vector<mapgeo::MapMarkerRow> markerRows;
     if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
-        PGconn *conn = PQconnectdb(cfg.gDatabaseUrl.c_str());
+        auto __pg_lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+        PGconn *conn = __pg_lease.get();
         if (PQstatus(conn) == CONNECTION_OK) {
-            PGresult *res = PQexec(
-                conn, "SELECT id, type, lat, lng, name, status FROM map_markers");
-            if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
-                const int rows = PQntuples(res);
+            storage::PgResult res{PQexec(
+                conn, "SELECT id, type, lat, lng, name, status FROM map_markers")};
+            if (res.okTuples()) {
+                const int rows = PQntuples(res.get());
                 markerRows.reserve(static_cast<size_t>(rows));
                 for (int i = 0; i < rows; ++i) {
                     mapgeo::MapMarkerRow m;
-                    m.id = std::stoi(PQgetvalue(res, i, 0));
-                    m.type = PQgetvalue(res, i, 1);
-                    m.lat = std::stod(PQgetvalue(res, i, 2));
-                    m.lng = std::stod(PQgetvalue(res, i, 3));
-                    m.name = PQgetvalue(res, i, 4);
-                    m.status = PQgetvalue(res, i, 5);
+                    m.id = std::stoi(PQgetvalue(res.get(), i, 0));
+                    m.type = PQgetvalue(res.get(), i, 1);
+                    m.lat = std::stod(PQgetvalue(res.get(), i, 2));
+                    m.lng = std::stod(PQgetvalue(res.get(), i, 3));
+                    m.name = PQgetvalue(res.get(), i, 4);
+                    m.status = PQgetvalue(res.get(), i, 5);
                     markerRows.push_back(std::move(m));
                 }
             }
-            if (res) PQclear(res);
-            PQfinish(conn);
         } else {
-            PQfinish(conn);
         }
 #endif
     }

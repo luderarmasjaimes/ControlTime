@@ -2,6 +2,7 @@
 #include "ai_engine_client.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
+#include "../security/validators.hpp"
 
 #include <algorithm>
 #include <array>
@@ -525,8 +526,11 @@ FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image,
       std::string inPath = "/tmp/opt_in_" + id + ".jpg";
       std::string outPath = "/tmp/opt_out_" + id + ".jpg";
       cv::imwrite(inPath, img);
-      std::string cmd = "python3 /app/image_optimizer.py " + inPath + " " +
-                        outPath + " > /dev/null 2>&1";
+      // Rutas citadas robustamente (defensa en profundidad, aunque son makeId).
+      std::string cmd = "python3 /app/image_optimizer.py " +
+                        security::Validator::shellQuote(inPath) + " " +
+                        security::Validator::shellQuote(outPath) +
+                        " > /dev/null 2>&1";
       const int rc = std::system(cmd.c_str());
       if (rc == 0) {
         cv::Mat optimized = cv::imread(outPath);
@@ -751,9 +755,13 @@ FaceAnalysis analyzeFaceImageDermalogCli(const std::string &base64Image,
               static_cast<std::streamsize>(raw.size()));
   }
 
-  const std::string cmd = "\"" + gDermalogCliPath + "\" --input \"" +
-                          imagePath.string() + "\" --mode " + mode +
-                          " --output-json \"" + jsonPath.string() + "\"";
+  // Todos los argumentos citados robustamente (incluye `mode`), sin metacaracteres.
+  const std::string cmd = security::Validator::shellQuote(gDermalogCliPath) +
+                          " --input " +
+                          security::Validator::shellQuote(imagePath.string()) +
+                          " --mode " + security::Validator::shellQuote(mode) +
+                          " --output-json " +
+                          security::Validator::shellQuote(jsonPath.string());
 
   const int rc = std::system(cmd.c_str());
   if (rc != 0 || !fs::exists(jsonPath)) {

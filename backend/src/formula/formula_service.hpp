@@ -15,8 +15,10 @@
 namespace formula {
 
 #if HAS_LIBPQ
+/** @brief Crea (si falta) la vista `v_mineria_catalogos` usada por el motor de fórmulas. Idempotente. @return true si la vista quedó disponible. */
 bool ensureFormulaCatalogViewPg(PGconn *conn);
 
+/** @brief Garantiza que exista el esquema mínimo del motor de fórmulas (vista de catálogos + datos semilla para `companyName` si aplica). @return true si el esquema quedó listo. */
 bool ensureFormulaSchemaPg(PGconn *conn, const std::string &companyName);
 #endif
 

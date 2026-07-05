@@ -122,12 +122,23 @@ AuthSession issueAuthSession(const AuthUser &user) {
   session.username = user.username;
   session.company = user.company;
   session.role = user.role;
+  session.tenantId = user.tenantId;
   session.expiresAt = std::chrono::system_clock::now() +
                       std::chrono::minutes(cfg.gSessionTtlMinutes);
 
   std::scoped_lock lk(gAuthSessionMutex);
   gAuthSessions[session.token] = session;
   return session;
+}
+
+void revokeAuthSession(const std::string &token) {
+  std::scoped_lock lk(gAuthSessionMutex);
+  gAuthSessions.erase(token);
+  // también limpia estado EMA de gafas asociado a este token
+  {
+    std::scoped_lock g(gGlassesEmaMutex);
+    gGlassesEmaBySession.erase(token);
+  }
 }
 
 void pruneExpiredAuthSessions() {

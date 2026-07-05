@@ -37,6 +37,8 @@ AppConfig& AppConfig::instance() {
 
 void AppConfig::loadFromEnv() {
     gDatabaseUrl = getenvOr("DATABASE_URL", "");
+    // Réplica read-only: si no se define, readUrl() usará el primario.
+    gReplicaDatabaseUrl = getenvOr("REPLICA_DATABASE_URL", "");
     gKpiExternalDatabaseUrl = getenvOr("KPI_EXTERNAL_DATABASE_URL", "");
     gKpiExternalQuery = getenvOr("KPI_EXTERNAL_QUERY", "");
     gSessionTtlMinutes =
@@ -55,6 +57,14 @@ void AppConfig::loadFromEnv() {
         "glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal");
     gBiometricDnnEnabled =
         toLowerCopy(getenvOr("BIOMETRIC_DNN_ENABLE", "false")) == "true";
+    gPdfExportUrl = getenvOr("PDF_EXPORT_URL", "");
+    gFrontendInternalOrigin = getenvOr("FRONTEND_INTERNAL_ORIGIN", "http://frontend");
+    try {
+        gPdfExportTimeoutMs = std::clamp(
+            std::stoi(getenvOr("PDF_EXPORT_TIMEOUT_MS", "45000")), 1000, 120000);
+    } catch (...) {
+        gPdfExportTimeoutMs = 45000;
+    }
     gAiEngineUrl = getenvOr("AI_ENGINE_URL", "");
     gCartoonOnnxModelPath = getenvOr("CARTOON_ONNX_MODEL", "");
     try {

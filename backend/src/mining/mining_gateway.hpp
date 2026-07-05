@@ -18,12 +18,16 @@ struct MiningConfig {
     std::size_t max_line_size = 1024;
     std::string cert_path = "/etc/mining-gateway/certs/server.crt";
     std::string key_path = "/etc/mining-gateway/certs/server.key";
+    // Si true, cada línea recibida se parsea e ingesta a telemetry_raw
+    // ("<sensor_code>,<value>[,<quality>]"). El ingestor debe estar arrancado.
+    bool ingest_enabled = false;
 };
 
 class MiningSession : public std::enable_shared_from_this<MiningSession> {
 public:
     using tcp = asio::ip::tcp;
-    MiningSession(tcp::socket socket, ssl::context& ssl_ctx, int timeout_sec, std::size_t max_line_size);
+    MiningSession(tcp::socket socket, ssl::context& ssl_ctx, int timeout_sec,
+                  std::size_t max_line_size, bool ingest_enabled);
     void start();
 
 private:
@@ -36,6 +40,7 @@ private:
     asio::streambuf buffer_;
     int timeout_sec_;
     std::size_t max_line_size_;
+    bool ingest_enabled_;
 };
 
 class MiningServer {

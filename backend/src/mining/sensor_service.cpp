@@ -7,6 +7,9 @@
 #include <mutex>
 #include <string>
 
+#include "storage/pg_pool.hpp"
+#include "storage/pg_result.hpp"
+
 using config::AppConfig;
 using config::AuthStorageMode;
 using http_utils::makeJsonResponse;
@@ -14,10 +17,11 @@ using auth::extractAuthTokenFromRequest;
 using auth::AuthSession;
 using auth::gAuthMutex;
 using auth::gAuthSessions;
-using auth::pqEscapeLiteral;
 
 #define gAuthStorageMode AppConfig::instance().gAuthStorageMode
 #define gDatabaseUrl     AppConfig::instance().gDatabaseUrl
+// Lecturas de sensores (dashboard) → réplica read-only si está configurada.
+#define gReadUrl         AppConfig::instance().readUrl()
 
 namespace mining {
 
@@ -43,22 +47,25 @@ handleGetSensorData(const http::request<http::string_body>& req,
   json::object data;
   if (gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
-    PGconn *conn = PQconnectdb(gDatabaseUrl.c_str());
+    // Lectura de sensores para dashboard → pool de RÉPLICA (offload primario).
+    auto __pg_lease = storage::PgPool::replica().acquire(gReadUrl);
+    PGconn *conn = __pg_lease.get();
     if (PQstatus(conn) == CONNECTION_OK) {
       const auto itTenant = query.find("tenant_id");
       const bool scoped = itTenant != query.end() && !itTenant->second.empty();
-      std::string scopeWhere;
-      std::string scopeTenantLit;
-      if (scoped) {
-        try {
-          scopeTenantLit = pqEscapeLiteral(conn, itTenant->second);
-          scopeWhere = std::string(" AND s.tenant_id = ") + scopeTenantLit + "::uuid ";
-        } catch (...) {
-          PQfinish(conn);
-          return makeJsonResponse(http::status::bad_request,
-                                  json::object{{"error", "invalid_scope_params"}});
+      // Filtro por tenant como parámetro $1 (reutilizado en cada query scoped).
+      const std::string tenantVal = scoped ? itTenant->second : std::string();
+      const std::string scopeWhere =
+          scoped ? " AND s.tenant_id = $1::uuid " : std::string();
+      // Ejecuta una query pasando el tenant como $1 cuando hay scope.
+      const auto runScoped = [&](const std::string &q) -> PGresult * {
+        if (scoped) {
+          const char *p[1] = {tenantVal.c_str()};
+          return PQexecParams(conn, q.c_str(), 1, nullptr, p, nullptr, nullptr,
+                              0);
         }
-      }
+        return PQexec(conn, q.c_str());
+      };
 
       const std::string sqlCategories =
           scoped ? ("SELECT DISTINCT c.id, c.name, c.description FROM mining_sensor_categories c "
@@ -97,92 +104,84 @@ handleGetSensorData(const http::request<http::string_body>& req,
                  : "SELECT sensor_id, value, timestamp FROM mining_sensor_history WHERE timestamp > "
                    "NOW() - INTERVAL '7 DAYS' ORDER BY sensor_id ASC, timestamp ASC";
 
-      PGresult *res_cat = PQexec(conn, sqlCategories.c_str());
+      storage::PgResult res_cat{runScoped(sqlCategories)};
       json::array categories;
-      if (res_cat && PQresultStatus(res_cat) == PGRES_TUPLES_OK) {
-        for (int i = 0; i < PQntuples(res_cat); ++i) {
-          categories.push_back(json::object{{"id", std::stoi(PQgetvalue(res_cat, i, 0))},
-                                            {"name", PQgetvalue(res_cat, i, 1)},
-                                            {"description", PQgetvalue(res_cat, i, 2)}});
+      if (res_cat.okTuples()) {
+        for (int i = 0; i < PQntuples(res_cat.get()); ++i) {
+          categories.push_back(json::object{{"id", std::stoi(PQgetvalue(res_cat.get(), i, 0))},
+                                            {"name", PQgetvalue(res_cat.get(), i, 1)},
+                                            {"description", PQgetvalue(res_cat.get(), i, 2)}});
         }
       }
-      if (res_cat) PQclear(res_cat);
       data["categories"] = categories;
 
       const std::string sqlZones =
           scoped ? ("SELECT id, code, name_es, sort_order, tenant_id::text FROM mining_sensor_zones "
-                    "WHERE tenant_id = " +
-                    scopeTenantLit + "::uuid ORDER BY sort_order ASC, id ASC")
+                    "WHERE tenant_id = $1::uuid ORDER BY sort_order ASC, id ASC")
                  : ("SELECT id, code, name_es, sort_order, tenant_id::text FROM mining_sensor_zones "
                     "ORDER BY tenant_id ASC, sort_order ASC, id ASC");
-      PGresult *res_zones = PQexec(conn, sqlZones.c_str());
+      storage::PgResult res_zones{runScoped(sqlZones)};
       json::array zones;
-      if (res_zones && PQresultStatus(res_zones) == PGRES_TUPLES_OK) {
-        for (int zi = 0; zi < PQntuples(res_zones); ++zi) {
-          zones.push_back(json::object{{"id", std::stoi(PQgetvalue(res_zones, zi, 0))},
-                                        {"code", PQgetvalue(res_zones, zi, 1)},
-                                        {"name_es", PQgetvalue(res_zones, zi, 2)},
-                                        {"sort_order", std::stoi(PQgetvalue(res_zones, zi, 3))},
-                                        {"tenant_id", PQgetvalue(res_zones, zi, 4)}});
+      if (res_zones.okTuples()) {
+        for (int zi = 0; zi < PQntuples(res_zones.get()); ++zi) {
+          zones.push_back(json::object{{"id", std::stoi(PQgetvalue(res_zones.get(), zi, 0))},
+                                        {"code", PQgetvalue(res_zones.get(), zi, 1)},
+                                        {"name_es", PQgetvalue(res_zones.get(), zi, 2)},
+                                        {"sort_order", std::stoi(PQgetvalue(res_zones.get(), zi, 3))},
+                                        {"tenant_id", PQgetvalue(res_zones.get(), zi, 4)}});
         }
       }
-      if (res_zones) PQclear(res_zones);
       data["zones"] = zones;
 
-      PGresult *res_types = PQexec(conn, sqlTypes.c_str());
+      storage::PgResult res_types{runScoped(sqlTypes)};
       json::array sensor_types;
-      if (res_types && PQresultStatus(res_types) == PGRES_TUPLES_OK) {
-        for (int i = 0; i < PQntuples(res_types); ++i) {
+      if (res_types.okTuples()) {
+        for (int i = 0; i < PQntuples(res_types.get()); ++i) {
           sensor_types.push_back(
-              json::object{{"id", std::stoi(PQgetvalue(res_types, i, 0))},
-                           {"category_id", std::stoi(PQgetvalue(res_types, i, 1))},
-                           {"name", PQgetvalue(res_types, i, 2)},
-                           {"unit", PQgetvalue(res_types, i, 3)}});
+              json::object{{"id", std::stoi(PQgetvalue(res_types.get(), i, 0))},
+                           {"category_id", std::stoi(PQgetvalue(res_types.get(), i, 1))},
+                           {"name", PQgetvalue(res_types.get(), i, 2)},
+                           {"unit", PQgetvalue(res_types.get(), i, 3)}});
         }
       }
-      if (res_types) PQclear(res_types);
       data["sensor_types"] = sensor_types;
 
-      PGresult *res_sensors = PQexec(conn, sqlSensors.c_str());
+      storage::PgResult res_sensors{runScoped(sqlSensors)};
       json::array sensors;
-      if (res_sensors && PQresultStatus(res_sensors) == PGRES_TUPLES_OK) {
-        for (int i = 0; i < PQntuples(res_sensors); ++i) {
-          json::object so{{"id", std::stoi(PQgetvalue(res_sensors, i, 0))},
-                          {"type_id", std::stoi(PQgetvalue(res_sensors, i, 1))},
-                          {"name", PQgetvalue(res_sensors, i, 2)},
-                          {"lat", std::stod(PQgetvalue(res_sensors, i, 3))},
-                          {"lng", std::stod(PQgetvalue(res_sensors, i, 4))},
-                          {"status", PQgetvalue(res_sensors, i, 5)},
-                          {"current_value", std::stod(PQgetvalue(res_sensors, i, 6))},
-                          {"tenant_id", PQgetvalue(res_sensors, i, 7)}};
-          if (!PQgetisnull(res_sensors, i, 8)) {
-            so["zone_id"] = std::stoi(PQgetvalue(res_sensors, i, 8));
-            so["zone_code"] = std::string(PQgetvalue(res_sensors, i, 9));
-            so["zone_name"] = std::string(PQgetvalue(res_sensors, i, 10));
+      if (res_sensors.okTuples()) {
+        for (int i = 0; i < PQntuples(res_sensors.get()); ++i) {
+          json::object so{{"id", std::stoi(PQgetvalue(res_sensors.get(), i, 0))},
+                          {"type_id", std::stoi(PQgetvalue(res_sensors.get(), i, 1))},
+                          {"name", PQgetvalue(res_sensors.get(), i, 2)},
+                          {"lat", std::stod(PQgetvalue(res_sensors.get(), i, 3))},
+                          {"lng", std::stod(PQgetvalue(res_sensors.get(), i, 4))},
+                          {"status", PQgetvalue(res_sensors.get(), i, 5)},
+                          {"current_value", std::stod(PQgetvalue(res_sensors.get(), i, 6))},
+                          {"tenant_id", PQgetvalue(res_sensors.get(), i, 7)}};
+          if (!PQgetisnull(res_sensors.get(), i, 8)) {
+            so["zone_id"] = std::stoi(PQgetvalue(res_sensors.get(), i, 8));
+            so["zone_code"] = std::string(PQgetvalue(res_sensors.get(), i, 9));
+            so["zone_name"] = std::string(PQgetvalue(res_sensors.get(), i, 10));
           }
           sensors.push_back(so);
         }
       }
-      if (res_sensors) PQclear(res_sensors);
       data["sensors"] = sensors;
 
-      PGresult *res_history = PQexec(conn, sqlHistory.c_str());
+      storage::PgResult res_history{runScoped(sqlHistory)};
       json::array history;
-      if (res_history && PQresultStatus(res_history) == PGRES_TUPLES_OK) {
-        for (int i = 0; i < PQntuples(res_history); ++i) {
+      if (res_history.okTuples()) {
+        for (int i = 0; i < PQntuples(res_history.get()); ++i) {
           history.push_back(json::object{
-              {"sensor_id", std::stoi(PQgetvalue(res_history, i, 0))},
-              {"value", std::stod(PQgetvalue(res_history, i, 1))},
-              {"timestamp", PQgetvalue(res_history, i, 2)}});
+              {"sensor_id", std::stoi(PQgetvalue(res_history.get(), i, 0))},
+              {"value", std::stod(PQgetvalue(res_history.get(), i, 1))},
+              {"timestamp", PQgetvalue(res_history.get(), i, 2)}});
         }
       }
-      if (res_history) PQclear(res_history);
       data["history"] = history;
 
-      PQfinish(conn);
       return makeJsonResponse(http::status::ok, data);
     }
-    PQfinish(conn);
 #endif
   }
   return makeJsonResponse(http::status::internal_server_error, json::object{{"error", "db_unavailable"}});

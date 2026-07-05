@@ -13,7 +13,7 @@ BEGIN
     SELECT id INTO proj_id FROM projects LIMIT 1;
 
     INSERT INTO reports (project_id, title, content_json, status) VALUES 
-    (proj_id, 'Informe de Estabilidad Crucero 340-N', '{"ops":[{"insert":"Informe de demostración generado automáticamente.\\n"}]}', 'published')
+    (proj_id, 'Informe de Estabilidad Crucero 340-N', '{"ops":[{"insert":"Informe de demostración generado automáticamente.\\n"}]}', 'archived')
     RETURNING id INTO rep_id;
 
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'geometric_data') THEN

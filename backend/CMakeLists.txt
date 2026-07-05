@@ -112,12 +112,14 @@ set(MINING_MODULES
   src/mining/surveillance_service.cpp
   src/mining/mining_gateway.cpp
   src/mining/mining_routes.cpp
+  src/mining/telemetry_ingest.cpp
 )
 
 # Módulos de reportes y fórmulas
 set(REPORTS_MODULES
   src/reports/report_service.cpp
   src/reports/report_routes.cpp
+  src/reports/report_pdf_export.cpp
   src/formula/formula_service.cpp
   src/formula/formula_routes.cpp
 )
@@ -193,6 +195,17 @@ endif()
 find_library(PQ_LIBRARY pq)
 if(PQ_LIBRARY)
   target_link_libraries(mapas_backend PRIVATE ${PQ_LIBRARY})
+endif()
+
+# librdkafka (C++ API) para ingesta durable vía Redpanda/Kafka.
+find_library(RDKAFKACPP_LIBRARY rdkafka++)
+find_library(RDKAFKA_LIBRARY rdkafka)
+if(RDKAFKACPP_LIBRARY AND RDKAFKA_LIBRARY)
+  message(STATUS "librdkafka: ${RDKAFKACPP_LIBRARY}")
+  target_link_libraries(mapas_backend PRIVATE ${RDKAFKACPP_LIBRARY} ${RDKAFKA_LIBRARY})
+  target_compile_definitions(mapas_backend PRIVATE HAVE_RDKAFKA=1)
+else()
+  message(STATUS "librdkafka: NO encontrado (ingesta Kafka deshabilitada)")
 endif()
 
 if(Python3_Interpreter_FOUND)

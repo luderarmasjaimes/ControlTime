@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-all-dev \
     libopencv-dev \
     libpq-dev \
+    librdkafka-dev \
     gdal-bin \
     ca-certificates \
     bash \
@@ -59,6 +60,8 @@ RUN apt-get update \
        libgstreamer1.0-0 \
        libgstreamer-plugins-base1.0-0 \
        libpq5 \
+       librdkafka++1 \
+       librdkafka1 \
        libboost-all-dev \
        libopencv-dev \
        opencv-data \

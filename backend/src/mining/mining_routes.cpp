@@ -10,6 +10,9 @@
 #include <algorithm>
 #include <string>
 
+#include "storage/pg_pool.hpp"
+#include "storage/pg_result.hpp"
+
 using config::AppConfig;
 using config::AuthStorageMode;
 using http_utils::makeJsonResponse;
@@ -26,32 +29,29 @@ handleDashboardMetrics(const http::request<http::string_body>& req,
   json::object metrics;
   if (gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
-    PGconn *conn = PQconnectdb(gDatabaseUrl.c_str());
+    auto __pg_lease = storage::PgPool::instance().acquire(gDatabaseUrl);
+    PGconn *conn = __pg_lease.get();
     if (PQstatus(conn) == CONNECTION_OK) {
-      PGresult *res_kpi = PQexec(conn, "SELECT name, value, unit, trend, trend_value FROM dashboard_kpis");
+      storage::PgResult res_kpi{PQexec(conn, "SELECT name, value, unit, trend, trend_value FROM dashboard_kpis")};
       json::object kpis;
-      if (res_kpi && PQresultStatus(res_kpi) == PGRES_TUPLES_OK) {
-          for (int i = 0; i < PQntuples(res_kpi); ++i) {
-              std::string name = PQgetvalue(res_kpi, i, 0);
-              kpis[name] = json::object{{"value", std::stod(PQgetvalue(res_kpi, i, 1))}, {"unit", PQgetvalue(res_kpi, i, 2)}, {"trend", PQgetvalue(res_kpi, i, 3)}, {"trend_value", std::stod(PQgetvalue(res_kpi, i, 4))}};
+      if (res_kpi.okTuples()) {
+          for (int i = 0; i < PQntuples(res_kpi.get()); ++i) {
+              std::string name = PQgetvalue(res_kpi.get(), i, 0);
+              kpis[name] = json::object{{"value", std::stod(PQgetvalue(res_kpi.get(), i, 1))}, {"unit", PQgetvalue(res_kpi.get(), i, 2)}, {"trend", PQgetvalue(res_kpi.get(), i, 3)}, {"trend_value", std::stod(PQgetvalue(res_kpi.get(), i, 4))}};
           }
       }
-      if (res_kpi) PQclear(res_kpi);
       metrics["kpis"] = kpis;
 
-      PGresult *res_heat = PQexec(conn, "SELECT day, level_name, x_coord, y_coord, intensity FROM dashboard_heatmap ORDER BY day ASC");
+      storage::PgResult res_heat{PQexec(conn, "SELECT day, level_name, x_coord, y_coord, intensity FROM dashboard_heatmap ORDER BY day ASC")};
       json::array heatmap;
-      if (res_heat && PQresultStatus(res_heat) == PGRES_TUPLES_OK) {
-          for (int i = 0; i < PQntuples(res_heat); ++i) {
-              heatmap.push_back(json::object{{"day", std::stoi(PQgetvalue(res_heat, i, 0))}, {"level", PQgetvalue(res_heat, i, 1)}, {"x", std::stoi(PQgetvalue(res_heat, i, 2))}, {"y", std::stoi(PQgetvalue(res_heat, i, 3))}, {"val", std::stod(PQgetvalue(res_heat, i, 4))}});
+      if (res_heat.okTuples()) {
+          for (int i = 0; i < PQntuples(res_heat.get()); ++i) {
+              heatmap.push_back(json::object{{"day", std::stoi(PQgetvalue(res_heat.get(), i, 0))}, {"level", PQgetvalue(res_heat.get(), i, 1)}, {"x", std::stoi(PQgetvalue(res_heat.get(), i, 2))}, {"y", std::stoi(PQgetvalue(res_heat.get(), i, 3))}, {"val", std::stod(PQgetvalue(res_heat.get(), i, 4))}});
           }
       }
-      if (res_heat) PQclear(res_heat);
       metrics["heatmap"] = heatmap;
-      PQfinish(conn);
       return makeJsonResponse(http::status::ok, metrics);
     }
-    PQfinish(conn);
 #endif
   }
   return makeJsonResponse(http::status::ok, metrics);
@@ -91,6 +91,10 @@ void registerRoutes(router::Router& r) {
 
   r.get("/api/surveillance/cameras", handleGetCameras);
   r.get("/api/surveillance/camera-snapshot", handleCameraSnapshot);
+  r.post("/api/surveillance/cameras", handleCreateCamera);
+  // prefix routes for /api/surveillance/cameras/<id>
+  r.put("/api/surveillance/cameras/", handleUpdateCamera);
+  r.del("/api/surveillance/cameras/", handleDeleteCamera);
 }
 
 } // namespace mining

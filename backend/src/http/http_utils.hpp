@@ -50,4 +50,8 @@ http::response<http::string_body> makeCsvResponse(const std::string &filename,
 
 http::response<http::string_body> makeJpegResponse(std::string jpegBytes);
 
+/** @brief Respuesta 200 con Content-Type application/pdf y Content-Disposition attachment (descarga directa). */
+http::response<http::string_body> makePdfResponse(const std::string &filename,
+                                                  std::string pdfBytes);
+
 } // namespace http_utils

@@ -1,0 +1,31 @@
+# Doxyfile — Documentación de la API del backend C++ (Beemetry / mapas_backend)
+# Generar: cd backend && doxygen Doxyfile   → salida en backend/docs/html/index.html
+PROJECT_NAME           = "Beemetry Backend (mapas_backend)"
+PROJECT_BRIEF          = "Gateway C++ de plataforma minera: auth/RBAC, telemetría, informes, IA local, geo"
+OUTPUT_DIRECTORY       = docs
+CREATE_SUBDIRS         = NO
+INPUT                  = src
+FILE_PATTERNS          = *.cpp *.hpp *.h
+RECURSIVE              = YES
+# Excluir respaldos y artefactos de build
+EXCLUDE_PATTERNS       = */build/* */build-vcpkg/* *_backup_* *.backup_*
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_OUTPUT            = html
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+OPTIMIZE_OUTPUT_FOR_C  = NO
+BUILTIN_STL_SUPPORT    = YES
+SORT_MEMBER_DOCS       = YES
+GENERATE_TREEVIEW      = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_NO_PARAMDOC       = YES
+QUIET                  = YES
+# Macros para que Doxygen parsee el código guardado tras #if HAS_LIBPQ
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+PREDEFINED             = HAS_LIBPQ=1 HAVE_RDKAFKA=1

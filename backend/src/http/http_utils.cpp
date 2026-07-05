@@ -208,6 +208,22 @@ http::response<http::string_body> makeCsvResponse(const std::string &filename,
     return res;
 }
 
+http::response<http::string_body> makePdfResponse(const std::string &filename,
+                                                  std::string pdfBytes) {
+    http::response<http::string_body> res{http::status::ok, 11};
+    res.set(http::field::content_type, "application/pdf");
+    res.set(http::field::access_control_allow_origin, "*");
+    res.set(http::field::access_control_allow_headers,
+            "content-type,authorization");
+    res.set(http::field::access_control_allow_methods,
+            "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.set(http::field::content_disposition,
+            "attachment; filename=\"" + filename + "\"");
+    res.body() = std::move(pdfBytes);
+    res.prepare_payload();
+    return res;
+}
+
 http::response<http::string_body> makeJpegResponse(std::string jpegBytes) {
     http::response<http::string_body> res{http::status::ok, 11};
     res.set(http::field::content_type, "image/jpeg");

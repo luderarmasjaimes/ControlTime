@@ -69,6 +69,13 @@ struct AppConfig {
 
     AuthStorageMode gAuthStorageMode = AuthStorageMode::File;
     std::string gDatabaseUrl;
+    // Réplica read-only (streaming standby) para lecturas de dashboards/KPIs.
+    // Si REPLICA_DATABASE_URL no se define, cae al primario (gDatabaseUrl).
+    std::string gReplicaDatabaseUrl;
+    /// URL para lecturas de solo-lectura (dashboards/KPIs): réplica si existe.
+    const std::string &readUrl() const {
+        return gReplicaDatabaseUrl.empty() ? gDatabaseUrl : gReplicaDatabaseUrl;
+    }
     std::string gKpiExternalDatabaseUrl;
     std::string gKpiExternalQuery;
     BiometricProvider gBiometricProvider = BiometricProvider::Legacy;
@@ -78,6 +85,10 @@ struct AppConfig {
     std::string gBiometricDnnModelPath;
     std::string gBiometricDnnLabelsCsv;
     float gBiometricDnnThreshold = 0.72f;
+    // ADR-016: sidecar de export PDF (Chromium headless). Vacío = deshabilitado.
+    std::string gPdfExportUrl;
+    int gPdfExportTimeoutMs = 45000;
+    std::string gFrontendInternalOrigin;
     std::string gAiEngineUrl;
     int gAiEngineTimeoutMs = 500;
     int gAiEngineCartoonTimeoutMs = 8000;

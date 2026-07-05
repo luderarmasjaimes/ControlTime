@@ -11,6 +11,8 @@
 #include <mutex>
 #include <string>
 
+#include "storage/pg_pool.hpp"
+
 using http_utils::makeJsonResponse;
 using http_utils::routePathOnly;
 using config::AppConfig;
@@ -101,7 +103,8 @@ void registerRoutes(router::Router &r) {
           bool loadedFromDb = false;
           if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
-            PGconn *conn = PQconnectdb(cfg.gDatabaseUrl.c_str());
+            auto __pg_lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+            PGconn *conn = __pg_lease.get();
             if (PQstatus(conn) == CONNECTION_OK) {
               (void)ensureAuthSchemaPg(conn);
               PGresult *res = PQexec(
@@ -117,7 +120,6 @@ void registerRoutes(router::Router &r) {
               }
               if (res) PQclear(res);
             }
-            PQfinish(conn);
 #endif
           }
           if (!loadedFromDb) {
@@ -226,8 +228,10 @@ void registerRoutes(router::Router &r) {
           if (!session)
             return makeJsonResponse(http::status::unauthorized,
                                     json::object{{"error", "unauthorized"}});
-          std::string company =
-              query.count("company") ? query.at("company") : session->company;
+          // IDOR fix: el tenant SIEMPRE viene de la sesión autenticada, nunca
+          // de un query param — de lo contrario cualquier usuario podría listar
+          // usuarios de otra empresa con ?company=OtraEmpresa.
+          const std::string &company = session->company;
 #if HAS_LIBPQ
           return makeJsonResponse(
               http::status::ok,
@@ -249,6 +253,13 @@ void registerRoutes(router::Router &r) {
                                      json::object{{"error", "unauthorized"}});
            try {
              auto payload = json::parse(req.body()).as_object();
+             // IDOR fix (escritura): el tenant sobre el que se actúa (bloquear,
+             // resetear password, cambiar rol, dar de baja) SIEMPRE es el de la
+             // sesión autenticada. Se sobreescribe cualquier "company" que el
+             // cliente haya enviado en el body — de lo contrario un usuario
+             // autenticado en el tenant A podría mutar usuarios del tenant B
+             // con solo cambiar ese campo en el payload.
+             payload["company"] = json::string(session->company);
              json::object audit;
              std::string error;
 #if HAS_LIBPQ
@@ -280,8 +291,9 @@ void registerRoutes(router::Router &r) {
           if (!session)
             return makeJsonResponse(http::status::unauthorized,
                                     json::object{{"error", "unauthorized"}});
-          std::string company =
-              query.count("company") ? query.at("company") : session->company;
+          // IDOR fix: mismo tenant-check que GET /api/auth/users — el log de
+          // auditoría de otra empresa no debe ser visible vía query override.
+          const std::string &company = session->company;
           int page = query.count("page")
                          ? std::atoi(query.at("page").c_str())
                          : 1;

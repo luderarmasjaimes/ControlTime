@@ -1,5 +1,6 @@
 #include "report_routes.hpp"
 #include "report_service.hpp"
+#include "report_pdf_export.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
 #include "../auth/auth_session.hpp"
@@ -7,6 +8,7 @@
 
 using config::AppConfig;
 using http_utils::makeJsonResponse;
+using http_utils::makePdfResponse;
 using http_utils::routePathOnly;
 using auth::resolveAuthSession;
 using auth::extractAuthTokenFromRequest;
@@ -48,7 +50,9 @@ handleGetReports(const http::request<http::string_body>& req,
           {"id", r.id}, {"project_id", r.projectId}, {"title", r.title},
           {"status", r.status}, {"created_at", r.createdAt}, {"updated_at", r.updatedAt},
           {"company_name", r.company},
-          {"createdAt", r.createdAt}, {"updatedAt", r.updatedAt}, {"company", r.company}
+          {"createdAt", r.createdAt}, {"updatedAt", r.updatedAt}, {"company", r.company},
+          {"signed_by_name", r.signedByName}, {"signed_by_role", r.signedByRole},
+          {"signed_at", r.signedAt}
       });
   }
   return makeJsonResponse(http::status::ok, json::object{{"reports", arr}});
@@ -65,6 +69,47 @@ handleGetReportById(const http::request<http::string_body>& req,
   const std::string target = std::string(req.target());
   const std::string pathOnly = routePathOnly(target);
   std::string rest = pathOnly.substr(std::string("/api/reports/").size());
+  // ── GET /api/reports/{id}/revisions — historial de versiones (ADR-015) ──
+  static const std::string kRevisionsSuffix = "/revisions";
+  if (rest.size() > kRevisionsSuffix.size() &&
+      rest.compare(rest.size() - kRevisionsSuffix.size(), kRevisionsSuffix.size(),
+                   kRevisionsSuffix) == 0) {
+    const std::string reportId = rest.substr(0, rest.size() - kRevisionsSuffix.size());
+    std::string error;
+    auto revisions = listReportRevisionsPg(gDatabaseUrl, reportId, session->company, error);
+    return makeJsonResponse(http::status::ok, json::object{{"revisions", revisions}});
+  }
+  // ── GET /api/reports/{id}/export/pdf — export PDF server-side (ADR-016) ──
+  static const std::string kExportPdfSuffix = "/export/pdf";
+  if (rest.size() > kExportPdfSuffix.size() &&
+      rest.compare(rest.size() - kExportPdfSuffix.size(), kExportPdfSuffix.size(),
+                   kExportPdfSuffix) == 0) {
+    const std::string reportId = rest.substr(0, rest.size() - kExportPdfSuffix.size());
+    // Verifica tenant/existencia ANTES de pedirle al sidecar que renderice
+    // (evita gastar un ciclo de Chromium en un id ajeno o inexistente).
+    std::string error;
+    Report r;
+    if (!getReportByIdPg(gDatabaseUrl, reportId, session->company, r, error)) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+    }
+    const std::string sessionToken = extractAuthTokenFromRequest(req, query);
+    auto pdfResult = exportReportPdf(reportId, sessionToken);
+    if (!pdfResult.ok) {
+      return makeJsonResponse(http::status::bad_gateway,
+                              json::object{{"error", pdfResult.error}});
+    }
+    // Sanitiza el título para el header Content-Disposition: comillas o
+    // CRLF en el título del informe no deben poder romper el header HTTP
+    // (inyección de headers) ni el nombre de archivo sugerido al navegador.
+    std::string safeName;
+    safeName.reserve(r.title.size());
+    for (char c : r.title) {
+      if (c == '"' || c == '\\' || c == '\r' || c == '\n') continue;
+      safeName += c;
+    }
+    if (safeName.empty()) safeName = "informe";
+    return makePdfResponse(safeName + ".pdf", std::move(pdfResult.pdfBytes));
+  }
   if (!rest.empty() && rest.find('/') == std::string::npos) {
     std::string error;
     Report r;
@@ -83,7 +128,10 @@ handleGetReportById(const http::request<http::string_body>& req,
                        {"company_name", r.company},
                        {"createdAt", r.createdAt},
                        {"updatedAt", r.updatedAt},
-                       {"company", r.company}});
+                       {"company", r.company},
+                       {"signed_by_name", r.signedByName},
+                       {"signed_by_role", r.signedByRole},
+                       {"signed_at", r.signedAt}});
     }
     return makeJsonResponse(http::status::not_found,
                             json::object{{"error", error}});
@@ -117,6 +165,9 @@ handleCreateReport(const http::request<http::string_body>& req,
         return makeJsonResponse(http::status::created,
                                 json::object{{"status", "created"}, {"id", newId}});
       }
+      if (error.rfind("invalid_workflow_transition:", 0) == 0) {
+        return makeJsonResponse(http::status::bad_request, json::object{{"error", error}});
+      }
       return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
   } catch (const std::exception &ex) {
       return makeJsonResponse(http::status::bad_request, json::object{{"error", ex.what()}});
@@ -140,11 +191,27 @@ handleUpdateReport(const http::request<http::string_body>& req,
       r.title = json::value_to<std::string>(obj.at("title"));
       r.contentJson = obj.contains("content_json") ? obj.at("content_json") : json::object{};
       r.status = obj.contains("status") ? json::value_to<std::string>(obj.at("status")) : "draft";
+      // Comentario de transición (p.ej. motivo de rechazo, ADR-030): viaja
+      // aparte del contenido del informe, solo se usa para la entrada de
+      // auditoría de esta transición — nunca se persiste en `reports`.
+      const std::string workflowComment =
+          obj.contains("workflow_comment")
+              ? json::value_to<std::string>(obj.at("workflow_comment"))
+              : std::string();
 
       std::string error;
       if (updateReportPg(gDatabaseUrl, id, session->company, r, error, session->username,
-                         session->company, authTokReportPut)) {
+                         session->company, authTokReportPut, session->role, workflowComment)) {
           return makeJsonResponse(http::status::ok, json::object{{"status", "updated"}});
+      }
+      // ADR-017: distinguir el rechazo de negocio (transición de workflow
+      // inválida / informe inexistente) de un fallo real de servidor, para
+      // que el frontend pueda mostrar un mensaje claro en vez de un 500.
+      if (error.rfind("invalid_workflow_transition:", 0) == 0) {
+        return makeJsonResponse(http::status::bad_request, json::object{{"error", error}});
+      }
+      if (error == "report_not_found") {
+        return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
       }
       return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
   } catch (const std::exception &ex) {

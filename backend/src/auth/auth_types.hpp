@@ -51,6 +51,11 @@ struct Report {
   std::string company;
   std::string createdAt;
   std::string updatedAt;
+  // Firma documental (ADR-018): poblados por el servidor solo al transicionar
+  // a 'signed' (ver reports::updateReportPg). Vacíos si nunca se firmó.
+  std::string signedByName;
+  std::string signedByRole;
+  std::string signedAt;
 };
 
 struct AuthSession {
@@ -59,6 +64,7 @@ struct AuthSession {
   std::string username;
   std::string company;
   std::string role;
+  std::string tenantId;  // mirrors AuthUser::tenantId (UUID); empty for file-mode
   std::chrono::system_clock::time_point expiresAt;
 };
 

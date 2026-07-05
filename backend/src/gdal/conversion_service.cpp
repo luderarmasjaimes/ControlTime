@@ -1,6 +1,7 @@
 #include "conversion_service.hpp"
 #include "../http/http_utils.hpp"
 #include "../config/app_config.hpp"
+#include "../security/validators.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -58,8 +59,9 @@ bool parseConvertRequest(const json::object &obj, ConvertRequest &out,
     return true;
 }
 
+// Quoting robusto (comillas simples POSIX + escape) — evita inyección de shell.
 static std::string quotePath(const std::string &path) {
-    return "\"" + path + "\"";
+    return security::Validator::shellQuote(path);
 }
 
 static int runCommand(const std::string &cmd) {

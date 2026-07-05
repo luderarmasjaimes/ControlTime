@@ -5,11 +5,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <initializer_list>
 #include <mutex>
 #include <string>
+#include <vector>
 
 using auth::pgExecOk;
-using auth::pqEscapeLiteral;
 using auth::trimCompanyName;
 #define gFormulaSchemaReady   config::AppConfig::instance().gFormulaSchemaReady
 #define gFormulaSchemaInitMutex config::AppConfig::instance().gFormulaSchemaInitMutex
@@ -184,35 +185,52 @@ CREATE INDEX IF NOT EXISTS idx_fsess_created ON formula_sessions(created_at DESC
   for (char &ch : code) {
     if (!std::isalnum(static_cast<unsigned char>(ch))) ch = '_';
   }
-  const std::string upsertCompany =
-      "INSERT INTO mineria_empresas(codigo,nombre,activo) VALUES(" +
-      pqEscapeLiteral(conn, code) + "," + pqEscapeLiteral(conn, normalized) +
-      ", true) ON CONFLICT (nombre) DO NOTHING";
-  (void)pgExecOk(conn, upsertCompany);
+  // Helper local: ejecuta un comando parametrizado (fire-and-forget) y
+  // devuelve si terminó OK. Evita concatenar literales en los seeds.
+  const auto execParams = [&](const char *sql,
+                              std::initializer_list<const char *> vals) -> bool {
+    std::vector<const char *> pv(vals);
+    PGresult *r = PQexecParams(conn, sql, static_cast<int>(pv.size()), nullptr,
+                               pv.data(), nullptr, nullptr, 0);
+    const bool ok = r && (PQresultStatus(r) == PGRES_COMMAND_OK ||
+                          PQresultStatus(r) == PGRES_TUPLES_OK);
+    if (r) PQclear(r);
+    return ok;
+  };
 
-  const std::string seedMine =
-      "INSERT INTO mineria_minas(empresa_id,codigo,nombre,zona_tipo,umbral_temp_alerta,factor_ajuste,activo) "
-      "SELECT id,'UNI-001','Unidad Minera Principal','sierra',8.0,0.82,true FROM mineria_empresas WHERE nombre=" +
-      pqEscapeLiteral(conn, normalized) + " ON CONFLICT (empresa_id,codigo) DO NOTHING";
-  (void)pgExecOk(conn, seedMine);
+  (void)execParams(
+      "INSERT INTO mineria_empresas(codigo,nombre,activo) "
+      "VALUES($1, $2, true) ON CONFLICT (nombre) DO NOTHING",
+      {code.c_str(), normalized.c_str()});
 
-  const std::string seedVar =
-      "INSERT INTO mineria_variables(empresa_id,codigo,nombre,unidad,tipo,activo) "
-      "SELECT id,'TEMP-001','Temperatura Ambiente','C','temperatura',true FROM mineria_empresas WHERE nombre=" +
-      pqEscapeLiteral(conn, normalized) + " ON CONFLICT (empresa_id,codigo) DO NOTHING";
-  (void)pgExecOk(conn, seedVar);
+  (void)execParams(
+      "INSERT INTO mineria_minas(empresa_id,codigo,nombre,zona_tipo,"
+      "umbral_temp_alerta,factor_ajuste,activo) "
+      "SELECT id,'UNI-001','Unidad Minera Principal','sierra',8.0,0.82,true "
+      "FROM mineria_empresas WHERE nombre=$1 "
+      "ON CONFLICT (empresa_id,codigo) DO NOTHING",
+      {normalized.c_str()});
 
-  const std::string seedSensor =
-      "INSERT INTO mineria_sensores(empresa_id,mina_id,variable_id,codigo,nombre,activo) "
+  (void)execParams(
+      "INSERT INTO mineria_variables(empresa_id,codigo,nombre,unidad,tipo,"
+      "activo) "
+      "SELECT id,'TEMP-001','Temperatura Ambiente','C','temperatura',true "
+      "FROM mineria_empresas WHERE nombre=$1 "
+      "ON CONFLICT (empresa_id,codigo) DO NOTHING",
+      {normalized.c_str()});
+
+  (void)execParams(
+      "INSERT INTO mineria_sensores(empresa_id,mina_id,variable_id,codigo,"
+      "nombre,activo) "
       "SELECT e.id,m.id,v.id,'SEN-001','Sensor Temperatura Principal',true "
       "FROM mineria_empresas e "
       "JOIN mineria_minas m ON m.empresa_id=e.id "
       "JOIN mineria_variables v ON v.empresa_id=e.id AND v.codigo='TEMP-001' "
-      "WHERE e.nombre=" + pqEscapeLiteral(conn, normalized) +
-      " ON CONFLICT (empresa_id,codigo) DO NOTHING";
-  (void)pgExecOk(conn, seedSensor);
+      "WHERE e.nombre=$1 ON CONFLICT (empresa_id,codigo) DO NOTHING",
+      {normalized.c_str()});
 
-  const std::string seedReadings = R"SQL(
+  (void)execParams(
+      R"SQL(
 INSERT INTO mineria_lecturas(empresa_id, mina_id, variable_id, timestamp_lectura, valor, calidad)
 SELECT e.id, m.id, v.id, ts,
        ROUND(CAST(9.5 + 4.2 * SIN(EXTRACT(EPOCH FROM ts) / 86400.0 * 2 * PI()) + (random() * 2.5 - 1.2) AS NUMERIC), 2),
@@ -221,13 +239,13 @@ FROM mineria_empresas e
 JOIN mineria_minas m ON m.empresa_id = e.id
 JOIN mineria_variables v ON v.empresa_id = e.id AND v.codigo = 'TEMP-001'
 CROSS JOIN generate_series(NOW() - INTERVAL '30 days', NOW(), INTERVAL '30 minutes') ts
-WHERE e.nombre = )SQL" + pqEscapeLiteral(conn, normalized) + R"SQL(
+WHERE e.nombre = $1
   AND NOT EXISTS (
   SELECT 1 FROM mineria_lecturas l
   WHERE l.empresa_id = e.id AND l.mina_id = m.id AND l.variable_id = v.id
 );
-)SQL";
-  (void)pgExecOk(conn, seedReadings);
+)SQL",
+      {normalized.c_str()});
   if (!ensureFormulaCatalogViewPg(conn)) {
     return false;
   }
