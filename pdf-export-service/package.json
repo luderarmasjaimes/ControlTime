@@ -1,0 +1,15 @@
+{
+  "name": "beemetry-pdf-export-service",
+  "version": "1.0.0",
+  "description": "Sidecar de export PDF server-side (ADR-016) — renderiza el informe con Chromium headless y devuelve el PDF, reusando el mismo componente React (ReadOnlyViewer) que ve el usuario para garantizar fidelidad visual.",
+  "private": true,
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "puppeteer": "^22.15.0"
+  }
+}

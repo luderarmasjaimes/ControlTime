@@ -20,6 +20,11 @@ dist/
 build/
 __pycache__/
 *.pyc
+ai_platform/rag/data/
+ai_platform/state/
 _deployed_frontend.js
 .env
 biometric-models/
+
+# Salida generada por Doxygen (backend/Doxyfile) — no es código fuente.
+backend/docs/html/
