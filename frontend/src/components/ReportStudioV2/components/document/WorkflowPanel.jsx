@@ -10,20 +10,26 @@ import {
    Bitácora forense inmutable con hash encadenado.
    ───────────────────────────────────────────────────────────────────────── */
 
+// Vocabulario y transiciones canónicos (ADR-017), idénticos a
+// backend/src/reports/report_workflow.hpp — el servidor es la autoridad
+// real; este mapa solo debe determinar qué botones mostrar, nunca asumir
+// que una transición "se ve bien" sin que el backend la confirme.
 const WORKFLOW_STATES = {
-  draft:    { label: 'Borrador',   color: '#94a3b8', icon: FileText },
-  review:   { label: 'En Revisión', color: '#f59e0b', icon: Eye },
-  approved: { label: 'Aprobado',   color: '#10b981', icon: CheckCircle2 },
-  signed:   { label: 'Firmado',    color: '#6366f1', icon: Shield },
-  rejected: { label: 'Rechazado',  color: '#ef4444', icon: XCircle },
+  draft:     { label: 'Borrador',    color: '#94a3b8', icon: FileText },
+  in_review: { label: 'En Revisión', color: '#f59e0b', icon: Eye },
+  approved:  { label: 'Aprobado',    color: '#10b981', icon: CheckCircle2 },
+  signed:    { label: 'Firmado',     color: '#6366f1', icon: Shield },
+  archived:  { label: 'Archivado',   color: '#64748b', icon: Hash },
+  rejected:  { label: 'Rechazado',   color: '#ef4444', icon: XCircle },
 };
 
 const WORKFLOW_TRANSITIONS = {
-  draft:    ['review'],
-  review:   ['approved', 'rejected', 'draft'],
-  approved: ['signed', 'review'],
-  signed:   [],
-  rejected: ['draft'],
+  draft:     ['in_review'],
+  in_review: ['approved', 'rejected'],
+  approved:  ['signed', 'in_review'],
+  signed:    ['archived'],
+  archived:  [],
+  rejected:  ['draft'],
 };
 
 function generateForensicHash(entry) {
@@ -68,7 +74,7 @@ export function WorkflowStatusBadge({ status }) {
 }
 
 export default function WorkflowPanel({
-  reportId, currentStatus = 'draft', auditLog = [],
+  reportId, currentStatus = 'draft', signature = null, auditLog = [],
   onTransition, onClose, currentUser = 'Usuario',
 }) {
   const [comment, setComment] = useState('');
@@ -118,10 +124,31 @@ export default function WorkflowPanel({
         )}
       </div>
 
+      {/* Firma documental (ADR-018): visible una vez que el informe llegó a
+          'signed' (o fue archivado después), nunca antes — el servidor la
+          calcula al momento exacto de la transición, no es editable. */}
+      {signature?.name && (currentStatus === 'signed' || currentStatus === 'archived') && (
+        <div className="wf-signature">
+          <Shield size={14} />
+          <div>
+            <div className="wf-signature-label">Firma documental</div>
+            <div className="wf-signature-value">
+              {signature.name}
+              {signature.role ? ` — ${signature.role}` : ''}
+            </div>
+            {signature.signedAt && (
+              <div className="wf-signature-date">
+                {new Date(signature.signedAt).toLocaleString('es-PE')}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Progress bar */}
       <div className="wf-progress">
-        {Object.entries(WORKFLOW_STATES).filter(([k]) => k !== 'rejected').map(([key, st], idx) => {
-          const keys = ['draft', 'review', 'approved', 'signed'];
+        {Object.entries(WORKFLOW_STATES).filter(([k]) => k !== 'rejected').map(([key, st], idx, arr) => {
+          const keys = ['draft', 'in_review', 'approved', 'signed', 'archived'];
           const currentIdx = keys.indexOf(currentStatus);
           const thisIdx = keys.indexOf(key);
           const isActive = thisIdx <= currentIdx;
@@ -133,7 +160,7 @@ export default function WorkflowPanel({
                 <StepIcon size={14} />
                 <span>{st.label}</span>
               </div>
-              {idx < 3 && <ChevronRight size={12} className="wf-step-arrow" />}
+              {idx < arr.length - 1 && <ChevronRight size={12} className="wf-step-arrow" />}
             </React.Fragment>
           );
         })}

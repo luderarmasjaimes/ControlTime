@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Camera, Layers, RefreshCw } from 'lucide-react';
 
+import { log } from '../../lib/logger';
 const DetailedMap = ({ 
     onCaptureMap, 
     captureButtonPlacement = 'bottom',
@@ -164,7 +165,7 @@ const DetailedMap = ({
 
             setTilesets(services);
         } catch (err) {
-            console.error('Error loading tilesets:', err);
+            log.error('Error loading tilesets:', err);
             // Fallback: try to load some default tiles if available
         } finally {
             setLoading(false);
@@ -244,7 +245,7 @@ const DetailedMap = ({
 
             setCurrentTileset(serviceUrl);
         } catch (err) {
-            console.error('Error loading tileset:', err);
+            log.error('Error loading tileset:', err);
             setStatus({ kind: 'error', text: `No se pudo cargar la capa: ${err.message}` });
         }
     };
@@ -288,7 +289,7 @@ const DetailedMap = ({
                 }
             }
         } catch (err) {
-            console.error('Error capturing map:', err);
+            log.error('Error capturing map:', err);
         }
     };
 

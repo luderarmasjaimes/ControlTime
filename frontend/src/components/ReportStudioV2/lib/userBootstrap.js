@@ -1,3 +1,4 @@
+import { log } from '../../../lib/logger';
 /**
  * userBootstrap.js
  * Bootstrap users from backend API to localStorage
@@ -166,7 +167,7 @@ export async function bootstrapUsers(company) {
       return;
     }
   } catch (err) {
-    console.debug('Failed to fetch users from backend, using seed data:', err.message);
+    log.debug('Failed to fetch users from backend, using seed data:', err.message);
   }
 
   // Fallback: create seed users
@@ -196,7 +197,7 @@ export async function refreshUsers(company) {
       return true;
     }
   } catch (err) {
-    console.debug('Failed to refresh users:', err.message);
+    log.debug('Failed to refresh users:', err.message);
   }
 
   return false;

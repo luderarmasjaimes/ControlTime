@@ -1,3 +1,4 @@
+import { log } from '../../../lib/logger';
 /* ─────────────────────────────────────────────────────────────────────────────
    .miningreport — Formato portable propietario
    ZIP + JSON + binarios firmados SHA-256
@@ -154,7 +155,7 @@ export async function importMiningReport(file) {
   const isValid = signature?.hash === computedHash;
 
   if (!isValid) {
-    console.warn('[MININGREPORT] Firma SHA-256 no coincide — posible manipulación');
+    log.warn('[MININGREPORT] Firma SHA-256 no coincide — posible manipulación');
   }
 
   // Re-inject binaries

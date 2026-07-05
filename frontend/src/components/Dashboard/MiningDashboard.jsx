@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
 import MiningWorkbenchHeader from './MiningWorkbenchHeader.jsx'
 
+import { log } from '../../lib/logger';
 const MiningDashboard = () => {
     const [heatmapData, setHeatmapData] = useState([]);
     const [kpis, setKpis] = useState(null);
@@ -20,7 +21,7 @@ const MiningDashboard = () => {
                     if (data.kpis) setKpis(data.kpis);
                 }
             } catch (err) {
-                console.error("Error fetching dashboard metrics:", err);
+                log.error("Error fetching dashboard metrics:", err);
             }
         };
         fetchMetrics();

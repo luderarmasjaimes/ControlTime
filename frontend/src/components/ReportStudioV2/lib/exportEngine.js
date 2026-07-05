@@ -1,3 +1,4 @@
+import { log } from '../../../lib/logger';
 /* ─────────────────────────────────────────────────────────────────────────────
    EXPORT ENGINE — PDF / DOCX / PPTX / PNG (server-side + client fallback)
    Etapa 1: Motor de exportación de alta fidelidad para informes mineros
@@ -45,7 +46,7 @@ export async function exportPDF(doc, options = {}) {
     downloadBlob(blob, generateFilename(doc, 'pdf'), 'application/pdf');
     return { success: true, method: 'server' };
   } catch (err) {
-    console.warn('[EXPORT] Server PDF failed, falling back to print:', err);
+    log.warn('[EXPORT] Server PDF failed, falling back to print:', err);
     window.print();
     return { success: true, method: 'print-fallback' };
   }
@@ -78,7 +79,7 @@ export async function exportDOCX(doc, options = {}) {
     downloadBlob(blob, generateFilename(doc, 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     return { success: true, method: 'server' };
   } catch (err) {
-    console.warn('[EXPORT] DOCX server export failed:', err);
+    log.warn('[EXPORT] DOCX server export failed:', err);
     // Client-side fallback: generate basic HTML-based DOCX
     return exportDOCXClientFallback(doc, options);
   }
@@ -109,7 +110,7 @@ export async function exportPPTX(doc, options = {}) {
     downloadBlob(blob, generateFilename(doc, 'pptx'), 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
     return { success: true, method: 'server' };
   } catch (err) {
-    console.warn('[EXPORT] PPTX server export failed:', err);
+    log.warn('[EXPORT] PPTX server export failed:', err);
     return { success: false, error: err.message };
   }
 }

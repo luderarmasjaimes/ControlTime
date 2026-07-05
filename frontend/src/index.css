@@ -2778,3 +2778,67 @@ textarea {
         font-size: 1.55rem;
     }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Fondo de plataforma impactante + barra inferior "Volver al menú"
+   ═══════════════════════════════════════════════════════════════════════════ */
+.dashboard-shell-mining {
+    background-color: #070b16;
+    background-image:
+        radial-gradient(circle at 12% -8%, rgba(14, 165, 233, 0.16), transparent 42%),
+        radial-gradient(circle at 88% -6%, rgba(245, 158, 11, 0.12), transparent 46%),
+        radial-gradient(circle at 50% 118%, rgba(59, 130, 246, 0.14), transparent 55%),
+        linear-gradient(180deg, #0a1120 0%, #070b16 55%, #05070f 100%);
+    background-attachment: fixed;
+}
+/* Malla de puntos sutil: profundidad sin distraer del contenido. */
+.dashboard-shell-mining::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image: radial-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+    background-size: 22px 22px;
+    -webkit-mask-image: radial-gradient(circle at 50% 24%, #000 0%, transparent 78%);
+    mask-image: radial-gradient(circle at 50% 24%, #000 0%, transparent 78%);
+}
+
+.nav-restore-bar {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    z-index: 9000;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 16px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: #e2f2ff;
+    background: linear-gradient(135deg, rgba(8, 47, 73, 0.96), rgba(15, 23, 42, 0.96));
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    box-shadow: 0 10px 30px -8px rgba(2, 132, 199, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+}
+.nav-restore-bar:hover {
+    transform: translateY(-1px);
+    border-color: rgba(56, 189, 248, 0.85);
+    box-shadow: 0 14px 36px -8px rgba(2, 132, 199, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.nav-restore-bar:active { transform: translateY(0); }
+.nav-restore-bar__ctx {
+    padding-left: 10px;
+    margin-left: 2px;
+    border-left: 1px solid rgba(148, 163, 184, 0.35);
+    font-weight: 600;
+    color: #7dd3fc;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+}

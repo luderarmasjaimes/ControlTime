@@ -4,6 +4,7 @@ import { Activity, AlertTriangle, RefreshCw, Radio, MapPin } from 'lucide-react'
 import MiningWorkbenchHeader from './MiningWorkbenchHeader.jsx';
 import { TELEMETRY_DEFAULT_TENANT_ID } from '../../auth/telemetryTenant';
 
+import { log } from '../../lib/logger';
 const defaultScope = {
     telemetryTenantId: TELEMETRY_DEFAULT_TENANT_ID,
 };
@@ -71,7 +72,7 @@ const AdvancedSensors = ({ telemetryTenantId = defaultScope.telemetryTenantId })
                     return json.sensors?.[0]?.id ?? null;
                 });
             } catch (err) {
-                console.error('Error fetching sensor data:', err);
+                log.error('Error fetching sensor data:', err);
                 if (!cancelled) setLoadError('No se pudo conectar con /api/sensors/data');
             } finally {
                 if (!cancelled) {

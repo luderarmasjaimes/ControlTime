@@ -8,11 +8,18 @@ import { getReportFilterUsers, listReportsAsync } from '../../lib/reportsStorage
 import { ensureCompanyUsers } from '../../lib/userBootstrap';
 import UserMaintenanceModal from './UserMaintenanceModal';
 
+import { log } from '../../../../lib/logger';
+// Vocabulario canónico completo (ADR-017): antes faltaban 'signed'/'rejected'
+// y el fallback a STATUS_LABELS.draft mostraba "Borrador" para informes
+// realmente firmados o rechazados — engañoso justo para el caso de uso de
+// auditoría/cumplimiento que la firma documental (ADR-018) debe sostener.
 const STATUS_LABELS = {
   draft:     { label: 'Borrador',    color: '#dbeafe', text: '#1e40af' },
   in_review: { label: 'En Revisión', color: '#fef3c7', text: '#92400e' },
   approved:  { label: 'Aprobado',    color: '#d1fae5', text: '#065f46' },
+  signed:    { label: 'Firmado',     color: '#e0e7ff', text: '#3730a3' },
   archived:  { label: 'Archivado',   color: '#f3f4f6', text: '#374151' },
+  rejected:  { label: 'Rechazado',   color: '#fee2e2', text: '#991b1b' },
 };
 
 function StatusBadge({ status }) {
@@ -67,7 +74,7 @@ export default function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit }) {
       setReports(result.data);
       setTotal(result.total);
     } catch (err) {
-      console.error('Failed to fetch reports:', err);
+      log.error('Failed to fetch reports:', err);
     } finally {
       setLoading(false);
     }
@@ -182,7 +189,9 @@ export default function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit }) {
                 <option value="draft">Borrador</option>
                 <option value="in_review">En Revisión</option>
                 <option value="approved">Aprobado</option>
+                <option value="signed">Firmado</option>
                 <option value="archived">Archivado</option>
+                <option value="rejected">Rechazado</option>
               </select>
             </div>
             <div className="ra-field ra-field-wide">

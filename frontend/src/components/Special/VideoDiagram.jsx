@@ -15,6 +15,7 @@ import CctvStreamVideo from './CctvStreamVideo.jsx'
 import MiningWorkbenchHeader from '../Dashboard/MiningWorkbenchHeader.jsx'
 import { TELEMETRY_DEFAULT_TENANT_ID } from '../../auth/telemetryTenant'
 
+import { log } from '../../lib/logger';
 function statusStyles(status) {
     const s = String(status || '').toLowerCase()
     if (s === 'online' || s === 'ok') {
@@ -78,7 +79,7 @@ const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }) => {
             setCameras(Array.isArray(data.cameras) ? data.cameras : [])
             setHasLoadedOnce(true)
         } catch (err) {
-            console.error('Failed to load cameras', err)
+            log.error('Failed to load cameras', err)
             setLoadError('No se pudo conectar con /api/surveillance/cameras')
             setCameras([])
         } finally {
@@ -136,7 +137,7 @@ const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }) => {
             if (localVideoRef.current) localVideoRef.current.srcObject = stream
             setWebcamActive(true)
         } catch (err) {
-            console.error('Webcam:', err)
+            log.error('Webcam:', err)
         }
     }
 

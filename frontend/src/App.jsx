@@ -18,6 +18,7 @@ import {
     BellRing,
     Radio,
 } from 'lucide-react'
+import { log } from './lib/logger';
     // Hubspot is removed as it is not available in lucide-react
 import { motion, AnimatePresence } from 'framer-motion'
 import AnimatedButton from './components/UI/AnimatedButton'
@@ -91,6 +92,10 @@ const DashboardApp = ({ session, onLogout }) => {
     const [dbStatus, setDbStatus] = useState('Sincronizado')
     const [activeMainMenu, setActiveMainMenu] = useState('monitoreo')
     const [navLevel, setNavLevel] = useState('main')
+    // Colapsa la barra de sub-navegación (la del botón "Volver") al entrar a
+    // cualquier módulo de trabajo, para maximizar el área. Un botón flotante
+    // inferior la restaura. Aplica a TODOS los menús, no solo Informe Técnico.
+    const [navCollapsed, setNavCollapsed] = useState(false)
     const [showAuditCenter, setShowAuditCenter] = useState(false)
     const [showUserMaintenance, setShowUserMaintenance] = useState(false)
     const [showUserMaintenancePrompt, setShowUserMaintenancePrompt] = useState(false)
@@ -461,7 +466,7 @@ const DashboardApp = ({ session, onLogout }) => {
                                             width={36}
                                             height={36}
                                             onError={() => {
-                                                console.warn('[SESSION_AVATAR] imagen base64 no válida o corrupta')
+                                                log.warn('[SESSION_AVATAR] imagen base64 no válida o corrupta')
                                                 setAvatarImageFailed(true)
                                             }}
                                         />
@@ -515,7 +520,7 @@ const DashboardApp = ({ session, onLogout }) => {
                     </div>
 
                     <div
-                        className={`relative z-10 ${compactReportChrome ? 'chrome-subnav-row' : 'mt-3'}`}
+                        className={`relative z-10 ${compactReportChrome ? 'chrome-subnav-row' : 'mt-3'}${navCollapsed ? ' hidden' : ''}`}
                     >
                         {navLevel === 'main' ? (
                             <div className="enterprise-main-nav">
@@ -531,6 +536,7 @@ const DashboardApp = ({ session, onLogout }) => {
                                                     const nextTab = tabs.find((tab) => group.items.includes(tab.name))
                                                     if (nextTab) setActiveTab(nextTab.name)
                                                     setNavLevel('sub')
+                                                    setNavCollapsed(false)
                                                 }}
                                                 title={group.tip}
                                             >
@@ -564,7 +570,7 @@ const DashboardApp = ({ session, onLogout }) => {
                                     return (
                                         <div key={t.name} className="tab-chip-wrap">
                                             <button
-                                                onClick={() => setActiveTab(t.name)}
+                                                onClick={() => { setActiveTab(t.name); setNavCollapsed(true) }}
                                                 className={`tab-button tab-button--premium tab-button--3d ${isActive ? 'tab-button--active' : ''}`}
                                                 aria-label={`Abrir ${t.name}`}
                                             >
@@ -591,6 +597,20 @@ const DashboardApp = ({ session, onLogout }) => {
                         />
                     ) : null}
                 </header>
+
+                {/* Barra inferior de restauración: reaparece el menú completo (todos los módulos). */}
+                {navCollapsed && (
+                    <button
+                        type="button"
+                        className="nav-restore-bar"
+                        onClick={() => setNavCollapsed(false)}
+                        title="Mostrar de nuevo el menú completo de la plataforma"
+                    >
+                        <ArrowLeft size={15} aria-hidden />
+                        <span>Volver al menú</span>
+                        {activeGroup?.title && <span className="nav-restore-bar__ctx">{activeGroup.title}</span>}
+                    </button>
+                )}
 
                 {/* Dynamic Visualization Bench */}
                 <main

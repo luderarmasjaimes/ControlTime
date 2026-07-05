@@ -12,7 +12,9 @@ export default function ReadOnlyViewer({ report, onClose }) {
 
   const doc = (() => {
     try {
-      const cj = report.contentJson;
+      // El backend devuelve content_json (snake_case); algunos flujos internos
+      // usan contentJson (camelCase, ya combinado en frontend). Aceptar ambos.
+      const cj = report.content_json ?? report.contentJson;
       if (!cj) return null;
       return typeof cj === 'string' ? JSON.parse(cj) : cj;
     } catch {
@@ -21,6 +23,19 @@ export default function ReadOnlyViewer({ report, onClose }) {
   })();
 
   const handleExportPdf = () => window.print();
+
+  // Entradas del índice: primera línea de cada bloque de texto, con su página.
+  const tocEntries = [];
+  if (doc?.pages) {
+    doc.pages.forEach((pg) => {
+      (pg.elements || []).forEach((el) => {
+        if (el.type === 'text' && el.props?.text) {
+          const first = String(el.props.text).split('\n')[0].trim();
+          if (first) tocEntries.push({ label: first.slice(0, 64), page: pg.page_number });
+        }
+      });
+    });
+  }
 
   return (
     <div className="ro-overlay">
@@ -68,7 +83,7 @@ export default function ReadOnlyViewer({ report, onClose }) {
                         overflow: 'hidden',
                       }}
                     >
-                      <ReadOnlyElement element={el} />
+                      <ReadOnlyElement element={el.type === 'toc' ? { ...el, _tocEntries: tocEntries } : el} />
                     </div>
                   ))}
                 </div>
@@ -85,6 +100,14 @@ export default function ReadOnlyViewer({ report, onClose }) {
           <div className="ro-meta-item"><strong>Versión:</strong> v{report.versionNumber || 1}</div>
           <div className="ro-meta-item"><strong>Creado:</strong> {report.createdAt ? new Date(report.createdAt).toLocaleString('es-PE') : '—'}</div>
           <div className="ro-meta-item"><strong>Actualizado:</strong> {report.updatedAt ? new Date(report.updatedAt).toLocaleString('es-PE') : '—'}</div>
+          {(report.signed_by_name || report.signedByName) && (
+            <div className="ro-meta-item">
+              <strong>Firma documental:</strong>{' '}
+              {report.signed_by_name ?? report.signedByName}
+              {(report.signed_by_role ?? report.signedByRole) ? ` — ${report.signed_by_role ?? report.signedByRole}` : ''}
+              {(report.signed_at ?? report.signedAt) ? ` (${new Date(report.signed_at ?? report.signedAt).toLocaleString('es-PE')})` : ''}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -167,6 +190,57 @@ function ReadOnlyElement({ element }) {
         color: '#94a3b8', fontSize: 12,
       }}>
         <img src={src} alt={props.alt || ''} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: element.objectFit || 'contain' }} />
+      </div>
+    );
+  }
+
+  if (element.type === 'cover') {
+    return (
+      <div style={{
+        width: '100%', height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column',
+        border: '1px solid #e2e8f0', borderRadius: 6, background: 'linear-gradient(180deg,#ffffff 0%,#f8fafc 100%)',
+        boxSizing: 'border-box',
+      }}>
+        <div style={{ background: '#0f172a', color: '#fbbf24', fontSize: 11, fontWeight: 700, letterSpacing: 1, textAlign: 'center', padding: '6px 0', textTransform: 'uppercase' }}>
+          {props.classification || 'CONFIDENCIAL'}
+        </div>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: 24, textAlign: 'center' }}>
+          <h1 style={{ fontSize: 30, fontWeight: 800, color: '#0f172a', margin: '0 0 10px', lineHeight: 1.15 }}>{props.title || 'Informe Técnico'}</h1>
+          {props.company && <div style={{ fontSize: 16, fontWeight: 600, color: '#334155' }}>{props.company}</div>}
+          {props.unit && <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{props.unit}</div>}
+        </div>
+        <div style={{ borderTop: '1px solid #e2e8f0', padding: '10px 20px', display: 'flex', flexWrap: 'wrap', gap: 14, fontSize: 11, color: '#475569', justifyContent: 'space-between' }}>
+          {props.docCode && <span><b>Código:</b> {props.docCode}</span>}
+          {props.author && <span><b>Autor:</b> {props.author}</span>}
+          {props.date && <span><b>Fecha:</b> {props.date}</span>}
+        </div>
+      </div>
+    );
+  }
+
+  if (element.type === 'toc') {
+    const entries = (element._tocEntries || []);
+    return (
+      <div style={{
+        width: '100%', height: '100%', overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 6,
+        background: '#ffffff', boxSizing: 'border-box', padding: 18,
+      }}>
+        <h2 style={{ fontSize: 18, fontWeight: 800, color: '#0f172a', margin: '0 0 12px', borderBottom: '2px solid #0f172a', paddingBottom: 6 }}>
+          {props.title || 'Tabla de Contenidos'}
+        </h2>
+        {entries.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>Sin entradas de índice.</div>
+        ) : (
+          <ol style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+            {entries.map((e, i) => (
+              <li key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 13, color: '#334155', padding: '3px 0' }}>
+                <span style={{ fontWeight: 600 }}>{e.label}</span>
+                <span style={{ flex: 1, borderBottom: '1px dotted #cbd5e1', margin: '0 2px', transform: 'translateY(-3px)' }} />
+                <span style={{ fontWeight: 700, color: '#0f172a' }}>{e.page}</span>
+              </li>
+            ))}
+          </ol>
+        )}
       </div>
     );
   }

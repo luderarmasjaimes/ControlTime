@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { getReportLayoutMetrics } from '../lib/reportLayoutMetrics';
 import { REPORT_IMAGE_PLACEHOLDER_SVG } from '../lib/reportImageSrc';
 
+import { log } from '../../../lib/logger';
 const INSERT_GAP = 12;
 
 const optimizeSyntaxOrder = (rawText) => {
@@ -183,6 +184,25 @@ const defaultPropsByType = (type) => {
     };
   }
 
+  if (type === 'cover') {
+    return {
+      title: 'Informe Técnico',
+      company: '',
+      unit: '',
+      author: '',
+      date: new Date().toISOString().slice(0, 10),
+      classification: 'CONFIDENCIAL',
+      docCode: '',
+    };
+  }
+
+  if (type === 'toc') {
+    return {
+      title: 'Tabla de Contenidos',
+      autoGenerate: true,
+    };
+  }
+
   return {
     title: type === 'kpi' ? 'Tonelaje movido' : `${type.toUpperCase()} BLOCK`,
     value: '—',
@@ -224,8 +244,16 @@ const createElement = (type, pageNumber, nextIndex, m) => {
           ? Math.min(420, contentW)
           : type === 'sensor'
             ? Math.min(240, contentW)
-            : Math.min(320, contentW),
-    height: type === 'kpi' ? 110 : type === 'table' ? 200 : type === 'sensor' ? 140 : 180,
+            : type === 'cover' || type === 'toc'
+              ? contentW
+              : Math.min(320, contentW),
+    height:
+      type === 'kpi' ? 110
+      : type === 'table' ? 200
+      : type === 'sensor' ? 140
+      : type === 'cover' ? 560
+      : type === 'toc' ? 340
+      : 180,
     zIndex: nextIndex,
     locked: false,
     props: defaultPropsByType(type),
@@ -288,7 +316,7 @@ export const useEditorStore = create((set, get) => ({
         currentReportTitle: reportTitle || 'Informe sin título',
       });
     } catch {
-      console.error('useEditorStore.loadDocument: JSON inválido');
+      log.error('useEditorStore.loadDocument: JSON inválido');
     }
   },
   setLayoutMode: (layoutMode) =>

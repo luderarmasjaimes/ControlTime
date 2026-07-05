@@ -5,6 +5,7 @@ import {
   deleteReport as deleteReportApi,
 } from './api';
 
+import { log } from '../../../lib/logger';
 function normalizeReport(r = {}) {
   return {
     ...r,
@@ -51,14 +52,18 @@ export async function listReportsAsync({
     if (company) {
       all = all.filter((r) => r.company === company);
     }
-    // Apply other filters locally for now, or update API to support them
+    // Apply other filters locally for now, or update API to support them.
+    // Límites explícitos en UTC (no `new Date(dateTo); .setHours(...)`, que
+    // muta en hora LOCAL del navegador): en cualquier timezone UTC-negativo
+    // (p.ej. Perú, UTC-5) eso corría el límite superior casi un día hacia
+    // atrás, excluyendo silenciosamente los informes creados "hoy" (sus
+    // `created_at` en UTC caían después del límite mal calculado).
     if (dateFrom) {
-      const from = new Date(dateFrom);
+      const from = new Date(`${dateFrom}T00:00:00.000Z`);
       all = all.filter((r) => new Date(r.createdAt) >= from);
     }
     if (dateTo) {
-      const to = new Date(dateTo);
-      to.setHours(23, 59, 59, 999);
+      const to = new Date(`${dateTo}T23:59:59.999Z`);
       all = all.filter((r) => new Date(r.createdAt) <= to);
     }
     if (status && status !== 'all') {
@@ -81,7 +86,7 @@ export async function listReportsAsync({
     const data = all.slice((page - 1) * pageSize, page * pageSize);
     return { total, page, pageSize, data };
   } catch (err) {
-    console.error('Error listing reports:', err);
+    log.error('Error listing reports:', err);
     return { total: 0, page, pageSize, data: [] };
   }
 }
@@ -98,8 +103,12 @@ export async function saveReportAsync({
   createdBy,
   createdByName,
   company,
+  workflowComment,
 }) {
   const payload = { title, project_id: null, content_json: contentJson, status };
+  if (workflowComment) {
+    payload.workflow_comment = workflowComment;
+  }
   try {
     if (id && !id.startsWith('seed_')) {
       return await updateReport(id, payload);
@@ -107,7 +116,7 @@ export async function saveReportAsync({
       return await createReport(payload);
     }
   } catch (err) {
-    console.error('Error saving report:', err);
+    log.error('Error saving report:', err);
     throw err;
   }
 }
@@ -120,7 +129,7 @@ export async function deleteReportAsync(id) {
     await deleteReportApi(id);
     return true;
   } catch (err) {
-    console.error('Error deleting report:', err);
+    log.error('Error deleting report:', err);
     return false;
   }
 }
@@ -132,7 +141,7 @@ export async function getReportAsync(id) {
 
 export async function shareReportAsync(id, { toUsername, message }) {
   // Mock background share for now
-  console.log('Sharing report', id, 'with', toUsername, ':', message);
+  log.debug('Sharing report', id, 'with', toUsername, ':', message);
   await new Promise(resolve => setTimeout(resolve, 600));
   return true;
 }

@@ -1,3 +1,4 @@
+import { log } from '../../../lib/logger';
 /* ─────────────────────────────────────────────────────────────────────────────
    AUTOSAVE ENGINE — Diff incremental vía WebSocket con recovery
    Guarda cambios cada 5 segundos, con indicador visual de estado.
@@ -100,7 +101,7 @@ export function saveLocalBackup(doc, reportId) {
     localStorage.setItem(key, JSON.stringify(backup));
     return true;
   } catch (err) {
-    console.warn('[AUTOSAVE] Local backup failed:', err);
+    log.warn('[AUTOSAVE] Local backup failed:', err);
     return false;
   }
 }
@@ -154,7 +155,7 @@ export function startAutosave(getDocument, saveCallback, reportId) {
       autosaveState.pendingDiff = null;
       previousDoc = JSON.parse(JSON.stringify(currentDoc));
     } catch (err) {
-      console.warn('[AUTOSAVE] Save failed, attempt', autosaveState.retryCount + 1, err);
+      log.warn('[AUTOSAVE] Save failed, attempt', autosaveState.retryCount + 1, err);
       autosaveState.retryCount++;
 
       if (autosaveState.retryCount >= MAX_RETRY_ATTEMPTS) {

@@ -40,6 +40,9 @@ export default function ImageInsertModal({
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
   const networkVideoRef = useRef(null);
+  // Guarda el MediaStream vivo fuera del ciclo de render para poder detenerlo
+  // sin meterlo en dependencias de efectos (evita el bucle de re-adquisición).
+  const streamRef = useRef(null);
 
   const [networkCameras, setNetworkCameras] = useState([]);
   const [networkLoading, setNetworkLoading] = useState(false);
@@ -47,12 +50,15 @@ export default function ImageInsertModal({
   const [selectedNetworkId, setSelectedNetworkId] = useState('');
   const [networkSnapshotBusy, setNetworkSnapshotBusy] = useState(false);
 
+  // Estable ([] deps): detener el stream NO debe cambiar la identidad de este
+  // callback, o el efecto de arranque de cámara se re-ejecutaría en bucle.
   const stopStream = useCallback(() => {
-    if (stream) {
-      stream.getTracks().forEach((t) => t.stop());
-      setStream(null);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
-  }, [stream]);
+    setStream(null);
+  }, []);
 
   const refreshVideoDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -68,31 +74,41 @@ export default function ImageInsertModal({
     if (tab === 'camera') refreshVideoDevices();
   }, [tab, refreshVideoDevices]);
 
+  // Adquiere el stream UNA vez por (tab, deviceId). El cleanup detiene
+  // exactamente el stream adquirido en esta ejecución → sin re-adquisición
+  // repetida ni parpadeo negro↔cámara.
   useEffect(() => {
-    if (tab !== 'camera') {
-      stopStream();
-      return;
-    }
+    if (tab !== 'camera') { stopStream(); return; }
     let cancelled = false;
-    const start = async () => {
+    let localStream = null;
+    (async () => {
       try {
-        const constraints = deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: true };
+        const constraints = deviceId
+          ? { video: { deviceId: { exact: deviceId } } }
+          : { video: true };
         const ms = await navigator.mediaDevices.getUserMedia(constraints);
-        if (cancelled) {
-          ms.getTracks().forEach(t => t.stop());
-          return;
-        }
+        if (cancelled) { ms.getTracks().forEach((t) => t.stop()); return; }
+        localStream = ms;
+        streamRef.current = ms;
         setStream(ms);
+        // Asignación directa: el <video> ya está montado (tab === 'camera').
+        if (videoRef.current) videoRef.current.srcObject = ms;
       } catch (e) {
-        setPcTabError(e.message || 'Error de cámara');
+        if (!cancelled) setPcTabError(e.message || 'Error de cámara');
       }
+    })();
+    return () => {
+      cancelled = true;
+      if (localStream) localStream.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     };
-    start();
-    return () => { cancelled = true; };
   }, [tab, deviceId, stopStream]);
 
+  // Red de seguridad: si el <video> se (re)monta con un stream vivo, reasigna.
   useEffect(() => {
-    if (videoRef.current && stream) videoRef.current.srcObject = stream;
+    if (videoRef.current && stream && videoRef.current.srcObject !== stream) {
+      videoRef.current.srcObject = stream;
+    }
   }, [stream]);
 
   const loadNetworkCameras = useCallback(async () => {

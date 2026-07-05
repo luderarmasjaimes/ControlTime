@@ -1,5 +1,6 @@
 import { getSession } from './authStorage'
 
+import { log } from '../lib/logger';
 function backendBaseUrl() {
     const env = import.meta.env.VITE_BACKEND_URL
     if (env) {
@@ -19,7 +20,7 @@ async function parseJsonResponse(response) {
     }
 
     if (!response.ok) {
-        console.error('[AUTH_API] HTTP error', {
+        log.error('[AUTH_API] HTTP error', {
             status: response.status,
             statusText: response.statusText,
             payload,
@@ -143,7 +144,7 @@ export async function registerUser(payload) {
     )
     if (t0 && typeof performance !== 'undefined') {
         const ms = Math.round(performance.now() - t0)
-        console.info('[AUTH_API] /api/auth/register OK', {
+        log.info('[AUTH_API] /api/auth/register OK', {
             ms,
             sent_template: Boolean(body.face_template),
             sent_image: Boolean(body.face_image_base64),
@@ -202,7 +203,7 @@ export async function checkLoginIdentity(company, identity) {
         }
     }
     if (response.status === 200 && payload && typeof payload.ok === 'boolean') {
-        console.info('[AUTH_API] checkLoginIdentity', {
+        log.info('[AUTH_API] checkLoginIdentity', {
             company: c,
             identityLen: id.length,
             ok: payload.ok,
@@ -249,7 +250,7 @@ export async function loginWithFace(payload) {
         throw new Error('No se capturó imagen o plantilla facial para validar.')
     }
 
-    console.info('[AUTH_FACE] loginWithFace request', {
+    log.info('[AUTH_FACE] loginWithFace request', {
         company,
         identity_login: identity,
         has_template: Boolean(body.face_template),

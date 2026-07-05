@@ -17,6 +17,8 @@ import {
   Pin,
   PinOff,
   ChevronRight,
+  FileText,
+  ListOrdered,
 } from 'lucide-react';
 
 const items = [
@@ -29,7 +31,10 @@ const items = [
   { type: 'sensor', label: 'Dato en tiempo real', icon: <Activity size={18} />, short: 'Sensor', tip: 'Insertar la lectura de un sensor en tiempo real' },
 ];
 
-export default function LeftLibrary({
+// React.memo: App.jsx ahora pasa callbacks estables (useCallback) para todos
+// estos props — antes eran arrow functions inline recreadas en cada render,
+// lo que habría anulado el memo de todas formas.
+const LeftLibrary = React.memo(function LeftLibrary({
   onAdd,
   onAddPage,
   onDuplicatePage,
@@ -37,6 +42,8 @@ export default function LeftLibrary({
   onAddFooter,
   onAddFindings,
   onExportVideo,
+  onAddCover,
+  onAddToc,
   isRecording,
 }) {
   const [isHovered, setIsHovered] = React.useState(false);
@@ -115,9 +122,8 @@ export default function LeftLibrary({
             </button>
           ))}
         </div>
-      </div>
 
-      <div className="toolbox-section panel-library-tools">
+        <div className="toolbox-section panel-library-tools">
         {!isExpanded && <div className="library-tools-divider" aria-hidden />}
         {isExpanded && (
           <div className="library-tools-heading" title="Operaciones sobre páginas y plantillas del informe">
@@ -125,6 +131,14 @@ export default function LeftLibrary({
           </div>
         )}
         <div className="toolbox-grid">
+          <button type="button" className="tool-action" onClick={onAddCover} title="Insertar bloque de portada (carátula del informe) en la página">
+            <FileText size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Portada</span>}
+          </button>
+          <button type="button" className="tool-action" onClick={onAddToc} title="Insertar índice / tabla de contenidos (se genera desde los títulos del informe)">
+            <ListOrdered size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Índice</span>}
+          </button>
           <button type="button" className="tool-action" onClick={onAddPage} title="Añadir una página en blanco al final del informe">
             <FilePlus2 size={18} aria-hidden />
             {isExpanded && <span className="tool-action-label">Nueva página</span>}
@@ -158,6 +172,9 @@ export default function LeftLibrary({
           </button>
         </div>
       </div>
+      </div>
     </aside>
   );
-}
+});
+
+export default LeftLibrary;

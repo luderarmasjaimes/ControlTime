@@ -1,3 +1,4 @@
+import { log } from '../../../lib/logger';
 /* ─────────────────────────────────────────────────────────────────────────────
    NOTIFICATION ENGINE — WhatsApp, Email, Push, In-App
    S09: WhatsApp Business API + sistema de notificaciones multi-canal
@@ -116,7 +117,7 @@ export async function sendWhatsApp(phone, message) {
     });
     return { success: response.ok, channel: 'whatsapp' };
   } catch (err) {
-    console.warn('[NOTIF] WhatsApp send failed:', err);
+    log.warn('[NOTIF] WhatsApp send failed:', err);
     return { success: false, error: err.message, channel: 'whatsapp' };
   }
 }
@@ -151,7 +152,7 @@ export async function sendPushNotification(title, body, icon = '/icon-192.png') 
 export async function dispatchNotification(templateId, vars = {}, recipientPhone = null, recipientEmail = null) {
   const template = TEMPLATES[templateId];
   if (!template) {
-    console.warn(`[NOTIF] Template ${templateId} not found`);
+    log.warn(`[NOTIF] Template ${templateId} not found`);
     return [];
   }
 

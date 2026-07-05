@@ -1,3 +1,4 @@
+import { log } from '../lib/logger';
 /**
  * Mapping of mining companies to their geographical coordinates (Lat/Lng)
  * to provide a centered view in the Map Capture Pro.
@@ -59,10 +60,10 @@ export async function initMiningLocations() {
         acc[key] = { lat: loc.latitude, lng: loc.longitude, zoom: loc.zoom || 14 };
         return acc;
       }, {});
-      console.log('[MiningLocations] Sync complete:', data.length, 'sites loaded.');
+      log.debug('[MiningLocations] Sync complete:', data.length, 'sites loaded.');
     }
   } catch (err) {
-    console.warn('[MiningLocations] Sync failed, using local fallback.', err);
+    log.warn('[MiningLocations] Sync failed, using local fallback.', err);
   }
 }
 

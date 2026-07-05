@@ -156,6 +156,27 @@ export async function deleteReport(id) {
   return response.data;
 }
 
+/** ADR-015: historial de revisiones autoritativo del servidor (una por cada guardado confirmado). */
+export async function fetchReportRevisions(id) {
+  const response = await api.get(`/reports/${encodeURIComponent(id)}/revisions`);
+  return response.data?.revisions || [];
+}
+
+/**
+ * ADR-016: export PDF server-side (Chromium headless vía sidecar), con la
+ * MISMA fidelidad visual que el visor de solo lectura (reusa ReadOnlyViewer).
+ * Requiere que el informe ya esté guardado (id real, no borrador sin guardar).
+ */
+export async function fetchReportPdfBlob(id) {
+  const response = await api.get(`/reports/${encodeURIComponent(id)}/export/pdf`, {
+    responseType: 'blob',
+    timeout: 60000,
+  });
+  const disposition = response.headers?.['content-disposition'] || '';
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return { blob: response.data, filename: match ? match[1] : 'informe.pdf' };
+}
+
 export async function validateCompany(company, ruc) {
   const response = await api.get('/auth/validate-company', { params: { company, ruc } });
   return response.data?.valid ?? false;

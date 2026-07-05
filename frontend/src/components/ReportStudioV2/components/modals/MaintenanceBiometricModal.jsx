@@ -8,6 +8,7 @@ import {
 } from '../../../../auth/authApi';
 import { computeBiometricOvalLayout, buildFullFrameJpegBase64FromVideo, frameToTemplate } from '../../../../auth/biometricOvalFrame';
 
+import { log } from '../../../../lib/logger';
 export default function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsername, company }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -17,7 +18,7 @@ export default function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, 
   // DEBUG LOGS
   useEffect(() => {
     if (isOpen) {
-      console.log("[MAINTENANCE_BIO_UI] Modal Opened. Props:", { operatorUsername, company });
+      log.debug("[MAINTENANCE_BIO_UI] Modal Opened. Props:", { operatorUsername, company });
     }
   }, [isOpen, operatorUsername, company]);
   const [cameraActive, setCameraActive] = useState(false);
@@ -62,7 +63,7 @@ export default function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, 
     try {
       setLoading(true);
       setError('');
-      console.log("[MAINTENANCE_BIO_UI] startCamera beginning...");
+      log.debug("[MAINTENANCE_BIO_UI] startCamera beginning...");
       
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('Su navegador no soporta acceso a la cámara o no está en un entorno seguro (HTTPS).');
@@ -84,7 +85,7 @@ export default function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, 
       setCameraActive(true);
       setLoading(false);
       setTimeLeft(60);
-      console.log("[MAINTENANCE_BIO_UI] Camera active. Timer started.");
+      log.debug("[MAINTENANCE_BIO_UI] Camera active. Timer started.");
       
       timerRef.current = setInterval(async () => {
         if (!videoRef.current || isVerifyingRef.current) return;
@@ -121,7 +122,7 @@ export default function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, 
       }, 700);
 
     } catch (err) {
-      console.error("Camera Error:", err);
+      log.error("Camera Error:", err);
       let msg = 'No se pudo acceder a la cámara.';
       if (err.name === 'NotAllowedError') msg = 'Acceso a la cámara denegado. Por favor, habilite los permisos en su navegador.';
       if (err.name === 'NotFoundError') msg = 'No se encontró una cámara conectada.';
@@ -138,7 +139,7 @@ export default function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, 
       const highResBase64 = buildFullFrameJpegBase64FromVideo(videoRef.current, 640, 480, 0.9);
       const template = frameToTemplate(videoRef.current);
       
-      console.log("[MAINTENANCE_BIO_UI] Attempting verification with engine...", {
+      log.debug("[MAINTENANCE_BIO_UI] Attempting verification with engine...", {
         operator: operatorUsername,
         company,
         templateLen: Array.isArray(template) ? template.length : 'not_array'
@@ -151,7 +152,7 @@ export default function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, 
         template: template
       });
 
-      console.info("[MAINTENANCE_BIO_UI] Engine Result Received:", result);
+      log.info("[MAINTENANCE_BIO_UI] Engine Result Received:", result);
 
       if (result.status === 'authenticated' || result.token || result.ok || result.success) {
         onSuccess(result);
@@ -160,7 +161,7 @@ export default function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, 
         isVerifyingRef.current = false;
       }
     } catch (err) {
-      console.error("[MAINTENANCE_BIO_UI] Critical Verification Error:", err);
+      log.error("[MAINTENANCE_BIO_UI] Critical Verification Error:", err);
       setError(err.message || 'Error en validación biométrica.');
       isVerifyingRef.current = false;
     } finally {

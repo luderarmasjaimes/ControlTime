@@ -5,6 +5,7 @@ import { telemetryTenantIdFromSession } from '../../../../auth/telemetryTenant';
 import { getSession } from '../../../../auth/authStorage';
 import { fetchMineSensors } from '../../lib/api';
 
+import { log } from '../../../../lib/logger';
 const SENSOR_ICONS = {
   temperature: <Thermometer size={14} />,
   humidity: <Droplets size={14} />,
@@ -43,7 +44,7 @@ export default function SensorWidget({ sensorId, type = 'temperature', title = '
         });
       }
     } catch (err) {
-      console.error('Error fetching sensor data for widget:', err);
+      log.error('Error fetching sensor data for widget:', err);
     } finally {
       setLoading(false);
     }

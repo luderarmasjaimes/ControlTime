@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorStore } from '../../store/useEditorStore';
 import { fetchMiningKpis } from '../../lib/api';
 import SensorInspector from './SensorInspector';
@@ -77,7 +77,7 @@ function TableInspector({ element, onUpdate }) {
         Doble clic en la tabla en el lienzo para editar celdas. Un clic selecciona y mueve el bloque.
       </p>
 
-      <div className="input-group">
+      <div className="input-group" title="Color de las líneas de la cuadrícula de la tabla">
         <label>Color de Borde</label>
         <div style={{ display: 'flex', gap: 8 }}>
           <Palette size={16} color="var(--text-muted)" />
@@ -90,7 +90,7 @@ function TableInspector({ element, onUpdate }) {
         </div>
       </div>
 
-      <div className="input-group">
+      <div className="input-group" title="Color de fondo de la primera fila (cabecera) de la tabla">
         <label>Fondo Cabecera</label>
         <div style={{ display: 'flex', gap: 8 }}>
           <Palette size={16} color="var(--text-muted)" />
@@ -104,7 +104,7 @@ function TableInspector({ element, onUpdate }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div className="input-group">
+        <div className="input-group" title="Espacio interior (px) entre el borde de cada celda y su contenido">
           <label>Padding Celdas</label>
           <input 
             className="input-premium" 
@@ -113,7 +113,7 @@ function TableInspector({ element, onUpdate }) {
             onChange={(e) => updateProps({ cellPadding: Number(e.target.value) })} 
           />
         </div>
-        <div className="input-group">
+        <div className="input-group" title="Tamaño de la tipografía del contenido de las celdas (px)">
           <label>Tamaño Texto</label>
           <input 
             className="input-premium" 
@@ -173,8 +173,8 @@ function KpiInspector({ element, onUpdate }) {
 
   return (
     <div className="inspector-form">
-      <span className="inspector-section-label">Configuración KPI Runtime</span>
-      <div className="input-group">
+      <span className="inspector-section-label" title="Vincula este bloque a un indicador KPI del sistema en tiempo real">Configuración KPI Runtime</span>
+      <div className="input-group" title="Rótulo visible del indicador en el informe. Se autocompleta al elegir un KPI del catálogo.">
         <label>Título</label>
         <input
           className="input-premium"
@@ -183,7 +183,7 @@ function KpiInspector({ element, onUpdate }) {
           placeholder="Ej: Tonelaje movido"
         />
       </div>
-      <div className="input-group">
+      <div className="input-group" title="Código del KPI en la base de datos: define de dónde se lee el valor en vivo (fuente de verdad)">
         <label>Código KPI (DB)</label>
         <select
           className="input-premium"
@@ -207,7 +207,7 @@ function KpiInspector({ element, onUpdate }) {
           ))}
         </select>
       </div>
-      <div className="input-group">
+      <div className="input-group" title="Cómo se dibuja la tendencia: mini-barras/línea (estilo informe) o anillo contra la meta">
         <label>Visualización de tendencia</label>
         <select
           className="input-premium"
@@ -282,7 +282,7 @@ function ImageInspector({ element, onUpdate, onOpenCaptureModal }) {
         />
       </div>
 
-      <div className="input-group">
+      <div className="input-group" title="Descripción de la figura para lectores de pantalla y para el pie/índice de figuras">
         <label>Texto alternativo (accesibilidad)</label>
         <input
           className="input-premium"
@@ -292,7 +292,7 @@ function ImageInspector({ element, onUpdate, onOpenCaptureModal }) {
         />
       </div>
 
-      <div className="input-group">
+      <div className="input-group" title="Cómo encaja la imagen en su marco: cubrir (recorta), contener (sin recortar) o estirar">
         <label>Ajuste en el marco</label>
         <select
           className="input-premium"
@@ -352,6 +352,121 @@ function ImageInspector({ element, onUpdate, onOpenCaptureModal }) {
   );
 }
 
+/* ───────── CHART INSPECTOR ───────── */
+const ChartInspector = React.memo(function ChartInspector({ element, onUpdate }) {
+  const props = element.props || {};
+  const updateProps = (patch) => onUpdate({ props: { ...props, ...patch } });
+  const chartTypes = [
+    { value: 'bar', label: 'Barras' },
+    { value: 'line', label: 'Líneas' },
+    { value: 'area', label: 'Área' },
+    { value: 'pie', label: 'Circular (pastel)' },
+  ];
+  const chartType = chartTypes.some((c) => c.value === props.chartType) ? props.chartType : 'bar';
+  return (
+    <div className="inspector-form">
+      <span className="inspector-section-label" title="Configuración del gráfico de series y ejes">Configuración de Gráfico</span>
+      <div className="input-group" title="Título que se muestra sobre el gráfico en el informe">
+        <label>Título</label>
+        <input className="input-premium" value={props.title || ''} onChange={(e) => updateProps({ title: e.target.value })} placeholder="Ej: Producción mensual" />
+      </div>
+      <div className="input-group" title="Tipo de representación: barras, líneas, área o circular">
+        <label>Tipo de gráfico</label>
+        <select className="input-premium" value={chartType} onChange={(e) => updateProps({ chartType: e.target.value })}>
+          {chartTypes.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+      </div>
+      <div className="input-group" title="Si está activo, el gráfico refleja datos en vivo; si no, un snapshot fijo">
+        <label>Datos en vivo</label>
+        <select className="input-premium" value={props.live ? 'yes' : 'no'} onChange={(e) => updateProps({ live: e.target.value === 'yes' })}>
+          <option value="yes">Sí — actualiza en tiempo real</option>
+          <option value="no">No — snapshot fijo (reproducible)</option>
+        </select>
+      </div>
+    </div>
+  );
+});
+
+/* ───────── TEXT INSPECTOR ───────── */
+const TextInspector = React.memo(function TextInspector({ element, onUpdate }) {
+  const props = element.props || {};
+  const updateProps = (patch) => onUpdate({ props: { ...props, ...patch } });
+  return (
+    <div className="inspector-form">
+      <span className="inspector-section-label" title="Formato del bloque de texto (párrafos y listas)">Formato de Texto</span>
+      <p style={{ margin: '0 0 10px', fontSize: 11, color: '#94a3b8', lineHeight: 1.35 }}>
+        Doble clic en el bloque del lienzo para editar el contenido. Aquí ajusta el formato.
+      </p>
+      <div className="inspector-grid-2">
+        <div className="input-group" title="Familia tipográfica del bloque (estilo documento)">
+          <label>Fuente</label>
+          <select className="input-premium" value={props.fontFamily || 'Arial'} onChange={(e) => updateProps({ fontFamily: e.target.value })}>
+            {['Arial', 'Inter', 'Times New Roman', 'Georgia', 'Calibri', 'Verdana'].map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+        </div>
+        <div className="input-group" title="Tamaño de la tipografía en puntos">
+          <label>Tamaño</label>
+          <input className="input-premium" type="number" value={Number(props.fontSize) || 16} onChange={(e) => updateProps({ fontSize: Number(e.target.value) })} />
+        </div>
+      </div>
+      <div className="inspector-grid-2">
+        <div className="input-group" title="Color del texto">
+          <label>Color</label>
+          <input type="color" value={props.fontColor || '#0f172a'} onChange={(e) => updateProps({ fontColor: e.target.value })} style={{ width: '100%', height: 32, padding: 0, border: 'none', background: 'none' }} />
+        </div>
+        <div className="input-group" title="Alineación horizontal del párrafo">
+          <label>Alineación</label>
+          <select className="input-premium" value={props.textAlign || 'left'} onChange={(e) => updateProps({ textAlign: e.target.value })}>
+            <option value="left">Izquierda</option>
+            <option value="center">Centro</option>
+            <option value="right">Derecha</option>
+            <option value="justify">Justificado</option>
+          </select>
+        </div>
+      </div>
+      <div className="input-group" title="Tipo de lista aplicada al bloque">
+        <label>Lista</label>
+        <select className="input-premium" value={props.listType || 'none'} onChange={(e) => updateProps({ listType: e.target.value })}>
+          <option value="none">Sin lista</option>
+          <option value="bullet">Viñetas</option>
+          <option value="ordered">Numerada</option>
+        </select>
+      </div>
+      <div className="inspector-actions" style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+        <button className={`btn-premium-outline${props.bold ? ' btn-premium-outline--active' : ''}`} style={{ flex: 1 }} onClick={() => updateProps({ bold: !props.bold })} title="Alternar negrita">
+          <Type size={14} /> Negrita
+        </button>
+        <button className={`btn-premium-outline${props.italic ? ' btn-premium-outline--active' : ''}`} style={{ flex: 1 }} onClick={() => updateProps({ italic: !props.italic })} title="Alternar cursiva">
+          <Type size={14} /> Cursiva
+        </button>
+      </div>
+    </div>
+  );
+});
+
+/* ───────── MAP INSPECTOR ───────── */
+const MapInspector = React.memo(function MapInspector({ element, onUpdate }) {
+  const props = element.props || {};
+  const updateProps = (patch) => onUpdate({ props: { ...props, ...patch } });
+  return (
+    <div className="inspector-form">
+      <span className="inspector-section-label" title="Configuración del bloque de mapa de alta definición">Configuración de Mapa</span>
+      <p style={{ margin: '0 0 10px', fontSize: 11, color: '#94a3b8', lineHeight: 1.35 }}>
+        En v0.1 el mapa se inserta como captura de alta resolución. Use el título y el
+        texto alternativo para el índice de figuras.
+      </p>
+      <div className="input-group" title="Título del mapa mostrado en el informe">
+        <label>Título</label>
+        <input className="input-premium" value={props.title || ''} onChange={(e) => updateProps({ title: e.target.value })} placeholder="Ej: Plano de faena — Unidad Principal" />
+      </div>
+      <div className="input-group" title="Descripción para accesibilidad e índice de figuras">
+        <label>Texto alternativo</label>
+        <input className="input-premium" value={props.alt || ''} onChange={(e) => updateProps({ alt: e.target.value })} placeholder="Descripción breve del mapa" />
+      </div>
+    </div>
+  );
+});
+
 /* ───────── MAIN COMPONENT ───────── */
 export default function RightInspector({ onRequestImageReplace }) {
   const selectedPage = useEditorStore((s) => s.selectedPage);
@@ -365,9 +480,22 @@ export default function RightInspector({ onRequestImageReplace }) {
     [page, selectedElementId],
   );
 
+  // Callback ESTABLE para los inspectores: junto con React.memo evita
+  // re-renders de los sub-inspectores cuando el panel se re-renderiza por
+  // hover/pin (no por cambio del bloque seleccionado).
+  const handleUpdate = useCallback(
+    (patch) => {
+      if (selected) updateElement(selectedPage, selected.id, patch);
+    },
+    [selectedPage, selected, updateElement],
+  );
+
   const [isHovered, setIsHovered] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
-  const isExpanded = isHovered || isPinned;
+  // Al seleccionar un bloque en el lienzo, el panel se expande automáticamente
+  // para mostrar sus propiedades (además de hover/pin). Es el comportamiento
+  // esperado: seleccionar objeto ⇒ ver y editar sus parámetros de inmediato.
+  const isExpanded = isHovered || isPinned || Boolean(selected);
 
   const typeMeta = selected ? ELEMENT_TYPE_META[selected.type] : null;
   const TypeIcon = typeMeta?.icon || Settings2;
@@ -447,13 +575,31 @@ export default function RightInspector({ onRequestImageReplace }) {
           {selected.type === 'table' && (
             <TableInspector 
               element={selected} 
-              onUpdate={(patch) => updateElement(selectedPage, selected.id, patch)} 
+              onUpdate={handleUpdate} 
             />
           )}
           {selected.type === 'kpi' && (
             <KpiInspector
               element={selected}
-              onUpdate={(patch) => updateElement(selectedPage, selected.id, patch)}
+              onUpdate={handleUpdate}
+            />
+          )}
+          {selected.type === 'chart' && (
+            <ChartInspector
+              element={selected}
+              onUpdate={handleUpdate}
+            />
+          )}
+          {selected.type === 'text' && (
+            <TextInspector
+              element={selected}
+              onUpdate={handleUpdate}
+            />
+          )}
+          {selected.type === 'map' && (
+            <MapInspector
+              element={selected}
+              onUpdate={handleUpdate}
             />
           )}
 
@@ -461,7 +607,7 @@ export default function RightInspector({ onRequestImageReplace }) {
             <div style={{ marginTop: selected.type === 'table' || selected.type === 'kpi' ? 18 : 0 }}>
               <SensorInspector
                 element={selected}
-                onUpdate={(patch) => updateElement(selectedPage, selected.id, patch)}
+                onUpdate={handleUpdate}
               />
             </div>
           )}
@@ -470,7 +616,7 @@ export default function RightInspector({ onRequestImageReplace }) {
             <div style={{ marginTop: selected.type === 'table' || selected.type === 'kpi' ? 18 : 0 }}>
               <ImageInspector
                 element={selected}
-                onUpdate={(patch) => updateElement(selectedPage, selected.id, patch)}
+                onUpdate={handleUpdate}
                 onOpenCaptureModal={(tab) => onRequestImageReplace?.(selectedPage, selected.id, tab)}
               />
             </div>
@@ -479,32 +625,26 @@ export default function RightInspector({ onRequestImageReplace }) {
           <div
             className="inspector-form"
             style={{
-              marginTop:
-                selected.type === 'table' ||
-                selected.type === 'kpi' ||
-                selected.type === 'sensor' ||
-                selected.type === 'image'
-                  ? 18
-                  : 0,
+              marginTop: ['table', 'kpi', 'sensor', 'image', 'chart', 'text', 'map'].includes(selected.type) ? 18 : 0,
             }}
           >
-            <span className="inspector-section-label">Geometría y Bloqueo</span>
+            <span className="inspector-section-label" title="Posición, tamaño y bloqueo del bloque dentro de la página">Geometría y Bloqueo</span>
             <div className="inspector-grid-2" style={{ marginTop: 8 }}>
-               <div className="input-group">
+               <div className="input-group" title="Distancia horizontal (px) desde el borde izquierdo de la página al bloque">
                   <label>Posición X</label>
                   <input className="input-premium" type="number" value={Math.round(selected.x)} onChange={(e) => updateElement(selectedPage, selected.id, { x: Number(e.target.value) })} />
                </div>
-               <div className="input-group">
+               <div className="input-group" title="Distancia vertical (px) desde el borde superior de la página al bloque">
                   <label>Posición Y</label>
                   <input className="input-premium" type="number" value={Math.round(selected.y)} onChange={(e) => updateElement(selectedPage, selected.id, { y: Number(e.target.value) })} />
                </div>
             </div>
             <div className="inspector-grid-2">
-               <div className="input-group">
+               <div className="input-group" title="Ancho del bloque en píxeles (mínimo 20)">
                   <label>Ancho</label>
                   <input className="input-premium" type="number" value={Math.round(selected.width)} onChange={(e) => updateElement(selectedPage, selected.id, { width: Math.max(20, Number(e.target.value)) })} />
                </div>
-               <div className="input-group">
+               <div className="input-group" title="Alto del bloque en píxeles (mínimo 20)">
                   <label>Alto</label>
                   <input className="input-premium" type="number" value={Math.round(selected.height)} onChange={(e) => updateElement(selectedPage, selected.id, { height: Math.max(20, Number(e.target.value)) })} />
                </div>

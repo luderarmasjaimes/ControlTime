@@ -1,3 +1,4 @@
+import { log } from '../../../lib/logger';
 const USERS_KEY = 'mining_auth_users_v1';
 const AUDIT_KEY = 'mining_user_maintenance_audit_v1';
 
@@ -108,7 +109,7 @@ export async function listCompanyUsersUnified(company) {
       };
     }
   } catch (err) {
-    console.warn("[MAINTENANCE_STORAGE] Backend list failed, using local fallback", err);
+    log.warn("[MAINTENANCE_STORAGE] Backend list failed, using local fallback", err);
   }
 
   return {
@@ -323,7 +324,7 @@ export async function applyUserMaintenanceUnified(payload) {
        return { ok: false, source: 'backend', message: response.error };
     }
   } catch (err) {
-    console.error("[MAINTENANCE_STORAGE] Backend apply error:", err);
+    log.error("[MAINTENANCE_STORAGE] Backend apply error:", err);
     // Solo si el error es de conexión o similar, intentamos fallback local
     if (err.message?.includes('failed') || err.message?.includes('network')) {
        const local = applyUserMaintenance(payload);

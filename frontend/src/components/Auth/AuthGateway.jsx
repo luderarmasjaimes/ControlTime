@@ -59,6 +59,7 @@ import {
 } from '../../auth/biometricOvalFrame'
 import { PlatformBrandPanelHeader } from '../../brand/PlatformBrandMark'
 
+import { log } from '../../lib/logger';
 const DEFAULT_COMPANIES = [
     'Alpayana',
     'Anglo American Quellaveco',
@@ -557,7 +558,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                     return { ...prev, company: uniqueCompanies[0] }
                 })
             } catch (err) {
-                console.warn('[AUTH_UI] fetchCompanies failed; using local catalog', err)
+                log.warn('[AUTH_UI] fetchCompanies failed; using local catalog', err)
                 setCompanies(DEFAULT_COMPANIES)
                 setLoginForm((prev) => ({ ...prev, company: DEFAULT_COMPANIES[0] }))
                 setRegisterForm((prev) => ({ ...prev, company: DEFAULT_COMPANIES[0] }))
@@ -604,7 +605,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 const isValid = await validateCompany(registerForm.company, registerForm.ruc);
                 setRegisterForm(prev => ({ ...prev, rucValid: isValid, isValidatingRuc: false }));
             } catch (err) {
-                console.error("RUC Validation error:", err);
+                log.error("RUC Validation error:", err);
                 setRegisterForm(prev => ({ ...prev, rucValid: false, isValidatingRuc: false }));
             }
         }, 800);
@@ -690,7 +691,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 if (videoRef.current) {
                     videoRef.current.onloadedmetadata = () => {
                         videoRef.current?.play().catch((e) =>
-                            console.warn('Reproducción automática:', e)
+                            log.warn('Reproducción automática:', e)
                         )
                     }
                 }
@@ -1459,13 +1460,13 @@ const AuthGateway = ({ onAuthenticated }) => {
                         return updated
                     })
                 }
-            } catch (err) { console.error("Tracking Error:", err) }
+            } catch (err) { log.error("Tracking Error:", err) }
             requestID = requestAnimationFrame(detectFaceLoop)
         }
 
 
         if (cameraReady) {
-            console.log("Starting biometric detection loop...");
+            log.debug("Starting biometric detection loop...");
             requestID = requestAnimationFrame(detectFaceLoop)
         }
 
@@ -1485,7 +1486,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             const now = performance.now()
             if (!gateOk && now - authFaceAutoDiagAtRef.current > 2000) {
                 authFaceAutoDiagAtRef.current = now
-                console.info('[AUTH_FACE_AUTO] 3/3 muestras pero gate de envío cerrado', {
+                log.info('[AUTH_FACE_AUTO] 3/3 muestras pero gate de envío cerrado', {
                     qualityReady: Boolean(faceGuide.qualityReady),
                     validFrames: Number(faceGuide.validFrames || 0),
                     captureCount: Number(faceGuide.captureCount || 0),
@@ -1503,7 +1504,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             hasRequiredBiometricSamples &&
             !loginSubmitTriggeredRef.current
         ) {
-            console.info('[AUTH_FACE_AUTO] disparando login facial', {
+            log.info('[AUTH_FACE_AUTO] disparando login facial', {
                 qualityReady: Boolean(faceGuide.qualityReady),
                 captureCount: Number(faceGuide.captureCount || 0),
                 lastServerOk: Boolean(faceGuide.lastServerOk),
@@ -1552,7 +1553,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             return
         }
         registerAutoSubmitTriggeredRef.current = true
-        console.info('[AUTH_REGISTER_FLOW] direct trigger by samples', {
+        log.info('[AUTH_REGISTER_FLOW] direct trigger by samples', {
             samples,
             requiredFrames: Number(FACIAL_ICAO.REQUIRED_VALID_FRAMES),
             qualityReady: Boolean(faceGuide.qualityReady),
@@ -1573,7 +1574,7 @@ const AuthGateway = ({ onAuthenticated }) => {
     const startLoginFaceSession = async () => {
         const id = String(loginForm.username || '').trim()
         const company = String(loginForm.company || '').trim()
-        console.info('[AUTH_FACE_UI] start session requested', {
+        log.info('[AUTH_FACE_UI] start session requested', {
             company,
             identity: id,
             loginTab,
@@ -1599,7 +1600,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                         ? 'USUARIO NO EXISTE'
                         : check.error || 'USUARIO NO EXISTE'
                 setError(msg)
-                console.warn('[AUTH_FACE_UI] identidad rechazada antes de cámara', {
+                log.warn('[AUTH_FACE_UI] identidad rechazada antes de cámara', {
                     company,
                     identity: id,
                     reason: check.reason,
@@ -1607,7 +1608,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 })
                 return
             }
-            console.info('[AUTH_FACE_UI] identidad verificada, abriendo sesión facial', {
+            log.info('[AUTH_FACE_UI] identidad verificada, abriendo sesión facial', {
                 company,
                 resolvedUsername: check.username,
             })
@@ -1647,7 +1648,7 @@ const AuthGateway = ({ onAuthenticated }) => {
     const handleFaceLogin = async (probeOverride = null) => {
         if (!videoRef.current || !cameraReady) {
             loginSubmitTriggeredRef.current = false
-            console.warn('[AUTH_FACE_UI] handleFaceLogin abort: camera', {
+            log.warn('[AUTH_FACE_UI] handleFaceLogin abort: camera', {
                 hasVideo: Boolean(videoRef.current),
                 cameraReady,
             })
@@ -1656,7 +1657,7 @@ const AuthGateway = ({ onAuthenticated }) => {
         }
         if (mode === 'login' && !loginBiometricSessionRef.current) {
             loginSubmitTriggeredRef.current = false
-            console.warn('[AUTH_FACE_UI] handleFaceLogin abort: no sesión biométrica login')
+            log.warn('[AUTH_FACE_UI] handleFaceLogin abort: no sesión biométrica login')
             setError(
                 'Active la verificación facial con el botón «Ingresar con Reconocimiento Facial».'
             )
@@ -1666,7 +1667,7 @@ const AuthGateway = ({ onAuthenticated }) => {
         const id = String(loginForm.username || '').trim()
         if (!id) {
             loginSubmitTriggeredRef.current = false
-            console.warn('[AUTH_FACE_UI] handleFaceLogin abort: identidad vacía')
+            log.warn('[AUTH_FACE_UI] handleFaceLogin abort: identidad vacía')
             setError(
                 'Indique Usuario, DNI o RUC antes del reconocimiento facial.'
             )
@@ -1687,7 +1688,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 }
             const template = probe.template
             const imageBase64 = probe.imageBase64
-            console.info('[AUTH_FACE_UI] submit face login', {
+            log.info('[AUTH_FACE_UI] submit face login', {
                 company: String(loginForm.company || '').trim(),
                 identity: id,
                 template_dim: Array.isArray(template) ? template.length : 0,
@@ -1705,7 +1706,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             })
             const user = result.user
             const score = result.score || 0
-            console.info('[AUTH_FACE_UI] login success', {
+            log.info('[AUTH_FACE_UI] login success', {
                 user: user?.username,
                 company: user?.company,
                 score,
@@ -1716,7 +1717,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             onAuthenticated(session)
         } catch (err) {
             loginSubmitTriggeredRef.current = false
-            console.warn('[AUTH_FACE_UI] login failed', {
+            log.warn('[AUTH_FACE_UI] login failed', {
                 message: err?.message || String(err),
                 company: String(loginForm.company || '').trim(),
                 identity: id,
@@ -1761,7 +1762,7 @@ const AuthGateway = ({ onAuthenticated }) => {
 
         const releaseRegisterAutoTrigger = (reason) => {
             if (!isUserRegisterCapture) return
-            console.info('[AUTH_REGISTER_FLOW] registerAutoSubmit ref liberado', { reason })
+            log.info('[AUTH_REGISTER_FLOW] registerAutoSubmit ref liberado', { reason })
             registerAutoSubmitTriggeredRef.current = false
         }
 
@@ -1769,7 +1770,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             Number(faceGuide.captureCount || 0) >= FACIAL_ICAO.REQUIRED_VALID_FRAMES &&
             Boolean(faceGuide.lastServerOk)
 
-        console.info('[AUTH_REGISTER_FLOW] capture invoked', {
+        log.info('[AUTH_REGISTER_FLOW] capture invoked', {
             mode,
             registerTab,
             step: registerUserBiometricStepRef.current,
@@ -1783,19 +1784,19 @@ const AuthGateway = ({ onAuthenticated }) => {
             isUserRegisterCapture,
         })
         if (registrationApiInFlightRef.current) {
-            console.info('[AUTH_REGISTER_FLOW] blocked: request already in flight')
+            log.info('[AUTH_REGISTER_FLOW] blocked: request already in flight')
             return
         }
         if (!videoRef.current || !cameraReady) {
             setError('La camara no esta lista para el registro facial.')
-            console.warn('[AUTH_REGISTER_FLOW] blocked: camera not ready')
+            log.warn('[AUTH_REGISTER_FLOW] blocked: camera not ready')
             releaseRegisterAutoTrigger('camera_not_ready')
             return
         }
 
         if (!faceGuide.detected) {
             setError('Mantenga el rostro visible y centrado en el ovalo.')
-            console.warn('[AUTH_REGISTER_FLOW] blocked: face not detected')
+            log.warn('[AUTH_REGISTER_FLOW] blocked: face not detected')
             releaseRegisterAutoTrigger('not_detected')
             return
         }
@@ -1803,7 +1804,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             setError(
                 'Complete los 5 parámetros ICAO + liveness (FACIAL): ojos, boca, frontalidad, sin lentes y anti-spoofing ≥ 70%.'
             )
-            console.warn('[AUTH_REGISTER_FLOW] blocked: quality_gate', {
+            log.warn('[AUTH_REGISTER_FLOW] blocked: quality_gate', {
                 qualityReady: Boolean(faceGuide.qualityReady),
                 captureCount: Number(faceGuide.captureCount || 0),
                 lastServerOk: Boolean(faceGuide.lastServerOk),
@@ -1813,7 +1814,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             return
         }
         if (isUserRegisterCapture && serverSamplesReady && !faceGuide.qualityReady) {
-            console.info(
+            log.info(
                 '[AUTH_REGISTER_FLOW] envío permitido por 3/3 servidor + último frame OK (qualityReady local false)'
             )
         }
@@ -1834,7 +1835,7 @@ const AuthGateway = ({ onAuthenticated }) => {
             setIsProcessing(true)
             setError('')
             setMessage('')
-            console.info('[AUTH_REGISTER_FLOW] registerUser request', {
+            log.info('[AUTH_REGISTER_FLOW] registerUser request', {
                 company: String(registerForm.company || '').trim(),
                 username: String(registerForm.username || '').trim(),
                 dni: String(registerForm.dni || '').trim(),
@@ -1852,7 +1853,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                     facePortraitOvalBase64: portraitOvalBase64,
                     faceBustRectBase64: bustRectBase64,
                 })
-                console.info('[AUTH_REGISTER_FLOW] registerUser success', {
+                log.info('[AUTH_REGISTER_FLOW] registerUser success', {
                     user: result?.user?.username,
                     company: result?.user?.company,
                     provider: result?.biometric_provider || 'unknown',
@@ -1890,7 +1891,7 @@ const AuthGateway = ({ onAuthenticated }) => {
                 setCapturedBustRectBase64('')
                 setError(err.message)
                 releaseRegisterAutoTrigger('api_error')
-                console.warn('[AUTH_REGISTER_FLOW] registerUser error', {
+                log.warn('[AUTH_REGISTER_FLOW] registerUser error', {
                     message: err?.message || String(err),
                     stack: err?.stack || null,
                 })

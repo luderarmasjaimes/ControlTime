@@ -311,7 +311,12 @@ function snap(value, enabled) {
   return Math.round(value / GRID) * GRID;
 }
 
-export default function PageCanvas({ page, viewportScale = 1, totalPages, onRequestImageReplace }) {
+// React.memo: cada página es un objeto propio en el store (useEditorStore
+// solo reemplaza la referencia de la página editada — ver
+// updateElement/removeElement, etc.), así que memoizar por props evita
+// re-renderizar TODAS las páginas del documento en cada tecla escrita en
+// UNA sola página.
+const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, totalPages, onRequestImageReplace }) {
   const transformerRef = useRef(null);
   const layerRef = useRef(null);
   const stageRef = useRef(null);
@@ -949,6 +954,79 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages, onRequ
             ))}
 
           {page.elements
+            .filter((element) => element.type === 'cover')
+            .map((element) => {
+              const p = element.props || {};
+              return (
+                <Html key={`${element.id}-cover`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+                  <div className="report-canvas-html-shield" style={{
+                    width: element.width - 8, height: element.height - 8, overflow: 'hidden',
+                    display: 'flex', flexDirection: 'column', border: '1px solid #e2e8f0',
+                    borderRadius: 6, background: 'linear-gradient(180deg,#ffffff 0%,#f8fafc 100%)',
+                    boxSizing: 'border-box',
+                  }}>
+                    <div style={{ background: '#0f172a', color: '#fbbf24', fontSize: 11, fontWeight: 700, letterSpacing: 1, textAlign: 'center', padding: '6px 0', textTransform: 'uppercase' }}>
+                      {p.classification || 'CONFIDENCIAL'}
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: 24, textAlign: 'center' }}>
+                      <h1 style={{ fontSize: 30, fontWeight: 800, color: '#0f172a', margin: '0 0 10px', lineHeight: 1.15 }}>{p.title || 'Informe Técnico'}</h1>
+                      {p.company && <div style={{ fontSize: 16, fontWeight: 600, color: '#334155' }}>{p.company}</div>}
+                      {p.unit && <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{p.unit}</div>}
+                    </div>
+                    <div style={{ borderTop: '1px solid #e2e8f0', padding: '10px 20px', display: 'flex', flexWrap: 'wrap', gap: 14, fontSize: 11, color: '#475569', justifyContent: 'space-between' }}>
+                      {p.docCode && <span><b>Código:</b> {p.docCode}</span>}
+                      {p.author && <span><b>Autor:</b> {p.author}</span>}
+                      {p.date && <span><b>Fecha:</b> {p.date}</span>}
+                    </div>
+                  </div>
+                </Html>
+              );
+            })}
+
+          {page.elements
+            .filter((element) => element.type === 'toc')
+            .map((element) => {
+              const p = element.props || {};
+              const allPages = useEditorStore.getState().doc.pages || [];
+              const entries = [];
+              allPages.forEach((pg) => {
+                (pg.elements || []).forEach((el) => {
+                  if (el.type === 'text' && el.props?.text) {
+                    const first = String(el.props.text).split('\n')[0].trim();
+                    if (first) entries.push({ label: first.slice(0, 64), page: pg.page_number });
+                  }
+                });
+              });
+              return (
+                <Html key={`${element.id}-toc`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+                  <div className="report-canvas-html-shield" style={{
+                    width: element.width - 8, height: element.height - 8, overflow: 'auto',
+                    border: '1px solid #e2e8f0', borderRadius: 6, background: '#ffffff', boxSizing: 'border-box', padding: 18,
+                  }}>
+                    <h2 style={{ fontSize: 18, fontWeight: 800, color: '#0f172a', margin: '0 0 12px', borderBottom: '2px solid #0f172a', paddingBottom: 6 }}>
+                      {p.title || 'Tabla de Contenidos'}
+                    </h2>
+                    {entries.length === 0 ? (
+                      <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
+                        Agregue bloques de texto con títulos para generar el índice automáticamente.
+                      </div>
+                    ) : (
+                      <ol style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                        {entries.map((e, i) => (
+                          <li key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 13, color: '#334155', padding: '3px 0' }}>
+                            <span style={{ fontWeight: 600 }}>{e.label}</span>
+                            <span style={{ flex: 1, borderBottom: '1px dotted #cbd5e1', margin: '0 2px', transform: 'translateY(-3px)' }} />
+                            <span style={{ fontWeight: 700, color: '#0f172a' }}>{e.page}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                </Html>
+              );
+            })}
+
+          {page.elements
             .filter((element) => element.type === 'sensor')
             .map((element) => (
               <Html key={`${element.id}-sensor`} groupProps={{ x: element.x, y: element.y, listening: false }}>
@@ -1481,4 +1559,6 @@ export default function PageCanvas({ page, viewportScale = 1, totalPages, onRequ
       </Stage>
     </div>
   );
-}
+});
+
+export default PageCanvas;

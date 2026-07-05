@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import Hls from 'hls.js'
 
+import { log } from '../../lib/logger';
 /**
  * Reproduce URL HTTP(S) en <video>: MP4/WebM directo o HLS (.m3u8) vía hls.js.
  * RTMP no es reproducible en navegadores; usar otro componente para mostrar la URL.
@@ -63,7 +64,7 @@ export default function CctvStreamVideo({ streamUrl, className, muted = true, ca
                 hlsRef.current = hls
                 hls.on(Hls.Events.ERROR, (_, data) => {
                     if (data.fatal) {
-                        console.warn('[CCTV HLS]', data.type, data.details)
+                        log.warn('[CCTV HLS]', data.type, data.details)
                     }
                 })
                 hls.loadSource(u)

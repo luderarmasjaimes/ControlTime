@@ -3,6 +3,7 @@ import { X, Sigma, Play } from 'lucide-react';
 import { getSession } from '../../../../auth/authStorage';
 import { fetchAnalysisCatalogs, runTemperatureAnalysis } from '../../lib/api';
 
+import { log } from '../../../../lib/logger';
 function toIsoLocalDateTime(dateStr, endOfDay = false) {
   if (!dateStr) return '';
   return `${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}-05:00`;
@@ -45,7 +46,7 @@ export default function FormulaAnalysisModal({ onClose }) {
         }
       })
       .catch((e) => {
-        console.error(e);
+        log.error(e);
         const message = e instanceof Error ? e.message : 'No se pudo cargar el catalogo de formula minera.';
         if (alive) setError(message);
       })
@@ -118,7 +119,7 @@ export default function FormulaAnalysisModal({ onClose }) {
       setRows(result.rows || []);
       setSummary(result.summary || null);
     } catch (e) {
-      console.error(e);
+      log.error(e);
       const message = e instanceof Error ? e.message : 'No fue posible ejecutar la formula minera para el rango solicitado.';
       setError(message);
     } finally {

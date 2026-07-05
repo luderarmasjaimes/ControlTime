@@ -180,6 +180,10 @@
 .wf-current-label{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.5px}
 .wf-current-value{font-size:14px;font-weight:700}
 .wf-report-id{font-size:9px;color:#475569;display:flex;align-items:center;gap:4px}
+.wf-signature{display:flex;align-items:flex-start;gap:8px;padding:10px 14px;border-bottom:1px solid rgba(100,116,139,.1);color:#a7f3d0;background:rgba(16,185,129,.06)}
+.wf-signature-label{font-size:9px;color:#6ee7b7;text-transform:uppercase;letter-spacing:.5px}
+.wf-signature-value{font-size:12px;font-weight:700;color:#d1fae5}
+.wf-signature-date{font-size:9px;color:#6ee7b7;margin-top:2px}
 .wf-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;color:var(--wf-color);background:rgba(0,0,0,.2);border:1px solid var(--wf-color)}
 .wf-progress{display:flex;align-items:center;gap:4px;padding:10px 14px;border-bottom:1px solid rgba(100,116,139,.1);overflow-x:auto}
 .wf-step{display:flex;align-items:center;gap:4px;padding:4px 8px;border-radius:4px;font-size:9px;color:#475569;background:rgba(30,41,59,.5);white-space:nowrap}

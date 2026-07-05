@@ -5,6 +5,7 @@ import { Layers, RefreshCw, LocateFixed, Filter, Mountain, ShieldAlert, Route, D
 import WMS_CATALOG from '../../config/wmsCorporateCatalog.json';
 import TerritorialCompliancePanel from './TerritorialCompliancePanel.jsx';
 
+import { log } from '../../lib/logger';
 const INITIAL_VIEW = { lat: -17.2464, lng: -70.612, zoom: 13 };
 
 const BASEMAPS = {
@@ -164,7 +165,7 @@ const MapViewer = ({
             setGeoCompliance(data);
             setGeoComplianceError(null);
         } catch (err) {
-            console.error('compliance-intersections', err);
+            log.error('compliance-intersections', err);
             setGeoComplianceError(err?.message || 'Error al evaluar cumplimiento');
             setGeoCompliance(null);
         } finally {
@@ -189,7 +190,7 @@ const MapViewer = ({
             gj.addTo(mapRef.current);
             officialGeoLayerRef.current = gj;
         } catch (err) {
-            console.error('official-zones', err);
+            log.error('official-zones', err);
         }
     }, [showOfficialGeo]);
 
@@ -314,7 +315,7 @@ const MapViewer = ({
             layer.addTo(mapRef.current);
             externalWmsLayerRef.current = layer;
         } catch (err) {
-            console.error('WMS layer error', err);
+            log.error('WMS layer error', err);
             setWmsStatus('Error al activar capa WMS');
         }
     }, [showExternalWms, wmsUrl, wmsLayerName, wmsOpacity, selectedWmsPreset]);
@@ -328,7 +329,7 @@ const MapViewer = ({
             const data = await res.json();
             setAllMarkers(Array.isArray(data?.markers) ? data.markers : []);
         } catch (err) {
-            console.error('Error loading map markers', err);
+            log.error('Error loading map markers', err);
             setAllMarkers([]);
         } finally {
             setLoading(false);

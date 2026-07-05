@@ -7,6 +7,7 @@ import {
 import { USER_ROLES, getRoleLabel, getRoleColor } from '../../../../auth/roleConstants';
 import { getSession } from '../../../../auth/authStorage';
 import { applyUserMaintenanceUnified, listCompanyUsersUnified, listMaintenanceAuditUnified } from '../../lib/userMaintenanceStorage';
+import { log } from '../../../../lib/logger';
 // Modal movido internamente para evitar errores de resolucion dinamica en tiempo de ejecucion
 
 const ACTIONS = [
@@ -69,7 +70,7 @@ export default function UserManagementView() {
       ]);
       setUsers(uRes.users || []);
       setAuditRows(aRes.logs || []);
-    } catch (e) { console.error("Load failed", e); }
+    } catch (e) { log.error("Load failed", e); }
     setLoading(false);
   };
 
@@ -111,7 +112,7 @@ export default function UserManagementView() {
     setSaving(true);
     setStatusMsg({ type: 'info', text: 'Procesando cambios...' });
 
-    console.log("[USER_MAINT_UI] executeMaintenanceAction starting...", { 
+    log.debug("[USER_MAINT_UI] executeMaintenanceAction starting...", { 
       action: activeAction, 
       target: selectedUser?.username,
       method: formData.securityMethod 
@@ -139,7 +140,7 @@ export default function UserManagementView() {
         operator: session,
       });
 
-      console.log("[USER_MAINT_UI] executeMaintenanceAction result:", result);
+      log.debug("[USER_MAINT_UI] executeMaintenanceAction result:", result);
 
       if (result.ok) {
         setStatusMsg({ type: 'success', text: result.message });
@@ -150,42 +151,42 @@ export default function UserManagementView() {
         setStatusMsg({ type: 'error', text: result.message });
       }
     } catch (err) {
-      console.error("[USER_MAINT_UI] executeMaintenanceAction CRITICAL ERROR:", err);
+      log.error("[USER_MAINT_UI] executeMaintenanceAction CRITICAL ERROR:", err);
       setStatusMsg({ type: 'error', text: `Error critico: ${err.message}` });
     } finally {
       setSaving(false);
-      console.log("[USER_MAINT_UI] executeMaintenanceAction finished.");
+      log.debug("[USER_MAINT_UI] executeMaintenanceAction finished.");
     }
   };
 
   const handleApply = async () => {
-    console.log("[USER_MAINT_UI] handleApply clicked.", { 
+    log.debug("[USER_MAINT_UI] handleApply clicked.", { 
       activeAction, 
       method: formData.securityMethod,
       target: selectedUser?.username 
     });
 
     if (!selectedUser || !activeAction) {
-      console.warn("[USER_MAINT_UI] handleApply aborted: No selected user or action.");
+      log.warn("[USER_MAINT_UI] handleApply aborted: No selected user or action.");
       return;
     }
 
     if (!formData.reason.trim()) {
-      console.warn("[USER_MAINT_UI] handleApply aborted: Empty reason.");
+      log.warn("[USER_MAINT_UI] handleApply aborted: Empty reason.");
       setStatusMsg({ type: 'error', text: 'Debe ingresar un motivo o justificación para realizar este cambio.' });
       return;
     }
 
     try {
       if (formData.securityMethod === 'facial') {
-        console.log("[USER_MAINT_UI] handleApply: Opening Biometric Modal");
+        log.debug("[USER_MAINT_UI] handleApply: Opening Biometric Modal");
         setIsBioModalOpen(true);
       } else {
-        console.log("[USER_MAINT_UI] handleApply: Executing directly with password");
+        log.debug("[USER_MAINT_UI] handleApply: Executing directly with password");
         executeMaintenanceAction();
       }
     } catch (err) {
-      console.error("[USER_MAINT_UI] handleApply CRITICAL ERROR:", err);
+      log.error("[USER_MAINT_UI] handleApply CRITICAL ERROR:", err);
       setStatusMsg({ type: 'error', text: `Falla en el proceso: ${err.message}` });
     }
   };

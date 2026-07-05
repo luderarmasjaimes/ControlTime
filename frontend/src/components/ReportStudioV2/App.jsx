@@ -25,11 +25,14 @@ import { exportPDF, exportDOCX, exportPPTX } from './lib/exportEngine';
 import { initAccessibility, destroyAccessibility } from './lib/accessibility';
 import {
   fetchReportById,
+  fetchReportRevisions,
+  fetchReportPdfBlob,
   syncMiningKpisFromDashboard,
   syncMiningKpisFromExternal,
 } from './lib/api';
 import { getSession } from '../../auth/authStorage';
 import { telemetryTenantIdFromSession } from '../../auth/telemetryTenant';
+import { log } from '../../lib/logger';
 import './styles.css';
 import './ribbon.css';
 
@@ -96,6 +99,9 @@ export default function App({
   const [rightPanelVisible, setRightPanelVisible] = useState(true);
   const [showWorkflow, setShowWorkflow] = useState(false);
   const [workflowStatus, setWorkflowStatus] = useState('draft');
+  // Firma documental (ADR-018): solo lectura en el cliente, la escribe el
+  // servidor en el momento exacto de la transición a 'signed'.
+  const [reportSignature, setReportSignature] = useState(null);
   const [auditLog, setAuditLog] = useState([]);
   const [autosaveStatus, setAutosaveStatus] = useState('idle');
 
@@ -186,7 +192,7 @@ export default function App({
         createdByName: session.fullName || session.username,
         company: session.company || 'default',
       });
-      console.log('Report saved successfully:', saved);
+      log.debug('Report saved successfully:', saved);
       // Backend might return the full object with id
       if (saved && saved.id) {
         setCurrentReportId(saved.id);
@@ -199,7 +205,7 @@ export default function App({
       setSaveLabel('¡Guardado!');
       setTimeout(() => setSaveLabel('Guardar'), 2000);
     } catch (err) {
-      console.error('Error al guardar informe:', err);
+      log.error('Error al guardar informe:', err);
       setSaveLabel('Error');
       setTimeout(() => setSaveLabel('Guardar'), 3000);
     } finally {
@@ -208,7 +214,7 @@ export default function App({
   };
 
   // ── Abrir informe desde modal (Leer / Editar / Enviar / Eliminar) ──────────
-  const handleOpenRead = (report) => {
+  const handleOpenRead = async (report) => {
     if (report._action === 'send') {
       setShareTarget(report);
       setShowShareModal(true);
@@ -216,8 +222,17 @@ export default function App({
       setDeleteTarget(report);
       setShowDeleteModal(true);
     } else {
+      // La lista de "Mis Informes" no incluye content_json (solo metadatos);
+      // se completa con el detalle antes de abrir el visor de solo lectura,
+      // igual que handleOpenEdit hace para el editor.
       setReadOnlyReport(report);
       setShowReadOnly(true);
+      try {
+        const full = await fetchReportById(report.id);
+        setReadOnlyReport({ ...report, ...full });
+      } catch (err) {
+        log.error('handleOpenRead: fetchReportById', err);
+      }
     }
   };
 
@@ -227,14 +242,29 @@ export default function App({
       const full = await fetchReportById(report.id);
       const docPayload = full.content_json ?? full.contentJson;
       loadDocument(docPayload, full.id, full.title);
+      // Antes, workflowStatus/reportSignature no se sincronizaban al abrir un
+      // informe existente: el badge/panel de workflow mostraba el valor
+      // residual de la sesión anterior (p.ej. 'draft') en vez del estado real
+      // guardado en el servidor.
+      setWorkflowStatus(full.status || 'draft');
+      const signedByName = full.signed_by_name ?? full.signedByName ?? '';
+      setReportSignature(
+        signedByName
+          ? {
+              name: signedByName,
+              role: full.signed_by_role ?? full.signedByRole ?? '',
+              signedAt: full.signed_at ?? full.signedAt ?? '',
+            }
+          : null,
+      );
     } catch (err) {
-      console.error('handleOpenEdit', err);
+      log.error('handleOpenEdit', err);
       setAiStatus('No se pudo cargar el informe para editar.');
       alert('No se pudo cargar el informe desde el servidor. Revisa la sesión o la red.');
     }
   };
 
-  const handleExportVideo = async () => {
+  const handleExportVideo = useCallback(async () => {
     if (!navigator?.mediaDevices?.getDisplayMedia || typeof MediaRecorder === 'undefined') {
       alert('Exportacion a video no disponible en este navegador.');
       return;
@@ -276,12 +306,12 @@ export default function App({
         }
       }, maxSeconds * 1000);
     } catch (error) {
-      console.error('No se pudo grabar video del informe', error);
+      log.error('No se pudo grabar video del informe', error);
       setIsRecording(false);
       alert('No se pudo iniciar la grabacion de video.');
     }
-  };
- 
+  }, []);
+
   const versionLabel = useMemo(() => `v${doc.meta.version}`, [doc.meta.version]);
 
   const handleReviewDocument = () => {
@@ -360,6 +390,30 @@ export default function App({
     setAiStatus('Elija archivo local o cámara web; al confirmar se insertará la imagen en la página activa.');
   }, [bumpImageInsertModal]);
 
+  // ── Callbacks estables para LeftLibrary (React.memo) ──
+  // Antes eran arrow functions inline en el JSX: se recreaban en cada
+  // render de App.jsx (que tiene ~30 useState) y anulaban cualquier memo
+  // posible en LeftLibrary, sin importar cómo estuviera implementado.
+  const handleLeftLibraryAdd = useCallback((type) => {
+    if (type === 'map') {
+      setShowMapCapture(true);
+    } else if (type === 'image') {
+      openImageInsertForNew();
+    } else {
+      addElement(type);
+    }
+  }, [addElement, openImageInsertForNew]);
+
+  const handleDuplicatePage = useCallback(() => {
+    duplicatePage(selectedPage);
+  }, [duplicatePage, selectedPage]);
+
+  const handleAddHeader = useCallback(() => addTextTemplate('header'), [addTextTemplate]);
+  const handleAddFooter = useCallback(() => addTextTemplate('footer'), [addTextTemplate]);
+  const handleAddFindings = useCallback(() => addTextTemplate('findings'), [addTextTemplate]);
+  const handleAddCover = useCallback(() => addElement('cover'), [addElement]);
+  const handleAddToc = useCallback(() => addElement('toc'), [addElement]);
+
   const openImageInsertForReplace = useCallback(
     (pageNumber, elementId, initialTab = 'file') => {
       const tab = ['file', 'camera', 'network'].includes(initialTab) ? initialTab : 'file';
@@ -412,7 +466,7 @@ export default function App({
   // ── Handler para insertar imagen capturada del mapa ──
   const handleMapCaptureComplete = (imageDataUrl) => {
     if (!imageDataUrl || imageDataUrl.length < 100) {
-      console.error('Imagen de captura vacía o inválida');
+      log.error('Imagen de captura vacía o inválida');
       setAiStatus('Error: La imagen del mapa no se capturó correctamente. Intenta nuevamente.');
       return;
     }
@@ -545,10 +599,45 @@ export default function App({
   }, [currentReportId, session?.username]);
 
   // ── Workflow transitions ──
-  const handleWorkflowTransition = useCallback((nextStatus, comment) => {
+  // ADR-017: el servidor es la autoridad de la máquina de estados. Antes,
+  // esto solo tocaba estado local de React y esperaba al próximo ciclo de
+  // autosave para llegar al backend — una transición inválida (o rechazada
+  // por otro motivo) quedaba "aceptada" en la UI sin que el usuario lo supiera
+  // hasta minutos después. Ahora se llama al backend de inmediato y el
+  // estado local solo avanza si el servidor confirma la transición.
+  const handleWorkflowTransition = useCallback(async (nextStatus, comment) => {
+    if (!currentReportId) {
+      setAiStatus('Guarde el informe antes de cambiar su estado de workflow.');
+      return;
+    }
+    const previousStatus = workflowStatus;
+    try {
+      await saveReportAsync({
+        id: currentReportId,
+        title: currentReportTitle,
+        contentJson: JSON.stringify(doc),
+        status: nextStatus,
+        createdBy: session.username,
+        company: session.company || 'default',
+        // ADR-030: el comentario (p.ej. motivo de rechazo) viaja al servidor
+        // para quedar en la entrada de auditoría de esta transición. Antes
+        // solo se guardaba en el `auditLog` local (bitácora en pantalla y
+        // export .miningreport), nunca llegaba al rastro forense real.
+        workflowComment: comment,
+      });
+    } catch (err) {
+      const serverError = err?.response?.data?.error || '';
+      if (err?.response?.status === 400 && serverError.startsWith('invalid_workflow_transition')) {
+        setAiStatus(`Transición rechazada: ${previousStatus} → ${nextStatus} no es válida.`);
+      } else {
+        log.error('Workflow transition failed', err);
+        setAiStatus('Error al aplicar la transición de workflow. Intente nuevamente.');
+      }
+      return;
+    }
     const prevHash = auditLog.length > 0 ? auditLog[auditLog.length - 1].hash : '00000000';
     const entry = createWorkflowEntry(
-      `${workflowStatus} → ${nextStatus}`,
+      `${previousStatus} → ${nextStatus}`,
       loggedAuthor,
       prevHash,
       comment,
@@ -556,7 +645,27 @@ export default function App({
     setAuditLog((prev) => [...prev, entry]);
     setWorkflowStatus(nextStatus);
     setAiStatus(`Workflow: ${nextStatus.toUpperCase()}`);
-  }, [workflowStatus, auditLog, loggedAuthor]);
+    // ADR-018: la firma documental (nombre/cargo/fecha) la calcula el
+    // servidor, nunca el cliente — se refresca desde el servidor tras firmar
+    // en vez de fabricarla localmente.
+    if (nextStatus === 'signed') {
+      try {
+        const refreshed = await fetchReportById(currentReportId);
+        const signedByName = refreshed.signed_by_name ?? refreshed.signedByName ?? '';
+        setReportSignature(
+          signedByName
+            ? {
+                name: signedByName,
+                role: refreshed.signed_by_role ?? refreshed.signedByRole ?? '',
+                signedAt: refreshed.signed_at ?? refreshed.signedAt ?? '',
+              }
+            : null,
+        );
+      } catch (err) {
+        log.error('No se pudo refrescar la firma documental tras firmar', err);
+      }
+    }
+  }, [workflowStatus, auditLog, loggedAuthor, currentReportId, currentReportTitle, doc, session]);
 
   // ── .miningreport export/import ──
   const handleExportMiningReport = useCallback(async () => {
@@ -571,7 +680,7 @@ export default function App({
       });
       setAiStatus('Archivo .miningreport exportado exitosamente.');
     } catch (err) {
-      console.error('Export .miningreport failed', err);
+      log.error('Export .miningreport failed', err);
       setAiStatus('Error al exportar .miningreport.');
     }
   }, [doc, loggedAuthor, session, currentReportTitle, auditLog, workflowStatus]);
@@ -594,7 +703,7 @@ export default function App({
         setAuditLog(result.auditLog || []);
         setAiStatus(`Importado: ${result.manifest?.title || 'Informe'} (${result.isValid ? 'firma válida ✓' : 'firma inválida ⚠'})`);
       } catch (err) {
-        console.error('Import .miningreport failed', err);
+        log.error('Import .miningreport failed', err);
         setAiStatus('Error al importar archivo .miningreport.');
       }
     };
@@ -602,11 +711,33 @@ export default function App({
   }, [loadDocument]);
 
   // ── Export handlers ──
+  // ADR-016: si el informe ya está guardado, usa el export server-side real
+  // (Chromium headless, misma fidelidad visual que el visor de lectura). Si
+  // aún no tiene id (borrador sin guardar), no hay nada que el servidor
+  // pueda renderizar todavía — cae al viejo camino cliente (window.print()).
   const handleExportPdf = useCallback(async () => {
+    if (currentReportId) {
+      setAiStatus('Exportando PDF (servidor)...');
+      try {
+        const { blob, filename } = await fetchReportPdfBlob(currentReportId);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setAiStatus('PDF exportado (servidor)');
+        return;
+      } catch (err) {
+        log.error('Export PDF server-side falló, usando fallback cliente', err);
+      }
+    }
     setAiStatus('Exportando PDF...');
     const result = await exportPDF(doc, { author: loggedAuthor });
     setAiStatus(result.success ? `PDF exportado (${result.method})` : 'Error al exportar PDF');
-  }, [doc, loggedAuthor]);
+  }, [doc, loggedAuthor, currentReportId]);
 
   const handleExportDocx = useCallback(async () => {
     setAiStatus('Exportando DOCX...');
@@ -633,6 +764,51 @@ export default function App({
     loadDocument(snap.documentData, currentReportId, currentReportTitle);
     setAiStatus(`Restaurado a versión ${snap.version}.`);
   }, [loadDocument, currentReportId, currentReportTitle]);
+
+  // ADR-015: el historial de versiones es autoritativo en el servidor — al
+  // abrir el panel se reemplazan los snapshots locales (que se perdían al
+  // recargar la página) por las revisiones reales guardadas en
+  // report_content_revision, generadas automáticamente en cada autosave
+  // exitoso (ver App.jsx::handleWorkflowTransition / autosave engine).
+  useEffect(() => {
+    if (!showVersionHistory || !currentReportId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const revisions = await fetchReportRevisions(currentReportId);
+        if (cancelled) return;
+        const summaryLabels = {
+          creacion_inicial: 'Creación inicial',
+          autosave: 'Autoguardado',
+        };
+        const mapped = revisions.map((rev) => {
+          const content = rev.content_json || {};
+          const pages = content.pages || [];
+          return {
+            id: `rev-${rev.revision_id}`,
+            timestamp: rev.created_at,
+            version: rev.version_number,
+            author: rev.created_by || 'Sistema',
+            description: summaryLabels[rev.change_summary] || rev.change_summary || `Versión ${rev.version_number}`,
+            pageCount: pages.length,
+            elementCount: pages.reduce((sum, p) => sum + (p.elements?.length || 0), 0),
+            documentData: content,
+            sizeBytes: JSON.stringify(content).length,
+          };
+        });
+        // Conserva los snapshots manuales de esta sesión (aún no persistidos
+        // al servidor) junto con las revisiones autoritativas del servidor,
+        // en vez de descartarlos al reabrir el panel.
+        setSnapshots((prev) => {
+          const localOnly = prev.filter((s) => s.id.startsWith('snap-'));
+          return [...mapped, ...localOnly];
+        });
+      } catch (err) {
+        log.error('No se pudo cargar el historial de versiones del servidor', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showVersionHistory, currentReportId]);
 
   // ── Voice dictation insert ──
   const handleVoiceInsert = useCallback((text) => {
@@ -736,20 +912,14 @@ export default function App({
       <div className="studio-layout">
         {leftPanelVisible && (
           <LeftLibrary
-            onAdd={(type) => {
-              if (type === 'map') {
-                setShowMapCapture(true);
-              } else if (type === 'image') {
-                openImageInsertForNew();
-              } else {
-                addElement(type);
-              }
-            }}
+            onAdd={handleLeftLibraryAdd}
             onAddPage={addPage}
-            onDuplicatePage={() => duplicatePage(selectedPage)}
-            onAddHeader={() => addTextTemplate('header')}
-            onAddFooter={() => addTextTemplate('footer')}
-            onAddFindings={() => addTextTemplate('findings')}
+            onDuplicatePage={handleDuplicatePage}
+            onAddHeader={handleAddHeader}
+            onAddFooter={handleAddFooter}
+            onAddFindings={handleAddFindings}
+            onAddCover={handleAddCover}
+            onAddToc={handleAddToc}
             onExportVideo={handleExportVideo}
             isRecording={isRecording}
           />
@@ -780,6 +950,7 @@ export default function App({
             <WorkflowPanel
               reportId={currentReportId}
               currentStatus={workflowStatus}
+              signature={reportSignature}
               auditLog={auditLog}
               onTransition={handleWorkflowTransition}
               onClose={() => setShowWorkflow(false)}
