@@ -1362,3 +1362,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
   setGridEnabled: (enabled) => set({ gridEnabled: enabled }),
 }));
+
+// Ayuda de desarrollo/testing: expone el store en window SOLO en dev server
+// (import.meta.env.DEV) — permite montar escenarios de prueba E2E (documentos
+// con spans/wrapModes específicos) sin depender de flujos de UI frágiles.
+// En builds de producción esta rama se elimina por tree-shaking.
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  (window as any).__EDITOR_STORE__ = useEditorStore;
+}

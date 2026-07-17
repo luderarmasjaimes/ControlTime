@@ -45,11 +45,13 @@ import { getTenantLogoDataUrl } from '../../lib/tenantLogo';
 import {
   type TextStyleSpan,
   type BaseTextStyle,
+  type EffectiveTextStyle,
   sanitizeSpans,
   buildStyledSegments,
   applyStyleToRange,
   remapSpansForTextChange,
   styleToCss,
+  getEffectiveStyleAt,
 } from '../../lib/textSpans';
 
 const GRID = 12;
@@ -313,27 +315,69 @@ interface WrappedSegment {
   text: string;
   x: number;
   y: number;
+  /** Estilo efectivo del tramo (formato por selección, lib/textSpans.ts) —
+   * cada segmento emitido tiene estilo UNIFORME; un cambio de estilo a
+   * mitad de línea produce segmentos separados con x contiguos. */
+  style: EffectiveTextStyle;
 }
+
+/** Fragmento de palabra con estilo uniforme — una palabra que cruza un
+ * límite de span se parte en varios frags que SIEMPRE se colocan juntos
+ * (la unidad de salto de línea sigue siendo la palabra completa). */
+interface WordFrag {
+  text: string;
+  style: EffectiveTextStyle;
+  fontSpec: string;
+  width: number;
+}
+
+const fontSpecOf = (s: EffectiveTextStyle) =>
+  `${s.italic ? 'italic ' : ''}${s.bold ? '700 ' : ''}${s.fontSize}px ${s.fontFamily}`;
 
 function computeWrappedTextLines(
   text: unknown,
-  fontSize: number,
-  fontFamily: string,
-  bold: boolean,
-  italic: boolean,
+  base: BaseTextStyle,
   lineHeight: number,
   contentWidth: number,
   exclusions: WrapExclusion[],
+  spans: TextStyleSpan[],
 ): { segments: WrappedSegment[]; totalHeight: number } {
   const sourceText = String(text ?? '');
   const context = getSharedMeasureCtx();
-  const lineH = fontSize * lineHeight;
+  // Altura de línea uniforme para todo el bloque, usando el tamaño de
+  // fuente MÁS GRANDE presente (base o algún span) — mismo criterio simple
+  // que un procesador de texto con "interlineado exacto": líneas parejas,
+  // sin recalcular alto línea a línea.
+  const maxFontSize = Math.max(base.fontSize, ...spans.map((s) => s.fontSize ?? base.fontSize));
+  const lineH = maxFontSize * lineHeight;
   if (!context || !sourceText.trim()) {
     return { segments: [], totalHeight: lineH };
   }
-  const fontSpec = `${italic ? 'italic ' : ''}${bold ? '700 ' : ''}${fontSize}px ${fontFamily}`;
-  context.font = fontSpec;
-  const spaceWidth = measureWordCached(context, fontSpec, '   ') / 3 || measureWordCached(context, fontSpec, 'i');
+  const baseSpec = fontSpecOf(base);
+  context.font = baseSpec;
+  const spaceWidth = measureWordCached(context, baseSpec, '   ') / 3 || measureWordCached(context, baseSpec, 'i');
+
+  /** Parte la palabra [wStart,wEnd) del texto fuente en frags por límite de
+   * span, cada uno medido con SU estilo (negrita/tamaño/fuente propios). */
+  const fragmentWord = (wStart: number, wEnd: number): WordFrag[] => {
+    const cuts = new Set<number>([wStart, wEnd]);
+    for (const span of spans) {
+      if (span.start > wStart && span.start < wEnd) cuts.add(span.start);
+      if (span.end > wStart && span.end < wEnd) cuts.add(span.end);
+    }
+    const sorted = Array.from(cuts).sort((a, b) => a - b);
+    const frags: WordFrag[] = [];
+    for (let i = 0; i < sorted.length - 1; i += 1) {
+      const from = sorted[i];
+      const to = sorted[i + 1];
+      const style = getEffectiveStyleAt(spans, base, from);
+      const spec = fontSpecOf(style);
+      context.font = spec;
+      const fragText = sourceText.slice(from, to);
+      frags.push({ text: fragText, style, fontSpec: spec, width: measureWordCached(context, spec, fragText) });
+    }
+    return frags;
+  };
 
   const segments: WrappedSegment[] = [];
   let cursorY = 0;
@@ -360,17 +404,27 @@ function computeWrappedTextLines(
     const ranges: Array<[number, number]> = [];
     let cursor = 0;
     for (const [a, b] of merged) {
-      if (a - cursor >= fontSize) ranges.push([cursor, a]); // hueco útil (≥ ~1 carácter)
+      if (a - cursor >= base.fontSize) ranges.push([cursor, a]); // hueco útil (≥ ~1 carácter)
       cursor = Math.max(cursor, b);
     }
-    if (contentWidth - cursor >= fontSize) ranges.push([cursor, contentWidth]);
+    if (contentWidth - cursor >= base.fontSize) ranges.push([cursor, contentWidth]);
     return { ranges };
   };
 
   const maxExclusionBottom = exclusions.length ? Math.max(...exclusions.map((e) => e.yBot)) : 0;
 
+  // Offsets GLOBALES de cada palabra dentro de sourceText — necesarios para
+  // resolver el estilo por span de cada fragmento (los spans usan offsets
+  // absolutos del string completo, incluyendo los '\n').
+  let paragraphOffset = 0;
   for (const paragraph of sourceText.split('\n')) {
-    const words = paragraph.trim().split(/\s+/).filter(Boolean);
+    const words: WordFrag[][] = [];
+    const wordRegex = /\S+/g;
+    let match: RegExpExecArray | null;
+    while ((match = wordRegex.exec(paragraph)) !== null) {
+      words.push(fragmentWord(paragraphOffset + match.index, paragraphOffset + match.index + match[0].length));
+    }
+    paragraphOffset += paragraph.length + 1; // +1 por el '\n' consumido por split
     if (words.length === 0) {
       cursorY += lineH;
       continue;
@@ -386,39 +440,88 @@ function computeWrappedTextLines(
       for (const [rx0, rx1] of band.ranges) {
         if (wordIndex >= words.length) break;
         const segWidth = rx1 - rx0;
-        let lineText = '';
+        // Acumulador de "runs": frags consecutivos con el MISMO estilo se
+        // concatenan en un solo segmento (menos nodos Konva); un cambio de
+        // estilo cierra el run y abre otro en el x acumulado.
+        let penX = rx0;
+        let runText = '';
+        let runStyle: EffectiveTextStyle | null = null;
+        let runStartX = rx0;
+        const flushRun = () => {
+          if (runText && runStyle) {
+            segments.push({ text: runText, x: runStartX, y: cursorY, style: runStyle });
+            placedAnyInLine = true;
+          }
+          runText = '';
+          runStyle = null;
+        };
+        const placeFrag = (frag: WordFrag) => {
+          if (runStyle && runStyle === frag.style) {
+            runText += frag.text;
+          } else if (runStyle && fontSpecOf(runStyle) === frag.fontSpec && runStyle.color === frag.style.color && runStyle.underline === frag.style.underline) {
+            // Mismo estilo por valor (objetos distintos) — seguir el run.
+            runText += frag.text;
+          } else {
+            flushRun();
+            runStartX = penX;
+            runStyle = frag.style;
+            runText = frag.text;
+          }
+          penX += frag.width;
+        };
         let lineWidth = 0;
         while (wordIndex < words.length) {
           const word = words[wordIndex];
-          const wordWidth = measureWordCached(context, fontSpec, word);
-          const candidate = lineText ? lineWidth + spaceWidth + wordWidth : wordWidth;
+          const wordWidth = word.reduce((acc, f) => acc + f.width, 0);
+          const candidate = lineWidth > 0 ? lineWidth + spaceWidth + wordWidth : wordWidth;
           if (candidate <= segWidth) {
-            lineText = lineText ? `${lineText} ${word}` : word;
+            if (lineWidth > 0) {
+              // Espacio entre palabras: se agrega al run activo (mismo
+              // estilo que la palabra anterior) y avanza el lápiz.
+              runText += ' ';
+              penX += spaceWidth;
+            }
+            for (const frag of word) placeFrag(frag);
             lineWidth = candidate;
             wordIndex += 1;
             continue;
           }
           // Palabra más ancha que CUALQUIER espacio disponible (aún sin
           // exclusiones activas): trocearla por caracteres para no ciclar.
-          if (!lineText && wordWidth > contentWidth && segWidth >= contentWidth - 1) {
-            let chunk = '';
-            let chunkWidth = 0;
-            for (const char of word) {
-              const cw = measureWordCached(context, fontSpec, char);
-              if (chunkWidth + cw > segWidth && chunk) break;
-              chunk += char;
-              chunkWidth += cw;
+          if (lineWidth === 0 && wordWidth > contentWidth && segWidth >= contentWidth - 1) {
+            let remaining = segWidth;
+            const rest: WordFrag[] = [];
+            for (let fi = 0; fi < word.length; fi += 1) {
+              const frag = word[fi];
+              if (rest.length > 0) { rest.push(frag); continue; }
+              if (frag.width <= remaining) {
+                placeFrag(frag);
+                remaining -= frag.width;
+                continue;
+              }
+              context.font = frag.fontSpec;
+              let chunk = '';
+              let chunkWidth = 0;
+              for (const char of frag.text) {
+                const cw = measureWordCached(context, frag.fontSpec, char);
+                if (chunkWidth + cw > remaining && chunk) break;
+                chunk += char;
+                chunkWidth += cw;
+              }
+              if (chunk) placeFrag({ ...frag, text: chunk, width: chunkWidth });
+              const restText = frag.text.slice(chunk.length);
+              if (restText) {
+                context.font = frag.fontSpec;
+                rest.push({ ...frag, text: restText, width: measureWordCached(context, frag.fontSpec, restText) });
+              }
+              remaining = 0;
             }
-            lineText = chunk;
-            words[wordIndex] = word.slice(chunk.length);
-            if (!words[wordIndex]) wordIndex += 1;
+            if (rest.length > 0) words[wordIndex] = rest;
+            else wordIndex += 1;
           }
           break;
         }
-        if (lineText) {
-          segments.push({ text: lineText, x: rx0, y: cursorY });
-          placedAnyInLine = true;
-        }
+        flushRun();
       }
       if (wordIndex < words.length) {
         cursorY += lineH;
@@ -2170,13 +2273,11 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               const wrappedLayout = !isEditorOpen && wrapExclusions.length > 0
                 ? computeWrappedTextLines(
                     textProps.text,
-                    textProps.fontSize,
-                    textProps.fontFamily,
-                    textProps.bold,
-                    textProps.italic,
+                    textBaseStyle,
                     textProps.lineHeight,
                     Math.max(120, element.width - TEXT_PAD * 2),
                     wrapExclusions,
+                    textProps.spans,
                   )
                 : null;
 
@@ -2188,12 +2289,12 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                         x={element.x + TEXT_PAD + seg.x}
                         y={element.y + TEXT_PAD + seg.y}
                         text={seg.text}
-                        fontFamily={textProps.fontFamily}
-                        fontSize={textProps.fontSize}
-                        fill={textProps.fontColor}
+                        fontFamily={seg.style.fontFamily}
+                        fontSize={seg.style.fontSize}
+                        fill={seg.style.color}
                         lineHeight={textProps.lineHeight}
-                        fontStyle={`${textProps.bold ? 'bold ' : ''}${textProps.italic ? 'italic' : ''}`.trim() || 'normal'}
-                        textDecoration={textProps.underline ? 'underline' : ''}
+                        fontStyle={`${seg.style.bold ? 'bold ' : ''}${seg.style.italic ? 'italic' : ''}`.trim() || 'normal'}
+                        textDecoration={seg.style.underline ? 'underline' : ''}
                         wrap="none"
                         listening={false}
                         hitStrokeWidth={0}
