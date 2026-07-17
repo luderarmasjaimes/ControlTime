@@ -26,15 +26,24 @@ export default defineConfig({
                 target: 'ws://localhost:8082',
                 ws: true
             },
+            // Motor FORMULA: el contenedor ya no publica el puerto 18020 en el
+            // host (solo `expose: 8020`, red interna de compose) — se enruta a
+            // través del nginx de producción (beemetry-web, host :5173), que es
+            // quien hace el rewrite del prefijo /formula-api E inyecta el
+            // header Authorization del motor (ver frontend/nginx.conf). Por eso
+            // aquí NO se hace rewrite: el prefijo debe llegar intacto a nginx.
             '/formula-api/ws': {
-                target: 'ws://localhost:18020',
+                target: 'ws://localhost:5173',
                 ws: true,
-                rewrite: (path) => path.replace(/^\/formula-api/, '') || '/',
             },
             '/formula-api': {
-                target: 'http://localhost:18020',
+                target: 'http://localhost:5173',
                 changeOrigin: true,
-                rewrite: (path) => path.replace(/^\/formula-api/, '') || '/',
+            },
+            '/tiles': {
+                target: 'http://localhost:8000',
+                changeOrigin: true,
+                rewrite: (path) => path.replace(/^\/tiles/, ''),
             },
         }
     },
@@ -47,15 +56,21 @@ export default defineConfig({
                 target: 'ws://localhost:8082',
                 ws: true
             },
+            // Mismo criterio que server.proxy: enrutar FORMULA via el nginx
+            // de producción en :5173 (rewrite + token server-side), sin
+            // depender del puerto 18020 que ya no se publica.
             '/formula-api/ws': {
-                target: 'ws://localhost:18020',
+                target: 'ws://localhost:5173',
                 ws: true,
-                rewrite: (path) => path.replace(/^\/formula-api/, '') || '/',
             },
             '/formula-api': {
-                target: 'http://localhost:18020',
+                target: 'http://localhost:5173',
                 changeOrigin: true,
-                rewrite: (path) => path.replace(/^\/formula-api/, '') || '/',
+            },
+            '/tiles': {
+                target: 'http://localhost:8000',
+                changeOrigin: true,
+                rewrite: (path) => path.replace(/^\/tiles/, ''),
             },
         }
     }
