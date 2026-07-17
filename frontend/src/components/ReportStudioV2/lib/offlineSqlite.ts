@@ -111,9 +111,22 @@ async function openDb(): Promise<Database> {
 }
 
 /** Inicializa (o reutiliza) la base offline. Idempotente — llamar tantas
- * veces como se quiera; solo la primera hace trabajo real. */
+ * veces como se quiera; solo la primera hace trabajo real.
+ *
+ * Si la inicialización FALLA (sin conexión al descargar la plantilla, sesión
+ * vencida → 401, o un fallo transitorio al cargar el WASM), la promesa
+ * rechazada NO se cachea: se limpia para que el siguiente intento vuelva a
+ * probar. De lo contrario, un único fallo temprano (p.ej. arrancar la app ya
+ * sin cobertura, el caso más probable en una unidad minera) dejaba la base
+ * offline inutilizable para toda la sesión aunque volviera la conexión —
+ * justo lo que este módulo existe para evitar. */
 export function getOfflineDb(): Promise<Database> {
-  if (!dbPromise) dbPromise = openDb();
+  if (!dbPromise) {
+    dbPromise = openDb().catch((err) => {
+      dbPromise = null;
+      throw err;
+    });
+  }
   return dbPromise;
 }
 
