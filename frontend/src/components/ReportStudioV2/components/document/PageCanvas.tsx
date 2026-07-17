@@ -54,6 +54,7 @@ import {
   styleToCss,
   getEffectiveStyleAt,
 } from '../../lib/textSpans';
+import { registerActiveTextFormatHandler } from '../../lib/activeTextFormatBridge';
 
 const GRID = 12;
 
@@ -744,6 +745,12 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   // captureSelection/applyFormatToSelection) — evita que abrir el popover
   // de la paleta y elegir un swatch colapse la selección del textarea.
   const selectionRangeRef = useRef<{ start: number; end: number } | null>(null);
+  // Última función `applyFormatToSelection` del bloque en edición — se
+  // reasigna en cada render dentro del .map() de abajo (asignación simple,
+  // no un hook, así que no viola las reglas de hooks pese a estar dentro de
+  // un array-map). El useEffect de más abajo (keyed en openTextEditorId) es
+  // el único punto que registra/desregistra esto en el puente global.
+  const activeFormatBridgeRef = useRef<((patch: Partial<BaseTextStyle>) => boolean) | null>(null);
   const layoutMode = useEditorStore((s) =>
     s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
   );
@@ -943,6 +950,23 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
     // un editor, nunca por cambios externos mientras se escribe (eso
     // pisaría lo que el usuario está tecleando).
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTextEditorId]);
+
+  // Puente ribbon↔selección (ver lib/activeTextFormatBridge.ts): mientras
+  // ESTA página tiene un editor de texto abierto, registra un wrapper que
+  // siempre llama a la función `applyFormatToSelection` MÁS RECIENTE (la
+  // reasignada en cada render dentro del .map() de elementos, vía
+  // activeFormatBridgeRef) — así los botones Negrita/Cursiva/Subrayado/
+  // Color/Tamaño del ribbon superior aplican a la palabra seleccionada en
+  // vez de a todo el bloque, sin que el ribbon (otro componente) necesite
+  // saber nada de textareas ni de spans.
+  useEffect(() => {
+    if (!openTextEditorId) return undefined;
+    registerActiveTextFormatHandler((patch) => {
+      const fn = activeFormatBridgeRef.current;
+      return fn ? fn(patch) : false;
+    });
+    return () => registerActiveTextFormatHandler(null);
   }, [openTextEditorId]);
 
   useEffect(() => {
@@ -1991,16 +2015,21 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 selectionRangeRef.current = { start: ta.selectionStart ?? 0, end: ta.selectionEnd ?? 0 };
               };
 
-              const applyFormatToSelection = (patch: Partial<BaseTextStyle>) => {
+              // Devuelve `true` si había una selección real y se aplicó el
+              // formato; `false` si no (cursor colapsado) — usado tanto por
+              // la barra flotante propia como por el puente con el ribbon
+              // (activeTextFormatBridge.ts): si no hay selección, el ribbon
+              // cae a su comportamiento histórico de "todo el bloque".
+              const applyFormatToSelection = (patch: Partial<BaseTextStyle>): boolean => {
                 const ta = activeTextareaRef.current;
-                if (!ta) return;
+                if (!ta) return false;
                 // Preferir el rango congelado (picker de color); si no hay,
                 // el rango vivo del textarea (botones directos).
                 const captured = selectionRangeRef.current;
                 const start = captured ? captured.start : (ta.selectionStart ?? 0);
                 const end = captured ? captured.end : (ta.selectionEnd ?? 0);
                 selectionRangeRef.current = null;
-                if (start === end) return;
+                if (start === end) return false;
                 const nextSpans = applyStyleToRange(liveText, liveSpans, textBaseStyle, start, end, patch);
                 setLiveEdit({ id: element.id, text: liveText, width: liveWidth, height: liveHeight, spans: nextSpans });
                 updateElement(page.page_number, element.id, {
@@ -2015,7 +2044,17 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                   ta.focus();
                   ta.setSelectionRange(start, end);
                 });
+                return true;
               };
+
+              // Registrar esta función como el handler activo del puente
+              // ribbon↔selección MIENTRAS este bloque está en edición — el
+              // ribbon (App.tsx) intenta primero este camino; si no hay
+              // selección real, cae a aplicar sobre todo el bloque (código
+              // ya existente en App.tsx, sin cambios).
+              if (isEditorOpen) {
+                activeFormatBridgeRef.current = applyFormatToSelection;
+              }
 
               const startDictation = async (): Promise<boolean> => {
                 const speechCtor = getSpeechCtor();

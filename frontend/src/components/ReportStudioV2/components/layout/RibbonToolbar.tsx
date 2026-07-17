@@ -10,6 +10,7 @@ import {
   PanelLeftClose, PanelRightClose, Maximize2, LayoutTemplate, FilePlus2,
   Hash, Minus, Camera, Mic, ArrowLeftRight, Gauge, Pin, PinOff,
 } from 'lucide-react';
+import ColorPalette from '../shared/ColorPalette';
 
 /* ─────────────────────────────────────────────────────────────────────────────
    RIBBON TOOLBAR — Etapa 1 Funcionalidad Core
@@ -156,6 +157,8 @@ interface RibbonToolbarProps {
   onSetFontFamily?: (family: string) => void;
   onSetFontSize?: (size: number) => void;
   onSetFontColor?: (color: string) => void;
+  onSetLineHeight?: (lineHeight: number) => void;
+  currentLineHeight?: number;
   onInsertTOC?: () => void;
   onInsertCoverPage?: (templateId: string) => void;
   onStartWorkflow?: () => void;
@@ -194,6 +197,7 @@ export default function RibbonToolbar({
   onInsertElement, onAddPage, onDuplicatePage, onAddTemplate,
   onApplyHeadingStyle, onToggleBold, onToggleItalic, onToggleUnderline,
   onSetAlignment, onSetFontFamily, onSetFontSize, onSetFontColor,
+  onSetLineHeight, currentLineHeight,
   onInsertTOC, onInsertCoverPage, onStartWorkflow,
   onToggleLeftPanel, onToggleRightPanel, leftPanelVisible, rightPanelVisible,
   onExportDocx, onExportPptx, onExportMiningReport, onImportMiningReport,
@@ -205,8 +209,8 @@ export default function RibbonToolbar({
 }: RibbonToolbarProps) {
   const [activeTab, setActiveTab] = useState('inicio');
   const [collapsed, setCollapsed] = useState(false);
-  const [showFontColorPicker, setShowFontColorPicker] = useState(false);
   const [showZoomDropdown, setShowZoomDropdown] = useState(false);
+  const [showLineSpacing, setShowLineSpacing] = useState(false);
   const [showCoverDropdown, setShowCoverDropdown] = useState(false);
   // Anclada por defecto (igual que Word/Office) — al desanclar, la barra se
   // oculta automáticamente al sacar el mouse y reaparece al pasar por encima
@@ -308,30 +312,11 @@ export default function RibbonToolbar({
                   <RibbonBtn icon={Italic} title="Aplicar cursiva al texto (Ctrl+I)" onClick={onToggleItalic} active={currentItalic} />
                   <RibbonBtn icon={Underline} title="Subrayar el texto (Ctrl+U)" onClick={onToggleUnderline} active={currentUnderline} />
                   <div className="ribbon-color-btn-wrap">
-                    <button
-                      type="button"
-                      className="ribbon-btn ribbon-btn--color"
-                      onClick={() => setShowFontColorPicker((v) => !v)}
-                      title="Elegir el color del texto"
-                    >
-                      <Type size={14} />
-                      <div className="ribbon-color-indicator" style={{ background: currentFontColor || '#1e293b' }} />
-                    </button>
-                    {showFontColorPicker && (
-                      <div className="ribbon-color-picker" onMouseLeave={() => setShowFontColorPicker(false)}>
-                        <div className="ribbon-color-grid">
-                          {MINING_COLORS.map((c) => (
-                            <button
-                              key={c}
-                              className="ribbon-color-swatch"
-                              style={{ background: c, border: c === '#ffffff' ? '1px solid #cbd5e1' : 'none' }}
-                              onClick={() => { onSetFontColor?.(c); setShowFontColorPicker(false); }}
-                              title={c}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    <ColorPalette
+                      value={currentFontColor || '#1e293b'}
+                      title="Elegir el color del texto — si hay una palabra seleccionada en el editor, se aplica solo a ella"
+                      onChange={(color) => onSetFontColor?.(color)}
+                    />
                   </div>
                 </div>
               </RibbonGroup>
@@ -350,7 +335,51 @@ export default function RibbonToolbar({
                 <div className="ribbon-format-row">
                   <RibbonBtn icon={List} title="Crear lista con viñetas" />
                   <RibbonBtn icon={ListOrdered} title="Crear lista numerada" />
-                  <RibbonBtn icon={Minus} title="Ajustar el espacio entre líneas" />
+                  <div className="ribbon-line-spacing-wrap">
+                    <RibbonBtn
+                      icon={Minus}
+                      title={`Interlineado actual: ${(Number(currentLineHeight) || 1.35).toFixed(2)} — clic para cambiarlo`}
+                      onClick={() => setShowLineSpacing((v) => !v)}
+                      active={showLineSpacing}
+                    />
+                    {showLineSpacing && (
+                      <div className="ribbon-line-spacing-popover" onMouseLeave={() => setShowLineSpacing(false)}>
+                        <span className="ribbon-line-spacing-title">
+                          Interlineado {(Number(currentLineHeight) || 1.35).toFixed(2)}
+                        </span>
+                        <div className="ribbon-line-spacing-presets">
+                          {[
+                            { value: 1, label: 'Sencillo' },
+                            { value: 1.15, label: '1,15' },
+                            { value: 1.35, label: '1,35' },
+                            { value: 1.5, label: '1,5' },
+                            { value: 2, label: 'Doble' },
+                          ].map((preset) => {
+                            const active = Math.abs((Number(currentLineHeight) || 1.35) - preset.value) < 0.001;
+                            return (
+                              <button
+                                key={preset.value}
+                                type="button"
+                                className={`ribbon-line-spacing-preset${active ? ' ribbon-line-spacing-preset--active' : ''}`}
+                                onClick={() => { onSetLineHeight?.(preset.value); setShowLineSpacing(false); }}
+                              >
+                                {preset.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <input
+                          type="number"
+                          step={0.05}
+                          min={0.8}
+                          max={3}
+                          className="ribbon-line-spacing-custom"
+                          value={Number(currentLineHeight) || 1.35}
+                          onChange={(e) => onSetLineHeight?.(Math.max(0.8, Number(e.target.value) || 1.35))}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </RibbonGroup>
 

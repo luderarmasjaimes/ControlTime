@@ -45,6 +45,7 @@ import {
   recordCameOnline,
 } from './lib/offlineSqlite';
 import { log } from '../../lib/logger';
+import { tryApplyToActiveTextSelection } from './lib/activeTextFormatBridge';
 import './styles.css';
 import './ribbon.css';
 
@@ -1346,13 +1347,18 @@ export default function App({
         // encabezado real), así que esto no afecta al índice.
         headingStyle: style.id === 'normal' ? undefined : style.id,
       })}
-      onToggleBold={() => handleUpdateSelectedProps({ bold: !isBold })}
-      onToggleItalic={() => handleUpdateSelectedProps({ italic: !isItalic })}
-      onToggleUnderline={() => handleUpdateSelectedProps({ underline: !isUnderline })}
+      onToggleBold={() => { if (!tryApplyToActiveTextSelection({ bold: true })) handleUpdateSelectedProps({ bold: !isBold }); }}
+      onToggleItalic={() => { if (!tryApplyToActiveTextSelection({ italic: true })) handleUpdateSelectedProps({ italic: !isItalic }); }}
+      onToggleUnderline={() => { if (!tryApplyToActiveTextSelection({ underline: true })) handleUpdateSelectedProps({ underline: !isUnderline }); }}
       onSetAlignment={(align) => handleUpdateSelectedProps({ textAlign: align })}
-      onSetFontFamily={(font) => handleUpdateSelectedProps({ fontFamily: font })}
-      onSetFontSize={(size) => handleUpdateSelectedProps({ fontSize: size })}
-      onSetFontColor={(color) => handleUpdateSelectedProps({ fontColor: color })}
+      onSetFontFamily={(font) => { if (!tryApplyToActiveTextSelection({ fontFamily: font })) handleUpdateSelectedProps({ fontFamily: font }); }}
+      onSetFontSize={(size) => { if (!tryApplyToActiveTextSelection({ fontSize: size })) handleUpdateSelectedProps({ fontSize: size }); }}
+      onSetFontColor={(color) => { if (!tryApplyToActiveTextSelection({ color })) handleUpdateSelectedProps({ fontColor: color }); }}
+      // Interlineado es un atributo de PÁRRAFO/bloque (igual que en Word),
+      // no de carácter — siempre se aplica a todo el bloque seleccionado,
+      // nunca a una palabra suelta.
+      currentLineHeight={currentProps.lineHeight}
+      onSetLineHeight={(lineHeight) => handleUpdateSelectedProps({ lineHeight })}
     />
   );
 

@@ -86,12 +86,41 @@
 .ribbon-btn--color{position:relative;flex-direction:column;gap:1px;padding:3px 5px}
 .ribbon-btn-label{font-size:10px}
 .ribbon-btn-col{display:flex;flex-direction:column;gap:2px}
-.ribbon-color-indicator{width:14px;height:3px;border-radius:1px}
 .ribbon-color-btn-wrap{position:relative}
-.ribbon-color-picker{position:absolute;top:100%;left:0;z-index:100;background:#1e293b;border:1px solid rgba(100,116,139,.3);border-radius:6px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
-.ribbon-color-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:3px}
-.ribbon-color-swatch{width:20px;height:20px;border-radius:3px;cursor:pointer;transition:transform .1s}
-.ribbon-color-swatch:hover{transform:scale(1.2)}
+/* ColorPalette (componente compartido) embebido en el ribbon OSCURO — su
+   estilo por defecto asume un panel claro (fondo blanco, texto oscuro);
+   sin esto el botón disparador quedaba con bajo contraste sobre el fondo
+   oscuro del ribbon ("no se visualiza bien por el contraste", reportado
+   explícitamente). El popover en sí ya es un panel claro flotante — se deja
+   igual, solo se retoca el BOTÓN disparador para que combine con el ribbon. */
+.ribbon-color-btn-wrap .color-palette-trigger{
+  height:24px;padding:2px 6px;background:transparent;border:1px solid rgba(148,163,184,.35);
+  color:#f1f5f9;
+}
+.ribbon-color-btn-wrap .color-palette-trigger:hover{background:rgba(148,163,184,.12);border-color:rgba(148,163,184,.55)}
+.ribbon-color-btn-wrap .color-palette-swatch-preview{border-color:rgba(241,245,249,.5)}
+.ribbon-color-btn-wrap .color-palette-caret{color:#cbd5e1}
+
+/* ── Interlineado del ribbon — antes un botón decorativo sin onClick ──── */
+.ribbon-line-spacing-wrap{position:relative}
+.ribbon-line-spacing-popover{
+  position:absolute;top:100%;left:0;margin-top:4px;z-index:100;
+  background:#1e293b;border:1px solid rgba(100,116,139,.3);border-radius:8px;
+  padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.5);min-width:150px;
+  display:flex;flex-direction:column;gap:6px;
+}
+.ribbon-line-spacing-title{font-size:10px;font-weight:700;color:#e2e8f0}
+.ribbon-line-spacing-presets{display:grid;grid-template-columns:repeat(2,1fr);gap:3px}
+.ribbon-line-spacing-preset{
+  padding:4px 6px;font-size:10px;font-weight:600;color:#cbd5e1;background:#0f172a;
+  border:1px solid rgba(100,116,139,.3);border-radius:4px;cursor:pointer;
+}
+.ribbon-line-spacing-preset:hover{border-color:#22d3ee;background:rgba(34,211,238,.1)}
+.ribbon-line-spacing-preset--active{border-color:#22d3ee;background:rgba(34,211,238,.18);color:#22d3ee}
+.ribbon-line-spacing-custom{
+  width:100%;height:24px;font-size:11px;background:#0f172a;color:#e2e8f0;
+  border:1px solid rgba(100,116,139,.3);border-radius:4px;padding:0 6px;
+}
 .ribbon-font-row{display:flex;gap:3px;margin-bottom:3px}
 .ribbon-format-row{display:flex;gap:2px}
 .ribbon-select{padding:2px 4px;font-size:10px;background:#0f172a;color:#e2e8f0;border:1px solid rgba(100,116,139,.3);border-radius:3px;cursor:pointer}
