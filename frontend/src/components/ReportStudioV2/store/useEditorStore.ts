@@ -742,6 +742,15 @@ export interface EditorState {
   selectElement: (id: string | undefined) => void;
   updateElement: (pageNumber: number, elementId: string, patch: Partial<ReportElement>) => void;
   removeElement: (pageNumber: number, elementId: string) => void;
+  /** Portapapeles interno (copiar/pegar de objetos del lienzo) — snapshot
+   * del elemento copiado, independiente del portapapeles del SO. */
+  clipboardElement: ReportElement | null;
+  /** Copia el elemento indicado al portapapeles interno. */
+  copyElement: (pageNumber: number, elementId: string) => void;
+  /** Pega el elemento del portapapeles en la página dada (clon con nuevo id
+   * y ligero desplazamiento para que no tape al original), y lo selecciona.
+   * Devuelve el id del nuevo elemento, o null si no hay nada que pegar. */
+  pasteElement: (pageNumber: number) => string | null;
   reviewDocumentQuality: () => DocumentReview;
   getOptimizationSuggestions: () => OptimizationSuggestion[];
   applyOptimizationSuggestion: (args: { pageNumber: number; elementId: string; optimizedText: string }) => void;
@@ -1191,6 +1200,49 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         selectedElementId: state.selectedElementId === elementId ? undefined : state.selectedElementId,
       };
     }),
+  clipboardElement: null,
+  copyElement: (pageNumber, elementId) =>
+    set((state) => {
+      const page = state.doc.pages.find((p) => p.page_number === pageNumber);
+      const element = page?.elements.find((e) => e.id === elementId);
+      // Snapshot profundo para que ediciones posteriores del original no
+      // "contaminen" lo copiado (y viceversa al pegar).
+      return { clipboardElement: element ? JSON.parse(JSON.stringify(element)) : state.clipboardElement };
+    }),
+  pasteElement: (pageNumber) => {
+    const state = get();
+    const src = state.clipboardElement;
+    if (!src) return null;
+    const m = metricsForPage(
+      state.doc.pages.find((p) => p.page_number === pageNumber) || { paperSize: undefined, orientation: undefined },
+      state.doc.meta,
+    );
+    // Desplazamiento leve para que la copia no tape exactamente al original;
+    // acotado al interior de la hoja.
+    const OFFSET = 24;
+    const newId = `${src.type}-${pageNumber}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const maxZ = Math.max(0, ...state.doc.pages.flatMap((p) => p.elements.map((e) => e.zIndex || 0)));
+    const clone: ReportElement = {
+      ...JSON.parse(JSON.stringify(src)),
+      id: newId,
+      x: Math.min(src.x + OFFSET, Math.max(0, m.PAGE_WIDTH - src.width - 4)),
+      y: Math.min(src.y + OFFSET, Math.max(0, m.PAGE_HEIGHT - src.height - 4)),
+      zIndex: maxZ + 1,
+      locked: false,
+    };
+    set((s) => ({
+      doc: {
+        ...s.doc,
+        pages: s.doc.pages.map((p) =>
+          p.page_number === pageNumber ? { ...p, elements: [...p.elements, clone] } : p,
+        ),
+        meta: { ...s.doc.meta, version: s.doc.meta.version + 1, updatedAt: new Date().toISOString() },
+      },
+      selectedPage: pageNumber,
+      selectedElementId: newId,
+    }));
+    return newId;
+  },
   reviewDocumentQuality: () => {
     const state = get();
     return buildDocumentReview(state.doc);

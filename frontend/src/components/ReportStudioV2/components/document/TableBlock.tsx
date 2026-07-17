@@ -1,4 +1,5 @@
-import React, { memo } from 'react';
+import React, { memo, useRef, useState, useCallback, useEffect } from 'react';
+import { REPORT_COLOR_SWATCHES } from '../shared/ColorPalette';
 
 interface TableBlockProps {
   title?: string;
@@ -18,6 +19,52 @@ interface TableBlockProps {
   onUpdateCells?: (newRows: string[][]) => void;
 }
 
+/**
+ * Celda editable con contenido gestionado IMPERATIVAMENTE (via ref), no como
+ * prop controlada de React. Motivo: un contentEditable cuyo innerHTML se
+ * re-aplica desde props en cada render pierde la posición del cursor y
+ * colapsa la selección al escribir/formatear (bug clásico de contentEditable
+ * en React). Aquí el DOM es la fuente de verdad mientras se edita; el valor
+ * externo solo se siembra al montar y se lee hacia afuera en input/blur.
+ */
+const TableCell = memo(function TableCell({
+  value,
+  onChange,
+  onFocusCell,
+  style,
+}: {
+  value: string;
+  onChange: (html: string) => void;
+  onFocusCell: (el: HTMLElement) => void;
+  style: React.CSSProperties;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Sembrar el contenido inicial una sola vez (y re-sembrar solo si el valor
+  // externo cambió Y la celda NO tiene el foco — p.ej. al cargar otro informe).
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (document.activeElement === el) return;
+    if (el.innerHTML !== value) el.innerHTML = value ?? '';
+  }, [value]);
+
+  return (
+    <div
+      ref={ref}
+      contentEditable
+      suppressContentEditableWarning
+      className="table-cell-editable"
+      onFocus={(e) => onFocusCell(e.currentTarget)}
+      onMouseUp={(e) => onFocusCell(e.currentTarget)}
+      onKeyUp={(e) => onFocusCell(e.currentTarget)}
+      onInput={(e) => onChange(e.currentTarget.innerHTML)}
+      onBlur={(e) => onChange(e.currentTarget.innerHTML)}
+      style={style}
+    />
+  );
+});
+
 function TableBlock({
   title = '',
   rows = [],
@@ -33,21 +80,82 @@ function TableBlock({
   cellAlign = 'left',
   bandedRows = false,
   bandColor = '#f1f5f9',
-  onUpdateCells
+  onUpdateCells,
 }: TableBlockProps) {
-  const handleCellChange = (rowIndex: number, colIndex: number, value: string) => {
-    const newRows = rows.map((r, ri) =>
-      ri === rowIndex ? r.map((c, ci) => ci === colIndex ? value : c) : r
-    );
-    if (onUpdateCells) {
-      onUpdateCells(newRows);
+  // Barra flotante de formato por selección dentro de la celda enfocada —
+  // usa document.execCommand sobre el contentEditable (enfoque estándar y
+  // fiable para texto enriquecido en celdas, equivalente al de ONLYOffice).
+  const [toolbar, setToolbar] = useState<{ top: number; left: number } | null>(null);
+  const [colorOpen, setColorOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const focusedCellRef = useRef<HTMLElement | null>(null);
+  const focusedPosRef = useRef<{ ri: number; ci: number } | null>(null);
+  const savedRangeRef = useRef<Range | null>(null);
+  // Copia mutable de las filas para persistir cambios de celda sin recalcular
+  // desde props (que pueden ir un tick por detrás durante la edición).
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
+  const persistCell = useCallback((ri: number, ci: number, html: string) => {
+    const cur = rowsRef.current;
+    if (cur[ri]?.[ci] === html) return;
+    const newRows = cur.map((r, rIdx) => (rIdx === ri ? r.map((c, cIdx) => (cIdx === ci ? html : c)) : r));
+    onUpdateCells?.(newRows);
+  }, [onUpdateCells]);
+
+  const positionToolbar = useCallback((ri: number, ci: number, cellEl: HTMLElement) => {
+    focusedCellRef.current = cellEl;
+    focusedPosRef.current = { ri, ci };
+    const cont = containerRef.current;
+    if (!cont) return;
+    const cRect = cont.getBoundingClientRect();
+    const eRect = cellEl.getBoundingClientRect();
+    setToolbar({
+      top: Math.max(0, eRect.top - cRect.top - 34),
+      left: Math.max(0, eRect.left - cRect.left),
+    });
+  }, []);
+
+  const exec = (command: string, value?: string) => {
+    const cell = focusedCellRef.current;
+    const pos = focusedPosRef.current;
+    if (!cell || !pos) return;
+    cell.focus();
+    if (savedRangeRef.current) {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(savedRangeRef.current);
+      savedRangeRef.current = null;
     }
+    document.execCommand(command, false, value);
+    persistCell(pos.ri, pos.ci, cell.innerHTML);
   };
+
+  const saveSelection = () => {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) savedRangeRef.current = sel.getRangeAt(0).cloneRange();
+  };
+
+  // Cerrar la barra al perder el foco fuera de la tabla.
+  useEffect(() => {
+    const onFocusOut = () => {
+      window.setTimeout(() => {
+        if (!containerRef.current?.contains(document.activeElement)) {
+          setToolbar(null);
+          setColorOpen(false);
+        }
+      }, 150);
+    };
+    const cont = containerRef.current;
+    cont?.addEventListener('focusout', onFocusOut);
+    return () => cont?.removeEventListener('focusout', onFocusOut);
+  }, []);
 
   const border = borderStyle === 'none' ? 'none' : `${borderWidth}px ${borderStyle} ${borderColor}`;
 
   return (
     <div
+      ref={containerRef}
       className="table-block-container"
       style={{
         width: '100%',
@@ -59,8 +167,47 @@ function TableBlock({
         pointerEvents: 'none',
         display: 'flex',
         flexDirection: 'column',
+        position: 'relative',
       }}
     >
+      {toolbar && (
+        <div
+          className="table-cell-format-toolbar"
+          style={{ position: 'absolute', top: toolbar.top, left: toolbar.left }}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          <button type="button" title="Negrita" onClick={() => exec('bold')}><b>N</b></button>
+          <button type="button" title="Cursiva" onClick={() => exec('italic')}><i>K</i></button>
+          <button type="button" title="Subrayado" onClick={() => exec('underline')}><u>S</u></button>
+          <button type="button" title="Reducir tamaño" onClick={() => exec('fontSize', '2')}>A-</button>
+          <button type="button" title="Aumentar tamaño" onClick={() => exec('fontSize', '5')}>A+</button>
+          <div className="table-cell-color-wrap">
+            <button
+              type="button"
+              title="Color del texto"
+              className="table-cell-color-btn"
+              onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+              onClick={() => setColorOpen((v) => !v)}
+            >
+              A<span className="table-cell-color-bar" style={{ background: '#dc2626' }} />
+            </button>
+            {colorOpen && (
+              <div className="table-cell-color-pop" onMouseDown={(e) => e.preventDefault()}>
+                {REPORT_COLOR_SWATCHES.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    style={{ background: c, border: c.toLowerCase() === '#ffffff' ? '1px solid #cbd5e1' : undefined }}
+                    title={c}
+                    onClick={() => { exec('foreColor', c); setColorOpen(false); }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {title && (
         <div
           style={{
@@ -81,7 +228,7 @@ function TableBlock({
           width: '100%',
           borderCollapse: 'collapse',
           fontSize: `${fontSize}px`,
-          fontFamily: "'Inter', sans-serif"
+          fontFamily: "'Inter', sans-serif",
         }}
       >
         <tbody>
@@ -89,9 +236,8 @@ function TableBlock({
             const isHeader = hasHeader && ri === 0;
             const isBanded = !isHeader && bandedRows && (hasHeader ? ri % 2 === 0 : ri % 2 === 1);
             return (
-            <tr key={ri}>
-              {row.map((cell, ci) => {
-                return (
+              <tr key={ri}>
+                {row.map((cell, ci) => (
                   <td
                     key={ci}
                     style={{
@@ -100,25 +246,18 @@ function TableBlock({
                       textAlign: cellAlign,
                       backgroundColor: isHeader ? headerBg : isBanded ? bandColor : 'transparent',
                       fontWeight: isHeader ? (headerBold ? 700 : 400) : 400,
-                      color: isHeader ? headerTextColor : '#334155'
+                      color: isHeader ? headerTextColor : '#334155',
                     }}
                   >
-                    <div
-                      contentEditable
-                      suppressContentEditableWarning
-                      onBlur={(e) => handleCellChange(ri, ci, e.currentTarget.innerText)}
-                      style={{
-                        outline: 'none',
-                        minHeight: '1.2em',
-                        pointerEvents: 'auto',
-                      }}
-                    >
-                      {cell}
-                    </div>
+                    <TableCell
+                      value={cell}
+                      onChange={(html) => persistCell(ri, ci, html)}
+                      onFocusCell={(el) => positionToolbar(ri, ci, el)}
+                      style={{ outline: 'none', minHeight: '1.2em', pointerEvents: 'auto' }}
+                    />
                   </td>
-                );
-              })}
-            </tr>
+                ))}
+              </tr>
             );
           })}
         </tbody>
@@ -127,13 +266,6 @@ function TableBlock({
   );
 }
 
-// onUpdateCells se recrea en cada render de PageCanvas.tsx (arrow inline en
-// el .map() de elementos tipo 'table') aunque ESTA tabla no haya cambiado —
-// comparador propio que ignora esa prop y compara solo los datos reales.
-// Correcto: si rows/demás no cambiaron, element.props (de donde vienen) es
-// la misma referencia (useEditorStore::updateElement preserva elementos
-// hermanos sin editar), así que la clausura "vieja" de onUpdateCells sigue
-// siendo equivalente a una nueva.
 function tableBlockPropsAreEqual(prev: TableBlockProps, next: TableBlockProps): boolean {
   return (
     prev.title === next.title &&

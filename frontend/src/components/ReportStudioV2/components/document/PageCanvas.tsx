@@ -42,6 +42,7 @@ import MiningKpiWidget from './MiningKpiWidget';
 import FloatingContextualToolbar from './FloatingContextualToolbar';
 import { generateTocData } from './TableOfContents';
 import { getTenantLogoDataUrl } from '../../lib/tenantLogo';
+import ColorPalette from '../shared/ColorPalette';
 import {
   type TextStyleSpan,
   type BaseTextStyle,
@@ -739,6 +740,10 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   // editor de texto abierto a la vez, un ref único basta (mismo patrón que
   // isComposingRef).
   const activeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Rango de selección "congelado" al abrir el picker de color (ver
+  // captureSelection/applyFormatToSelection) — evita que abrir el popover
+  // de la paleta y elegir un swatch colapse la selección del textarea.
+  const selectionRangeRef = useRef<{ start: number; end: number } | null>(null);
   const layoutMode = useEditorStore((s) =>
     s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
   );
@@ -772,6 +777,10 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   const selectPage = useEditorStore((s) => s.selectPage);
   const updateElement = useEditorStore((s) => s.updateElement);
   const removeElement = useEditorStore((s) => s.removeElement);
+  const copyElement = useEditorStore((s) => s.copyElement);
+  const pasteElement = useEditorStore((s) => s.pasteElement);
+  const clipboardElement = useEditorStore((s) => s.clipboardElement);
+  const selectedPage = useEditorStore((s) => s.selectedPage);
   const gridEnabled = useEditorStore((s) => s.gridEnabled);
   const snapEnabled = useEditorStore((s) => s.snapEnabled);
   const [openTextEditorId, setOpenTextEditorId] = useState<string | null>(null);
@@ -986,6 +995,38 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
       window.removeEventListener('blur', clearDrag);
     };
   }, []);
+
+  // Copiar/pegar de objetos del lienzo (Ctrl/Cmd+C / +V) — pedido explícito
+  // ("seleccionar un objeto, copiar y pegarlo en el mismo lienzo"). Solo la
+  // página "actual" (selectedPage) atiende el evento, para no pegar N veces
+  // (una por cada PageCanvas montado). Se ignora si el foco está en un campo
+  // de texto/celda (ahí Ctrl+C/V es copia de TEXTO, no del objeto).
+  useEffect(() => {
+    if (page.page_number !== selectedPage) return undefined;
+    const onCopyPaste = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const k = event.key.toLowerCase();
+      if (k !== 'c' && k !== 'v') return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName?.toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable) return;
+      }
+      if (k === 'c') {
+        if (!selectedElementId) return;
+        const el = page.elements.find((e) => e.id === selectedElementId);
+        // No copiar bloques de plataforma (encabezado/pie/carátula).
+        if (!el || el.type === 'header' || el.type === 'footer' || el.type === 'cover') return;
+        event.preventDefault();
+        copyElement(page.page_number, selectedElementId);
+      } else if (k === 'v') {
+        event.preventDefault();
+        pasteElement(page.page_number);
+      }
+    };
+    window.addEventListener('keydown', onCopyPaste);
+    return () => window.removeEventListener('keydown', onCopyPaste);
+  }, [page.page_number, selectedPage, selectedElementId, page.elements, copyElement, pasteElement]);
 
   useEffect(() => {
     const selectedElement = page.elements.find((element) => element.id === selectedElementId);
@@ -1939,11 +1980,26 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               // pueda cambiar sin afectar al resto del texto". Requiere una
               // selección real (start !== end), igual que Word: con el
               // cursor colapsado no hay nada que "solo esa porción" cambiar.
+              // Captura el rango seleccionado en el textarea. Necesario para
+              // el picker de color: abrir su popover y elegir un swatch son
+              // varios clics que, pese al preventDefault, podían colapsar la
+              // selección — se "congela" el rango al abrir el picker y se usa
+              // ese al aplicar. Para negrita/cursiva basta el rango vivo.
+              const captureSelection = () => {
+                const ta = activeTextareaRef.current;
+                if (!ta) return;
+                selectionRangeRef.current = { start: ta.selectionStart ?? 0, end: ta.selectionEnd ?? 0 };
+              };
+
               const applyFormatToSelection = (patch: Partial<BaseTextStyle>) => {
                 const ta = activeTextareaRef.current;
                 if (!ta) return;
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
+                // Preferir el rango congelado (picker de color); si no hay,
+                // el rango vivo del textarea (botones directos).
+                const captured = selectionRangeRef.current;
+                const start = captured ? captured.start : (ta.selectionStart ?? 0);
+                const end = captured ? captured.end : (ta.selectionEnd ?? 0);
+                selectionRangeRef.current = null;
                 if (start === end) return;
                 const nextSpans = applyStyleToRange(liveText, liveSpans, textBaseStyle, start, end, patch);
                 setLiveEdit({ id: element.id, text: liveText, width: liveWidth, height: liveHeight, spans: nextSpans });
@@ -2425,12 +2481,11 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                           <button type="button" title="Subrayado en la selección" onClick={() => applyFormatToSelection({ underline: true })}>
                             <Underline size={12} />
                           </button>
-                          <input
-                            type="color"
-                            className="text-editor-format-color"
+                          <ColorPalette
+                            value={textProps.fontColor}
                             title="Color de la selección"
-                            defaultValue={textProps.fontColor}
-                            onChange={(event) => applyFormatToSelection({ color: event.target.value })}
+                            onOpen={captureSelection}
+                            onChange={(color) => applyFormatToSelection({ color })}
                           />
                           <select
                             className="text-editor-format-select"
@@ -2809,6 +2864,42 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                   </div>
                 )}
               </div>
+            )}
+            {menuElement.type !== 'header' && menuElement.type !== 'footer' && menuElement.type !== 'cover' && (
+              <button
+                type="button"
+                onClick={() => {
+                  copyElement(page.page_number, menuElement.id);
+                  setContextMenu(null);
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                  border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left',
+                  borderRadius: 6, color: '#0f172a',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                Copiar bloque <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 11 }}>Ctrl+C</span>
+              </button>
+            )}
+            {clipboardElement && (
+              <button
+                type="button"
+                onClick={() => {
+                  pasteElement(page.page_number);
+                  setContextMenu(null);
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                  border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left',
+                  borderRadius: 6, color: '#0f172a',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                Pegar bloque <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 11 }}>Ctrl+V</span>
+              </button>
             )}
             <button
               type="button"

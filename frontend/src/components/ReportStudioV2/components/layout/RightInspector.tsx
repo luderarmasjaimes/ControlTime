@@ -5,6 +5,7 @@ import SensorInspector from './SensorInspector';
 import { readImageFileAsDataUrl, resolveReportImageSrc } from '../../lib/reportImageSrc';
 import { getSession } from '../../../../auth/authStorage';
 import { fetchTenantGallery, fetchTenantGalleryImageDataUrl, type TenantGalleryImage } from '../../lib/tenantGallery';
+import ColorPalette from '../shared/ColorPalette';
 
 import {
   Lock,
@@ -577,9 +578,9 @@ const TextInspector = React.memo(function TextInspector({ element, onUpdate }: S
         </div>
       </div>
       <div className="inspector-grid-2">
-        <div className="input-group" title="Color del texto">
+        <div className="input-group" title="Color del texto de todo el bloque (para colorear solo una parte, selecciónala al editar y usa el color de la barra flotante)">
           <label>Color</label>
-          <input type="color" value={props.fontColor || '#0f172a'} onChange={(e) => updateProps({ fontColor: e.target.value })} style={{ width: '100%', height: 32, padding: 0, border: 'none', background: 'none' }} />
+          <ColorPalette value={props.fontColor || '#0f172a'} label={props.fontColor || '#0f172a'} onChange={(color) => updateProps({ fontColor: color })} />
         </div>
         <div className="input-group" title="Alineación horizontal del párrafo">
           <label>Alineación</label>
