@@ -1,0 +1,570 @@
+import { getSession, updateSessionTokens, clearSession, readCookie } from './authStorage'
+
+import { log } from '../lib/logger';
+
+function backendBaseUrl(): string {
+    const env = import.meta.env.VITE_BACKEND_URL
+    if (env) {
+        return String(env).replace(/\/$/, '')
+    }
+    // Mismo origen: Vite (dev) y Nginx (Docker) proxifican /api -> backend (p. ej. :8082 en el host).
+    // Antes se usaba :8081 y el login fallaba con "Failed to fetch".
+    return ''
+}
+
+async function parseJsonResponse(response: Response): Promise<any> {
+    let payload: any = {}
+    try {
+        payload = await response.json()
+    } catch {
+        payload = {}
+    }
+
+    if (!response.ok) {
+        log.error('[AUTH_API] HTTP error', {
+            status: response.status,
+            statusText: response.statusText,
+            payload,
+        })
+        let message = payload.error || `Error HTTP ${response.status}`
+        if (Array.isArray(payload.issues) && payload.issues.length > 0) {
+            const translations: Record<string, string> = {
+                'suspected_glasses': 'Lentes detectados (Retirar lentes)',
+                'suspected_hat': 'Gorra o casco detectado (Retirar accesorio)',
+                'suspected_face_accessory': 'Accesorio/Mascarilla cubriendo rostro',
+                'suspected_heavy_makeup': 'Maquillaje excesivo detectado',
+                'eyes_not_open_or_not_visible': 'Los ojos deben estar abiertos y visibles',
+                'eye_open_confidence_low': 'Apertura ocular insuficiente (ICAO): abra bien los ojos',
+                'mouth_not_closed': 'Mantener la boca cerrada',
+                'face_not_frontal': 'Debe mirar fijamente de frente al lente',
+                'head_pose_not_straight': 'La cabeza debe estar recta',
+                'face_too_small': 'Acérquese más a la cámara',
+                'face_off_center': 'Rostro descentrado',
+                'lighting_out_of_range': 'Mejore la iluminación del ambiente',
+                'lighting_insufficient_icao': 'Iluminación insuficiente (norma ICAO / FACIAL)',
+                'ai_face_not_detected': 'No se detectó rostro en el análisis biométrico',
+                'image_not_sharp': 'Imagen borrosa, manténgase quieto',
+                'low_dynamic_range': 'Baja calidad de imagen/contraste'
+            };
+            const translatedIssues = payload.issues.map((issue: string) => translations[issue] || issue);
+            message = `Validación Biométrica Fallida: ${translatedIssues.join(' | ')}`
+        }
+        throw new Error(message)
+    }
+
+    return payload
+}
+
+function authHeaders(): Record<string, string> {
+    const session = getSession()
+    if (session?.token) {
+        return {
+            Authorization: `Bearer ${session.token}`,
+        }
+    }
+    return {}
+}
+
+/**
+ * ADR-029, "Actualización 2026-07-19": header de doble envío contra CSRF
+ * (double-submit cookie). El backend pone una cookie `csrf_token` legible
+ * por JS a propósito (a diferencia de `refresh_token`, HttpOnly); este
+ * código la repite en el header para que el servidor pueda verificar que
+ * quien llama puede LEER cookies de este origen (un sitio de terceros no
+ * puede, aunque el navegador de la víctima sí mande la cookie sola).
+ */
+function csrfHeaders(): Record<string, string> {
+    const csrf = readCookie('csrf_token')
+    return csrf ? { 'X-CSRF-Token': csrf } : {}
+}
+
+/**
+ * ADR-029 (revisado): el access token vive ~15 min; en vez de esperar a que
+ * el backend responda 401, cualquier fetch autenticado puede pasar por acá
+ * para renovarlo una sola vez y reintentar. `refreshInFlight` deduplica
+ * refrescos concurrentes (varias llamadas 401 casi simultáneas comparten
+ * la misma promesa en vez de rotar el refresh token varias veces).
+ *
+ * "Actualización 2026-07-19": el refresh token ya no vive en `localStorage`
+ * -- viaja como cookie HttpOnly que el navegador adjunta solo. Este código
+ * ya no puede (ni necesita) leerlo: simplemente llama al endpoint con
+ * `credentials: 'include'` y deja que el navegador mande la cookie; si no
+ * hay una cookie de refresh válida, el backend responde 401/400 igual que
+ * antes y se limpia la sesión local.
+ */
+let refreshInFlight: Promise<string | null> | null = null
+
+export async function refreshAccessToken(): Promise<string | null> {
+    if (refreshInFlight) {
+        return refreshInFlight
+    }
+    refreshInFlight = (async () => {
+        try {
+            const response = await fetch(`${backendBaseUrl()}/api/auth/refresh`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+            })
+            if (!response.ok) {
+                // Refresh token inválido/expirado/revocado/ausente: no hay
+                // forma de recuperar la sesión sin volver a autenticarse.
+                clearSession()
+                return null
+            }
+            const payload = await response.json().catch(() => ({} as any))
+            if (typeof payload?.access_token !== 'string') {
+                clearSession()
+                return null
+            }
+            updateSessionTokens(payload.access_token, payload.expires_in)
+            return payload.access_token as string
+        } catch {
+            return null
+        }
+    })()
+    try {
+        return await refreshInFlight
+    } finally {
+        refreshInFlight = null
+    }
+}
+
+/** @brief fetch autenticado con un reintento automático tras renovar el access token si la respuesta es 401.
+ * Exportado (ADR-041): única implementación canónica de este patrón para clientes fetch nativo —
+ * `frontend/src/lib/fetchWithAuth.ts` re-exporta esta misma función en vez de duplicarla. */
+export async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+    const doFetch = () =>
+        fetch(`${backendBaseUrl()}${path}`, {
+            ...init,
+            headers: { ...(init.headers || {}), ...authHeaders() },
+        })
+
+    let response = await doFetch()
+    // ADR-029, "Actualización 2026-07-19": ya no se puede saber desde JS si
+    // existe una cookie de refresh vigente (es HttpOnly, a propósito) -- se
+    // intenta el refresh siempre que haya un 401; si no hay cookie válida,
+    // refreshAccessToken() simplemente devuelve null sin reintentar nada.
+    if (response.status === 401 && getSession()) {
+        const refreshed = await refreshAccessToken()
+        if (refreshed) {
+            response = await doFetch()
+        }
+    }
+    return response
+}
+
+async function postJson(path: string, body: unknown, options: { timeoutMs?: number } = {}): Promise<any> {
+    const timeoutMs =
+        Number.isFinite(options?.timeoutMs) && Number(options.timeoutMs) > 0
+            ? Number(options.timeoutMs)
+            : 30000
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+        const response = await authFetch(path, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        })
+        return parseJsonResponse(response)
+    } catch (err) {
+        if ((err as { name?: string })?.name === 'AbortError') {
+            throw new Error(
+                `Tiempo de espera agotado (${Math.round(timeoutMs / 1000)}s). Verifique red/servidor e intente de nuevo.`
+            )
+        }
+        throw err
+    } finally {
+        clearTimeout(timeoutId)
+    }
+}
+
+export async function fetchCompanies(): Promise<any[]> {
+    const response = await fetch(`${backendBaseUrl()}/api/auth/companies`)
+    const payload = await parseJsonResponse(response)
+    return Array.isArray(payload.companies) ? payload.companies : []
+}
+
+interface RegisterUserPayload {
+    company: string;
+    firstName: string;
+    lastName: string;
+    dni: string;
+    username: string;
+    password: string;
+    role?: string;
+    ruc?: string;
+    phone?: string;
+    mobile?: string;
+    email?: string;
+    faceTemplate?: number[];
+    faceImageBase64?: string;
+    facePortraitOvalBase64?: string;
+    faceBustRectBase64?: string;
+}
+
+export async function registerUser(payload: RegisterUserPayload): Promise<any> {
+    const body: Record<string, unknown> = {
+        company: payload.company,
+        first_name: payload.firstName,
+        last_name: payload.lastName,
+        dni: payload.dni,
+        username: payload.username,
+        password: payload.password,
+    }
+
+    if (payload.role) body.role = payload.role
+    if (payload.ruc) body.ruc = payload.ruc
+    if (payload.phone) body.phone = payload.phone
+    if (payload.mobile) body.mobile = payload.mobile
+    if (payload.email) body.email = payload.email
+
+    /* Enviar plantilla e imagen si existen: el backend prioriza face_template (rápido)
+       y ya no fuerza embedding en ai_engine cuando la plantilla viene del cliente. */
+    const hasTemplate =
+        Array.isArray(payload.faceTemplate) &&
+        payload.faceTemplate.length > 0
+    if (hasTemplate) {
+        body.face_template = payload.faceTemplate
+    }
+    if (payload.faceImageBase64) {
+        body.face_image_base64 = payload.faceImageBase64
+    }
+    if (payload.facePortraitOvalBase64) {
+        body.face_portrait_oval_base64 = payload.facePortraitOvalBase64
+    }
+    if (payload.faceBustRectBase64) {
+        body.face_bust_rect_base64 = payload.faceBustRectBase64
+    }
+
+    const t0 = typeof performance !== 'undefined' ? performance.now() : 0
+    const out = await postJson(
+        '/api/auth/register',
+        {
+            ...body,
+        },
+        { timeoutMs: 45000 }
+    )
+    if (t0 && typeof performance !== 'undefined') {
+        const ms = Math.round(performance.now() - t0)
+        log.info('[AUTH_API] /api/auth/register OK', {
+            ms,
+            sent_template: Boolean(body.face_template),
+            sent_image: Boolean(body.face_image_base64),
+        })
+    }
+    return out
+}
+
+export async function loginWithPassword(payload: { company: string; username: string; password: string }): Promise<any> {
+    return postJson('/api/auth/login/password', {
+        company: payload.company,
+        username: payload.username,
+        password: payload.password,
+    })
+}
+
+/**
+ * ADR-029 (revisado): logout real — revoca el access token (jti) y el
+ * refresh token en el servidor de inmediato. Antes el "logout" solo
+ * limpiaba localStorage; la sesión seguía siendo válida en el backend hasta
+ * su expiración natural (hasta 8 h). Best-effort: si el backend no responde,
+ * igual se limpia la sesión local para no dejar al usuario atascado.
+ *
+ * "Actualización 2026-07-19": el refresh token ya no se manda en el body (ya
+ * no vive en JS) -- el backend lo lee de su propia cookie HttpOnly vía
+ * `credentials: 'include'`, y exige el header X-CSRF-Token (double-submit
+ * cookie) para aceptar revocarla.
+ */
+export async function logout(): Promise<void> {
+    try {
+        await fetch(`${backendBaseUrl()}/api/auth/logout`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json', ...authHeaders(), ...csrfHeaders() },
+        })
+    } catch (err) {
+        log.warn('[AUTH_API] logout: no se pudo notificar al servidor', err)
+    } finally {
+        clearSession()
+    }
+}
+
+const MSG_USUARIO_NO_EXISTE = 'USUARIO NO EXISTE'
+
+/**
+ * Comprueba si existe un usuario (Usuario, DNI o RUC) en la empresa antes de abrir la cámara.
+ * Usa POST (JSON) para evitar proxies que alteran el query string; si el backend solo tiene GET, reintenta por GET.
+ * Solo si payload.ok === true se debe abrir la sesión facial.
+ */
+export async function checkLoginIdentity(company: string, identity: string): Promise<any> {
+    const c = String(company ?? '').trim()
+    const id = String(identity ?? '').trim()
+    const base = `${backendBaseUrl()}/api/auth/login/check-identity`
+    const postOpts = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company: c, identity: id }),
+    }
+    let response = await fetch(base, postOpts)
+    if (response.status === 404) {
+        const q = new URLSearchParams({ company: c, identity: id })
+        response = await fetch(`${base}?${q.toString()}`)
+    }
+    let payload: any = {}
+    try {
+        payload = await response.json()
+    } catch {
+        payload = {}
+    }
+    if (response.status >= 500) {
+        throw new Error(
+            payload.error || `Error HTTP ${response.status}: no se pudo verificar el usuario.`
+        )
+    }
+    if (response.status === 400) {
+        return {
+            ok: false,
+            reason: payload.reason || 'bad_request',
+            error:
+                payload.error ||
+                'Indique empresa e identificador (Usuario, DNI o RUC).',
+        }
+    }
+    if (response.status === 200 && payload && typeof payload.ok === 'boolean') {
+        log.info('[AUTH_API] checkLoginIdentity', {
+            company: c,
+            identityLen: id.length,
+            ok: payload.ok,
+            reason: payload.reason,
+            username: payload.username,
+        })
+        return payload
+    }
+    return {
+        ok: false,
+        reason: 'invalid_response',
+        error: MSG_USUARIO_NO_EXISTE,
+    }
+}
+
+interface LoginWithFacePayload {
+    company?: string;
+    companyName?: string;
+    identityLogin?: string;
+    identity_login?: string;
+    username?: string;
+    dni?: string;
+    ruc?: string;
+    imageBase64?: string;
+    template?: number[];
+}
+
+export async function loginWithFace(payload: LoginWithFacePayload): Promise<any> {
+    const company = String(payload.company ?? payload.companyName ?? '').trim()
+    const identity = String(
+        payload.identityLogin ??
+            payload.identity_login ??
+            payload.username ??
+            payload.dni ??
+            payload.ruc ??
+            ''
+    ).trim()
+    if (!company || !identity) {
+        throw new Error(
+            'Complete empresa y Usuario/DNI/RUC antes del reconocimiento facial.'
+        )
+    }
+    const body: Record<string, unknown> = {
+        company,
+        identity_login: identity,
+        username: identity,
+    }
+
+    if (payload.imageBase64) {
+        body.face_image_base64 = payload.imageBase64
+    }
+    if (payload.template) {
+        body.face_template = payload.template
+    }
+    if (!body.face_image_base64 && !body.face_template) {
+        throw new Error('No se capturó imagen o plantilla facial para validar.')
+    }
+
+    log.info('[AUTH_FACE] loginWithFace request', {
+        company,
+        identity_login: identity,
+        has_template: Boolean(body.face_template),
+        template_dim: Array.isArray(body.face_template) ? body.face_template.length : 0,
+        has_image_base64: Boolean(body.face_image_base64),
+        image_base64_len: typeof body.face_image_base64 === 'string' ? body.face_image_base64.length : 0,
+    })
+
+    return postJson('/api/auth/login/face', {
+        ...body,
+    })
+}
+
+export async function fetchAuthAudit({ page = 1, pageSize = 50, company, username, action, success }: {
+    page?: number;
+    pageSize?: number;
+    company?: string;
+    username?: string;
+    action?: string;
+    success?: boolean;
+} = {}): Promise<any> {
+    const query = new URLSearchParams()
+    query.set('page_size', String(pageSize))
+    query.set('page', String(page))
+    if (company) query.set('company', company)
+    if (username) query.set('username', username)
+    if (action) query.set('action', action)
+    if (typeof success === 'boolean') query.set('success', success ? 'true' : 'false')
+
+    const response = await authFetch(`/api/auth/audit?${query.toString()}`)
+    return parseJsonResponse(response)
+}
+
+export function getAuthAuditCsvUrl({ company, username, action, success }: {
+    company?: string;
+    username?: string;
+    action?: string;
+    success?: boolean;
+} = {}): string {
+    const query = new URLSearchParams()
+    if (company) query.set('company', company)
+    if (username) query.set('username', username)
+    if (action) query.set('action', action)
+    if (typeof success === 'boolean') query.set('success', success ? 'true' : 'false')
+    const token = getSession()?.token
+    if (token) {
+        query.set('auth_token', token)
+    }
+    return `${backendBaseUrl()}/api/auth/audit/export.csv?${query.toString()}`
+}
+export async function verifyBiometricFrame(imageBase64: string): Promise<any> {
+    const response = await authFetch('/api/auth/biometric/verify-frame', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_image_base64: imageBase64 }),
+    })
+    return parseJsonResponse(response)
+}
+
+export async function processBiometricFrame(imageBase64: string): Promise<any> {
+    const raw = atob(imageBase64)
+    const bytes = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i += 1) {
+        bytes[i] = raw.charCodeAt(i)
+    }
+    const response = await authFetch('/api/process_frame', {
+        method: 'POST',
+        headers: { 'Content-Type': 'image/jpeg' },
+        body: bytes,
+    })
+    return parseJsonResponse(response)
+}
+
+export async function fetchBiometricStatus(): Promise<any> {
+    const response = await authFetch('/api/status')
+    return parseJsonResponse(response)
+}
+
+export async function resetBiometricCapture(): Promise<any> {
+    const response = await authFetch('/api/reset_capture')
+    return parseJsonResponse(response)
+}
+
+export async function fetchCompanyUsers(company?: string): Promise<any> {
+    const query = new URLSearchParams()
+    if (company) query.set('company', company)
+
+    const response = await authFetch(`/api/auth/users?${query.toString()}`)
+
+    return parseJsonResponse(response)
+}
+
+export async function executeUserMaintenance(payload: unknown): Promise<any> {
+    return postJson('/api/auth/users/maintenance', {
+        ...(payload as Record<string, unknown>),
+    })
+}
+
+export async function fetchUserMaintenanceAudit({ company, page = 1, pageSize = 20 }: {
+    company?: string;
+    page?: number;
+    pageSize?: number;
+} = {}): Promise<any> {
+    const query = new URLSearchParams()
+    query.set('page', String(page))
+    query.set('page_size', String(pageSize))
+    if (company) query.set('company', company)
+
+    const response = await authFetch(`/api/auth/users/maintenance/audit?${query.toString()}`)
+
+    return parseJsonResponse(response)
+}
+
+export async function validateCompany(company?: string, ruc?: string): Promise<boolean> {
+    const query = new URLSearchParams()
+    if (company) query.set('company', company)
+    if (ruc) query.set('ruc', ruc)
+
+    const response = await fetch(`${backendBaseUrl()}/api/auth/validate-company?${query.toString()}`)
+    const payload = await parseJsonResponse(response)
+    return payload.valid === true
+}
+
+const FALLBACK_PLATFORM_COUNTRIES = [
+    { iso2: 'US', label: 'Estados Unidos', phone_prefix: '1', region: 'north_america' },
+    { iso2: 'CA', label: 'Canadá', phone_prefix: '1', region: 'north_america' },
+    { iso2: 'MX', label: 'México', phone_prefix: '52', region: 'north_america' },
+    { iso2: 'PE', label: 'Perú', phone_prefix: '51', region: 'latam' },
+    { iso2: 'CL', label: 'Chile', phone_prefix: '56', region: 'latam' },
+    { iso2: 'CO', label: 'Colombia', phone_prefix: '57', region: 'latam' },
+    { iso2: 'BR', label: 'Brasil', phone_prefix: '55', region: 'latam' },
+    { iso2: 'AR', label: 'Argentina', phone_prefix: '54', region: 'latam' },
+    { iso2: 'EC', label: 'Ecuador', phone_prefix: '593', region: 'latam' },
+    { iso2: 'BO', label: 'Bolivia', phone_prefix: '591', region: 'latam' },
+    { iso2: 'GT', label: 'Guatemala', phone_prefix: '502', region: 'latam' },
+    { iso2: 'CU', label: 'Cuba', phone_prefix: '53', region: 'caribbean' },
+    { iso2: 'DO', label: 'República Dominicana', phone_prefix: '1', region: 'caribbean' },
+]
+
+const FALLBACK_UI_LANGUAGES = [
+    { code: 'es', label_es: 'Español', label_native: 'Español', sort_order: 10 },
+    { code: 'en', label_es: 'Inglés', label_native: 'English', sort_order: 20 },
+    { code: 'pt', label_es: 'Portugués', label_native: 'Português', sort_order: 30 },
+    { code: 'fr', label_es: 'Francés', label_native: 'Français', sort_order: 40 },
+]
+
+export async function fetchPlatformCountries(): Promise<any[]> {
+    try {
+        const response = await fetch(`${backendBaseUrl()}/api/platform/countries`)
+        if (!response.ok) {
+            return [...FALLBACK_PLATFORM_COUNTRIES]
+        }
+        const payload = await response.json()
+        const list = Array.isArray(payload.countries) ? payload.countries : []
+        return list.length > 0 ? list : [...FALLBACK_PLATFORM_COUNTRIES]
+    } catch {
+        return [...FALLBACK_PLATFORM_COUNTRIES]
+    }
+}
+
+export async function fetchPlatformUiLanguages(): Promise<any[]> {
+    try {
+        const response = await fetch(`${backendBaseUrl()}/api/platform/ui-languages`)
+        if (!response.ok) {
+            return [...FALLBACK_UI_LANGUAGES]
+        }
+        const payload = await response.json()
+        const list = Array.isArray(payload.languages) ? payload.languages : []
+        return list.length > 0 ? list : [...FALLBACK_UI_LANGUAGES]
+    } catch {
+        return [...FALLBACK_UI_LANGUAGES]
+    }
+}
