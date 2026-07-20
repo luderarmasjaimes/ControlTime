@@ -17,7 +17,8 @@ fs::path legacyFacialUsersFile(const std::string &dataRoot);
 
 json::object authUserToJson(const AuthUser &u);
 
-json::object authUserSessionJson(const AuthUser &u, const std::string &token);
+/** @brief Construye el JSON "user" devuelto en login/registro/refresh: solo el access_token JWT (ADR-029, "Actualización 2026-07-19" -- el refresh_token ya no viaja acá, ver http_utils::setAuthCookies). */
+json::object authUserSessionJson(const AuthUser &u, const AuthTokenPair &tokens);
 
 bool jsonToAuthUser(const json::object &obj, AuthUser &out);
 

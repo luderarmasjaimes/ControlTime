@@ -53,14 +53,20 @@ json::object authUserToJson(const AuthUser &u) {
 }
 
 json::object authUserSessionJson(const AuthUser &u,
-                                 const std::string &token) {
+                                 const AuthTokenPair &tokens) {
   const std::string tid =
       u.tenantId.empty() ? std::string(kMiningTelemetryDemoTenantId) : u.tenantId;
   json::object jo{{"id", u.id},
                   {"company", u.company},
                   {"username", u.username},
                   {"role", u.role},
-                  {"token", token},
+                  // ADR-029, "Actualización 2026-07-19": el refresh token ya
+                  // NO viaja en el body JSON -- el caller debe adjuntarlo a
+                  // la respuesta HTTP vía http_utils::setAuthCookies() (cookie
+                  // HttpOnly). Nunca poner tokens.refreshToken/csrfToken acá.
+                  {"access_token", tokens.token},
+                  {"expires_in", tokens.expiresInSeconds},
+                  {"token_type", "Bearer"},
                   {"full_name", u.firstName + " " + u.lastName},
                   {"tenant_id", tid}};
   if (!u.avatarCartoonBase64.empty()) {

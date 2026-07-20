@@ -2,7 +2,7 @@ services:
   # Redpanda: broker Kafka-compatible (single binary, sin Zookeeper) para
   # ingesta DURABLE de telemetría. Memoria y retención acotadas (disco-safe).
   redpanda:
-    container_name: aurixa-redpanda
+    container_name: beemetry-redpanda
     image: redpandadata/redpanda:latest
     restart: unless-stopped
     command:
@@ -34,8 +34,71 @@ services:
           cpus: '0.5'
           memory: 512M
 
+  # Notificaciones de alarma por email (ADR-034 ampliado): relay SMTP de
+  # desarrollo con bandeja web (http://localhost:8025). En producción se
+  # apunta BEEMETRY_SMTP_HOST/PORT al relay corporativo de la minera y este
+  # sidecar no se despliega — el notificador no cambia, solo el destino.
+  mailpit:
+    container_name: beemetry-mailpit
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "8025:8025"   # UI web para inspeccionar los correos enviados
+    environment:
+      - MP_SMTP_AUTH_ACCEPT_ANY=true
+      - MP_SMTP_AUTH_ALLOW_INSECURE=true
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -q -O- http://localhost:8025/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # ADR-034: broker MQTT propio (Eclipse Mosquitto) para ingesta de telemetría
+  # push — sensores industriales/mineros modernos, gateways LoRaWAN
+  # (ChirpStack), puentes zigbee2mqtt y dispositivos domésticos/comerciales
+  # (Tasmota/ESPHome/Shelly). El backend se suscribe (protocol_adapters.cpp)
+  # y normaliza al evento canónico del pipeline de ADR-007/008.
+  mqtt:
+    container_name: beemetry-mqtt
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    entrypoint: ["/bin/sh", "-c"]
+    # Credenciales desde .env (mosquitto no lee env vars nativamente: se
+    # genera el password_file al arrancar). Sin anonymous: todo cliente
+    # (dispositivos y el propio backend) se autentica.
+    command:
+      - >
+        rm -f /mosquitto/config/passwd
+        && mosquitto_passwd -c -b /mosquitto/config/passwd "$${BEEMETRY_MQTT_USERNAME}" "$${BEEMETRY_MQTT_PASSWORD}"
+        && chown mosquitto:mosquitto /mosquitto/config/passwd
+        && chmod 600 /mosquitto/config/passwd
+        && printf 'listener 1883\nallow_anonymous false\npassword_file /mosquitto/config/passwd\npersistence false\n' > /mosquitto/config/mosquitto.generated.conf
+        && exec mosquitto -c /mosquitto/config/mosquitto.generated.conf
+    environment:
+      - BEEMETRY_MQTT_USERNAME=${BEEMETRY_MQTT_USERNAME:?Definir BEEMETRY_MQTT_USERNAME en .env}
+      - BEEMETRY_MQTT_PASSWORD=${BEEMETRY_MQTT_PASSWORD:?Definir BEEMETRY_MQTT_PASSWORD en .env}
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3 -u \"$${BEEMETRY_MQTT_USERNAME}\" -P \"$${BEEMETRY_MQTT_PASSWORD}\" >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
   db:
-    container_name: aurixa-db
+    container_name: beemetry-db
     image: timescale/timescaledb:latest-pg15
     restart: unless-stopped
     # Tuning para ingesta tiempo real ~10K sensores (host 20C/15G):
@@ -84,7 +147,7 @@ services:
       - "jit=off"
     environment:
       POSTGRES_USER: sensors
-      POSTGRES_PASSWORD: sensors_pass
+      POSTGRES_PASSWORD: ${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
       POSTGRES_DB: sensors_db
     volumes:
       - db_data:/var/lib/postgresql/data
@@ -131,16 +194,16 @@ services:
   # MinIO: almacenamiento de objetos S3-compatible para el TIER FRÍO (>1 año).
   # Los chunks antiguos se exportan a Parquet aquí y se eliminan del hypertable.
   minio:
-    container_name: aurixa-minio
+    container_name: beemetry-minio
     image: minio/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_ROOT_USER: ${BEEMETRY_MINIO_ROOT_USER:?Definir BEEMETRY_MINIO_ROOT_USER en .env (ver .env.example)}
+      MINIO_ROOT_PASSWORD: ${BEEMETRY_MINIO_ROOT_PASSWORD:?Definir BEEMETRY_MINIO_ROOT_PASSWORD en .env (ver .env.example)}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -158,17 +221,35 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # ADR-009: crea el bucket de archivado Parquet una sola vez al levantar el
+  # stack (idempotente — `mb --ignore-existing`) y termina. No es un servicio
+  # de larga duración.
+  minio_init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      - MINIO_ROOT_USER=${BEEMETRY_MINIO_ROOT_USER:?Definir BEEMETRY_MINIO_ROOT_USER en .env (ver .env.example)}
+      - MINIO_ROOT_PASSWORD=${BEEMETRY_MINIO_ROOT_PASSWORD:?Definir BEEMETRY_MINIO_ROOT_PASSWORD en .env (ver .env.example)}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set localminio http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+      mc mb --ignore-existing localminio/beemetry-archive
+      "
+    restart: "no"
+
   # Réplica de lectura (streaming replication) de TimescaleDB.
   # Dashboards/informes leen de aquí; el primario (db) queda solo para escritura.
   # Se inicializa con pg_basebackup del primario (slot propio) y arranca standby.
   db_replica:
-    container_name: aurixa-db-replica
+    container_name: beemetry-db-replica
     image: timescale/timescaledb:latest-pg15
     restart: unless-stopped
     user: root
     environment:
       PGDATA: /var/lib/postgresql/data
-      PGPASSWORD: sensors_pass
+      PGPASSWORD: ${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
     entrypoint:
       - bash
       - -c
@@ -219,14 +300,14 @@ services:
   # backend C++ en un checkout de pool → soporta ~10K clientes con ~200 conexiones
   # reales a Postgres. Cero cambios de código.
   pgbouncer:
-    container_name: aurixa-pgbouncer
+    container_name: beemetry-pgbouncer
     image: edoburu/pgbouncer:v1.23.1-p3
     restart: unless-stopped
     environment:
       - DB_HOST=db
       - DB_PORT=5432
       - DB_USER=sensors
-      - DB_PASSWORD=sensors_pass
+      - DB_PASSWORD=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
       - DB_NAME=sensors_db
       - POOL_MODE=transaction
       - MAX_CLIENT_CONN=10000
@@ -259,86 +340,150 @@ services:
           memory: 64M
 
   web:
-    container_name: aurixa-api
+    container_name: beemetry-api
     build:
       context: ./backend
     ports:
-      - "8082:8081"
+      # 8081 (HTTP plano) solo en loopback: ya se sirve same-origin vía nginx
+      # /api/ (frontend:80 -> web:8081 dentro de la red Docker); publicarlo al
+      # host completo duplicaría el endpoint sin CSP/headers/rate-limit de
+      # nginx. Bind a 127.0.0.1 deja debug local (SSH tunnel) sin exponerlo.
+      - "127.0.0.1:8082:8081"
+      # 8443 (mining gateway TLS): sensores físicos externos se conectan
+      # directo aquí, no hay passthrough TLS en nginx — debe seguir público.
+      # Restringir por IP de origen en el firewall de la VPS si se conocen los
+      # rangos de los sensores (ver scripts/harden-vps.sh).
       - "8443:8443"
     environment:
       # Backend → PgBouncer → Postgres (transaction pooling). El backend abre y
       # cierra conexiones por request (PQconnectdb), pgbouncer reutiliza las
       # backend connections reales → 10K clientes / ~200 conexiones server.
-      - DATABASE_URL=host=pgbouncer port=5432 dbname=sensors_db user=sensors password=sensors_pass
+      - BEEMETRY_DATABASE_URL=host=pgbouncer port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
       # Hilos del mining_gateway TLS (ingesta 10K sensores). 6 = casi todo el cap
       # de CPU (8), deja 2 para HTTP y resto.
-      - MINING_GATEWAY_THREADS=6
+      - BEEMETRY_MINING_GATEWAY_THREADS=6
       # OpenCV no se come la CPU del I/O: 4 hilos para imdecode/resize/etc.
-      - OPENCV_THREADS=4
+      - BEEMETRY_OPENCV_THREADS=4
       # BLAS/OpenMP de OpenCV: idem
       - OMP_NUM_THREADS=4
       - OPENBLAS_NUM_THREADS=4
       # Fuente externa opcional para ETL KPI (si no se define, usa sync dashboard local)
-      - KPI_EXTERNAL_DATABASE_URL=${KPI_EXTERNAL_DATABASE_URL:-}
-      - KPI_EXTERNAL_QUERY=${KPI_EXTERNAL_QUERY:-}
-      - MAPAS_PORT=8081
-      # Mapas / GIS (backend C++ mapas_backend): GeoJSON en MAPAS_DATA_ROOT/map_official_polygons.geojson
+      - BEEMETRY_KPI_EXTERNAL_DATABASE_URL=${BEEMETRY_KPI_EXTERNAL_DATABASE_URL:-}
+      - BEEMETRY_KPI_EXTERNAL_QUERY=${BEEMETRY_KPI_EXTERNAL_QUERY:-}
+      # ADR-034: adaptadores de protocolo (protocol_adapters.cpp). MQTT se
+      # suscribe al broker propio; Modbus/OPC UA sondean lo configurado en
+      # la tabla protocol_adapter_sources (db_scripts/41).
+      - BEEMETRY_MQTT_ENABLED=true
+      - BEEMETRY_MQTT_HOST=mqtt
+      - BEEMETRY_MQTT_PORT=1883
+      - BEEMETRY_MQTT_USERNAME=${BEEMETRY_MQTT_USERNAME:?Definir BEEMETRY_MQTT_USERNAME en .env}
+      - BEEMETRY_MQTT_PASSWORD=${BEEMETRY_MQTT_PASSWORD:?Definir BEEMETRY_MQTT_PASSWORD en .env}
+      - BEEMETRY_MODBUS_ENABLED=true
+      - BEEMETRY_OPCUA_ENABLED=true
+      # Notificaciones de alarma por email (relay SMTP). Dev: sidecar mailpit;
+      # prod: apuntar al SMTP corporativo de la minera.
+      - BEEMETRY_SMTP_HOST=mailpit
+      - BEEMETRY_SMTP_PORT=1025
+      - BEEMETRY_ALARM_MAIL_FROM=alarmas@beemetry.local
+      - BEEMETRY_MAPAS_PORT=8081
+      # Mapas / GIS (backend C++ beemetry_backend): GeoJSON en MAPAS_DATA_ROOT/map_official_polygons.geojson
       # (volumen ./data:/data). APIs: GET /api/map/markers, /api/map/official-zones, /api/map/compliance-intersections
-      - MAPAS_DATA_ROOT=/data
-      - BIOMETRIC_PROVIDER=dermalog_cli
-      - DERMALOG_REQUIRED=false
-      - DERMALOG_CLI_PATH=/opt/dermalog/bin/dermalog-face-cli
-      - DERMALOG_SDK_DIR=/opt/dermalog
-      - BIOMETRIC_DNN_ENABLE=${BIOMETRIC_DNN_ENABLE:-false}
-      - BIOMETRIC_DNN_MODEL=/opt/biometric-models/face_qc.onnx
-      - BIOMETRIC_DNN_LABELS=${BIOMETRIC_DNN_LABELS:-glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal}
-      - BIOMETRIC_DNN_THRESHOLD=${BIOMETRIC_DNN_THRESHOLD:-0.72}
-      - AI_ENGINE_URL=http://ai_engine:5000
+      - BEEMETRY_MAPAS_DATA_ROOT=/data
+      - BEEMETRY_BIOMETRIC_PROVIDER=dermalog_cli
+      - BEEMETRY_DERMALOG_REQUIRED=false
+      - BEEMETRY_DERMALOG_CLI_PATH=/opt/dermalog/bin/dermalog-face-cli
+      - BEEMETRY_DERMALOG_SDK_DIR=/opt/dermalog
+      - BEEMETRY_BIOMETRIC_DNN_ENABLE=${BEEMETRY_BIOMETRIC_DNN_ENABLE:-false}
+      - BEEMETRY_BIOMETRIC_DNN_MODEL=/opt/biometric-models/face_qc.onnx
+      - BEEMETRY_BIOMETRIC_DNN_LABELS=${BEEMETRY_BIOMETRIC_DNN_LABELS:-glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal}
+      - BEEMETRY_BIOMETRIC_DNN_THRESHOLD=${BEEMETRY_BIOMETRIC_DNN_THRESHOLD:-0.72}
+      - BEEMETRY_AI_ENGINE_URL=http://ai_engine:5000
       # ADR-016: export PDF server-side (sidecar Chromium headless). Sin
       # depends_on hard: si el sidecar no está listo, el export falla con un
       # error claro en vez de bloquear el arranque del backend.
-      - PDF_EXPORT_URL=http://pdf_export:4000
-      - PDF_EXPORT_TIMEOUT_MS=45000
+      - BEEMETRY_PDF_EXPORT_URL=http://pdf_export:4000
+      - BEEMETRY_PDF_EXPORT_TIMEOUT_MS=45000
       # Origen público desde el que Chromium debe llegar al frontend para
       # renderizar el informe (nombre de servicio interno, no localhost).
-      - FRONTEND_INTERNAL_ORIGIN=http://frontend
+      - BEEMETRY_FRONTEND_INTERNAL_ORIGIN=http://frontend
       # LanguageTool on-premise (servicio Docker). El backend centraliza /api/text/*.
-      - LANGUAGETOOL_URL=http://languagetool:8010
-      - LANGUAGETOOL_TIMEOUT_MS=60000
+      - BEEMETRY_LANGUAGETOOL_URL=http://languagetool:8010
+      - BEEMETRY_LANGUAGETOOL_TIMEOUT_MS=60000
       # Ollama opcional: reescritura local en /api/text/rewrite. Ejecutar: scripts/ensure-ollama-model.ps1
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-tinyllama}
-      - OLLAMA_TIMEOUT_MS=180000
-      - TEXT_SPELL_MAX_CHARS=30000
-      - CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
-      - OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
-      - AI_ENGINE_TIMEOUT_MS=3000
-      - AI_ENGINE_CARTOON_TIMEOUT_MS=${AI_ENGINE_CARTOON_TIMEOUT_MS:-120000}
-      - AI_ENGINE_MAX_IMAGE_BYTES=${AI_ENGINE_MAX_IMAGE_BYTES:-2500000}
-      - FACE_EMBEDDING_COSINE_THRESHOLD=0.40
-      - FACE_LEGACY_COSINE_THRESHOLD=0.80
-      - BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN=70
-      - BIOMETRIC_IMAGE_OPTIMIZER_ENABLE=false
-      - BIOMETRIC_MAX_PIXELS=921600
-      - AUTH_ADMIN_USERS=admin
-      - MINING_GATEWAY_PORT=8443
-      - TLS_CERT_PATH=/etc/mining-gateway/certs/server.crt
-      - TLS_KEY_PATH=/etc/mining-gateway/certs/server.key
+      - BEEMETRY_OLLAMA_URL=http://ollama:11434
+      - BEEMETRY_OLLAMA_MODEL=${BEEMETRY_OLLAMA_MODEL:-tinyllama}
+      - BEEMETRY_OLLAMA_TIMEOUT_MS=180000
+      - BEEMETRY_TEXT_SPELL_MAX_CHARS=30000
+      - BEEMETRY_CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
+      - BEEMETRY_OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
+      - BEEMETRY_AI_ENGINE_TIMEOUT_MS=3000
+      - BEEMETRY_AI_ENGINE_CARTOON_TIMEOUT_MS=${BEEMETRY_AI_ENGINE_CARTOON_TIMEOUT_MS:-120000}
+      - BEEMETRY_AI_ENGINE_MAX_IMAGE_BYTES=${BEEMETRY_AI_ENGINE_MAX_IMAGE_BYTES:-2500000}
+      - BEEMETRY_FACE_EMBEDDING_COSINE_THRESHOLD=0.40
+      - BEEMETRY_FACE_LEGACY_COSINE_THRESHOLD=0.80
+      - BEEMETRY_BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN=70
+      - BEEMETRY_BIOMETRIC_IMAGE_OPTIMIZER_ENABLE=false
+      - BEEMETRY_BIOMETRIC_MAX_PIXELS=921600
+      - BEEMETRY_AUTH_ADMIN_USERS=admin
+      # ADR-029 (revisado): esquema híbrido JWT. Clave de firma HS256 fijada
+      # aquí para que las sesiones sobrevivan reinicios/redeploys del backend
+      # (sin esto, cada restart invalida todos los access tokens vigentes —
+      # ver advertencia en app_config.cpp si se omite). Rotar cambiando este
+      # valor invalida todas las sesiones activas de inmediato.
+      - BEEMETRY_JWT_SECRET=${BEEMETRY_JWT_SECRET:?Definir BEEMETRY_JWT_SECRET en .env (ver .env.example) — rotar invalida todas las sesiones activas}
+      - BEEMETRY_JWT_ACCESS_TTL_MINUTES=15
+      - BEEMETRY_JWT_REFRESH_TTL_DAYS=7
+      # ADR-029, "Actualización 2026-07-19": el refresh token vive en cookie
+      # `Secure` — este compose sirve por HTTP plano en el puerto expuesto del
+      # host (sin TLS propio, ver comentario del servicio `web` más arriba),
+      # así que el navegador descartaría la cookie si quedara en `true` acá.
+      # Un despliegue real detrás de un balanceador con TLS (ADR-054) debe
+      # quitar este override (el default en código ya es `true`).
+      - BEEMETRY_AUTH_COOKIE_SECURE=${BEEMETRY_AUTH_COOKIE_SECURE:-false}
+      - BEEMETRY_MINING_GATEWAY_PORT=8443
+      - BEEMETRY_TLS_CERT_PATH=/etc/mining-gateway/certs/server.crt
+      - BEEMETRY_TLS_KEY_PATH=/etc/mining-gateway/certs/server.key
       # Ingesta de telemetría de alta tasa (sensores -> gateway TLS -> COPY batch -> telemetry_raw)
-      - TELEMETRY_INGEST_ENABLE=true
-      - TELEMETRY_BATCH_SIZE=1000
-      - TELEMETRY_FLUSH_MS=200
+      - BEEMETRY_TELEMETRY_INGEST_ENABLE=true
+      - BEEMETRY_TELEMETRY_BATCH_SIZE=1000
+      - BEEMETRY_TELEMETRY_FLUSH_MS=200
       # Ingestor con conexión persistente para COPY → directo a db (evita pgbouncer)
-      - TELEMETRY_DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=sensors_pass
+      - BEEMETRY_TELEMETRY_DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
       # Ingesta durable vía Redpanda (Kafka). Modo: kafka | direct (cola in-process)
-      - TELEMETRY_INGEST_MODE=kafka
-      - KAFKA_BROKERS=redpanda:9092
-      - KAFKA_TOPIC=telemetry
-      - KAFKA_CONSUMER_GROUP=telemetry-writers
+      - BEEMETRY_TELEMETRY_INGEST_MODE=kafka
+      - BEEMETRY_KAFKA_BROKERS=redpanda:9092
+      - BEEMETRY_KAFKA_TOPIC=telemetry
+      - BEEMETRY_KAFKA_CONSUMER_GROUP=telemetry-writers
+      # Sync ThingsBoard (AWS legacy) → plataforma propia (ver thingsboard_sync.hpp).
+      # Deshabilitado por defecto: integración con sistema externo del cliente,
+      # opt-in explícito por tenant vía fila en etl_sync_peer.
+      - BEEMETRY_THINGSBOARD_SYNC_ENABLED=${BEEMETRY_THINGSBOARD_SYNC_ENABLED:-false}
+      - BEEMETRY_TB_BACKFILL_INTERVAL_MS=${BEEMETRY_TB_BACKFILL_INTERVAL_MS:-60000}
+      - BEEMETRY_TB_INITIAL_LOOKBACK_DAYS=${BEEMETRY_TB_INITIAL_LOOKBACK_DAYS:-7}
       # SSE push de KPIs en vivo lee de la RÉPLICA (aislado del primario)
-      - REPLICA_DATABASE_URL=host=db_replica port=5432 dbname=sensors_db user=dashboard_ro password=dash_pass
-      - LIVE_PUSH_INTERVAL_MS=2000
+      # NOTA: el rol dashboard_ro NO existe hoy en ningún db_scripts/*.sql — esta
+      # conexión falla y el código cae de vuelta al primario con credenciales
+      # completas (ver main.cpp handleLiveKpiSse, fallback documentado). Crear
+      # un rol de solo lectura real es un fast-follow de mínimo privilegio
+      # (ver RUNBOOK.md sección Seguridad).
+      - BEEMETRY_REPLICA_DATABASE_URL=host=db_replica port=5432 dbname=sensors_db user=dashboard_ro password=${BEEMETRY_DASHBOARD_RO_PASSWORD:-changeme_provision_role_first}
+      - BEEMETRY_LIVE_PUSH_INTERVAL_MS=2000
+      # ADR-009: archivado Parquet de telemetry_raw a MinIO. Sin política de
+      # retención de negocio documentada — 180 días es un default conservador
+      # (ver scripts/archive_telemetry_to_parquet.sh), ajustable acá.
+      - BEEMETRY_ARCHIVE_RETENTION_DAYS=180
+      - BEEMETRY_MINIO_ENDPOINT=minio:9000
+      - BEEMETRY_MINIO_ACCESS_KEY=${BEEMETRY_MINIO_ROOT_USER:?Definir BEEMETRY_MINIO_ROOT_USER en .env (ver .env.example)}
+      - BEEMETRY_MINIO_SECRET_KEY=${BEEMETRY_MINIO_ROOT_PASSWORD:?Definir BEEMETRY_MINIO_ROOT_PASSWORD en .env (ver .env.example)}
+      - BEEMETRY_MINIO_ARCHIVE_BUCKET=beemetry-archive
     depends_on:
+      minio_init:
+        condition: service_completed_successfully
+      # ADR-034: el adaptador MQTT hace su connect inicial al arrancar; el
+      # broker debe existir (resolución DNS) — service_started basta, el
+      # cliente reintenta la conexión TCP por su cuenta.
+      mqtt:
+        condition: service_started
       db:
         condition: service_healthy
       pgbouncer:
@@ -358,7 +503,12 @@ services:
       - ${DERMALOG_SDK_HOST_DIR:-./dermalog-sdk}:/opt/dermalog:ro
       - ${BIOMETRIC_MODEL_HOST_DIR:-./biometric-models}:/opt/biometric-models:ro
       - ./certs:/etc/mining-gateway/certs:ro
-      
+      # ADR-046/047: fuente de logos (SVG) + galería de imágenes (JPEG) por
+      # empresa — un subdirectorio por empresa, importado a Postgres vía
+      # POST /api/platform/assets/import (admin). Solo lectura: el backend
+      # nunca escribe aquí, solo importa hacia la BD.
+      - ./IMAGENES:/imagenes:ro
+
 
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8081/health', timeout=3); print('ok')\" >/dev/null 2>&1 || exit 1"]
@@ -391,7 +541,7 @@ services:
       - /tmp:size=512M,mode=1777
 
   tileserver:
-    container_name: aurixa-gis-tiles
+    container_name: beemetry-gis-tiles
     image: ghcr.io/consbio/mbtileserver:latest
     ports:
       - "8000:8000"
@@ -416,7 +566,7 @@ services:
 
   # Motor FORMULA: editor embebido (/formula) + API proxificada como /formula-api
   formula_db:
-    container_name: aurixa-formula-db
+    container_name: beemetry-formula-db
     image: postgres:15
     restart: unless-stopped
     command:
@@ -441,7 +591,7 @@ services:
           memory: 256M
     environment:
       POSTGRES_USER: formula
-      POSTGRES_PASSWORD: formula
+      POSTGRES_PASSWORD: ${BEEMETRY_FORMULA_DB_PASSWORD:?Definir BEEMETRY_FORMULA_DB_PASSWORD en .env (ver .env.example)}
       POSTGRES_DB: formula
     volumes:
       - formula_db_data:/var/lib/postgresql/data
@@ -457,17 +607,19 @@ services:
       start_period: 25s
 
   formula_engine:
-    container_name: aurixa-formula
+    container_name: beemetry-formula
     build:
       context: ./formula_engine
     environment:
-      DATABASE_URL: postgresql://formula:formula@formula_db:5432/formula
-      AUTH_TOKEN: devtoken
+      DATABASE_URL: postgresql://formula:${BEEMETRY_FORMULA_DB_PASSWORD:?Definir BEEMETRY_FORMULA_DB_PASSWORD en .env (ver .env.example)}@formula_db:5432/formula
+      AUTH_TOKEN: ${BEEMETRY_FORMULA_AUTH_TOKEN:?Definir BEEMETRY_FORMULA_AUTH_TOKEN en .env (ver .env.example)}
     depends_on:
       formula_db:
         condition: service_healthy
-    ports:
-      - "18020:8020"
+    # Sin ports: al host — solo alcanzable dentro de la red Docker. nginx lo
+    # proxifica en /formula-api/ (mismo origen que la SPA, ver frontend/nginx.conf).
+    expose:
+      - "8020"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8020/api/catalogos >/dev/null || exit 1"]
       interval: 10s
@@ -485,7 +637,7 @@ services:
           memory: 192M
 
   ai_engine:
-    container_name: aurixa-ai-vision
+    container_name: beemetry-ai-vision
     build:
       context: ./ai_engine
       dockerfile: Dockerfile.ai
@@ -532,7 +684,7 @@ services:
   # (o: docker compose build --no-cache frontend && docker compose up -d frontend)
   # LLM local opcional para redacción premium (POST /api/text/rewrite).
   ollama:
-    container_name: aurixa-llm
+    container_name: beemetry-llm
     image: ollama/ollama:latest
     restart: unless-stopped
     expose:
@@ -571,10 +723,15 @@ services:
           memory: 512M
 
   frontend:
-    container_name: aurixa-web
+    container_name: beemetry-web
     platform: linux/amd64
     build:
       context: ./frontend
+    environment:
+      # Inyectado en nginx.conf vía envsubst al arrancar (ver frontend/Dockerfile):
+      # nginx agrega "Authorization: Bearer <token>" al proxificar /formula-api/ws,
+      # así el editor FORMULA embebido no necesita el token en el navegador.
+      - BEEMETRY_FORMULA_AUTH_TOKEN=${BEEMETRY_FORMULA_AUTH_TOKEN:?Definir BEEMETRY_FORMULA_AUTH_TOKEN en .env (ver .env.example)}
     ports:
       - "5173:80"
     depends_on:
@@ -609,7 +766,7 @@ services:
   # el primer export, el backend devuelve un error claro en vez de bloquear
   # el arranque de toda la plataforma.
   pdf_export:
-    container_name: aurixa-pdf-export
+    container_name: beemetry-pdf-export
     build:
       context: ./pdf-export-service
     environment:
@@ -638,7 +795,7 @@ services:
   # Corrector ortográfico/gramatical (self-hosted) para es-PE.
   # Evita depender de api.languagetool.org y asegura disponibilidad en Docker.
   languagetool:
-    container_name: aurixa-grammar
+    container_name: beemetry-grammar
     image: erikvl87/languagetool:latest
     restart: unless-stopped
     expose:

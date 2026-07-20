@@ -11,6 +11,21 @@
 
 namespace http_utils {
 
+// CORS (auditoría de seguridad 2026-07-13): antes hardcodeado a "*" en las 4
+// respuestas de abajo, en todas las respuestas de la API (incluidas las
+// autenticadas) — sin capacidad de restringirlo. La app real es same-origin
+// (nginx proxifica /api al backend, ver ADR-033/backendBaseUrl()), así que el
+// wildcard no beneficia al frontend legítimo, solo abre la puerta a que un
+// sitio de terceros lea respuestas de endpoints sin auth desde el navegador
+// de una víctima. Configurable por entorno para poder acotarlo en producción
+// sin adivinar el dominio real desde aquí; default "*" preserva el
+// comportamiento actual hasta que se fije un valor explícito.
+const std::string &corsAllowedOrigin() {
+    static const std::string origin =
+        config::getenvOr("BEEMETRY_CORS_ALLOWED_ORIGIN", "*");
+    return origin;
+}
+
 int hexToInt(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
@@ -122,7 +137,7 @@ void pushIssueUnique(std::vector<std::string> &issues,
 
 std::string hashPassword(const std::string &password) {
     static const std::string salt =
-        config::getenvOr("AUTH_PASSWORD_SALT", "mining_local_salt_change_me");
+        config::getenvOr("BEEMETRY_AUTH_PASSWORD_SALT", "mining_local_salt_change_me");
     const auto mixed = salt + "::" + password;
     const auto hashed = std::hash<std::string>{}(mixed);
     std::ostringstream oss;
@@ -162,6 +177,24 @@ double cosineSimilarity(const std::vector<double> &a,
     return dot / (std::sqrt(normA) * std::sqrt(normB));
 }
 
+double safeStod(const char *value, double fallback) {
+    if (!value || !*value) return fallback;
+    try {
+        return std::stod(value);
+    } catch (const std::exception &) {
+        return fallback;
+    }
+}
+
+int safeStoi(const char *value, int fallback) {
+    if (!value || !*value) return fallback;
+    try {
+        return std::stoi(value);
+    } catch (const std::exception &) {
+        return fallback;
+    }
+}
+
 std::string csvEscape(const std::string &v) {
     bool mustQuote = v.find(',') != std::string::npos ||
                      v.find('"') != std::string::npos ||
@@ -178,11 +211,73 @@ std::string csvEscape(const std::string &v) {
     return out;
 }
 
+std::string extractCookie(const http::request<http::string_body> &req,
+                          const std::string &name) {
+    const auto it = req.find(http::field::cookie);
+    if (it == req.end()) {
+        return {};
+    }
+    const std::string header(it->value());
+    // Formato: "a=1; b=2; c=3" -- se busca el par cuya clave (tras recortar
+    // espacios a la izquierda) coincide EXACTO con `name`, no un prefijo, así
+    // "csrf_token_old=x; csrf_token=y" no matchea de más.
+    std::size_t pos = 0;
+    while (pos <= header.size()) {
+        const auto sep = header.find(';', pos);
+        const std::string pair = header.substr(
+            pos, sep == std::string::npos ? std::string::npos : sep - pos);
+        const auto eq = pair.find('=');
+        if (eq != std::string::npos) {
+            const auto keyStart = pair.find_first_not_of(' ');
+            if (keyStart != std::string::npos && keyStart < eq) {
+                if (pair.compare(keyStart, eq - keyStart, name) == 0) {
+                    return pair.substr(eq + 1);
+                }
+            }
+        }
+        if (sep == std::string::npos) {
+            break;
+        }
+        pos = sep + 1;
+    }
+    return {};
+}
+
+namespace {
+std::string buildCookieHeader(const std::string &name, const std::string &value,
+                              int maxAgeSeconds, bool httpOnly) {
+    std::ostringstream oss;
+    oss << name << "=" << value << "; Path=/api/auth; Max-Age=" << maxAgeSeconds
+        << "; SameSite=Strict";
+    if (config::AppConfig::instance().gAuthCookieSecure) {
+        oss << "; Secure";
+    }
+    if (httpOnly) {
+        oss << "; HttpOnly";
+    }
+    return oss.str();
+}
+} // namespace
+
+void setAuthCookies(http::response<http::string_body> &res,
+                    const std::string &refreshToken, const std::string &csrfToken,
+                    int maxAgeSeconds) {
+    res.insert(http::field::set_cookie,
+              buildCookieHeader("refresh_token", refreshToken, maxAgeSeconds, true));
+    res.insert(http::field::set_cookie,
+              buildCookieHeader("csrf_token", csrfToken, maxAgeSeconds, false));
+}
+
+void clearAuthCookies(http::response<http::string_body> &res) {
+    res.insert(http::field::set_cookie, buildCookieHeader("refresh_token", "", 0, true));
+    res.insert(http::field::set_cookie, buildCookieHeader("csrf_token", "", 0, false));
+}
+
 http::response<http::string_body> makeJsonResponse(http::status status,
                                                    const json::value &value) {
     http::response<http::string_body> res{status, 11};
     res.set(http::field::content_type, "application/json");
-    res.set(http::field::access_control_allow_origin, "*");
+    res.set(http::field::access_control_allow_origin, corsAllowedOrigin());
     res.set(http::field::access_control_allow_headers,
             "content-type,authorization");
     res.set(http::field::access_control_allow_methods,
@@ -196,7 +291,7 @@ http::response<http::string_body> makeCsvResponse(const std::string &filename,
                                                   const std::string &csv) {
     http::response<http::string_body> res{http::status::ok, 11};
     res.set(http::field::content_type, "text/csv; charset=utf-8");
-    res.set(http::field::access_control_allow_origin, "*");
+    res.set(http::field::access_control_allow_origin, corsAllowedOrigin());
     res.set(http::field::access_control_allow_headers,
             "content-type,authorization");
     res.set(http::field::access_control_allow_methods,
@@ -212,7 +307,7 @@ http::response<http::string_body> makePdfResponse(const std::string &filename,
                                                   std::string pdfBytes) {
     http::response<http::string_body> res{http::status::ok, 11};
     res.set(http::field::content_type, "application/pdf");
-    res.set(http::field::access_control_allow_origin, "*");
+    res.set(http::field::access_control_allow_origin, corsAllowedOrigin());
     res.set(http::field::access_control_allow_headers,
             "content-type,authorization");
     res.set(http::field::access_control_allow_methods,
@@ -224,10 +319,27 @@ http::response<http::string_body> makePdfResponse(const std::string &filename,
     return res;
 }
 
+http::response<http::string_body> makeOctetResponse(const std::string &filename,
+                                                     std::string bytes) {
+    http::response<http::string_body> res{http::status::ok, 11};
+    res.set(http::field::content_type, "application/octet-stream");
+    res.set(http::field::access_control_allow_origin, corsAllowedOrigin());
+    res.set(http::field::access_control_allow_headers,
+            "content-type,authorization");
+    res.set(http::field::access_control_allow_methods,
+            "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.set(http::field::content_disposition,
+            "attachment; filename=\"" + filename + "\"");
+    res.set("X-Content-Type-Options", "nosniff");
+    res.body() = std::move(bytes);
+    res.prepare_payload();
+    return res;
+}
+
 http::response<http::string_body> makeJpegResponse(std::string jpegBytes) {
     http::response<http::string_body> res{http::status::ok, 11};
     res.set(http::field::content_type, "image/jpeg");
-    res.set(http::field::access_control_allow_origin, "*");
+    res.set(http::field::access_control_allow_origin, corsAllowedOrigin());
     res.set(http::field::access_control_allow_headers,
             "content-type,authorization");
     res.set(http::field::access_control_allow_methods,

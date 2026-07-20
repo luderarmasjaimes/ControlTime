@@ -26,6 +26,7 @@
 #include "auth/auth_storage_file.hpp"
 #include "auth/auth_storage_pg.hpp"
 #include "auth/auth_routes.hpp"
+#include "auth/jwt.hpp"
 #include "biometric/biometric_types.hpp"
 #include "biometric/face_analysis.hpp"
 #include "biometric/ai_engine_client.hpp"
@@ -33,10 +34,17 @@
 #include "mining/mining_routes.hpp"
 #include "mining/mining_gateway.hpp"
 #include "mining/telemetry_ingest.hpp"
+#include "mining/protocol_adapters.hpp"
+#include "mining/thingsboard_sync.hpp"
+#include "mining/device_alarm_routes.hpp"
+#include "mining/notification_routes.hpp"
+#include "mining/map_aggregator.hpp"
+#include "ws_broadcast.hpp"
 #include "reports/report_routes.hpp"
 #include "formula/formula_service.hpp"
 #include "formula/formula_routes.hpp"
 #include "platform/platform_routes.hpp"
+#include "tenant/tenant_assets_routes.hpp"
 #include "map/map_routes.hpp"
 #include "gdal/gdal_routes.hpp"
 #include "gdal/conversion_service.hpp"
@@ -103,6 +111,7 @@ using auth::loginFaceTargetedPg;
 using auth::updateUserAvatarCartoonPg;
 #endif
 using auth::updateUserAvatarCartoonFile;
+using auth::AuthTokenPair;
 
 using biometric::BiometricCaptureRuntimeState;
 using biometric::gBiometricCaptureMutex;
@@ -123,6 +132,15 @@ static constexpr const char *kAuthAmbiguousIdentityMsg = AppConfig::kAuthAmbiguo
 
 // ── global router ──────────────────────────────────────────────────────────
 static router::Router gRouter;
+
+/** @brief Adjunta a `res` las cookies de refresh/CSRF de `pair` (ADR-029, "Actualización 2026-07-19") -- usar en TODA respuesta de login/registro/refresh/tenant-switch que emita un AuthTokenPair. El refresh token ya no viaja en el body JSON. */
+static http::response<http::string_body>
+withAuthCookies(http::response<http::string_body> res, const AuthTokenPair &pair) {
+    auto &cfg = AppConfig::instance();
+    const int maxAgeSeconds = cfg.gJwtRefreshTtlDays * 24 * 3600;
+    http_utils::setAuthCookies(res, pair.refreshToken, pair.csrfToken, maxAgeSeconds);
+    return res;
+}
 
 // =========================================================================
 //  Route handlers NOT yet extracted into modules
@@ -156,7 +174,7 @@ handleCapturedImages(const http::request<http::string_body> & /*req*/,
 static http::response<http::string_body>
 handleLegacyUsers(const http::request<http::string_body> & /*req*/,
                   const std::unordered_map<std::string, std::string> & /*query*/) {
-    const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
     const auto users = loadLegacyFacialUsers(dataRoot);
     json::array arr;
     for (const auto &u : users) {
@@ -214,7 +232,7 @@ handleEnroll(const http::request<http::string_body> &req,
             gBiometricCapturedImages.clear();
         }
 
-        const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+        const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
         const std::string userId =
             empresa + "_" + paterno + "_" + materno + "_" + nombre;
         const std::string fullName =
@@ -243,7 +261,7 @@ static http::response<http::string_body>
 handleRegister(const http::request<http::string_body> &req,
                const std::unordered_map<std::string, std::string> & /*query*/) {
     auto &cfg = AppConfig::instance();
-    const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
     try {
         auto val = json::parse(req.body());
         if (!val.is_object()) {
@@ -566,15 +584,17 @@ handleRegister(const http::request<http::string_body> &req,
         const auto sessionToken = issueAuthSession(created);
         regLog("response_ready");
 
-        return makeJsonResponse(
-            http::status::created,
-            json::object{{"status", "registered"},
-                         {"biometric_provider", biometricProvider},
-                         {"quality_score", qualityScore},
-                         {"user", authUserSessionJson(created,
-                                                      sessionToken.token)}});
+        return withAuthCookies(
+            makeJsonResponse(
+                http::status::created,
+                json::object{{"status", "registered"},
+                             {"biometric_provider", biometricProvider},
+                             {"quality_score", qualityScore},
+                             {"user", authUserSessionJson(created,
+                                                          sessionToken)}}),
+            sessionToken);
     } catch (const std::exception &ex) {
-        const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+        const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
         appendAuthAuditLog(dataRoot, "register", "unknown", "unknown", false,
                            ex.what());
         return makeJsonResponse(http::status::bad_request,
@@ -614,7 +634,31 @@ static void loginRateClear(const std::string &key) {
     gLoginRateMap.erase(key);
 }
 
+// ADR-029, "Actualización 2026-07-19": el refresh token viaja SOLO por la
+// cookie HttpOnly `refresh_token` (nunca más en el body JSON, ver
+// http_utils::setAuthCookies) -- se lee del header `Cookie` de la request,
+// no del body. Endpoints protegidos por esta cookie (refresh/logout) exigen
+// además que el header `X-CSRF-Token` coincida con la cookie legible
+// `csrf_token` (patrón double-submit): un sitio de terceros puede lograr que
+// el navegador de la víctima MANDE la cookie de refresh_token sola, pero no
+// puede LEERLA (same-origin policy) para repetirla en el header.
+static bool csrfHeaderMatchesCookie(const http::request<http::string_body> &req) {
+    const std::string cookieCsrf = http_utils::extractCookie(req, "csrf_token");
+    if (cookieCsrf.empty()) {
+        return false;
+    }
+    const auto it = req.find("X-CSRF-Token");
+    if (it == req.end()) {
+        return false;
+    }
+    return std::string(it->value()) == cookieCsrf;
+}
+
 // ── T21 — POST /api/auth/logout ───────────────────────────────────────────
+// ADR-029 (revisado): revoca el jti del access token de inmediato (denylist)
+// y, si el cliente envía el refresh_token (ahora vía cookie, no body), lo
+// marca revocado en el servidor — antes el logout solo actuaba client-side y
+// la sesión seguía viva hasta expirar naturalmente (hasta 8 h).
 static http::response<http::string_body>
 handleLogout(const http::request<http::string_body> &req,
              const std::unordered_map<std::string, std::string> &query) {
@@ -622,42 +666,70 @@ handleLogout(const http::request<http::string_body> &req,
     if (!session)
         return makeJsonResponse(http::status::unauthorized,
                                 json::object{{"error", "unauthorized"}});
-    auth::revokeAuthSession(session->token);
-    return makeJsonResponse(http::status::ok, json::object{{"status", "logged_out"}});
+    const std::string refreshToken = http_utils::extractCookie(req, "refresh_token");
+    // CSRF solo se exige cuando hay una cookie de refresh que revocar -- si el
+    // cliente no la tenía (ya venció, o nunca hizo login con cookie), el
+    // logout igual debe poder revocar el access token vigente.
+    if (!refreshToken.empty() && !csrfHeaderMatchesCookie(req)) {
+        return makeJsonResponse(http::status::forbidden,
+                                json::object{{"error", "csrf_token_mismatch"}});
+    }
+    auth::revokeAuthSession(session->token, refreshToken);
+    auto res = makeJsonResponse(http::status::ok, json::object{{"status", "logged_out"}});
+    http_utils::clearAuthCookies(res);
+    return res;
 }
 
-// ── T21 — POST /api/auth/refresh ──────────────────────────────────────────
-// Emite un token nuevo de 8 h si el actual es válido; el anterior expira naturalmente.
+// ── POST /api/auth/refresh ─────────────────────────────────────────────────
+// ADR-029 (revisado): endpoint stateless respecto al access token — recibe el
+// refresh_token vía cookie HttpOnly (nunca un access token, que puede ya
+// haber expirado; ese es justamente el propósito del refresh) y, si es
+// válido, emite un par nuevo rotando el refresh token usado (uso único:
+// reintentarlo tras esta llamada falla siempre, mitigando replay si fue
+// robado).
 static http::response<http::string_body>
 handleTokenRefresh(const http::request<http::string_body> &req,
-                   const std::unordered_map<std::string, std::string> &query) {
-    const auto session = resolveAuthSession(req, query);
-    if (!session)
-        return makeJsonResponse(http::status::unauthorized,
-                                json::object{{"error", "unauthorized"}});
+                   const std::unordered_map<std::string, std::string> & /*query*/) {
+    const std::string refreshToken = http_utils::extractCookie(req, "refresh_token");
+    if (refreshToken.empty()) {
+        return makeJsonResponse(http::status::bad_request,
+            json::object{{"error", "missing_refresh_token"}});
+    }
+    if (!csrfHeaderMatchesCookie(req)) {
+        return makeJsonResponse(http::status::forbidden,
+            json::object{{"error", "csrf_token_mismatch"}});
+    }
 
-    AuthUser user;
-    user.id       = session->userId;
-    user.username = session->username;
-    user.company  = session->company;
-    user.role     = session->role;
-    user.tenantId = session->tenantId;
+    const auto pair = auth::refreshWithToken(refreshToken);
+    if (!pair) {
+        // Refresh token inválido/vencido/reusado: limpiar la cookie vieja
+        // también, no solo responder 401 -- si no, el cliente seguiría
+        // reenviándola en cada intento sin llegar nunca a un login limpio.
+        auto res = makeJsonResponse(http::status::unauthorized,
+            json::object{{"error", "invalid_or_expired_refresh_token"}});
+        http_utils::clearAuthCookies(res);
+        return res;
+    }
 
-    const auto newSess = issueAuthSession(user);
-    // Revocar el token anterior inmediatamente (rotación estricta)
-    auth::revokeAuthSession(session->token);
+    auto &cfg = AppConfig::instance();
+    const auto claims = auth::jwt::verify(pair->token, cfg.gJwtSecret);
+    json::object userObj;
+    if (claims) {
+        userObj = json::object{{"id", claims->sub},
+                               {"username", claims->username},
+                               {"company", claims->company},
+                               {"role", claims->role},
+                               {"tenant_id", claims->tenantId}};
+    }
 
-    return makeJsonResponse(http::status::ok,
-        json::object{{"status",     "refreshed"},
-                     {"token",      newSess.token},
-                     {"expires_at", nowIso8601()},
-                     {"user",       json::object{
-                        {"id",        user.id},
-                        {"username",  user.username},
-                        {"company",   user.company},
-                        {"role",      user.role},
-                        {"tenant_id", user.tenantId}
-                     }}});
+    return withAuthCookies(
+        makeJsonResponse(http::status::ok,
+            json::object{{"status",       "refreshed"},
+                         {"access_token",  pair->token},
+                         {"expires_in",    pair->expiresInSeconds},
+                         {"token_type",    "Bearer"},
+                         {"user",          userObj}}),
+        *pair);
 }
 
 // ── POST /api/auth/login/password ───────────────────────────────────────
@@ -665,7 +737,7 @@ static http::response<http::string_body>
 handleLoginPassword(const http::request<http::string_body> &req,
                     const std::unordered_map<std::string, std::string> & /*query*/) {
     auto &cfg = AppConfig::instance();
-    const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
     try {
         auto val = json::parse(req.body());
         if (!val.is_object()) {
@@ -771,11 +843,13 @@ handleLoginPassword(const http::request<http::string_body> &req,
 
         loginRateClear(rateKey);  // login exitoso: reinicia contador
         const auto sessionToken = issueAuthSession(found);
-        return makeJsonResponse(
-            http::status::ok,
-            json::object{{"status", "authenticated"},
-                         {"method", "password"},
-                         {"user", authUserSessionJson(found, sessionToken.token)}});
+        return withAuthCookies(
+            makeJsonResponse(
+                http::status::ok,
+                json::object{{"status", "authenticated"},
+                             {"method", "password"},
+                             {"user", authUserSessionJson(found, sessionToken)}}),
+            sessionToken);
     } catch (const std::exception &ex) {
         return makeJsonResponse(http::status::bad_request,
                                 json::object{{"error", ex.what()}});
@@ -787,7 +861,7 @@ static http::response<http::string_body>
 handleLoginFace(const http::request<http::string_body> &req,
                 const std::unordered_map<std::string, std::string> & /*query*/) {
     auto &cfg = AppConfig::instance();
-    const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
     try {
         auto val = json::parse(req.body());
         if (!val.is_object()) {
@@ -1018,14 +1092,16 @@ handleLoginFace(const http::request<http::string_body> &req,
                   << " provider=" << biometricProvider
                   << " score=" << bestScore << std::endl;
 
-        return makeJsonResponse(
-            http::status::ok,
-            json::object{{"status", "authenticated"},
-                         {"method", "face"},
-                         {"biometric_provider", biometricProvider},
-                         {"score", bestScore},
-                         {"user", authUserSessionJson(bestUser,
-                                                      sessionToken.token)}});
+        return withAuthCookies(
+            makeJsonResponse(
+                http::status::ok,
+                json::object{{"status", "authenticated"},
+                             {"method", "face"},
+                             {"biometric_provider", biometricProvider},
+                             {"score", bestScore},
+                             {"user", authUserSessionJson(bestUser,
+                                                          sessionToken)}}),
+            sessionToken);
     } catch (const std::exception &ex) {
         return makeJsonResponse(http::status::bad_request,
                                 json::object{{"error", ex.what()}});
@@ -1037,7 +1113,7 @@ static http::response<http::string_body>
 handleAudit(const http::request<http::string_body> &req,
             const std::unordered_map<std::string, std::string> &query) {
     auto &cfg = AppConfig::instance();
-    const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
 
     const auto session = resolveAuthSession(req, query);
     if (!session || session->role != "admin") {
@@ -1108,7 +1184,7 @@ static http::response<http::string_body>
 handleAuditExportCsv(const http::request<http::string_body> &req,
                      const std::unordered_map<std::string, std::string> &query) {
     auto &cfg = AppConfig::instance();
-    const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
 
     const auto session = resolveAuthSession(req, query);
     if (!session || session->role != "admin") {
@@ -1213,6 +1289,22 @@ static http::response<http::string_body> handleMetrics(
           << "mapas_backend_telemetry_consumed_total "       << ti.consumed       << "\n"
           << "mapas_backend_telemetry_commits_total "        << ti.commits        << "\n"
           << "mapas_backend_telemetry_mode{mode=\"" << ti.mode << "\"} 1\n";
+
+        auto tb = mining::tbsync::thingsBoardSyncStats();
+        m << "# HELP mapas_backend_tbsync ThingsBoard (AWS legacy) sync counters\n"
+          << "# TYPE mapas_backend_tbsync counter\n"
+          << "mapas_backend_tbsync_enabled "                        << (tb.enabled ? 1 : 0)          << "\n"
+          << "mapas_backend_tbsync_peers_configured "                << tb.peers_configured           << "\n"
+          << "mapas_backend_tbsync_peers_authenticated_total "       << tb.peers_authenticated        << "\n"
+          << "mapas_backend_tbsync_login_failures_total "            << tb.login_failures             << "\n"
+          << "mapas_backend_tbsync_backfill_runs_total "             << tb.backfill_runs              << "\n"
+          << "mapas_backend_tbsync_backfill_points_ingested_total "  << tb.backfill_points_ingested   << "\n"
+          << "mapas_backend_tbsync_backfill_errors_total "           << tb.backfill_errors            << "\n"
+          << "mapas_backend_tbsync_realtime_ws_connects_total "      << tb.realtime_ws_connects       << "\n"
+          << "mapas_backend_tbsync_realtime_ws_reconnects_total "    << tb.realtime_ws_reconnects     << "\n"
+          << "mapas_backend_tbsync_realtime_points_ingested_total "  << tb.realtime_points_ingested   << "\n"
+          << "mapas_backend_tbsync_realtime_points_dropped_total "   << tb.realtime_points_dropped_unmapped << "\n"
+          << "mapas_backend_tbsync_realtime_errors_total "           << tb.realtime_errors            << "\n";
     }
 #endif
 
@@ -1272,22 +1364,25 @@ static void handleLiveKpiSse(beast::tcp_stream& stream,
     const std::string tenant = session->tenantId;
 
     // 3. Cabeceras SSE (escritura manual; conexión persistente)
+    // Sin Access-Control-Allow-Origin: este endpoint se sirve same-origin vía
+    // el proxy nginx /api/ (frontend/nginx.conf) — un wildcard aquí solo
+    // permitía a cualquier origen leer el stream de KPIs si obtenía un token
+    // válido por otra vía, sin ningún beneficio funcional.
     static const std::string kHead =
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/event-stream\r\n"
         "Cache-Control: no-cache\r\n"
-        "Connection: keep-alive\r\n"
-        "Access-Control-Allow-Origin: *\r\n\r\n";
+        "Connection: keep-alive\r\n\r\n";
     asio::write(stream, asio::buffer(kHead), ec);
     if (ec) return;
 
 #if HAS_LIBPQ
     const std::string replicaUrl = getenvOr(
-        "REPLICA_DATABASE_URL",
+        "BEEMETRY_REPLICA_DATABASE_URL",
         "host=db_replica port=5432 dbname=sensors_db user=dashboard_ro "
         "password=dash_pass");
     int intervalMs = 2000;
-    try { intervalMs = std::stoi(getenvOr("LIVE_PUSH_INTERVAL_MS", "2000")); }
+    try { intervalMs = std::stoi(getenvOr("BEEMETRY_LIVE_PUSH_INTERVAL_MS", "2000")); }
     catch (...) {}
 
     // Degradación graceful: si réplica no disponible, usar primario (Art.3 relajado).
@@ -1349,7 +1444,46 @@ static void session(beast::tcp_stream stream) {
     if (ec) return;
 
     if (websocket::is_upgrade(req)) {
-        std::make_shared<WebSocketSession>(stream.release_socket())->run();
+        // Resuelve tenant desde la sesión (token en query string ?auth_token=
+        // o header Authorization, ver auth::extractAuthTokenFromRequest --
+        // el handshake WS del navegador no permite headers custom, así que
+        // el cliente debe pasar el token como query param). Sin sesión
+        // válida, la conexión igual se acepta (compat con el eco original y
+        // con clientes que no necesitan push, p.ej. tests), pero
+        // simplemente no se registra en WsRegistry => no recibe push de
+        // ningún tenant (fail-closed: nunca queda suscrito "por defecto" a
+        // datos de otro tenant).
+        const auto query = http_utils::parseQueryString(std::string(req.target()));
+        const auto authSession = auth::resolveAuthSession(req, query);
+        const std::string tenantId = authSession ? authSession->tenantId : std::string();
+
+        // IMPORTANTE: el socket liberado de `stream` pertenece al io_context
+        // *global* del accept loop (ver `asio::io_context ioc{1}` en main()),
+        // que jamás se pumpea con `.run()` -- el accept loop usa
+        // `acceptor.accept()` SÍNCRONO en un bucle infinito, así que ningún
+        // `async_*` colgado de ese io_context terminaría de ejecutarse jamás
+        // (confirmado en pruebas: `ws_.async_accept()` nunca completaba, el
+        // handshake WS se colgaba indefinidamente sin error ni log -- el eco
+        // "original" de este archivo nunca funcionó realmente sobre la red).
+        // Cada conexión WS ya corre en su propio hilo dedicado (detached, ver
+        // el bucle de accept), así que la forma más simple y correcta de
+        // arreglarlo sin rediseñar el modelo de concurrencia del resto del
+        // servidor es: crear un io_context propio para ESTE hilo y
+        // bloquearlo en `ioc.run()` hasta que la sesión WS termine. El socket
+        // ya conectado se puede re-adjuntar (asio::ip::tcp::socket admite
+        // moverse de un io_context a otro vía su release_socket()/protocolo
+        // nativo) usando `native_handle()` + `assign()`.
+        auto wsIoc = std::make_shared<net::io_context>(1);
+        auto releasedSocket = stream.release_socket();
+        const auto proto = releasedSocket.local_endpoint().protocol();
+        const auto nativeHandle = releasedSocket.release();
+        tcp::socket wsSocket(*wsIoc, proto, nativeHandle);
+        // Se pasa `req` (ya leído arriba vía http::read) al accept: evita
+        // que Beast intente releer el handshake HTTP del socket (ver
+        // comentario en websocket_session.hpp::run(req) -- causaba
+        // "gracefully closed" en pruebas reales contra el stack).
+        std::make_shared<WebSocketSession>(std::move(wsSocket), tenantId)->run(req);
+        wsIoc->run();
         return;
     }
 
@@ -1360,7 +1494,7 @@ static void session(beast::tcp_stream stream) {
         return;
     }
 
-    std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
+    std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
     auto res = gRouter.dispatch(req, dataRoot);
     http::write(stream, res, ec);
     stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
@@ -1375,7 +1509,7 @@ int main() {
         // (10K sensores → priorizar Asio). OPENCV_THREADS sobreescribe (default 4).
         {
             int cv_threads = 4;
-            if (const char* e = std::getenv("OPENCV_THREADS")) {
+            if (const char* e = std::getenv("BEEMETRY_OPENCV_THREADS")) {
                 try { cv_threads = std::max(1, std::stoi(e)); } catch (...) {}
             }
             cv::setNumThreads(cv_threads);
@@ -1388,8 +1522,8 @@ int main() {
         auto &cfg = AppConfig::instance();
         cfg.loadFromEnv();
 
-        const std::string address = getenvOr("MAPAS_BIND_ADDRESS", "0.0.0.0");
-        const int port = std::stoi(getenvOr("MAPAS_PORT", "8081"));
+        const std::string address = getenvOr("BEEMETRY_MAPAS_BIND_ADDRESS", "0.0.0.0");
+        const int port = std::stoi(getenvOr("BEEMETRY_MAPAS_PORT", "8081"));
 
         text_spell::configureFromEnv();
 
@@ -1397,16 +1531,23 @@ int main() {
         auth::registerRoutes(gRouter);
         biometric::registerRoutes(gRouter);
         mining::registerRoutes(gRouter);
+        mining_iot::registerRoutes(gRouter);
+        mining_iot::registerNotificationRoutes(gRouter);
         reports::registerRoutes(gRouter);
         formula::registerRoutes(gRouter);
         platform::registerRoutes(gRouter);
+        tenant_assets::registerRoutes(gRouter);
         map_mod::registerRoutes(gRouter);
         gdal_mod::registerRoutes(gRouter);
         text_mod::registerRoutes(gRouter);
         registerRemainingRoutes(gRouter);
 
+        // ADR-034: motor de alarmas (evaluador de reglas en segundo plano,
+        // near-real-time por polling — ver razonamiento en device_alarm_routes.cpp).
+        mining_iot::startAlarmEvaluator();
+
         // Diagnostic output
-        std::cout << "mapas_backend listening on " << address << ":" << port
+        std::cout << "beemetry_backend listening on " << address << ":" << port
                   << std::endl;
         std::cout << "auth storage mode: "
                   << (cfg.gAuthStorageMode == AuthStorageMode::Postgres
@@ -1460,31 +1601,51 @@ int main() {
         // para que la caché de sensores y el hilo flusher estén listos antes de
         // aceptar conexiones en el gateway. Activable con TELEMETRY_INGEST_ENABLE.
         const bool telemetryIngestEnabled =
-            getenvOr("TELEMETRY_INGEST_ENABLE", "true") != "false" &&
+            getenvOr("BEEMETRY_TELEMETRY_INGEST_ENABLE", "true") != "false" &&
             cfg.gAuthStorageMode == AuthStorageMode::Postgres &&
             !cfg.gDatabaseUrl.empty();
 #if HAS_LIBPQ
         if (telemetryIngestEnabled) {
             std::size_t batch = 1000;
             int flushMs = 200;
-            try { batch = std::stoul(getenvOr("TELEMETRY_BATCH_SIZE", "1000")); }
+            try { batch = std::stoul(getenvOr("BEEMETRY_TELEMETRY_BATCH_SIZE", "1000")); }
             catch (...) {}
-            try { flushMs = std::stoi(getenvOr("TELEMETRY_FLUSH_MS", "200")); }
+            try { flushMs = std::stoi(getenvOr("BEEMETRY_TELEMETRY_FLUSH_MS", "200")); }
             catch (...) {}
             // El ingestor usa UNA conexión persistente para COPY → va DIRECTO a
             // la BD (no por pgbouncer, que es para las conexiones cortas del
             // backend). TELEMETRY_DATABASE_URL permite sobreescribir.
             const std::string ingestUrl =
-                getenvOr("TELEMETRY_DATABASE_URL", cfg.gDatabaseUrl);
+                getenvOr("BEEMETRY_TELEMETRY_DATABASE_URL", cfg.gDatabaseUrl);
             // Modo Kafka (ingesta durable vía Redpanda) si TELEMETRY_INGEST_MODE=kafka
-            if (getenvOr("TELEMETRY_INGEST_MODE", "direct") == "kafka") {
+            if (getenvOr("BEEMETRY_TELEMETRY_INGEST_MODE", "direct") == "kafka") {
                 mining::TelemetryIngestor::instance().configureKafka(
-                    getenvOr("KAFKA_BROKERS", "redpanda:9092"),
-                    getenvOr("KAFKA_TOPIC", "telemetry"),
-                    getenvOr("KAFKA_CONSUMER_GROUP", "telemetry-writers"));
+                    getenvOr("BEEMETRY_KAFKA_BROKERS", "redpanda:9092"),
+                    getenvOr("BEEMETRY_KAFKA_TOPIC", "telemetry"),
+                    getenvOr("BEEMETRY_KAFKA_CONSUMER_GROUP", "telemetry-writers"));
             }
             mining::TelemetryIngestor::instance().start(ingestUrl, batch,
                                                         flushMs);
+
+            // Agregador de mapa: push diferencial por WS (ver
+            // ws_broadcast.hpp / map_aggregator.hpp). Reusa la misma
+            // BEEMETRY_TELEMETRY_DATABASE_URL/gDatabaseUrl que el resto del
+            // backend (no el canal directo de COPY del ingestor).
+            int mapPollMs = 3000;
+            try { mapPollMs = std::stoi(getenvOr("BEEMETRY_MAP_AGGREGATOR_POLL_MS", "3000")); }
+            catch (...) {}
+            mining::MapAggregator::instance().start(cfg.gDatabaseUrl, mapPollMs);
+
+            // ADR-034: adaptadores de protocolo (MQTT/Modbus TCP/OPC UA).
+            // Después del ingestor: normalizan todo al evento canónico y lo
+            // entregan a TelemetryIngestor::ingestLine(), así que dependen de
+            // que la caché de sensores y el pipeline ya estén arriba.
+            mining::protocols::startAdapters(cfg.gDatabaseUrl);
+
+            // Sync ThingsBoard (AWS legacy) → plataforma propia, ver
+            // thingsboard_sync.hpp. Gated por BEEMETRY_THINGSBOARD_SYNC_ENABLED
+            // (default false); no-op si está deshabilitado o sin peer configurado.
+            mining::tbsync::startThingsBoardSync(cfg.gDatabaseUrl);
         }
 #endif
 
@@ -1498,10 +1659,10 @@ int main() {
                 asio::io_context mining_ioc;
                 mining::MiningConfig mcfg;
                 mcfg.port = static_cast<unsigned short>(
-                    std::stoi(getenvOr("MINING_GATEWAY_PORT", "8443")));
-                mcfg.cert_path = getenvOr("TLS_CERT_PATH",
+                    std::stoi(getenvOr("BEEMETRY_MINING_GATEWAY_PORT", "8443")));
+                mcfg.cert_path = getenvOr("BEEMETRY_TLS_CERT_PATH",
                     "/etc/mining-gateway/certs/server.crt");
-                mcfg.key_path = getenvOr("TLS_KEY_PATH",
+                mcfg.key_path = getenvOr("BEEMETRY_TLS_KEY_PATH",
                     "/etc/mining-gateway/certs/server.key");
                 mcfg.ingest_enabled = telemetryIngestEnabled;
                 std::cout << "[MINING-GATEWAY] Initializing on "
@@ -1514,7 +1675,7 @@ int main() {
                 unsigned hw = std::thread::hardware_concurrency();
                 if (hw == 0) hw = 4;
                 unsigned n_workers = std::min(hw, 8u);
-                if (const char* e = std::getenv("MINING_GATEWAY_THREADS")) {
+                if (const char* e = std::getenv("BEEMETRY_MINING_GATEWAY_THREADS")) {
                     try { n_workers = std::max(1u,
                         static_cast<unsigned>(std::stoi(e))); }
                     catch (...) {}

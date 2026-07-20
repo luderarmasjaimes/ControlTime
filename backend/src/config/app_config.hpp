@@ -102,6 +102,19 @@ struct AppConfig {
     bool gImageOptimizerEnabled = false;
     int gBiometricMaxPixels = 1280 * 720;
     int gSessionTtlMinutes = 480;
+    // ADR-029 (revisado): JWT de acceso de vida corta + refresh token
+    // server-side rotado. gJwtSecret vacío en loadFromEnv() dispara una clave
+    // efímera aleatoria (con warning) — válida solo dentro de este proceso;
+    // en despliegue real JWT_SECRET debe fijarse (ver docker-compose.yml).
+    std::string gJwtSecret;
+    int gJwtAccessTtlMinutes = 15;
+    int gJwtRefreshTtlDays = 7;
+    // ADR-029, "Actualización 2026-07-19": el refresh token migró de
+    // localStorage (JSON body) a una cookie HttpOnly — Secure debe quedar en
+    // true en cualquier despliegue con TLS real delante (terminado por el
+    // balanceador, ver ADR-054); solo se desactiva para probar por HTTP
+    // plano en local (docker-compose.yml lo hace explícito).
+    bool gAuthCookieSecure = true;
     std::atomic<bool> gAuthSchemaReady{false};
     std::mutex gAuthSchemaInitMutex;
     std::atomic<bool> gFormulaSchemaReady{false};
