@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { dismissUserMaintenancePrompt, openCategory } from './helpers'
 
 test('Editor carga y muestra el encabezado del informe', async ({ page }) => {
   await page.addInitScript(() => {
@@ -14,6 +15,8 @@ test('Editor carga y muestra el encabezado del informe', async ({ page }) => {
     )
   })
   await page.goto('/')
+  await dismissUserMaintenancePrompt(page)
+  await openCategory(page, 'Reportes')
   await page.getByRole('button', { name: 'Abrir Report', exact: true }).click()
   await expect(page.getByText(/Informe Geomecánico/i)).toBeVisible()
 })

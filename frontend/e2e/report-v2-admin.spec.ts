@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { dismissUserMaintenancePrompt, openCategory } from './helpers'
 
 function bootstrapSession() {
   localStorage.clear()
@@ -39,8 +40,10 @@ function bootstrapSession() {
 test('Report v2 guarda informe y lo lista en Mis Informes', async ({ page }) => {
   await page.addInitScript(bootstrapSession)
   await page.goto('/')
+  await dismissUserMaintenancePrompt(page)
 
   await page.setViewportSize({ width: 1400, height: 900 })
+  await openCategory(page, 'Reportes')
   await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click()
 
   page.once('dialog', async (dialog) => {
@@ -158,8 +161,10 @@ test('Report v2 abre visor de lectura desde administracion', async ({ page }) =>
   })
 
   await page.goto('/')
+  await dismissUserMaintenancePrompt(page)
   await page.setViewportSize({ width: 1400, height: 900 })
 
+  await openCategory(page, 'Reportes')
   await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click()
   await page.getByRole('button', { name: 'Mis Informes', exact: true }).click()
 

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { dismissUserMaintenancePrompt, openCategory } from './helpers'
 
 test('Navegar a Report y pulsar Guardar Cambios', async ({ page }) => {
   await page.addInitScript(() => {
@@ -14,6 +15,8 @@ test('Navegar a Report y pulsar Guardar Cambios', async ({ page }) => {
     )
   })
   await page.goto('/')
+  await dismissUserMaintenancePrompt(page)
+  await openCategory(page, 'Reportes')
   await page.getByRole('button', { name: 'Abrir Report', exact: true }).click()
   const saveBtn = page.getByRole('button', { name: /Guardar Cambios/i })
   await expect(saveBtn).toBeVisible()

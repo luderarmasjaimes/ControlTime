@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { dismissUserMaintenancePrompt, openCategory } from './helpers'
 
 test('Dashboard shows KPIs and Map occupies full area on Map tab', async ({ page }) => {
   await page.addInitScript(() => {
@@ -14,6 +15,7 @@ test('Dashboard shows KPIs and Map occupies full area on Map tab', async ({ page
     )
   })
   await page.goto('/')
+  await dismissUserMaintenancePrompt(page)
 
   // Ensure desktop viewport so tab labels are visible
   await page.setViewportSize({ width: 1280, height: 800 })
@@ -22,6 +24,7 @@ test('Dashboard shows KPIs and Map occupies full area on Map tab', async ({ page
     await expect(page.getByText(/Prod\. Mensual/i)).toBeVisible()
 
   // Switch to Map tab and verify map viewer area is rendered
+  await openCategory(page, 'Mapas')
   await page.getByRole('button', { name: 'Abrir Map', exact: true }).click()
   await expect(page.getByText(/Unidad Minera Toquepala/i)).toBeVisible({ timeout: 10000 })
 
