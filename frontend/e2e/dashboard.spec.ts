@@ -26,7 +26,10 @@ test('Dashboard shows KPIs and Map occupies full area on Map tab', async ({ page
   // Switch to Map tab and verify map viewer area is rendered
   await openCategory(page, 'Mapas')
   await page.getByRole('button', { name: 'Abrir Map', exact: true }).click()
-  await expect(page.getByText(/Unidad Minera Toquepala/i)).toBeVisible({ timeout: 10000 })
+  // "Unidad Minera Toquepala" ya no aparece en ningun lado de la app (contenido
+  // desactualizado, verificado 2026-07-21) -- se reemplaza por el titulo real
+  // y estable del visor de mapa (MapViewer.tsx, mapTitle por defecto).
+  await expect(page.getByText(/Mapa Satelital Operacional/i)).toBeVisible({ timeout: 10000 })
 
   const mainContent = page.locator('.map-full').first()
   await expect(mainContent).toBeVisible({ timeout: 5000 })

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { dismissUserMaintenancePrompt, openCategory } from './helpers';
+import { dismissUserMaintenancePrompt, openCategory, openMisInformes } from './helpers';
 
 test('Mantenimiento usuarios bloquea usuario y registra auditoria', async ({ page }) => {
   await page.addInitScript(() => {
@@ -47,7 +47,7 @@ test('Mantenimiento usuarios bloquea usuario y registra auditoria', async ({ pag
 
   await openCategory(page, 'Reportes');
   await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click();
-  await page.getByRole('button', { name: 'Mis Informes', exact: true }).click();
+  await openMisInformes(page);
 
   await page.getByRole('button', { name: /Mantenimiento Usuarios/i }).click();
   await expect(page.getByText('Mantenimiento de Usuarios')).toBeVisible();

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { dismissUserMaintenancePrompt, openCategory } from './helpers'
+import { dismissUserMaintenancePrompt, openCategory, openMisInformes } from './helpers'
 
 function bootstrapSession() {
   localStorage.clear()
@@ -63,7 +63,7 @@ test('Report v2 guarda informe y lo lista en Mis Informes', async ({ page }) => 
     })
     .toBeGreaterThan(0)
 
-  await page.getByRole('button', { name: 'Mis Informes', exact: true }).click()
+  await openMisInformes(page)
 
   const dateInputs = page.locator('.ra-filters input[type="date"]')
   await dateInputs.nth(0).fill('2020-01-01')
@@ -166,7 +166,7 @@ test('Report v2 abre visor de lectura desde administracion', async ({ page }) =>
 
   await openCategory(page, 'Reportes')
   await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click()
-  await page.getByRole('button', { name: 'Mis Informes', exact: true }).click()
+  await openMisInformes(page)
 
   const dateInputs = page.locator('.ra-filters input[type="date"]')
   await dateInputs.nth(0).fill('2020-01-01')

@@ -25,12 +25,37 @@ export async function dismissUserMaintenancePrompt(page: Page): Promise<void> {
  * aparecen sus módulos ("Abrir Report", "Abrir Report v2", "Abrir Map",
  * etc.) como botones propios. Las specs viejas asumían una lista plana de
  * módulos visibles de entrada -- desactualizado desde que se introdujo ese
- * sistema de navegación. Los módulos ya abiertos/expandidos no necesitan
- * reabrir la categoría (`isVisible` sobre el botón de módulo directamente).
+ * sistema de navegación.
+ *
+ * El nombre ACCESIBLE (ARIA) de cada botón de categoría es su `title`
+ * (descripción larga, p.ej. "Mapa satelital de la operación y planos de
+ * alta resolución."), NO la etiqueta corta visible ("Mapas") -- por eso
+ * `getByRole('button', { name: 'Mapas' })` nunca matchea. Se busca por
+ * TEXTO VISIBLE del botón en su lugar (el `<span>` interno sí dice
+ * "Mapas"), con `.first()` porque el badge ("MAP", "Beta", etc.) queda
+ * concatenado al mismo texto y podría, en teoría, dar más de un candidato.
  */
-export async function openCategory(page: Page, categoryName: string): Promise<void> {
-  const categoryBtn = page.getByRole('button', { name: categoryName, exact: true })
+export async function openCategory(page: Page, categoryLabel: string): Promise<void> {
+  const categoryBtn = page.locator('button').filter({ hasText: categoryLabel }).first()
   if (await categoryBtn.isVisible().catch(() => false)) {
     await categoryBtn.click()
   }
+}
+
+/**
+ * "Mis Informes" (biblioteca de informes guardados, onOpenReportsAdmin) vive
+ * dentro de la pestaña "Datos" del ribbon de ReportStudioV2 (RibbonToolbar.tsx,
+ * grupo "Informes") -- no es visible con la pestaña "Inicio" (la que abre por
+ * defecto). Hay que cambiar de pestaña del ribbon primero.
+ *
+ * Se usa texto visible (no accessible name/getByRole) para ambos clicks --
+ * los botones del ribbon (RibbonBtn) llevan un `title` largo/descriptivo
+ * distinto de su label corto visible, y distintas herramientas de
+ * accesibilidad resuelven el nombre accesible de forma distinta para ese
+ * patrón (title vs. contenido de texto) -- filtrar por texto visible evita
+ * la ambigüedad por completo.
+ */
+export async function openMisInformes(page: Page): Promise<void> {
+  await page.locator('button').filter({ hasText: 'Datos' }).first().click()
+  await page.locator('button').filter({ hasText: 'Mis Informes' }).first().click()
 }
