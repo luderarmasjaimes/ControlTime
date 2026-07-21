@@ -158,6 +158,22 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > comportamiento resuelve `tenant_id` real (antes de este fix, el mismo
 > escenario resolvía vacío). El hallazgo G2 (creación de empresas sin
 > endpoint) sigue sin decisión — no se tocó en esta pasada.
+>
+> **Actualización 2026-07-21 (quinta pasada, mismo día)**: 67 → **68 ADRs**.
+> Durante la verificación con login real (commit `9782c09`) se detectó que
+> `POST /api/auth/register` nunca creaba una fila real en `auth_user_tenant`
+> — 23 de 28 usuarios reales de la base caían en un tenant de "fallback"
+> compartido que resultó ser el tenant REAL de otra empresa (Compañía Minera
+> Antamina), no un tenant demo aislado como sugería su nombre de constante.
+> **067** (`autoregistro-provisiona-tenant-real`, ámbito `plataforma`) agrega
+> `findOrCreateTenantForCompanyPg` (tenant dedicado + membresía real en el
+> registro, backend reconstruido y redesplegado) y hace backfill de los 23
+> usuarios legacy (5 empresas) con su propio tenant aislado
+> (`db_scripts/48_...sql`). Verificado: una empresa nunca antes vista se
+> autoregistra y crea un informe en el primer login, sin intervención manual.
+> El hallazgo G2 (creación de empresas sin endpoint dedicado, deduplicación
+> de nombres) sigue sin decisión — este ADR corrige el aislamiento, no
+> reemplaza ese flujo pendiente.
 
 ### Ámbito `plataforma` — fundaciones transversales
 | # | Slug | Status | Resumen |
@@ -185,8 +201,9 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 061 | `catalogo-casos-prueba-qa` | ✅ accepted, documentado (2026-07-21) | Catálogo de 69 casos de prueba QA (Capa 5 de ADR-059, adelantada) sobre 14 funcionalidades pedidas por Gerencia. Encontró 2 brechas reales (video no implementado; creación de empresas sin endpoint) y 1 defecto (RBAC: 6 vs 7 roles en `roleConstants.ts`). |
 | 063 | `correccion-rbac-siete-roles-asignables` | ✅ implemented, verificado (2026-07-21) | `ADMIN_ASSIGNABLE_ROLES` (7 roles) reemplaza `USER_ROLES` (6) en las 3 pantallas de administración de roles; corrige matriz de permisos del backend que solo devolvía 4 de 7 roles. Cierra TC-RBAC-05 de ADR-061. |
 | 066 | `login-usa-razon-social-minera-no-contratista` | ✅ implemented, verificado (2026-07-21) | El registro/login de un contratista usa la razón social de la EMPRESA MINERA asociada (no la propia) para determinar `company`/tenant — antes se sobreescribía con `contractorLegalName`, dejando al contratista sin tenant real. Verificado: `tenant_id` ahora resuelve real. Cierra el hallazgo de `Auditoria_Registro_RUC_Tenant_2026-07-21.md`. |
+| 067 | `autoregistro-provisiona-tenant-real` | ✅ implemented, verificado (2026-07-21) | `POST /api/auth/register` nunca creaba una fila real en `auth_user_tenant` — 23/28 usuarios reales caían en un fallback compartido que resultó ser el tenant REAL de otra empresa (Antamina), no un tenant demo aislado. Se agrega `findOrCreateTenantForCompanyPg` (tenant dedicado + membresía real en el registro) y se hace backfill de los 23 usuarios legacy con su propio tenant. Verificado: empresa nunca antes vista se autoregistra y crea un informe en el primer login sin intervención manual. |
 
-**Ámbito `plataforma`: 21/23 implemented, 1 partial, 1 proposed.**
+**Ámbito `plataforma`: 22/24 implemented, 1 partial, 1 proposed.**
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |

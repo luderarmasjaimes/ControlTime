@@ -82,6 +82,29 @@ AuthLoginIdentityLookupResult authLookupIdentityForCompanyPg(
 std::string resolveTelemetryTenantIdPg(void *connV, const std::string &userId,
                                        const std::string &companyName);
 
+/**
+ * @brief Encuentra (por `tenant_name` == `companyName`) o crea un tenant real
+ * para una empresa, y vincula `userId` a él en `auth_user_tenant`
+ * (is_default=true). Pensado para el autoregistro (`/api/auth/register`):
+ * sin esto, un usuario recién registrado nunca obtiene una fila real de
+ * membresía y su JWT cae permanentemente en el tenant de fallback
+ * (`kMiningTelemetryDemoTenantId`, ver `resolveTelemetryTenantIdPg`) — que
+ * ADR-039 vetó explícitamente para creación/edición de informes
+ * (`userHasRealTenantMembership`), dejando al usuario bloqueado sin salida.
+ * Idempotente ante carreras concurrentes (ON CONFLICT + relectura).
+ * @return El tenant_id (nuevo o existente), o cadena vacía si falló (ver
+ * `error`) — el llamador NO debe abortar el registro por esto, solo loguear.
+ */
+std::string findOrCreateTenantForCompanyPg(const std::string &databaseUrl,
+                                           const std::string &companyName,
+                                           const std::string &userId,
+                                           const std::string &role,
+                                           std::string &error);
+
+/** @brief Recarga un AuthUser por id (sin verificar password) — usado para reemitir sesión al cambiar de tenant activo (ver /api/auth/tenants/switch). tenantId queda vacío; el caller lo sobreescribe con el tenant destino. @return El AuthUser si existe y está activo; `std::nullopt` en cualquier otro caso. */
+std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
+                                       const std::string &userId);
+
 /** @brief Autentica por contraseña: resuelve la identidad, valida `account_status` (bloqueado/eliminado/suspendido) y compara el hash. Registra cada resultado en la auditoría. @return El `AuthUser` si las credenciales son válidas; `std::nullopt` en cualquier otro caso (ver `error`/`errorCodeOut`). */
 std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &company,
@@ -117,6 +140,26 @@ bool executeUserMaintenancePg(const std::string &databaseUrl,
 /** @brief Lee `auth_audit_logs` con filtros opcionales (empresa/usuario/acción/éxito) y paginación. @return Página de resultados junto con el total que matchea los filtros. */
 AuditPageResult readAuthAuditPg(const std::string &databaseUrl,
                                 const AuditFilter &filter);
+
+// ── ADR-029 (revisado): refresh tokens del esquema híbrido JWT ────────────
+
+/** @brief Persiste el hash (nunca el token crudo) de un nuevo refresh token para `user`. @return true si el INSERT tuvo éxito. */
+bool insertRefreshTokenPg(const std::string &databaseUrl, const AuthUser &user,
+                          const std::string &tokenHash,
+                          const std::string &expiresAtIso);
+
+/** @brief Busca un refresh token vigente (no revocado, no expirado) por su hash y rehidrata la identidad asociada. @return El `AuthUser` (sin credenciales) si el hash es válido; `std::nullopt` en otro caso. */
+std::optional<AuthUser> findValidRefreshTokenUserPg(const std::string &databaseUrl,
+                                                    const std::string &tokenHash);
+
+/** @brief Marca un refresh token como revocado (logout, o rotación — `replacedByHash` referencia el token nuevo). @return true si afectó una fila. */
+bool revokeRefreshTokenPg(const std::string &databaseUrl,
+                          const std::string &tokenHash,
+                          const std::string &replacedByHash = "");
+
+/** @brief Revoca todos los refresh tokens vigentes de un usuario (logout global / incidente de seguridad). @return true si el UPDATE se ejecutó sin error. */
+bool revokeAllRefreshTokensForUserPg(const std::string &databaseUrl,
+                                     const std::string &userId);
 #endif
 
 } // namespace auth

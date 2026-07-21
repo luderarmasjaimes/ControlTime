@@ -106,6 +106,7 @@ using auth::auditRowsToCsv;
 #if HAS_LIBPQ
 using auth::readAuthAuditPg;
 using auth::registerUserPg;
+using auth::findOrCreateTenantForCompanyPg;
 using auth::loginPasswordPg;
 using auth::loginFaceTargetedPg;
 using auth::updateUserAvatarCartoonPg;
@@ -451,6 +452,22 @@ handleRegister(const http::request<http::string_body> &req,
                 if (!registerUserPg(cfg.gDatabaseUrl, created, dbError)) {
                     return makeJsonResponse(http::status::conflict,
                                             json::object{{"error", dbError}});
+                }
+                // Sin esto, el usuario autoregistrado nunca obtiene una fila
+                // real en auth_user_tenant: su JWT queda atado para siempre
+                // al tenant de fallback (kMiningTelemetryDemoTenantId), que
+                // ADR-039 ya vetó explícitamente para crear/editar informes
+                // -- quedaría bloqueado sin ninguna salida. Se crea (o
+                // reutiliza, si ya existe) un tenant real dedicado para su
+                // `company` y se vincula de una vez. No se aborta el
+                // registro si esto falla (el usuario ya quedó creado) --
+                // solo se deja constancia en el log del servidor.
+                std::string tenantError;
+                const std::string provisionedTenantId = findOrCreateTenantForCompanyPg(
+                    cfg.gDatabaseUrl, company, created.id, role, tenantError);
+                if (provisionedTenantId.empty()) {
+                    std::cerr << "[AUTH_REGISTER] tenant provisioning failed for company='"
+                              << company << "': " << tenantError << std::endl;
                 }
 #else
                 return makeJsonResponse(

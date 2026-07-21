@@ -127,6 +127,27 @@ CREATE TABLE IF NOT EXISTS auth_user_maintenance_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_user_maint_audit_time ON auth_user_maintenance_audit(event_time DESC);
 CREATE INDEX IF NOT EXISTS idx_auth_user_maint_audit_company ON auth_user_maintenance_audit(company_name);
+
+-- ADR-029 (revisado): refresh tokens del esquema híbrido JWT. El token crudo
+-- nunca se persiste, solo su hash SHA-256 (jwt::sha256Hex) — si la tabla se
+-- filtra, no hay tokens utilizables. Identidad (username/company/role/tenant)
+-- se duplica aquí para poder rotar/reautorizar sin una segunda consulta a
+-- auth_users; no son datos sensibles.
+CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    username VARCHAR(80) NOT NULL,
+    company_name VARCHAR(180) NOT NULL,
+    role VARCHAR(32) NOT NULL,
+    tenant_id TEXT NOT NULL DEFAULT '',
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    replaced_by CHAR(64)
+);
+CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_hash ON auth_refresh_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_user ON auth_refresh_tokens(user_id) WHERE revoked_at IS NULL;
 )SQL";
   const bool ok = pgExecOk(conn, sql);
   if (ok) {
@@ -406,6 +427,99 @@ std::string resolveTelemetryTenantIdPg(void *connV, const std::string &userId,
     }
   }
   return fallback;
+}
+
+std::string findOrCreateTenantForCompanyPg(const std::string &databaseUrl,
+                                           const std::string &companyName,
+                                           const std::string &userId,
+                                           const std::string &role,
+                                           std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return "";
+  }
+
+  std::string tenantId;
+  const char *nameP[1] = {companyName.c_str()};
+
+  {
+    storage::PgResult sel{PQexecParams(
+        conn, "SELECT tenant_id::text FROM tenants WHERE tenant_name = $1",
+        1, nullptr, nameP, nullptr, nullptr, 0)};
+    if (sel.okTuples() && PQntuples(sel.get()) > 0) {
+      tenantId = PQgetvalue(sel.get(), 0, 0);
+    }
+  }
+
+  if (tenantId.empty()) {
+    storage::PgResult ins{PQexecParams(
+        conn,
+        "INSERT INTO tenants (tenant_name) VALUES ($1) "
+        "ON CONFLICT (tenant_name) DO NOTHING RETURNING tenant_id::text",
+        1, nullptr, nameP, nullptr, nullptr, 0)};
+    if (ins.okTuples() && PQntuples(ins.get()) > 0) {
+      tenantId = PQgetvalue(ins.get(), 0, 0);
+    } else {
+      // ON CONFLICT DO NOTHING no devuelve fila si otra request concurrente
+      // ya creó el mismo tenant primero -- releer.
+      storage::PgResult sel2{PQexecParams(
+          conn, "SELECT tenant_id::text FROM tenants WHERE tenant_name = $1",
+          1, nullptr, nameP, nullptr, nullptr, 0)};
+      if (sel2.okTuples() && PQntuples(sel2.get()) > 0) {
+        tenantId = PQgetvalue(sel2.get(), 0, 0);
+      }
+    }
+  }
+
+  if (tenantId.empty()) {
+    error = "no se pudo crear ni resolver el tenant para la empresa '" + companyName + "'";
+    return "";
+  }
+
+  const char *linkP[3] = {userId.c_str(), tenantId.c_str(), role.c_str()};
+  storage::PgResult link{PQexecParams(
+      conn,
+      "INSERT INTO auth_user_tenant (user_id, tenant_id, is_default, role) "
+      "VALUES ($1::uuid, $2::uuid, true, $3) ON CONFLICT (user_id, tenant_id) DO NOTHING",
+      3, nullptr, linkP, nullptr, nullptr, 0)};
+  if (!link.okCommand()) {
+    error = "tenant resuelto pero fallo el vinculo auth_user_tenant";
+  }
+
+  return tenantId;
+}
+
+std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
+                                       const std::string &userId) {
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) return std::nullopt;
+  (void)ensureAuthSchemaPg(conn);
+
+  const char *params[1] = {userId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "SELECT id, company_name, first_name, last_name, dni, username, role, "
+      "avatar_cartoon_base64, account_status "
+      "FROM auth_users WHERE id = $1::uuid LIMIT 1",
+      1, nullptr, params, nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) != 1) return std::nullopt;
+
+  const std::string status = PQgetvalue(res.get(), 0, 8);
+  if (status != "active" && !status.empty()) return std::nullopt;
+
+  AuthUser u;
+  u.id = PQgetvalue(res.get(), 0, 0);
+  u.company = PQgetvalue(res.get(), 0, 1);
+  u.firstName = PQgetvalue(res.get(), 0, 2);
+  u.lastName = PQgetvalue(res.get(), 0, 3);
+  u.dni = PQgetvalue(res.get(), 0, 4);
+  u.username = PQgetvalue(res.get(), 0, 5);
+  u.role = PQgetvalue(res.get(), 0, 6);
+  if (!PQgetisnull(res.get(), 0, 7)) u.avatarCartoonBase64 = PQgetvalue(res.get(), 0, 7);
+  return u;
 }
 
 std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
@@ -952,6 +1066,97 @@ AuditPageResult readAuthAuditPg(const std::string &databaseUrl,
   }
 
   return out;
+}
+
+// ── ADR-029 (revisado): refresh tokens del esquema híbrido JWT ────────────
+
+bool insertRefreshTokenPg(const std::string &databaseUrl, const AuthUser &user,
+                          const std::string &tokenHash,
+                          const std::string &expiresAtIso) {
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    return false;
+  }
+  (void)ensureAuthSchemaPg(conn);
+  const std::string tid = user.tenantId.empty()
+                              ? std::string(kMiningTelemetryDemoTenantId)
+                              : user.tenantId;
+  const char *params[7] = {user.id.c_str(),       user.username.c_str(),
+                           user.company.c_str(),  user.role.c_str(),
+                           tid.c_str(),            tokenHash.c_str(),
+                           expiresAtIso.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "INSERT INTO auth_refresh_tokens(user_id, username, company_name, "
+      "role, tenant_id, token_hash, expires_at) VALUES "
+      "($1, $2, $3, $4, $5, $6, $7::timestamptz)",
+      7, nullptr, params, nullptr, nullptr, 0)};
+  return res.okCommand();
+}
+
+/** @brief Rehidrata un `AuthUser` mínimo (sin credenciales) a partir de una fila de auth_refresh_tokens vigente. */
+std::optional<AuthUser> findValidRefreshTokenUserPg(const std::string &databaseUrl,
+                                                    const std::string &tokenHash) {
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    return std::nullopt;
+  }
+  (void)ensureAuthSchemaPg(conn);
+  const char *params[1] = {tokenHash.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "SELECT user_id, username, company_name, role, tenant_id FROM "
+      "auth_refresh_tokens WHERE token_hash=$1 AND revoked_at IS NULL AND "
+      "expires_at > NOW()",
+      1, nullptr, params, nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) == 0) {
+    return std::nullopt;
+  }
+  AuthUser user;
+  user.id = PQgetvalue(res.get(), 0, 0);
+  user.username = PQgetvalue(res.get(), 0, 1);
+  user.company = PQgetvalue(res.get(), 0, 2);
+  user.role = PQgetvalue(res.get(), 0, 3);
+  user.tenantId = PQgetvalue(res.get(), 0, 4);
+  return user;
+}
+
+bool revokeRefreshTokenPg(const std::string &databaseUrl,
+                          const std::string &tokenHash,
+                          const std::string &replacedByHash) {
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    return false;
+  }
+  const char *params[2] = {tokenHash.c_str(), replacedByHash.empty()
+                                                  ? nullptr
+                                                  : replacedByHash.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "UPDATE auth_refresh_tokens SET revoked_at = NOW(), replaced_by = $2 "
+      "WHERE token_hash = $1 AND revoked_at IS NULL",
+      2, nullptr, params, nullptr, nullptr, 0)};
+  return res.okCommand();
+}
+
+/** @brief Revoca todos los refresh tokens vigentes de un usuario ("logout everywhere" / incidente de seguridad). */
+bool revokeAllRefreshTokensForUserPg(const std::string &databaseUrl,
+                                     const std::string &userId) {
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    return false;
+  }
+  const char *params[1] = {userId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "UPDATE auth_refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 "
+      "AND revoked_at IS NULL",
+      1, nullptr, params, nullptr, nullptr, 0)};
+  return res.okCommand();
 }
 
 } // namespace auth

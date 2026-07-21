@@ -249,8 +249,8 @@ handleSwitchTenant(const http::request<http::string_body> &req,
 #endif
 }
 
-// Los 6 roles reales de la plataforma (roleConstants.ts en el frontend es la
-// fuente de verdad) — ver db_scripts/43. Usado para validar tanto la
+// Los 7 roles reales de la plataforma (roleConstants.ts en el frontend es la
+// fuente de verdad) — ver db_scripts/43 y ADR-063. Usado para validar tanto la
 // creación de usuarios como la asignación de tenant/rol.
 static const std::set<std::string> kValidPlatformRoles = {
     "admin", "manager", "supervisor", "geologist", "safety", "operator", "viewer"};
