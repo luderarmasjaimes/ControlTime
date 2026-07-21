@@ -86,6 +86,24 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > en `localStorage`) que ya se había cerrado ese mismo día con su propia
 > actualización — ver ADR-058 § PENDIENTE para la referencia cruzada
 > explícita entre ambos.
+>
+> **Actualización 2026-07-21**: 59 → **61 ADRs**. Se agregaron **059**
+> (`plan-maestro-pruebas-qa`) y **060** (`framework-pruebas-backend-catch2`),
+> ambos ámbito `plataforma`, cerrando el entregable contractual "plan
+> maestro de pruebas QA" del Sprint S4/R2. No quedaron solo en papel: se
+> compiló y corrió el primer target de tests automatizados del backend
+> (`beemetry_backend_tests`, Catch2 v3, 27 aserciones/7 test cases, 100%
+> passed), y — más importante — se detectó y corrigió un hallazgo real de
+> resiliencia operativa: el contenedor `beemetry-api` en ejecución corría
+> una imagen construida el 2026-07-20T21:37, **antes** del fix de
+> cookies/CSRF de ADR-029 — verificado desde una imagen de prueba aislada
+> pero nunca desplegado al sistema real. Se reconstruyó (`docker compose
+> build web`) y redesplegó, y se corrió `scripts/smoke-auth-e2e.ps1`
+> completo (registro→login→refresh con cookie+CSRF→logout) contra el
+> contenedor real ya actualizado: `Resultado: OK`. De paso se corrigieron 2
+> bugs reales preexistentes en ese mismo script (campo `token` desactualizado
+> tras el cambio a `access_token`; lectura de cookies con un `Path` de URI
+> incorrecto que nunca iba a encontrar las cookies de sesión).
 
 ### Ámbito `plataforma` — fundaciones transversales
 | # | Slug | Status | Resumen |
@@ -108,8 +126,10 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 042 | `nomenclatura-menus-lenguaje-llano-minero` | ✅ implemented (2026-07-13) | Renombrado de menús a lenguaje llano para usuarios de operación minera. |
 | 043 | `endurecimiento-seguridad-pre-pentest` | ✅ implemented (2026-07-13) | Cierra IDOR crítico en cámaras, endpoints sin auth (GDAL/KPIs), CORS y salt de contraseña (salt rotation documentada, no ejecutada — requiere ventana de mantenimiento). |
 | 058 | `auditoria-seguridad-integral-jul2026` | ✅ implemented (2026-07-19) | XSS almacenado (tablas) e IDOR sin auth (`/api/sensors/data`) cerrados y verificados en vivo; CVEs de dependencias a 0; HSTS agregado. Pendiente: pentest externo (sin agendar) y `echarts@6` (CVE moderada, migración deliberada). |
+| 059 | `plan-maestro-pruebas-qa` | ✅ accepted, primera fase implementada (2026-07-21) | 5 capas de prueba formalizadas (unit frontend, unit backend, e2e frontend, smoke/integración backend, regresión de cierre de etapa) con cronograma y exit criteria por gate. Verificado en vivo: `smoke-auth-e2e.ps1` extendido corrido de punta a punta contra el `beemetry-api` real, `Resultado: OK`. |
+| 060 | `framework-pruebas-backend-catch2` | ✅ implemented, verificado (2026-07-21) | Catch2 v3 (apt) como framework de tests del backend; target `beemetry_backend_tests` cubriendo `http_utils.cpp`. `ctest`: 100% passed; corrida detallada: 27 aserciones en 7 test cases, todas passed. |
 
-**Ámbito `plataforma`: 16/18 implemented, 1 partial, 1 proposed.**
+**Ámbito `plataforma`: 18/20 implemented, 1 partial, 1 proposed.**
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |
