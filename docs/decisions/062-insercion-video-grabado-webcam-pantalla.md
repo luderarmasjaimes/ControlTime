@@ -1,9 +1,22 @@
 # ADR-062 — Inserción de video grabado (cámara web o pantalla/ventana) en el lienzo
 
-**Status**: implemented (2026-07-21). Verificado en vivo contra el backend real (login, apertura de ReportStudioV2, ambas pestañas del modal renderizando correctamente, manejo de error sin crash cuando el sandbox de pruebas bloqueó el acceso a cámara). No se pudo verificar una grabación real completa por esa misma restricción de entorno.
+**Status**: superseded by ADR-064 (cámara web) y ADR-065 (pantalla/ventana). Ver "Actualización 2026-07-21" abajo — el contenido original se conserva sin editar, según la convención de este log.
 **Fecha**: 2026-07-21
 **Autores**: EC
 **Ámbito**: reports
+
+> **Actualización 2026-07-21 (misma fecha, pasada posterior)**: Gerencia pidió
+> separar esta decisión en dos ADR independientes — uno por cada origen de
+> grabación (cámara web vs. pantalla/ventana) — porque son dos capacidades
+> técnicas distintas con su propio ciclo de vida, trade-offs y verificación
+> (p.ej. la pantalla ya reutilizaba un mecanismo existente, `getDisplayMedia`
+> del botón "Grabar"; la cámara web era 100% nueva). Este ADR-062 queda
+> **superseded**: su contenido original no se edita (se conserva íntegro
+> abajo, por trazabilidad), pero el registro vigente para cada capacidad es
+> ADR-064 y ADR-065 respectivamente. El componente compartido
+> (`VideoInsertModal.tsx` con dos pestañas, un solo tipo de bloque `video` en
+> `useEditorStore.ts`) sigue siendo el mismo archivo físico — la separación es
+> de **decisión documentada**, no de código; no se duplicó ningún componente.
 
 ## Contexto
 
