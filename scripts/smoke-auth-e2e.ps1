@@ -107,7 +107,7 @@ if (-not $DryRun) {
     Write-Host "Login password OK"
 }
 
-$authToken = if (-not $DryRun) { $loginPassword.user.token } else { "" }
+$authToken = if (-not $DryRun) { $loginPassword.user.access_token } else { "" }
 
 Write-Section "STEP 3 - LOGIN FACE"
 $loginFace = Invoke-Api -Method POST -Path "/api/auth/login/face" -Body @{
@@ -143,6 +143,75 @@ else {
         throw "Export CSV de auditoria fallido"
     }
     Write-Host "Export CSV OK"
+}
+
+Write-Section "STEP 6 - REFRESH TOKEN VIA COOKIE + PROTECCION CSRF (ADR-029)"
+# El refresh token ya no viaja en el body JSON (ver ADR-029, "Actualizacion
+# 2026-07-19") -- viaja en una cookie HttpOnly que el backend pone en el
+# login/registro; -SessionVariable hace que Invoke-WebRequest la guarde y
+# reenvie automaticamente, igual que un navegador real.
+if ($DryRun) {
+    Write-Host "[DRY-RUN] POST $BackendUrl/api/auth/refresh (con cookie de sesion)"
+    Write-Host "[DRY-RUN] POST $BackendUrl/api/auth/logout (con cookie de sesion)"
+}
+else {
+    $session = $null
+    $loginResp = Invoke-WebRequest -Method Post -Uri "$BackendUrl/api/auth/login/password" `
+        -ContentType "application/json" `
+        -Body (@{ company = $Company; username = $username; password = $password } | ConvertTo-Json) `
+        -SessionVariable session -TimeoutSec 30 -UseBasicParsing
+    $loginBody = $loginResp.Content | ConvertFrom-Json
+    if ($loginBody.user.PSObject.Properties.Name -contains "refresh_token") {
+        throw "FALLO: refresh_token sigue presente en el body de login/password (deberia viajar solo por cookie)"
+    }
+    Write-Host "Login OK: refresh_token NO esta en el body (correcto, ADR-029)"
+
+    $refreshCookie = $session.Cookies.GetCookies("$BackendUrl/api/auth/") | Where-Object { $_.Name -eq "refresh_token" }
+    $csrfCookie = $session.Cookies.GetCookies("$BackendUrl/api/auth/") | Where-Object { $_.Name -eq "csrf_token" }
+    if (-not $refreshCookie -or -not $csrfCookie) {
+        throw "FALLO: no se recibieron las cookies refresh_token/csrf_token esperadas"
+    }
+    if (-not $refreshCookie.HttpOnly) {
+        throw "FALLO: la cookie refresh_token deberia ser HttpOnly"
+    }
+    Write-Host "Cookies OK: refresh_token (HttpOnly) + csrf_token presentes"
+
+    # Sin header X-CSRF-Token: debe rechazar (403), mismo comportamiento que
+    # protege contra un sitio de terceros que solo puede lograr que el
+    # navegador MANDE la cookie, no LEERLA para repetirla en el header.
+    try {
+        Invoke-WebRequest -Method Post -Uri "$BackendUrl/api/auth/refresh" -WebSession $session -TimeoutSec 30 -UseBasicParsing | Out-Null
+        throw "FALLO: /api/auth/refresh sin X-CSRF-Token deberia responder 403"
+    }
+    catch {
+        if ($_.Exception.Response.StatusCode.value__ -ne 403) {
+            throw "FALLO: se esperaba 403 sin X-CSRF-Token, se obtuvo $($_.Exception.Response.StatusCode.value__)"
+        }
+        Write-Host "Refresh sin CSRF rechazado con 403 (correcto)"
+    }
+
+    # Con el header correcto: debe funcionar y rotar el refresh token.
+    $refreshResp = Invoke-WebRequest -Method Post -Uri "$BackendUrl/api/auth/refresh" `
+        -Headers @{ "X-CSRF-Token" = $csrfCookie.Value } -WebSession $session -TimeoutSec 30 -UseBasicParsing
+    $refreshBody = $refreshResp.Content | ConvertFrom-Json
+    if ($refreshBody.status -ne "refreshed" -or -not $refreshBody.access_token) {
+        throw "FALLO: refresh con CSRF correcto no devolvio un access_token nuevo"
+    }
+    if ($refreshBody.PSObject.Properties.Name -contains "refresh_token") {
+        throw "FALLO: refresh_token sigue presente en el body de /api/auth/refresh"
+    }
+    Write-Host "Refresh con CSRF correcto OK: nuevo access_token, sin refresh_token en el body"
+
+    # Logout: mismo criterio de CSRF, y debe limpiar ambas cookies (Max-Age=0).
+    $newCsrfCookie = $session.Cookies.GetCookies("$BackendUrl/api/auth/") | Where-Object { $_.Name -eq "csrf_token" }
+    $logoutResp = Invoke-WebRequest -Method Post -Uri "$BackendUrl/api/auth/logout" `
+        -Headers @{ Authorization = "Bearer $($refreshBody.access_token)"; "X-CSRF-Token" = $newCsrfCookie.Value } `
+        -WebSession $session -TimeoutSec 30 -UseBasicParsing
+    $logoutBody = $logoutResp.Content | ConvertFrom-Json
+    if ($logoutBody.status -ne "logged_out") {
+        throw "FALLO: logout con CSRF correcto no devolvio logged_out"
+    }
+    Write-Host "Logout con CSRF correcto OK"
 }
 
 Write-Section "SMOKE AUTH COMPLETADO"
