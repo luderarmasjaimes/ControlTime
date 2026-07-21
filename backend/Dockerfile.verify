@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     librdkafka-dev \
     libssl-dev \
+    catch2 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,7 +24,8 @@ WORKDIR /app
 COPY . /app
 RUN rm -rf /app/build /app/build-vcpkg /app/build-verify \
     && cmake -S . -B build-verify -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build-verify --config Release -j"$(nproc)"
+    && cmake --build build-verify --config Release -j"$(nproc)" \
+    && ctest --test-dir build-verify --output-on-failure
 
 # Deja el binario disponible para inspección/ejecución de verificación.
 CMD ["/bin/bash", "-lc", "ls -la /app/build-verify && echo BUILD_OK"]

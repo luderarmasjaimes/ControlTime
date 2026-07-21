@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mapas_backend LANGUAGES CXX)
+project(beemetry_backend LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -87,14 +87,17 @@ set(INFRA_MODULES
   src/config/app_config.cpp
   src/http/http_utils.cpp
   src/http/router.cpp
+  src/ws_broadcast.cpp
 )
 
 # Módulos de autenticación
 set(AUTH_MODULES
+  src/auth/jwt.cpp
   src/auth/auth_session.cpp
   src/auth/auth_storage_file.cpp
   src/auth/auth_storage_pg.cpp
   src/auth/auth_routes.cpp
+  src/auth/permissions.cpp
 )
 
 # Módulos biométricos
@@ -113,6 +116,12 @@ set(MINING_MODULES
   src/mining/mining_gateway.cpp
   src/mining/mining_routes.cpp
   src/mining/telemetry_ingest.cpp
+  src/mining/device_alarm_routes.cpp
+  src/mining/map_aggregator.cpp
+  src/mining/protocol_adapters.cpp
+  src/mining/thingsboard_sync.cpp
+  src/mining/alarm_notifier.cpp
+  src/mining/notification_routes.cpp
 )
 
 # Módulos de reportes y fórmulas
@@ -120,6 +129,7 @@ set(REPORTS_MODULES
   src/reports/report_service.cpp
   src/reports/report_routes.cpp
   src/reports/report_pdf_export.cpp
+  src/reports/report_portable.cpp
   src/formula/formula_service.cpp
   src/formula/formula_routes.cpp
 )
@@ -127,13 +137,14 @@ set(REPORTS_MODULES
 # Módulos de plataforma, mapa, GDAL, texto
 set(PLATFORM_MODULES
   src/platform/platform_routes.cpp
+  src/tenant/tenant_assets_routes.cpp
   src/map/map_routes.cpp
   src/gdal/conversion_service.cpp
   src/gdal/gdal_routes.cpp
   src/text/text_routes.cpp
 )
 
-add_executable(mapas_backend
+add_executable(beemetry_backend
   src/main.cpp
   src/map_geo_intersect.cpp
   src/text_spell_service.cpp
@@ -147,7 +158,7 @@ add_executable(mapas_backend
   ${PLATFORM_MODULES}
 )
 
-target_include_directories(mapas_backend PRIVATE
+target_include_directories(beemetry_backend PRIVATE
   ${Boost_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
   src
@@ -157,28 +168,28 @@ target_include_directories(mapas_backend PRIVATE
 )
 
 if(ONNXRUNTIME_ROOT AND EXISTS "${_onnx_hdr}")
-  target_include_directories(mapas_backend PRIVATE "${ONNXRUNTIME_ROOT}/include")
+  target_include_directories(beemetry_backend PRIVATE "${ONNXRUNTIME_ROOT}/include")
   if(WIN32)
-    target_link_libraries(mapas_backend PRIVATE
+    target_link_libraries(beemetry_backend PRIVATE
       "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib")
   else()
-    target_link_libraries(mapas_backend PRIVATE
+    target_link_libraries(beemetry_backend PRIVATE
       "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so")
 endif()
 endif()
 
 if(_onnx_def)
-  target_compile_definitions(mapas_backend PRIVATE ${_onnx_def})
+  target_compile_definitions(beemetry_backend PRIVATE ${_onnx_def})
 endif()
 
 if(_use_boost_header_only)
-  target_compile_definitions(mapas_backend PRIVATE
+  target_compile_definitions(beemetry_backend PRIVATE
     BOOST_ERROR_CODE_HEADER_ONLY=1
     BOOST_JSON_HEADER_ONLY=1
   )
 endif()
 
-target_link_libraries(mapas_backend PRIVATE
+target_link_libraries(beemetry_backend PRIVATE
   ${OpenCV_LIBS}
   Threads::Threads
   OpenSSL::SSL
@@ -186,15 +197,29 @@ target_link_libraries(mapas_backend PRIVATE
 )
 
 if(TARGET Boost::system)
-  target_link_libraries(mapas_backend PRIVATE Boost::system)
+  target_link_libraries(beemetry_backend PRIVATE Boost::system)
 endif()
 if(TARGET Boost::json)
-  target_link_libraries(mapas_backend PRIVATE Boost::json)
+  target_link_libraries(beemetry_backend PRIVATE Boost::json)
 endif()
 
 find_library(PQ_LIBRARY pq)
 if(PQ_LIBRARY)
-  target_link_libraries(mapas_backend PRIVATE ${PQ_LIBRARY})
+  target_link_libraries(beemetry_backend PRIVATE ${PQ_LIBRARY})
+endif()
+
+# libpq-fe.h vive bajo <prefix>/include/postgresql/ en Debian/Ubuntu (paquete
+# libpq-dev), no en <prefix>/include/ directo — nunca hubo un include dir
+# dedicado para esto; los archivos que ya usaban `#include <libpq-fe.h>`
+# (vía storage/pg_pool.hpp) solo compilaban porque, en su orden particular de
+# #include, alguna otra cabecera (auth_storage_pg.hpp/telemetry_ingest.hpp)
+# hacía primero `#include <postgresql/libpq-fe.h>` calificado — frágil y
+# dependiente del orden de includes de cada .cpp. Se agrega el include dir
+# real para que `#include <libpq-fe.h>` (forma no calificada, la que usa
+# pg_pool.hpp/pg_result.hpp) resuelva siempre, sin depender de ese orden.
+find_path(PQ_INCLUDE_DIR NAMES libpq-fe.h PATH_SUFFIXES postgresql)
+if(PQ_INCLUDE_DIR)
+  target_include_directories(beemetry_backend PRIVATE ${PQ_INCLUDE_DIR})
 endif()
 
 # librdkafka (C++ API) para ingesta durable vía Redpanda/Kafka.
@@ -202,13 +227,79 @@ find_library(RDKAFKACPP_LIBRARY rdkafka++)
 find_library(RDKAFKA_LIBRARY rdkafka)
 if(RDKAFKACPP_LIBRARY AND RDKAFKA_LIBRARY)
   message(STATUS "librdkafka: ${RDKAFKACPP_LIBRARY}")
-  target_link_libraries(mapas_backend PRIVATE ${RDKAFKACPP_LIBRARY} ${RDKAFKA_LIBRARY})
-  target_compile_definitions(mapas_backend PRIVATE HAVE_RDKAFKA=1)
+  target_link_libraries(beemetry_backend PRIVATE ${RDKAFKACPP_LIBRARY} ${RDKAFKA_LIBRARY})
+  target_compile_definitions(beemetry_backend PRIVATE HAVE_RDKAFKA=1)
 else()
   message(STATUS "librdkafka: NO encontrado (ingesta Kafka deshabilitada)")
 endif()
 
+# ADR-034 — adaptadores de protocolo. Cada librería es opcional: si falta, el
+# adaptador correspondiente se compila a no-op (guardas __has_include en
+# protocol_adapters.cpp) y el resto del backend no se ve afectado.
+find_library(MOSQUITTO_LIBRARY mosquitto)
+if(MOSQUITTO_LIBRARY)
+  message(STATUS "libmosquitto (MQTT): ${MOSQUITTO_LIBRARY}")
+  target_link_libraries(beemetry_backend PRIVATE ${MOSQUITTO_LIBRARY})
+else()
+  message(STATUS "libmosquitto: NO encontrado (adaptador MQTT deshabilitado)")
+endif()
+
+find_library(MODBUS_LIBRARY modbus)
+find_path(MODBUS_INCLUDE_DIR NAMES modbus/modbus.h)
+if(MODBUS_LIBRARY AND MODBUS_INCLUDE_DIR)
+  message(STATUS "libmodbus (Modbus TCP): ${MODBUS_LIBRARY}")
+  target_link_libraries(beemetry_backend PRIVATE ${MODBUS_LIBRARY})
+  target_include_directories(beemetry_backend PRIVATE ${MODBUS_INCLUDE_DIR})
+else()
+  message(STATUS "libmodbus: NO encontrado (adaptador Modbus deshabilitado)")
+endif()
+
+# open62541 (OPC UA) se compila estático en el Dockerfile (no está empaquetado
+# en Ubuntu 24.04); instala open62541Config.cmake bajo /usr/local.
+find_package(open62541 CONFIG QUIET)
+if(open62541_FOUND)
+  message(STATUS "open62541 (OPC UA): encontrado")
+  target_link_libraries(beemetry_backend PRIVATE open62541::open62541)
+else()
+  message(STATUS "open62541: NO encontrado (adaptador OPC UA deshabilitado)")
+endif()
+
 if(Python3_Interpreter_FOUND)
   message(STATUS "Python3 interpreter: ${Python3_EXECUTABLE}")
+endif()
+
+# ── Pruebas automatizadas del backend (ADR-060) ────────────────────────────
+# Catch2 v3 (apt: libcatch2-dev en Dockerfile/Dockerfile.verify). Target
+# aparte del binario principal (nunca incluye src/main.cpp, que ya tiene su
+# propio main()) -- arranca con lógica pura sin I/O de red/BD
+# (http_utils.cpp) para no depender de Postgres/Redpanda/etc. levantados.
+# Opcional: si Catch2 no está instalado, el resto del build no se ve
+# afectado (mismo criterio que open62541/librdkafka arriba).
+find_package(Catch2 3 QUIET)
+if(Catch2_FOUND)
+  message(STATUS "Catch2: encontrado -- target beemetry_backend_tests habilitado")
+  enable_testing()
+  add_executable(beemetry_backend_tests
+    tests/test_http_utils.cpp
+    src/http/http_utils.cpp
+    src/config/app_config.cpp
+  )
+  target_include_directories(beemetry_backend_tests PRIVATE
+    ${Boost_INCLUDE_DIRS}
+    src
+  )
+  target_link_libraries(beemetry_backend_tests PRIVATE
+    Catch2::Catch2WithMain
+    Threads::Threads
+  )
+  if(TARGET Boost::system)
+    target_link_libraries(beemetry_backend_tests PRIVATE Boost::system)
+  endif()
+  if(TARGET Boost::json)
+    target_link_libraries(beemetry_backend_tests PRIVATE Boost::json)
+  endif()
+  add_test(NAME backend_unit_tests COMMAND beemetry_backend_tests)
+else()
+  message(STATUS "Catch2: NO encontrado -- target de pruebas backend deshabilitado (ver ADR-060)")
 endif()
 
