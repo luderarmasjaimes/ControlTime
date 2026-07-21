@@ -1,44 +1,11 @@
 import { test, expect } from '@playwright/test'
-import { dismissUserMaintenancePrompt, openCategory, openMisInformes } from './helpers'
+import { dismissUserMaintenancePrompt, openCategory, openMisInformes, realLogin } from './helpers'
 
-function bootstrapSession() {
-  localStorage.clear()
-  localStorage.setItem(
-    'mining_auth_session_v1',
-    JSON.stringify({
-      username: 'admin_e2e',
-      fullName: 'E2E Admin',
-      company: 'Minera Raura',
-      role: 'admin',
-      token: 'tok_e2e_admin',
-    })
-  )
-
-  localStorage.setItem(
-    'mining_auth_users_v1',
-    JSON.stringify([
-      {
-        username: 'admin_e2e',
-        first_name: 'E2E',
-        last_name: 'Admin',
-        company: 'Minera Raura',
-        role: 'admin',
-        is_active: true,
-      },
-      {
-        username: 'operador_e2e',
-        first_name: 'Operador',
-        last_name: 'Prueba',
-        company: 'Minera Raura',
-        role: 'operator',
-        is_active: true,
-      },
-    ])
-  )
-}
+// Cuenta real pre-existente (no fake token): larmas / Alpayana / 123456.
+const REAL_CREDS = { company: 'Alpayana', username: 'larmas', password: '123456' }
 
 test('Report v2 guarda informe y lo lista en Mis Informes', async ({ page }) => {
-  await page.addInitScript(bootstrapSession)
+  await realLogin(page, REAL_CREDS)
   await page.goto('/')
   await dismissUserMaintenancePrompt(page)
 
@@ -46,22 +13,24 @@ test('Report v2 guarda informe y lo lista en Mis Informes', async ({ page }) => 
   await openCategory(page, 'Reportes')
   await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click()
 
+  // Titulo unico por corrida para no chocar con informes de corridas previas
+  // (el backend real persiste entre ejecuciones, a diferencia del
+  // localStorage fake de antes).
+  const reportTitle = `Informe E2E Report V2 ${Date.now()}`
   page.once('dialog', async (dialog) => {
-    await dialog.accept('Informe E2E Report V2')
+    await dialog.accept(reportTitle)
   })
 
-  await page.getByRole('button', { name: 'Guardar', exact: true }).click()
-
-  await expect
-    .poll(async () => {
-      return page.evaluate(() => {
-        const raw = localStorage.getItem('mining_reports_v1')
-        if (!raw) return 0
-        const rows = JSON.parse(raw)
-        return Array.isArray(rows) ? rows.length : 0
-      })
-    })
-    .toBeGreaterThan(0)
+  // Con login real, "Guardar" persiste vía POST /api/reports (backend real,
+  // ver reportsStorage.ts/api.ts) -- ya no escribe en localStorage
+  // ('mining_reports_v1' era solo el mirror del flujo offline/fake-token
+  // anterior). Se espera la respuesta real de creación en vez de sondear esa
+  // clave, que con un guardado online nunca se vuelve a poblar.
+  const [createResponse] = await Promise.all([
+    page.waitForResponse((res) => res.url().includes('/api/reports') && res.request().method() === 'POST'),
+    page.getByRole('button', { name: 'Guardar', exact: true }).click(),
+  ])
+  expect(createResponse.ok()).toBeTruthy()
 
   await openMisInformes(page)
 
@@ -71,94 +40,51 @@ test('Report v2 guarda informe y lo lista en Mis Informes', async ({ page }) => 
   await page.getByRole('button', { name: 'Buscar', exact: true }).click()
 
   await expect(page.getByText(/Administraci.n de Informes T.cnicos/i)).toBeVisible()
-  await expect(page.getByText('Informe E2E Report V2')).toBeVisible()
+  await expect(page.getByText(reportTitle)).toBeVisible()
 })
 
 test('Report v2 abre visor de lectura desde administracion', async ({ page }) => {
-  await page.addInitScript(() => {
-    localStorage.clear()
-    localStorage.setItem(
-      'mining_auth_session_v1',
-      JSON.stringify({
-        username: 'admin_e2e',
-        fullName: 'E2E Admin',
-        company: 'Minera Raura',
-        role: 'admin',
-        token: 'tok_e2e_admin',
-      })
-    )
-    localStorage.setItem(
-      'mining_auth_users_v1',
-      JSON.stringify([
-        {
-          username: 'admin_e2e',
-          first_name: 'E2E',
-          last_name: 'Admin',
-          company: 'Minera Raura',
-          role: 'admin',
-          is_active: true,
-        },
-        {
-          username: 'operador_e2e',
-          first_name: 'Operador',
-          last_name: 'Prueba',
-          company: 'Minera Raura',
-          role: 'operator',
-          is_active: true,
-        },
-      ])
-    )
-    localStorage.setItem(
-      'mining_reports_v1',
-      JSON.stringify([
-        {
-          id: 'rpt_e2e_001',
-          title: 'Informe Seed E2E',
-          projectName: 'Proyecto E2E',
-          contentJson: JSON.stringify({
-            document_id: 'doc_e2e_001',
-            pages: [
-              {
-                page_number: 1,
-                elements: [
-                  {
-                    id: 'txt_1',
-                    type: 'text',
-                    x: 80,
-                    y: 120,
-                    width: 320,
-                    height: 100,
-                    zIndex: 1,
-                    props: {
-                      text: 'Texto de prueba para visor read-only E2E.',
-                      fontFamily: 'Arial',
-                      fontSize: 16,
-                      fontColor: '#0f172a',
-                      textAlign: 'left',
-                      lineHeight: 1.35,
-                    },
-                  },
-                ],
-              },
-            ],
-            meta: { author: 'E2E', version: 1 },
-          }),
-          status: 'draft',
-          createdBy: 'admin_e2e',
-          createdByName: 'E2E Admin',
-          reviewedBy: null,
-          reviewedByName: null,
-          reviewedAt: null,
-          company: 'Minera Raura',
-          createdAt: '2026-03-19T18:00:00.000Z',
-          updatedAt: '2026-03-19T18:00:00.000Z',
-          versionNumber: 1,
-          deletedAt: null,
-          shares: [],
-        },
-      ])
-    )
+  const loginResult = await realLogin(page, REAL_CREDS)
+
+  // El visor read-only lista informes reales del backend (fetchReports),
+  // no un mirror en localStorage -- se siembra el informe semilla via API
+  // real (mismo token de la sesion) antes de navegar, en vez de escribir
+  // 'mining_reports_v1' (ese key ya no lo lee nada en el flujo online).
+  const seedTitle = `Informe Seed E2E ${Date.now()}`
+  const seedContentJson = JSON.stringify({
+    document_id: 'doc_e2e_seed',
+    pages: [
+      {
+        page_number: 1,
+        elements: [
+          {
+            id: 'txt_1',
+            type: 'text',
+            x: 80,
+            y: 120,
+            width: 320,
+            height: 100,
+            zIndex: 1,
+            props: {
+              text: 'Texto de prueba para visor read-only E2E.',
+              fontFamily: 'Arial',
+              fontSize: 16,
+              fontColor: '#0f172a',
+              textAlign: 'left',
+              lineHeight: 1.35,
+            },
+          },
+        ],
+      },
+    ],
+    meta: { author: 'E2E', version: 1 },
   })
+
+  const seedResponse = await page.request.post(`${loginResult.backendUrl}/api/reports`, {
+    headers: { Authorization: `Bearer ${loginResult.token}` },
+    data: { title: seedTitle, project_id: null, content_json: seedContentJson, status: 'draft' },
+  })
+  expect(seedResponse.ok()).toBeTruthy()
 
   await page.goto('/')
   await dismissUserMaintenancePrompt(page)
@@ -173,11 +99,11 @@ test('Report v2 abre visor de lectura desde administracion', async ({ page }) =>
   await dateInputs.nth(1).fill('2099-12-31')
   await page.getByRole('button', { name: 'Buscar', exact: true }).click()
 
-  await page.getByText('Informe Seed E2E').click()
+  await page.getByText(seedTitle).click()
   await page.getByRole('button', { name: 'Leer', exact: true }).click()
 
   await expect(page.getByText(/MODO LECTURA/i)).toBeVisible()
-  await expect(page.locator('.ro-title').filter({ hasText: 'Informe Seed E2E' })).toBeVisible()
+  await expect(page.locator('.ro-title').filter({ hasText: seedTitle })).toBeVisible()
 
   await page.locator('.ro-btn-close').click({ force: true })
   await expect(page.getByText(/MODO LECTURA/i)).not.toBeVisible()

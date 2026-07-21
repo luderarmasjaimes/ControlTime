@@ -59,3 +59,76 @@ export async function openMisInformes(page: Page): Promise<void> {
   await page.locator('button').filter({ hasText: 'Datos' }).first().click()
   await page.locator('button').filter({ hasText: 'Mis Informes' }).first().click()
 }
+
+export interface RealLoginCreds {
+  company: string
+  username: string
+  password: string
+}
+
+const DEFAULT_BACKEND_URL = 'http://localhost:8082'
+
+/**
+ * Hace un login REAL contra el backend (POST /api/auth/login/password) y
+ * siembra la sesion resultante en localStorage antes de `page.goto('/')`.
+ *
+ * Reemplaza el patron anterior de inyectar un token falso
+ * (`token: 'tok_e2e_admin'`, etc.) que rompia con el endurecimiento de
+ * ADR-029: cualquier llamada autenticada real que el backend rechazara (401)
+ * disparaba el logout automatico ("Sesion expirada...") y vaciaba el
+ * localStorage relevante antes de que el test pudiera hacer sus asserts. Con
+ * un access_token real y valido, el flujo de refresh/backend funciona sin
+ * intervencion adicional.
+ */
+export interface RealLoginResult {
+  token: string
+  userId: string
+  tenantId: string
+  company: string
+  username: string
+  fullName: string
+  backendUrl: string
+}
+
+export async function realLogin(
+  page: Page,
+  creds: RealLoginCreds,
+  backendUrl: string = process.env.VITE_BACKEND_URL || DEFAULT_BACKEND_URL,
+): Promise<RealLoginResult> {
+  const response = await page.request.post(`${backendUrl}/api/auth/login/password`, {
+    data: creds,
+  })
+  const body = await response.json()
+  if (body.status !== 'authenticated' || !body.user?.access_token) {
+    throw new Error(`realLogin: fallo el login real para ${creds.username}@${creds.company}: ${JSON.stringify(body)}`)
+  }
+
+  const user = body.user
+  const session = {
+    userId: user.id,
+    username: user.username,
+    fullName: user.full_name || '',
+    company: user.company,
+    tenantId: user.tenant_id || '',
+    role: (user.role || '').toLowerCase(),
+    loginType: 'user',
+    token: user.access_token,
+    accessTokenExpiresAt: new Date(Date.now() + (user.expires_in || 900) * 1000).toISOString(),
+    loggedAt: new Date().toISOString(),
+  }
+
+  await page.addInitScript((sessionData) => {
+    localStorage.clear()
+    localStorage.setItem('mining_auth_session_v1', JSON.stringify(sessionData))
+  }, session)
+
+  return {
+    token: user.access_token,
+    userId: user.id,
+    tenantId: user.tenant_id || '',
+    company: user.company,
+    username: user.username,
+    fullName: user.full_name || '',
+    backendUrl,
+  }
+}
