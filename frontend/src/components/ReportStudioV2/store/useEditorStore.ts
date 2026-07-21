@@ -467,6 +467,16 @@ const defaultPropsByType = (type: string): ElementProps => {
     };
   }
 
+  if (type === 'video') {
+    return {
+      // 'webcam' | 'screen' -- de dónde se grabó (informativo, no cambia el
+      // render: ambos son <video> con controles nativos del navegador).
+      source: 'webcam',
+      mimeType: 'video/webm',
+      durationSeconds: 0,
+    };
+  }
+
   if (type === 'cover') {
     // Empresa, unidad minera y autor NUNCA se guardan en props — se calculan
     // en vivo desde la sesión activa en cada render (ver PageCanvas.tsx),
@@ -561,6 +571,23 @@ const createElement = (
       wrapMode: 'square',
       props: defaultPropsByType('image'),
       border: defaultBorderByType('image'),
+    };
+  }
+
+  if (type === 'video') {
+    return {
+      id: `video-${pageNumber}-${Date.now()}-${nextIndex}`,
+      type: 'video',
+      x: m.CONTENT_LEFT,
+      y: m.CONTENT_TOP,
+      width: Math.min(360, contentW),
+      height: Math.round(Math.min(360, contentW) * 9 / 16),
+      zIndex: nextIndex,
+      locked: false,
+      src: '',
+      wrapMode: 'square',
+      props: defaultPropsByType('video'),
+      border: defaultBorderByType('video'),
     };
   }
 

@@ -10,6 +10,7 @@ import {
   Bold,
   Italic,
   Underline,
+  Highlighter,
 } from 'lucide-react';
 import { useEditorStore, defaultBorderByType, resolvePagePaperSetup, type ReportElement, type ReportPage } from '../../store/useEditorStore';
 import { getReportLayoutMetrics } from '../../lib/reportLayoutMetrics';
@@ -54,7 +55,8 @@ import {
   styleToCss,
   getEffectiveStyleAt,
 } from '../../lib/textSpans';
-import { registerActiveTextFormatHandler } from '../../lib/activeTextFormatBridge';
+import { registerActiveTextFormatHandler, registerActiveCaseHandler } from '../../lib/activeTextFormatBridge';
+import { SELECTION_HEADING_OPTIONS, findHeadingStyle } from '../../lib/headingStyles';
 
 const GRID = 12;
 
@@ -109,6 +111,20 @@ interface TextProps {
   bold: boolean;
   italic: boolean;
   underline: boolean;
+  /** Estilo de encabezado del BLOQUE completo ('title'|'h1'..'h6'|'normal'|
+   * 'quote'), aplicado por el ribbon (onApplyHeadingStyle). '' = sin
+   * encabezado. Ya lo escribía App.tsx directo en props.headingStyle sin
+   * pasar por este tipo; se agrega acá para poder leerlo como base del
+   * estilo por selección (ver textBaseStyle) y para el nuevo selector de
+   * encabezado de la barra flotante. */
+  headingStyle: string;
+  /** Color de RESALTADO (marcador) del BLOQUE completo cuando se aplica
+   * desde el ribbon fijo SIN selección de texto activa — distinto de
+   * `backgroundColor` (el fondo de todo el cuadro/caja) y del
+   * `highlightColor` por SPAN (barra flotante, solo la porción
+   * seleccionada). Sirve de estilo "base" cuando no hay spans que lo
+   * cubran, igual que `fontColor` con `color`. */
+  highlightColor: string;
   /** Formato por selección (negrita/color/tamaño/fuente solo en una parte
    * del texto) — ver lib/textSpans.ts. Vacío = comportamiento histórico
    * (todo el bloque usa las props de arriba de forma uniforme). */
@@ -127,6 +143,8 @@ const DEFAULT_TEXT_PROPS: TextProps = {
   bold: false,
   italic: false,
   underline: false,
+  headingStyle: '',
+  highlightColor: 'transparent',
   spans: [],
 };
 
@@ -149,6 +167,8 @@ function getTextProps(element: ReportElement): TextProps {
     // Konva ni el <textarea> de edición los leían — el toggle no tenía
     // ningún efecto visual. Corregido acá y en el render de abajo.
     underline: Boolean(props.underline ?? DEFAULT_TEXT_PROPS.underline),
+    headingStyle: String(props.headingStyle ?? DEFAULT_TEXT_PROPS.headingStyle),
+    highlightColor: String(props.highlightColor ?? DEFAULT_TEXT_PROPS.highlightColor),
     spans: sanitizeSpans(props.spans, text.length),
   };
 }
@@ -283,7 +303,7 @@ function getSharedMeasureCtx(): CanvasRenderingContext2D | null {
 const WORD_WIDTH_CACHE_MAX = 20000;
 const wordWidthCache = new Map<string, number>();
 function measureWordCached(context: CanvasRenderingContext2D, fontSpec: string, word: string): number {
-  const key = `${fontSpec} ${word}`;
+  const key = `${fontSpec} ${word}`;
   const hit = wordWidthCache.get(key);
   if (hit !== undefined) return hit;
   const width = context.measureText(word).width;
@@ -555,6 +575,13 @@ function getAutoSizedTextBox(
   minHeight: number,
   maxWidth: number,
   maxHeight: number,
+  // Mientras se está editando, deja siempre una línea en blanco visible
+  // debajo de la última línea escrita (como el espacio que Word deja para
+  // seguir tecleando) — pedido explícito: "la parte inferior debe mostrar
+  // siempre una línea en blanco según la línea que se está escribiendo".
+  // Solo aplica en vivo: el bloque YA CERRADO (no editando) se ajusta
+  // exacto al contenido, sin la línea de cortesía de más.
+  reserveTrailingLine = false,
 ): { width: number; height: number } {
   const safeMaxWidth = Math.max(minWidth, maxWidth);
   const safeMaxHeight = Math.max(minHeight, maxHeight);
@@ -654,8 +681,9 @@ function getAutoSizedTextBox(
 
   const measuredLineWidth = maxLineWidth;
 
+  const lineCountForHeight = Math.max(1, visualLines.length) + (reserveTrailingLine ? 1 : 0);
   const calculatedWidth = Math.ceil(measuredLineWidth + horizontalPadding);
-  const calculatedHeight = Math.ceil(Math.max(1, visualLines.length) * fontSize * lineHeight + verticalPadding);
+  const calculatedHeight = Math.ceil(lineCountForHeight * fontSize * lineHeight + verticalPadding);
 
   return {
     width: Math.min(safeMaxWidth, Math.max(minWidth, calculatedWidth)),
@@ -751,6 +779,15 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   // un array-map). El useEffect de más abajo (keyed en openTextEditorId) es
   // el único punto que registra/desregistra esto en el puente global.
   const activeFormatBridgeRef = useRef<((patch: Partial<BaseTextStyle>) => boolean) | null>(null);
+  // Mismo patrón que activeFormatBridgeRef, para el puente del botón "Aa"
+  // (tryApplyCaseToActiveTextSelection) — ver activeTextFormatBridge.ts.
+  const activeCaseBridgeRef = useRef<(() => boolean) | null>(null);
+  // Cambiar la selección con el mouse/teclado dentro del textarea NO
+  // dispara por sí solo un re-render de React (no toca ningún estado) — sin
+  // este contador, el "cuadro de fuente de la selección" de la barra de
+  // formato (ver más abajo) quedaría desactualizado hasta la próxima tecla.
+  // Se incrementa en onSelect/onMouseUp/onKeyUp del textarea.
+  const [selectionTick, setSelectionTick] = useState(0);
   const layoutMode = useEditorStore((s) =>
     s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
   );
@@ -966,7 +1003,14 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
       const fn = activeFormatBridgeRef.current;
       return fn ? fn(patch) : false;
     });
-    return () => registerActiveTextFormatHandler(null);
+    registerActiveCaseHandler(() => {
+      const fn = activeCaseBridgeRef.current;
+      return fn ? fn() : false;
+    });
+    return () => {
+      registerActiveTextFormatHandler(null);
+      registerActiveCaseHandler(null);
+    };
   }, [openTextEditorId]);
 
   useEffect(() => {
@@ -1183,21 +1227,30 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
           if (event.target === event.target.getStage()) {
             const pos = event.target.getStage().getPointerPosition();
             if (pos) {
-              const x = snap(pos.x / scale, snapEnabled);
               const y = snap(pos.y / scale, snapEnabled);
 
               if (openTextEditorId) {
                 setOpenTextEditorId(null);
               }
 
+              // Un bloque de texto creado con doble clic en la hoja debe
+              // ocupar TODO el ancho disponible de la columna de contenido
+              // (como un párrafo nuevo de Word), igual que ya hace el botón
+              // "Insertar texto" del ribbon (ver createElement en
+              // useEditorStore.ts) — antes quedaba fijo en 350px de ancho
+              // sin relación con el ancho real de la hoja, un recuadro
+              // angosto en medio de una página A4/A3. Se ancla al margen
+              // izquierdo del contenido; la Y sí respeta dónde se hizo doble
+              // clic.
               useEditorStore.getState().addElement('text', {
-                width: 350,
+                x: CONTENT_LEFT,
+                width: CONTENT_RIGHT - CONTENT_LEFT,
                 height: 40,
                 props: { text: '' }
               });
               const newId = useEditorStore.getState().selectedElementId;
               if (newId) {
-                useEditorStore.getState().updateElement(page.page_number, newId, { x, y });
+                useEditorStore.getState().updateElement(page.page_number, newId, { x: CONTENT_LEFT, y });
               }
               setOpenTextEditorId(newId ?? null);
             }
@@ -1739,6 +1792,43 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               );
             })}
 
+          {/* Videos insertados (webcam o pantalla/ventana grabada, ADR pendiente
+             de formalizar) -- a diferencia de las imágenes, el <video> necesita
+             pointerEvents activo para que sus controles nativos (play/pausa/
+             volumen) respondan al click; esto hace que arrastrar el bloque
+             deba hacerse por el borde/marco, no tocando el reproductor mismo
+             -- mismo trade-off que cualquier bloque con controles interactivos
+             embebidos en un overlay Html sobre Konva. */}
+          {page.elements
+            .filter((element) => element.type === 'video')
+            .map((element) => (
+              <Html key={`${element.id}-video`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'auto', zIndex: element.wrapMode === 'behind' ? 5 : 15 } }}>
+                <div
+                  className="report-canvas-html-shield"
+                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
+                  style={{
+                    width: element.width - 8,
+                    height: element.height - 8,
+                    overflow: 'hidden',
+                    borderRadius: '4px',
+                    background: '#000',
+                  }}
+                >
+                  {element.src ? (
+                    <video
+                      src={element.src}
+                      controls
+                      style={{ width: '100%', height: '100%', display: 'block' }}
+                    />
+                  ) : (
+                    <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 12 }}>
+                      Sin video
+                    </div>
+                  )}
+                </div>
+              </Html>
+            ))}
+
           {page.elements
             .filter((element) => element.type === 'toc')
             .map((element) => {
@@ -1846,11 +1936,28 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 color: textProps.fontColor,
                 fontSize: textProps.fontSize,
                 fontFamily: textProps.fontFamily,
+                // Resaltado BASE del bloque (ribbon fijo, sin selección
+                // activa) — los spans por selección (barra flotante) lo
+                // sobreescriben solo en su rango, igual que con `color`.
+                // Distinto de props.backgroundColor (el fondo de TODO el
+                // cuadro/caja de texto, no del texto en sí).
+                highlightColor: textProps.highlightColor,
+                headingStyle: textProps.headingStyle,
               };
 
               const getAutoSizeForPatch = (patch: Partial<TextProps>) => {
                 const nextProps = { ...textProps, ...patch };
                 const maxWidth = CONTENT_RIGHT - element.x;
+                // El ancho NUNCA se encoge por debajo del que ya tiene el
+                // bloque (mínimo = element.width, no un piso fijo de 120px)
+                // — un bloque creado a todo el ancho de la columna (ribbon o
+                // doble clic, ver createElement/onDblClick) debe SEGUIR
+                // ocupando todo el ancho aunque el texto tecleado sea corto;
+                // solo la ALTURA debe auto-ajustarse línea a línea, como un
+                // párrafo normal de Word, no como una etiqueta que se ciñe
+                // al contenido. Sigue pudiendo crecer más allá si una
+                // palabra sin cortes es más ancha que el bloque (maxWidth).
+                const minWidthForPatch = Math.min(maxWidth, Math.max(120, element.width));
                 // Mientras se escribe (y también al cerrar, ver
                 // closeAndProcess — isEditorOpen sigue true en ese momento),
                 // el límite de alto es el borde FÍSICO de la hoja, no el
@@ -1875,10 +1982,11 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                   nextProps.bold,
                   nextProps.italic,
                   nextProps.lineHeight,
-                  120,
+                  minWidthForPatch,
                   56,
                   maxWidth,
                   maxHeight,
+                  isEditorOpen,
                 );
               };
 
@@ -2055,6 +2163,220 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               if (isEditorOpen) {
                 activeFormatBridgeRef.current = applyFormatToSelection;
               }
+
+              // Fuente de la selección actual, para el cuadro indicador junto
+              // al selector de fuente: recorre cada carácter del rango
+              // marcado y compara su estilo efectivo (span que lo cubre, o el
+              // base del bloque — ver getEffectiveStyleAt). Si todos los
+              // caracteres comparten la misma fuente, se muestra su nombre;
+              // si hay dos o más fuentes distintas en la selección, se
+              // devuelve '' (el cuadro queda en blanco, pero el selector de
+              // al lado sigue permitiendo aplicar una fuente nueva a toda la
+              // selección, igual que en Word). selectionTick fuerza que esto
+              // se recalcule cuando la selección cambia solo con el mouse
+              // (evento que no toca ningún estado de React por sí solo).
+              const getSelectionFontFamily = (): string => {
+                void selectionTick;
+                const ta = activeTextareaRef.current;
+                if (!ta) return '';
+                const start = ta.selectionStart ?? 0;
+                const end = ta.selectionEnd ?? 0;
+                if (start >= end) return '';
+                let common: string | null = null;
+                for (let offset = start; offset < end; offset += 1) {
+                  const effective = getEffectiveStyleAt(liveSpans, textBaseStyle, offset);
+                  if (common === null) {
+                    common = effective.fontFamily;
+                  } else if (common !== effective.fontFamily) {
+                    return '';
+                  }
+                }
+                return common ?? '';
+              };
+              const selectionFontFamily = isEditorOpen ? getSelectionFontFamily() : '';
+              const handleSelectionMaybeChanged = () => setSelectionTick((tick) => tick + 1);
+
+              // Tamaño de fuente ACTUAL de la selección (no el del bloque):
+              // los botones A-/A+ deben partir de lo que YA tiene lo
+              // seleccionado (si ya se achicó una vez, el siguiente clic
+              // sigue achicando esa porción) en vez de siempre recalcular
+              // desde textProps.fontSize (el tamaño base del bloque) — con
+              // eso, clics repetidos sobre una selección que ya tenía un
+              // tamaño propio no hacían nada (siempre volvían a
+              // "base - 2"). Ante una selección con tamaños mezclados se usa
+              // el del primer carácter, igual que el resto de los toggles.
+              const getSelectionFontSize = (): number => {
+                void selectionTick;
+                const ta = activeTextareaRef.current;
+                if (!ta) return textProps.fontSize;
+                const start = ta.selectionStart ?? 0;
+                const end = ta.selectionEnd ?? 0;
+                if (start >= end) return textProps.fontSize;
+                return getEffectiveStyleAt(liveSpans, textBaseStyle, start).fontSize;
+              };
+
+              // Color de TEXTO actual de la selección — el swatch de la
+              // paleta de color mostraba siempre textProps.fontColor (el
+              // del BLOQUE), nunca el de lo realmente seleccionado. Con
+              // cursor colapsado (nada marcado) se sigue mostrando el color
+              // del bloque, como "color ambiente" de referencia.
+              const getSelectionColor = (): string => {
+                void selectionTick;
+                const ta = activeTextareaRef.current;
+                if (!ta) return textProps.fontColor;
+                const start = ta.selectionStart ?? 0;
+                const end = ta.selectionEnd ?? 0;
+                if (start >= end) return textProps.fontColor;
+                return getEffectiveStyleAt(liveSpans, textBaseStyle, start).color;
+              };
+
+              // Color de RESALTADO (fondo detrás del texto, tipo marcador)
+              // de la selección actual — 'transparent' si no hay ninguno
+              // aplicado o si no hay selección real.
+              const getSelectionHighlightColor = (): string => {
+                void selectionTick;
+                const ta = activeTextareaRef.current;
+                if (!ta) return 'transparent';
+                const start = ta.selectionStart ?? 0;
+                const end = ta.selectionEnd ?? 0;
+                if (start >= end) return 'transparent';
+                return getEffectiveStyleAt(liveSpans, textBaseStyle, start).highlightColor || 'transparent';
+              };
+
+              // Estilo de encabezado ('title'|'h1'..'h6') de la selección,
+              // solo si TODO el rango marcado comparte el mismo — igual
+              // criterio que getSelectionFontFamily. '' = sin selección,
+              // selección sin encabezado, o encabezados mezclados (el
+              // <select> simplemente queda en "Normal").
+              const getSelectionHeadingStyle = (): string => {
+                void selectionTick;
+                const ta = activeTextareaRef.current;
+                if (!ta) return '';
+                const start = ta.selectionStart ?? 0;
+                const end = ta.selectionEnd ?? 0;
+                if (start >= end) return '';
+                let common: string | null = null;
+                for (let offset = start; offset < end; offset += 1) {
+                  const effective = getEffectiveStyleAt(liveSpans, textBaseStyle, offset).headingStyle || '';
+                  if (common === null) {
+                    common = effective;
+                  } else if (common !== effective) {
+                    return '';
+                  }
+                }
+                return common ?? '';
+              };
+
+              // Aplica un estilo de encabezado a la selección: además de
+              // marcarla para la Tabla de Contenidos (headingStyle, ver
+              // TableOfContents.tsx), replica las propiedades de CARÁCTER
+              // del estilo (fuente/tamaño/negrita/cursiva/subrayado/color) —
+              // NO alineación ni interlineado, esas son de párrafo y no
+              // tienen sentido para una porción de texto suelta dentro de
+              // un bloque. '' (Normal) limpia el encabezado y vuelve al
+              // estilo de cuerpo normal, igual que "Normal" en el ribbon.
+              const applyHeadingStyleToSelection = (headingId: string) => {
+                const preset = findHeadingStyle(headingId || 'normal') ?? findHeadingStyle('normal')!;
+                applyFormatToSelection({
+                  headingStyle: headingId || '',
+                  fontFamily: preset.fontFamily,
+                  fontSize: preset.fontSize,
+                  bold: preset.fontWeight >= 600,
+                  italic: preset.italic,
+                  underline: preset.underline,
+                  color: preset.color,
+                });
+              };
+
+              // "Cambiar MAYÚSCULAS/minúsculas" al estilo Word (Mayús+F3):
+              // cicla entre MAYÚSCULAS → minúsculas → Cada Palabra En
+              // Mayúscula → MAYÚSCULAS... el siguiente estado se decide por
+              // el contenido ACTUAL de la selección (no hay que recordar en
+              // qué paso del ciclo iba). A diferencia del resto de los
+              // controles de esta barra, esto muta el TEXTO en sí, no un
+              // atributo de estilo — se re-mapean los spans igual que en
+              // dictado/corrección (remapSpansForTextChange) para que el
+              // formato ya aplicado no se pierda ni se desplace.
+              const applyCaseToSelection = (): boolean => {
+                const ta = activeTextareaRef.current;
+                if (!ta) return false;
+                const start = ta.selectionStart ?? 0;
+                const end = ta.selectionEnd ?? 0;
+                if (start === end) return false;
+                const original = liveText.slice(start, end);
+                const isUpper = original === original.toUpperCase() && original !== original.toLowerCase();
+                const isLower = original === original.toLowerCase() && original !== original.toUpperCase();
+                let transformed: string;
+                if (isUpper) {
+                  transformed = original.toLowerCase();
+                } else if (isLower) {
+                  transformed = original.replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+                } else {
+                  transformed = original.toUpperCase();
+                }
+                const nextText = liveText.slice(0, start) + transformed + liveText.slice(end);
+                const nextSpans = remapSpansForTextChange(liveText, nextText, liveSpans);
+                setLiveEdit({ id: element.id, text: nextText, width: liveWidth, height: liveHeight, spans: nextSpans });
+                updateElement(page.page_number, element.id, {
+                  props: { ...mergedProps, text: nextText, spans: nextSpans },
+                });
+                requestAnimationFrame(() => {
+                  ta.focus();
+                  ta.setSelectionRange(start, start + transformed.length);
+                });
+                return true;
+              };
+
+              // Puente ribbon↔selección para el botón "Aa" (ver
+              // lib/activeTextFormatBridge.ts, tryApplyCaseToActiveTextSelection)
+              // — mismo criterio que activeFormatBridgeRef para negrita/color/
+              // tamaño: mientras el editor de ESTE bloque está abierto, el
+              // ribbon fijo intenta primero aplicar el ciclo de mayúsculas a
+              // la selección; si no hay selección real, cae a "todo el
+              // bloque" (App.tsx).
+              if (isEditorOpen) {
+                activeCaseBridgeRef.current = applyCaseToSelection;
+              }
+
+              const selectionFontColor = isEditorOpen ? getSelectionColor() : textProps.fontColor;
+              const selectionHighlightColor = isEditorOpen ? getSelectionHighlightColor() : 'transparent';
+              const selectionHeadingStyle = isEditorOpen ? getSelectionHeadingStyle() : '';
+
+              // Rango [start,end) de la selección REAL viva del textarea, o
+              // null si no hay nada marcado. Bug real reportado: al agrandar
+              // el tamaño de un rango seleccionado con A+/A-, el área de
+              // selección "se perdía" — no encogía ni crecía junto con el
+              // texto. Causa real: el <textarea> invisible (que es quien
+              // dueño de la selección NATIVA del navegador, el rectángulo
+              // azul/celeste que el usuario ve) SIEMPRE usa un único
+              // fontSize uniforme (el del bloque, textProps.fontSize) para
+              // TODO su contenido — un textarea no puede tener tamaños de
+              // fuente mixtos por carácter. El overlay "fantasma" de abajo
+              // SÍ pinta cada span a su propio tamaño real (por eso
+              // highlightColor por ejemplo SÍ escala bien, ver
+              // getSelectionHighlightColor). Cuando la selección tiene un
+              // tamaño de fuente distinto al del bloque, el textarea sigue
+              // ajustando líneas (wrap) según el tamaño PEQUEÑO/uniforme
+              // mientras el overlay ajusta líneas según el tamaño real
+              // (grande) de ese span — los dos layouts divergen y el
+              // rectángulo de selección nativo del navegador queda
+              // desalineado/diminuto respecto al texto grande que se ve.
+              // Fix: no depender de la selección nativa del navegador para
+              // la señal visual — pintar un indicador de selección PROPIO
+              // dentro del mismo overlay que ya calcula el tamaño real por
+              // span (ver el render del "ghost overlay" más abajo), así
+              // hereda automáticamente el tamaño correcto. La selección
+              // nativa se oculta vía CSS (.text-editor-area-seamless::selection
+              // { background: transparent }, ver styles.css).
+              const getLiveSelectionRange = (): [number, number] | null => {
+                void selectionTick;
+                const ta = activeTextareaRef.current;
+                if (!ta) return null;
+                const start = ta.selectionStart ?? 0;
+                const end = ta.selectionEnd ?? 0;
+                if (start === end) return null;
+                return [Math.min(start, end), Math.max(start, end)];
+              };
 
               const startDictation = async (): Promise<boolean> => {
                 const speechCtor = getSpeechCtor();
@@ -2510,7 +2832,48 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                            applyFormatToSelection). Requiere una selección
                            real; con el cursor colapsado no hace nada, igual
                            que en Word. */}
-                        <div className="text-editor-format-row" onMouseDown={(event) => event.preventDefault()}>
+                        <div
+                          className="text-editor-format-row"
+                          onMouseDown={(event) => {
+                            // preventDefault evita que el mousedown le quite el
+                            // foco/selección al textarea al hacer clic en los
+                            // BOTONES de esta barra (Negrita/Cursiva/A-/A+/etc,
+                            // ver applyFormatToSelection). Pero en Chrome/Edge
+                            // ese mismo preventDefault en el mousedown de un
+                            // <select> NATIVO bloquea que el navegador abra su
+                            // lista de opciones — bug real reportado: "Estilo"
+                            // y "Fuente" quedaban fijos, ningún clic los abría.
+                            // Los <select> (Estilo, Fuente) manejan su propio
+                            // mousedown (ver más abajo, captureSelection) para
+                            // seguir capturando la selección antes de perder
+                            // foco, sin bloquear su apertura nativa.
+                            if ((event.target as HTMLElement).tagName === 'SELECT') return;
+                            event.preventDefault();
+                          }}
+                        >
+                          {/* Estilo de documento (Título/Heading 1-6) sobre la
+                             SELECCIÓN — no todo el bloque. Marca el rango con
+                             headingStyle (ver lib/textSpans.ts) para que la
+                             Tabla de Contenidos lo detecte igual que un
+                             bloque entero (TableOfContents.tsx ya escanea
+                             ambos). "Normal" (valor "") es la opción por
+                             defecto: sin encabezado, no aparece en el TOC. */}
+                          <select
+                            className="text-editor-format-select text-editor-format-heading-select"
+                            title="Estilo de documento de la selección (para la Tabla de Contenidos)"
+                            value={selectionHeadingStyle}
+                            onMouseDown={captureSelection}
+                            onChange={(event) => {
+                              applyHeadingStyleToSelection(event.target.value);
+                              handleSelectionMaybeChanged();
+                            }}
+                          >
+                            <option value="">Normal</option>
+                            {SELECTION_HEADING_OPTIONS.map((h) => (
+                              <option key={h.id} value={h.id}>{h.label}</option>
+                            ))}
+                          </select>
+                          <div className="text-editor-format-divider" />
                           <button type="button" title="Negrita en la selección" onClick={() => applyFormatToSelection({ bold: true })}>
                             <Bold size={12} />
                           </button>
@@ -2520,38 +2883,84 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                           <button type="button" title="Subrayado en la selección" onClick={() => applyFormatToSelection({ underline: true })}>
                             <Underline size={12} />
                           </button>
+                          <button
+                            type="button"
+                            title="Cambiar MAYÚSCULAS/minúsculas/Cada Palabra (como Word)"
+                            onClick={applyCaseToSelection}
+                          >
+                            Aa
+                          </button>
                           <ColorPalette
-                            value={textProps.fontColor}
-                            title="Color de la selección"
+                            value={selectionFontColor}
+                            title="Color del texto de la selección"
                             onOpen={captureSelection}
-                            onChange={(color) => applyFormatToSelection({ color })}
+                            onChange={(color) => { applyFormatToSelection({ color }); handleSelectionMaybeChanged(); }}
                           />
+                          <Highlighter size={13} className="text-editor-format-highlight-icon" />
+                          <ColorPalette
+                            value={selectionHighlightColor}
+                            title="Color de resaltado de fondo de la selección"
+                            allowClear
+                            onOpen={captureSelection}
+                            onChange={(color) => { applyFormatToSelection({ highlightColor: color }); handleSelectionMaybeChanged(); }}
+                            onClear={() => { applyFormatToSelection({ highlightColor: 'transparent' }); handleSelectionMaybeChanged(); }}
+                          />
+                          {/* Cuadro indicador: muestra la fuente de lo que hay
+                             seleccionado con el mouse. En blanco si la
+                             selección mezcla dos o más fuentes distintas (no
+                             hay UNA fuente que mostrar) — igual que Word deja
+                             ese campo vacío ante una selección mixta. Es solo
+                             lectura; el cambio de fuente se hace con el
+                             selector de al lado. */}
+                          <span
+                            className="text-editor-format-current-font"
+                            title={
+                              selectionFontFamily
+                                ? `Fuente de la selección: ${selectionFontFamily}`
+                                : 'La selección mezcla varias fuentes'
+                            }
+                          >
+                            {selectionFontFamily || '—'}
+                          </span>
                           <select
                             className="text-editor-format-select"
-                            title="Fuente de la selección"
+                            title="Cambiar la fuente de la selección"
                             defaultValue=""
+                            // Bug real: al mover el foco de verdad al <select>
+                            // (mousedown→focus, no solo un evento sintético),
+                            // el navegador COLAPSA ta.selectionStart/End a la
+                            // posición del cursor — para cuando onChange se
+                            // dispara (el usuario ya eligió una opción, el
+                            // foco lleva rato en el select), la selección
+                            // "viva" del textarea ya no existe. captureSelection
+                            // guarda el rango ANTES de ese blur (mousedown
+                            // ocurre primero), y applyFormatToSelection lo usa
+                            // en vez de la selección ya colapsada — mismo
+                            // arreglo que ya tenía el selector de Estilo.
+                            onMouseDown={captureSelection}
                             onChange={(event) => {
                               if (!event.target.value) return;
                               applyFormatToSelection({ fontFamily: event.target.value });
                               event.target.value = '';
+                              handleSelectionMaybeChanged();
                             }}
                           >
                             <option value="" disabled>Fuente…</option>
                             {['Arial', 'Inter', 'Times New Roman', 'Georgia', 'Calibri', 'Verdana'].map((f) => (
-                              <option key={f} value={f}>{f}</option>
+                              <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
                             ))}
                           </select>
                           <button
                             type="button"
-                            title="Reducir tamaño de la selección"
-                            onClick={() => applyFormatToSelection({ fontSize: Math.max(6, textProps.fontSize - 2) })}
+                            title="Reducir tamaño de la selección (mínimo 7)"
+                            onClick={() => applyFormatToSelection({ fontSize: Math.max(7, getSelectionFontSize() - 2) })}
                           >
                             A-
                           </button>
                           <button
                             type="button"
-                            title="Aumentar tamaño de la selección"
-                            onClick={() => applyFormatToSelection({ fontSize: textProps.fontSize + 2 })}
+                            title="Aumentar tamaño de la selección (máximo 200)"
+                            onClick={() => applyFormatToSelection({ fontSize: Math.min(200, getSelectionFontSize() + 2) })}
                           >
                             A+
                           </button>
@@ -2633,9 +3042,47 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                               pointerEvents: 'none',
                             }}
                           >
-                            {buildStyledSegments(liveText, liveSpans, textBaseStyle).map((seg, segIndex) => (
-                              <span key={segIndex} style={styleToCss(seg.style) as any}>{seg.text}</span>
-                            ))}
+                            {(() => {
+                              const selRange = getLiveSelectionRange();
+                              let offset = 0;
+                              return buildStyledSegments(liveText, liveSpans, textBaseStyle).map((seg, segIndex) => {
+                                const segStart = offset;
+                                const segEnd = offset + seg.text.length;
+                                offset = segEnd;
+                                const css = styleToCss(seg.style) as any;
+                                // Sin cruce con la selección viva: un solo
+                                // <span>, camino histórico sin cambios.
+                                if (!selRange || selRange[1] <= segStart || selRange[0] >= segEnd) {
+                                  return <span key={segIndex} style={css}>{seg.text}</span>;
+                                }
+                                // La porción seleccionada se parte en hasta 3
+                                // trozos (antes/dentro/después) para pintar un
+                                // indicador de selección PROPIO — ver el
+                                // comentario de getLiveSelectionRange arriba:
+                                // a diferencia de la selección nativa del
+                                // navegador (atada al tamaño uniforme del
+                                // <textarea>), este indicador nace del mismo
+                                // cálculo de segmentos que ya usa el tamaño de
+                                // fuente real por span, así que crece/encoge
+                                // correctamente junto con A+/A-.
+                                const [selStart, selEnd] = selRange;
+                                const parts: { text: string; selected: boolean }[] = [];
+                                const midStart = Math.max(segStart, selStart) - segStart;
+                                const midEnd = Math.min(segEnd, selEnd) - segStart;
+                                if (midStart > 0) parts.push({ text: seg.text.slice(0, midStart), selected: false });
+                                parts.push({ text: seg.text.slice(midStart, midEnd), selected: true });
+                                if (midEnd < seg.text.length) parts.push({ text: seg.text.slice(midEnd), selected: false });
+                                return parts.map((part, partIndex) => {
+                                  if (!part.text) return null;
+                                  const partStyle = part.selected
+                                    ? css.backgroundColor
+                                      ? { ...css, outline: '2px solid rgba(37,99,235,0.65)', outlineOffset: -1 }
+                                      : { ...css, backgroundColor: 'rgba(37,99,235,0.35)' }
+                                    : css;
+                                  return <span key={`${segIndex}-${partIndex}`} style={partStyle}>{part.text}</span>;
+                                });
+                              });
+                            })()}
                             {liveText === '' && <span style={{ opacity: 0 }}>&nbsp;</span>}
                           </div>
 
@@ -2681,7 +3128,28 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                             autoFocus
                             value={liveText}
                             placeholder="Empieza a escribir..."
-                            onBlur={closeAndProcess}
+                            onBlur={(event) => {
+                              // Bug real: hacer clic en un <select> NATIVO
+                              // (Estilo/Fuente) mueve el foco del navegador
+                              // del textarea hacia el select — eso SIEMPRE
+                              // dispara onBlur del textarea, sin importar el
+                              // preventDefault del mousedown. Cerrar el editor
+                              // en cualquier blur significaba que abrir esos
+                              // selects cerraba TODO el bloque de edición
+                              // (textarea + barra flotante) antes de poder
+                              // elegir una opción. Ahora solo se cierra si el
+                              // foco sale COMPLETAMENTE del editor (afuera de
+                              // .text-editor-seamless-container, que incluye
+                              // la barra de formato y sus selects/popovers de
+                              // color) — igual que Word no cierra el cursor
+                              // de edición al usar su propia barra flotante.
+                              const next = event.relatedTarget as Node | null;
+                              const container = event.currentTarget.closest('.text-editor-seamless-container');
+                              if (next && container?.contains(next)) {
+                                return;
+                              }
+                              closeAndProcess();
+                            }}
                             onChange={(event) => handleLiveTyping(event.target.value)}
                             onCompositionStart={() => {
                               isComposingRef.current = true;
@@ -2700,6 +3168,15 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                               }
                               handleTextShortcuts(event);
                             }}
+                            // Marcar/mover la selección con el mouse (arrastre,
+                            // doble clic para elegir palabra) o con flechas +
+                            // Shift no dispara onChange — sin estos tres, el
+                            // cuadro indicador de fuente de la barra de
+                            // formato quedaba desactualizado hasta la próxima
+                            // tecla que sí modificara el texto.
+                            onSelect={handleSelectionMaybeChanged}
+                            onMouseUp={handleSelectionMaybeChanged}
+                            onKeyUp={handleSelectionMaybeChanged}
                             spellCheck={true}
                             lang={spellcheckLang}
                             // Higiene sdkjs (text_input.js:211-215): impedir que

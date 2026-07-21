@@ -8,9 +8,10 @@ import {
   Target, Activity, Layers, FileDown, FileUp, Undo2, Redo2,
   Copy, Scissors, Clipboard, BookOpen, CheckSquare, Shield, Clock,
   PanelLeftClose, PanelRightClose, Maximize2, LayoutTemplate, FilePlus2,
-  Hash, Minus, Camera, Mic, ArrowLeftRight, Gauge, Pin, PinOff,
+  Hash, Minus, Camera, Mic, ArrowLeftRight, Gauge, Pin, PinOff, Highlighter,
 } from 'lucide-react';
 import ColorPalette from '../shared/ColorPalette';
+import { HEADING_STYLES, type HeadingStyleDef } from '../../lib/headingStyles';
 
 /* ─────────────────────────────────────────────────────────────────────────────
    RIBBON TOOLBAR — Etapa 1 Funcionalidad Core
@@ -24,41 +25,6 @@ const FONT_FAMILIES = [
 ];
 
 const FONT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60, 72];
-
-/** Estilo Word-like: aplicar uno reemplaza TODO el formato del bloque
- * seleccionado de una sola vez (fuente, tamaño, color, negrita, cursiva,
- * subrayado, alineación, interlineado) — no solo tamaño/color como antes.
- * Pedido explícito del negocio: "simulando ser un Microsoft Word". */
-export interface HeadingStyleDef {
-  id: string;
-  label: string;
-  tag: string;
-  fontFamily: string;
-  fontSize: number;
-  fontWeight: number;
-  italic: boolean;
-  underline: boolean;
-  color: string;
-  textAlign: 'left' | 'center' | 'right' | 'justify';
-  lineHeight: number;
-}
-
-/** Escala tipográfica corporativa premium: Calibri para encabezados (más
- * "documento oficial"), Arial para cuerpo — mismo criterio que una plantilla
- * Word con Estilos rápidos. Cada nivel es visualmente distinguible del
- * siguiente (tamaño + peso + color, escala de slate) para que la Tabla de
- * Contenidos generada a partir de estos estilos tenga jerarquía clara. */
-const HEADING_STYLES: HeadingStyleDef[] = [
-  { id: 'title', label: 'Título',    tag: 'h1', fontFamily: 'Calibri', fontSize: 28, fontWeight: 800, italic: false, underline: false, color: '#0f172a', textAlign: 'center', lineHeight: 1.2 },
-  { id: 'h1',    label: 'Heading 1', tag: 'h1', fontFamily: 'Calibri', fontSize: 22, fontWeight: 700, italic: false, underline: false, color: '#1e293b', textAlign: 'left',   lineHeight: 1.25 },
-  { id: 'h2',    label: 'Heading 2', tag: 'h2', fontFamily: 'Calibri', fontSize: 18, fontWeight: 700, italic: false, underline: false, color: '#1e40af', textAlign: 'left',   lineHeight: 1.3 },
-  { id: 'h3',    label: 'Heading 3', tag: 'h3', fontFamily: 'Calibri', fontSize: 15, fontWeight: 600, italic: false, underline: false, color: '#334155', textAlign: 'left',   lineHeight: 1.3 },
-  { id: 'h4',    label: 'Heading 4', tag: 'h4', fontFamily: 'Calibri', fontSize: 13, fontWeight: 600, italic: false, underline: false, color: '#475569', textAlign: 'left',   lineHeight: 1.35 },
-  { id: 'h5',    label: 'Heading 5', tag: 'h5', fontFamily: 'Calibri', fontSize: 12, fontWeight: 600, italic: true,  underline: false, color: '#64748b', textAlign: 'left',   lineHeight: 1.35 },
-  { id: 'h6',    label: 'Heading 6', tag: 'h6', fontFamily: 'Calibri', fontSize: 11, fontWeight: 600, italic: true,  underline: false, color: '#94a3b8', textAlign: 'left',   lineHeight: 1.4 },
-  { id: 'normal', label: 'Normal',   tag: 'p',  fontFamily: 'Arial',   fontSize: 12, fontWeight: 400, italic: false, underline: false, color: '#1e293b', textAlign: 'left',   lineHeight: 1.35 },
-  { id: 'quote',  label: 'Cita',     tag: 'blockquote', fontFamily: 'Arial', fontSize: 12, fontWeight: 400, italic: true, underline: false, color: '#64748b', textAlign: 'left', lineHeight: 1.35 },
-];
 
 const MINING_COLORS = [
   '#0f172a','#1e293b','#334155','#64748b','#94a3b8',
@@ -157,6 +123,8 @@ interface RibbonToolbarProps {
   onSetFontFamily?: (family: string) => void;
   onSetFontSize?: (size: number) => void;
   onSetFontColor?: (color: string) => void;
+  onSetHighlightColor?: (color: string) => void;
+  onApplyCase?: () => void;
   onSetLineHeight?: (lineHeight: number) => void;
   currentLineHeight?: number;
   onInsertTOC?: () => void;
@@ -173,6 +141,7 @@ interface RibbonToolbarProps {
   currentFontFamily?: string;
   currentFontSize?: number;
   currentFontColor?: string;
+  currentHighlightColor?: string;
   currentHeadingStyle?: string;
   currentAlignment?: string;
   // Version & snapshot
@@ -197,11 +166,12 @@ export default function RibbonToolbar({
   onInsertElement, onAddPage, onDuplicatePage, onAddTemplate,
   onApplyHeadingStyle, onToggleBold, onToggleItalic, onToggleUnderline,
   onSetAlignment, onSetFontFamily, onSetFontSize, onSetFontColor,
+  onSetHighlightColor, onApplyCase,
   onSetLineHeight, currentLineHeight,
   onInsertTOC, onInsertCoverPage, onStartWorkflow,
   onToggleLeftPanel, onToggleRightPanel, leftPanelVisible, rightPanelVisible,
   onExportDocx, onExportPptx, onExportMiningReport, onImportMiningReport,
-  currentFontFamily, currentFontSize, currentFontColor, currentHeadingStyle,
+  currentFontFamily, currentFontSize, currentFontColor, currentHighlightColor, currentHeadingStyle,
   currentAlignment,
   onCreateSnapshot, onShowVersionHistory,
   onShowComparator, onToggleVoiceDictation, onTogglePerfDashboard,
@@ -311,11 +281,26 @@ export default function RibbonToolbar({
                   <RibbonBtn icon={Bold} title="Aplicar negrita al texto (Ctrl+B)" onClick={onToggleBold} active={currentBold} />
                   <RibbonBtn icon={Italic} title="Aplicar cursiva al texto (Ctrl+I)" onClick={onToggleItalic} active={currentItalic} />
                   <RibbonBtn icon={Underline} title="Subrayar el texto (Ctrl+U)" onClick={onToggleUnderline} active={currentUnderline} />
+                  <RibbonBtn
+                    label="Aa"
+                    title="Cambiar MAYÚSCULAS/minúsculas/Cada Palabra (como Word) — si hay una palabra seleccionada en el editor, se aplica solo a ella"
+                    onClick={onApplyCase}
+                  />
                   <div className="ribbon-color-btn-wrap">
                     <ColorPalette
                       value={currentFontColor || '#1e293b'}
                       title="Elegir el color del texto — si hay una palabra seleccionada en el editor, se aplica solo a ella"
                       onChange={(color) => onSetFontColor?.(color)}
+                    />
+                  </div>
+                  <Highlighter size={13} className="ribbon-highlight-icon" />
+                  <div className="ribbon-color-btn-wrap">
+                    <ColorPalette
+                      value={currentHighlightColor || 'transparent'}
+                      title="Color de resaltado del texto — si hay una palabra seleccionada en el editor, se aplica solo a ella"
+                      allowClear
+                      onChange={(color) => onSetHighlightColor?.(color)}
+                      onClear={() => onSetHighlightColor?.('transparent')}
                     />
                   </div>
                 </div>
@@ -421,6 +406,7 @@ export default function RibbonToolbar({
               <RibbonGroup title="Contenido">
                 <RibbonBtn icon={Type} label="Texto" onClick={() => onInsertElement?.('text')} title="Insertar un bloque de texto" />
                 <RibbonBtn icon={ImageIcon} label="Imagen" onClick={() => onInsertElement?.('image')} title="Insertar una imagen en la página" />
+                <RibbonBtn icon={Video} label="Video" onClick={() => onInsertElement?.('video')} title="Grabar y insertar un video (cámara web o pantalla/ventana) en la página" />
                 <RibbonBtn icon={TableIcon} label="Tabla" onClick={() => onInsertElement?.('table')} title="Insertar una tabla de filas y columnas" />
                 <RibbonBtn icon={BarChart3} label="Gráfico" onClick={() => onInsertElement?.('chart')} title="Insertar un gráfico de datos" />
                 <RibbonBtn icon={Target} label="KPI" onClick={() => onInsertElement?.('kpi')} title="Insertar un indicador KPI" />

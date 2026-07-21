@@ -17,6 +17,7 @@ import ShareReportModal from './components/modals/ShareReportModal';
 import DeleteReportConfirm from './components/modals/DeleteReportConfirm';
 import MapCaptureModal from './components/modals/MapCaptureModal';
 import ImageInsertModal from './components/modals/ImageInsertModal';
+import VideoInsertModal from './components/modals/VideoInsertModal';
 import FormulaAnalysisModal from './components/modals/FormulaAnalysisModal';
 import { saveReportAsync } from './lib/reportsStorage';
 import { startAutosave, stopAutosave, subscribeAutosave } from './lib/autosaveEngine';
@@ -45,7 +46,7 @@ import {
   recordCameOnline,
 } from './lib/offlineSqlite';
 import { log } from '../../lib/logger';
-import { tryApplyToActiveTextSelection } from './lib/activeTextFormatBridge';
+import { tryApplyToActiveTextSelection, tryApplyCaseToActiveTextSelection } from './lib/activeTextFormatBridge';
 import './styles.css';
 import './ribbon.css';
 
@@ -138,6 +139,8 @@ export default function App({
   const [saveLabel, setSaveLabel] = useState('Guardar');
   const [showMapCapture, setShowMapCapture] = useState(false);
   const [showImageInsertModal, setShowImageInsertModal] = useState(false);
+  const [showVideoInsertModal, setShowVideoInsertModal] = useState(false);
+  const [videoInsertOpenSeq, setVideoInsertOpenSeq] = useState(0);
   const [imageInsertReplaceTarget, setImageInsertReplaceTarget] = useState<ImageInsertIntent | null>(null);
   const [imageInsertInitialTab, setImageInsertInitialTab] = useState('file');
   const [imageInsertOpenSeq, setImageInsertOpenSeq] = useState(0);
@@ -212,6 +215,24 @@ export default function App({
   const currentFontFamily = currentProps.fontFamily;
   const currentFontSize = currentProps.fontSize;
   const currentFontColor = currentProps.fontColor;
+  const currentHighlightColor = currentProps.highlightColor;
+
+  // Botón "Aa" del ribbon FIJO cuando no hay selección de texto activa en
+  // un editor (tryApplyCaseToActiveTextSelection devuelve false) — mismo
+  // ciclo MAYÚSCULAS→minúsculas→Cada Palabra que la barra flotante
+  // (PageCanvas.tsx → applyCaseToSelection), pero sobre TODO el texto del
+  // bloque, ya que el ribbon fijo actúa a nivel de bloque completo.
+  const applyCaseToWholeBlock = useCallback(() => {
+    const original = String(currentProps.text ?? '');
+    if (!original) return;
+    const isUpper = original === original.toUpperCase() && original !== original.toLowerCase();
+    const isLower = original === original.toLowerCase() && original !== original.toUpperCase();
+    let transformed: string;
+    if (isUpper) transformed = original.toLowerCase();
+    else if (isLower) transformed = original.replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+    else transformed = original.toUpperCase();
+    handleUpdateSelectedProps({ text: transformed });
+  }, [currentProps.text, handleUpdateSelectedProps]);
   // Nunca se pasaba a RibbonToolbar (prop declarada pero jamás calculada) —
   // "Estilo actual" quedaba siempre en "Normal" sin importar la selección.
   const currentHeadingStyle = currentProps.headingStyle;
@@ -550,6 +571,12 @@ export default function App({
     setAiStatus('Elija archivo local o cámara web; al confirmar se insertará la imagen en la página activa.');
   }, [bumpImageInsertModal]);
 
+  const openVideoInsertForNew = useCallback(() => {
+    setVideoInsertOpenSeq((n) => n + 1);
+    setShowVideoInsertModal(true);
+    setAiStatus('Elija cámara web o pantalla/ventana; al confirmar se insertará el video en la página activa.');
+  }, []);
+
   // ── Callbacks estables para LeftLibrary (React.memo) ──
   // Antes eran arrow functions inline en el JSX: se recreaban en cada
   // render de App.jsx (que tiene ~30 useState) y anulaban cualquier memo
@@ -559,10 +586,12 @@ export default function App({
       setShowMapCapture(true);
     } else if (type === 'image') {
       openImageInsertForNew();
+    } else if (type === 'video') {
+      openVideoInsertForNew();
     } else {
       addElement(type);
     }
-  }, [addElement, openImageInsertForNew]);
+  }, [addElement, openImageInsertForNew, openVideoInsertForNew]);
 
   const handleDuplicatePage = useCallback(() => {
     duplicatePage(selectedPage);
@@ -644,6 +673,30 @@ export default function App({
       setImageInsertReplaceTarget(null);
     },
     [addElement, addCenteredImage, updateElement, doc],
+  );
+
+  const closeVideoInsertModal = useCallback(() => {
+    setShowVideoInsertModal(false);
+  }, []);
+
+  const handleVideoInsertComplete = useCallback(
+    (videoDataUrl: string, meta: { source: 'webcam' | 'screen'; durationSeconds: number; mimeType: string }) => {
+      if (!videoDataUrl || videoDataUrl.length < 32) {
+        setAiStatus('Error: video vacío o inválido.');
+        return;
+      }
+      addElement('video', {
+        src: videoDataUrl,
+        props: {
+          source: meta.source,
+          mimeType: meta.mimeType,
+          durationSeconds: meta.durationSeconds,
+        },
+      });
+      setAiStatus(`Video (${meta.source === 'webcam' ? 'cámara web' : 'pantalla'}, ${meta.durationSeconds}s) insertado en la página activa.`);
+      setShowVideoInsertModal(false);
+    },
+    [addElement],
   );
 
   const closeImageInsertModal = useCallback(() => {
@@ -1294,6 +1347,7 @@ export default function App({
       onInsertElement={(type) => {
         if (type === 'map') setShowMapCapture(true);
         else if (type === 'image') openImageInsertForNew();
+        else if (type === 'video') openVideoInsertForNew();
         else addElement(type);
       }}
       onAddPage={addPage}
@@ -1317,6 +1371,7 @@ export default function App({
       currentFontFamily={currentFontFamily}
       currentFontSize={currentFontSize}
       currentFontColor={currentFontColor}
+      currentHighlightColor={currentHighlightColor}
       currentHeadingStyle={currentHeadingStyle}
       currentAlignment={currentAlignment}
       currentBold={isBold}
@@ -1354,6 +1409,8 @@ export default function App({
       onSetFontFamily={(font) => { if (!tryApplyToActiveTextSelection({ fontFamily: font })) handleUpdateSelectedProps({ fontFamily: font }); }}
       onSetFontSize={(size) => { if (!tryApplyToActiveTextSelection({ fontSize: size })) handleUpdateSelectedProps({ fontSize: size }); }}
       onSetFontColor={(color) => { if (!tryApplyToActiveTextSelection({ color })) handleUpdateSelectedProps({ fontColor: color }); }}
+      onSetHighlightColor={(color) => { if (!tryApplyToActiveTextSelection({ highlightColor: color })) handleUpdateSelectedProps({ highlightColor: color }); }}
+      onApplyCase={() => { if (!tryApplyCaseToActiveTextSelection()) applyCaseToWholeBlock(); }}
       // Interlineado es un atributo de PÁRRAFO/bloque (igual que en Word),
       // no de carácter — siempre se aplica a todo el bloque seleccionado,
       // nunca a una palabra suelta.
@@ -1714,6 +1771,17 @@ export default function App({
               assetTenantId={session?.tenantId}
               initialTab={imageInsertInitialTab}
               openSequence={imageInsertOpenSeq}
+            />,
+            document.body,
+          )
+        : null}
+
+      {typeof document !== 'undefined' && showVideoInsertModal
+        ? createPortal(
+            <VideoInsertModal
+              key={`video-insert-${videoInsertOpenSeq}`}
+              onClose={closeVideoInsertModal}
+              onComplete={handleVideoInsertComplete}
             />,
             document.body,
           )

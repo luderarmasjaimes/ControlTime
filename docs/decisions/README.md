@@ -124,6 +124,24 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > Ninguna de las tres queda "corregida" en este ADR — se documentan con
 > evidencia como decisión pendiente de Gerencia/producto, no se resuelven
 > unilateralmente.
+>
+> **Actualización 2026-07-21 (tercera pasada, mismo día)**: 62 → **64 ADRs**.
+> De las 3 brechas/defecto que dejó ADR-061 documentadas como pendientes,
+> Gerencia pidió cerrar 2 el mismo día: **062**
+> (`insercion-video-grabado-webcam-pantalla`, ámbito `reports`) cierra el
+> hallazgo G1 — nuevo tipo de bloque `video` con grabación por cámara web o
+> pantalla/ventana, insertable en el lienzo (verificado en vivo hasta el
+> límite de hardware del entorno de pruebas: no se pudo grabar una toma real
+> por sandboxing, pero sí el flujo completo de UI y manejo de errores).
+> **063** (`correccion-rbac-siete-roles-asignables`, ámbito `plataforma`)
+> cierra TC-RBAC-05 — `ADMIN_ASSIGNABLE_ROLES` (7 roles) reemplaza el uso de
+> `USER_ROLES` (6) en las 3 pantallas de administración, y se corrigió un
+> bug real independiente en el backend (`notification_routes.cpp`) que solo
+> devolvía 4 de 7 roles en la matriz de permisos. La brecha de creación de
+> empresas (G2, sin endpoint) y la auditoría completa del flujo RUC/tenant
+> quedaron en un documento aparte
+> (`Auditoria_Registro_RUC_Tenant_2026-07-21.md`, no un ADR — es un hallazgo
+> pendiente de decisión de producto, no una decisión ya tomada).
 
 ### Ámbito `plataforma` — fundaciones transversales
 | # | Slug | Status | Resumen |
@@ -149,8 +167,9 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 059 | `plan-maestro-pruebas-qa` | ✅ accepted, primera fase implementada (2026-07-21) | 5 capas de prueba formalizadas (unit frontend, unit backend, e2e frontend, smoke/integración backend, regresión de cierre de etapa) con cronograma y exit criteria por gate. Verificado en vivo: `smoke-auth-e2e.ps1` extendido corrido de punta a punta contra el `beemetry-api` real, `Resultado: OK`. |
 | 060 | `framework-pruebas-backend-catch2` | ✅ implemented, verificado (2026-07-21) | Catch2 v3 (apt) como framework de tests del backend; target `beemetry_backend_tests` cubriendo `http_utils.cpp`. `ctest`: 100% passed; corrida detallada: 27 aserciones en 7 test cases, todas passed. |
 | 061 | `catalogo-casos-prueba-qa` | ✅ accepted, documentado (2026-07-21) | Catálogo de 69 casos de prueba QA (Capa 5 de ADR-059, adelantada) sobre 14 funcionalidades pedidas por Gerencia. Encontró 2 brechas reales (video no implementado; creación de empresas sin endpoint) y 1 defecto (RBAC: 6 vs 7 roles en `roleConstants.ts`). |
+| 063 | `correccion-rbac-siete-roles-asignables` | ✅ implemented, verificado (2026-07-21) | `ADMIN_ASSIGNABLE_ROLES` (7 roles) reemplaza `USER_ROLES` (6) en las 3 pantallas de administración de roles; corrige matriz de permisos del backend que solo devolvía 4 de 7 roles. Cierra TC-RBAC-05 de ADR-061. |
 
-**Ámbito `plataforma`: 19/21 implemented, 1 partial, 1 proposed.**
+**Ámbito `plataforma`: 20/22 implemented, 1 partial, 1 proposed.**
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |
@@ -202,8 +221,9 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 052 | `navegacion-zoom-tamano-pagina` | ✅ implemented (2026-07-17) | Navegación de teclado (PageUp/PageDown/flechas), zoom 10%-400%, tamaño de hoja/orientación configurable por página individual. |
 | 053 | `estilos-visuales-tabla` | ✅ implemented (2026-07-17) | Galería de temas de color, filas alternadas, bordes configurables, título de tabla; formato por selección en celdas (`contentEditable`+`execCommand`). |
 | 055 | `editor-indicador-seleccion-propio` | ✅ implemented (2026-07-18) | Indicador de selección propio (ya no el nativo del navegador) para que el resaltado escale correctamente con tamaño de fuente mixto por tramo; resaltado y ciclo de mayúsculas llevados al mismo criterio "selección o bloque completo" de ADR-050. |
+| 062 | `insercion-video-grabado-webcam-pantalla` | ✅ implemented, verificado parcialmente (2026-07-21) | Nuevo tipo de bloque `video`: grabación por cámara web o pantalla/ventana, insertable en el lienzo (antes solo se podía exportar/descargar). Cierra el hallazgo G1 de ADR-061. Almacenamiento inline (mismo patrón que `image`); grabación real de punta a punta pendiente de verificar con hardware real. |
 
-**Ámbito `reports`: 25/25 implemented sin reservas — ver "Progreso del proyecto de reportabilidad" abajo.**
+**Ámbito `reports`: 26/26 implemented sin reservas — ver "Progreso del proyecto de reportabilidad" abajo.**
 
 ### Ámbito `ia` — inteligencia artificial local
 | # | Slug | Status | Resumen |
@@ -236,17 +256,26 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Progreso del proyecto de reportabilidad (ámbito `reports`)
 
-Cálculo basado **en los 25 ADRs de ámbito `reports` redactados hasta hoy**
-(010-022, 039, 044-053, 055) — no incluye trabajo futuro sin ADR todavía, ni
+Cálculo basado **en los 26 ADRs de ámbito `reports` redactados hasta hoy**
+(010-022, 039, 044-053, 055, 062) — no incluye trabajo futuro sin ADR todavía, ni
 los gates de release que no son decisiones arquitectónicas (pentest, QA
 funcional, GO-LIVE — ver más abajo, se rastrean aparte).
 
 | Estado | ADRs | Peso |
 |---|---|---|
-| Implementado sin reservas (incl. alcance v0.1 explícitamente reducido por diseño) | 010, 011, 012, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 039, 044, 045, 046, 047, 048, 049, 050, 051, 052, 053, 055 | 25 × 1.0 = 25.0 |
-| **Total** | **25 ADRs** | **25.0 / 25** |
+| Implementado sin reservas (incl. alcance v0.1 explícitamente reducido por diseño) | 010, 011, 012, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 039, 044, 045, 046, 047, 048, 049, 050, 051, 052, 053, 055, 062 | 26 × 1.0 = 26.0 |
+| **Total** | **26 ADRs** | **26.0 / 26** |
 
-### → **Avance del proyecto de reportabilidad: 100%** (25 / 25 ADRs planificados)
+### → **Avance del proyecto de reportabilidad: 100%** (26 / 26 ADRs planificados)
+
+**Actualización 2026-07-21**: se agregó ADR-062 (inserción de video grabado
+por cámara web/pantalla, insertable en el lienzo). Se marca "implementado,
+verificado parcialmente" — el flujo completo de UI se verificó en vivo
+contra el backend real, pero una grabación de punta a punta con hardware
+real de cámara/pantalla queda pendiente de una prueba manual (el sandbox de
+este entorno bloquea el acceso a esos dispositivos). No cambia el 100% del
+ámbito porque el propio ADR-059 (Capa 5) ya contempla la regresión manual
+completa antes del gate R4 como paso posterior a la implementación.
 
 **Actualización 2026-07-20**: se agregó ADR-055 (`editor-indicador-seleccion-propio`,
 formalizando un bug fix del 2026-07-18 que no tenía ADR escrito — ver §
