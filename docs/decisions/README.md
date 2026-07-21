@@ -104,6 +104,26 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > bugs reales preexistentes en ese mismo script (campo `token` desactualizado
 > tras el cambio a `access_token`; lectura de cookies con un `Path` de URI
 > incorrecto que nunca iba a encontrar las cookies de sesión).
+>
+> **Actualización 2026-07-21 (segunda pasada, mismo día)**: 61 → **62 ADRs**.
+> Se agregó **061** (`catalogo-casos-prueba-qa`, ámbito `plataforma`) — 69
+> casos de prueba sobre las 14 funcionalidades que Gerencia pidió controlar
+> (usuarios, empresas, auth password/facial, multitenant, RBAC, menú,
+> reportabilidad completa, carátula, TOC, encabezados, texto libre,
+> atributos de texto, imágenes, video), es la Capa 5 de ADR-059 adelantada
+> del Sprint S7 al sprint actual. Al verificar cada funcionalidad contra
+> código real (no se asumió "implementado" por igual para las 14) se
+> encontraron 2 brechas reales — inserción de video **no existe** como tipo
+> de bloque en ReportStudioV2 (solo hay captura de webcam a imagen fija, no
+> video embebido); creación de empresas **no tiene endpoint** (`GET
+> /api/auth/companies` solo lee, no hay `POST` — se provisionan por seed de
+> BD) — y 1 defecto real no pedido: `frontend/src/auth/roleConstants.ts`
+> define 6 roles pero el backend valida 7 (falta `viewer`), lo que matiza
+> parcialmente el cierre de ADR-036 ("7 roles unificados"): el backend sí
+> soporta los 7, la pantalla de administración de usuarios no expone uno.
+> Ninguna de las tres queda "corregida" en este ADR — se documentan con
+> evidencia como decisión pendiente de Gerencia/producto, no se resuelven
+> unilateralmente.
 
 ### Ámbito `plataforma` — fundaciones transversales
 | # | Slug | Status | Resumen |
@@ -128,8 +148,9 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 058 | `auditoria-seguridad-integral-jul2026` | ✅ implemented (2026-07-19) | XSS almacenado (tablas) e IDOR sin auth (`/api/sensors/data`) cerrados y verificados en vivo; CVEs de dependencias a 0; HSTS agregado. Pendiente: pentest externo (sin agendar) y `echarts@6` (CVE moderada, migración deliberada). |
 | 059 | `plan-maestro-pruebas-qa` | ✅ accepted, primera fase implementada (2026-07-21) | 5 capas de prueba formalizadas (unit frontend, unit backend, e2e frontend, smoke/integración backend, regresión de cierre de etapa) con cronograma y exit criteria por gate. Verificado en vivo: `smoke-auth-e2e.ps1` extendido corrido de punta a punta contra el `beemetry-api` real, `Resultado: OK`. |
 | 060 | `framework-pruebas-backend-catch2` | ✅ implemented, verificado (2026-07-21) | Catch2 v3 (apt) como framework de tests del backend; target `beemetry_backend_tests` cubriendo `http_utils.cpp`. `ctest`: 100% passed; corrida detallada: 27 aserciones en 7 test cases, todas passed. |
+| 061 | `catalogo-casos-prueba-qa` | ✅ accepted, documentado (2026-07-21) | Catálogo de 69 casos de prueba QA (Capa 5 de ADR-059, adelantada) sobre 14 funcionalidades pedidas por Gerencia. Encontró 2 brechas reales (video no implementado; creación de empresas sin endpoint) y 1 defecto (RBAC: 6 vs 7 roles en `roleConstants.ts`). |
 
-**Ámbito `plataforma`: 18/20 implemented, 1 partial, 1 proposed.**
+**Ámbito `plataforma`: 19/21 implemented, 1 partial, 1 proposed.**
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |
