@@ -34,12 +34,16 @@
 .ribbon-tab--active {
   color: var(--accent);
   border-bottom-color: var(--accent);
-  background: rgba(99, 102, 241, 0.1);
+  background: var(--accent-glow);
   text-shadow: 0 0 8px var(--accent-glow);
 }
 .ribbon-tab-spacer{flex:1}
 .ribbon-quick-actions{display:flex;align-items:center;gap:4px;padding-right:4px}
-.ribbon-body{display:flex;align-items:stretch;gap:2px;padding:4px 8px;min-height:58px;overflow-x:auto;scrollbar-width:thin}
+/* flex-wrap: los grupos se acomodan en una segunda fila cuando no caben, en
+   vez de quedar ocultos tras un scroll horizontal — así los grupos nuevos del
+   sistema minero avanzado (Bloques Técnicos, Secciones, Gráficos con datos)
+   SIEMPRE son visibles sin tener que desplazar la barra. */
+.ribbon-body{display:flex;flex-wrap:wrap;align-items:stretch;gap:2px;row-gap:6px;padding:4px 8px;min-height:58px;overflow-x:auto;scrollbar-width:thin}
 .ribbon-group{display:flex;flex-direction:column;border-right:1px solid rgba(100,116,139,.15);padding:0 8px;min-width:0}
 .ribbon-group:last-child{border-right:none}
 .ribbon-group-content{display:flex;align-items:center;gap:3px;flex:1;min-height:0}
@@ -100,6 +104,7 @@
 .ribbon-color-btn-wrap .color-palette-trigger:hover{background:rgba(148,163,184,.12);border-color:rgba(148,163,184,.55)}
 .ribbon-color-btn-wrap .color-palette-swatch-preview{border-color:rgba(241,245,249,.5)}
 .ribbon-color-btn-wrap .color-palette-caret{color:#cbd5e1}
+.ribbon-highlight-icon{color:#94a3b8;align-self:center}
 
 /* ── Interlineado del ribbon — antes un botón decorativo sin onClick ──── */
 .ribbon-line-spacing-wrap{position:relative}
@@ -156,6 +161,10 @@
 .ribbon-cover-option:hover{background:rgba(34,211,238,.08)}
 .ribbon-cover-label{font-size:11px;font-weight:600;color:#f1f5f9}
 .ribbon-cover-desc{font-size:9px;color:#64748b}
+/* Muestra de color de la caja de resaltado en el desplegable "Bloques Técnicos" */
+.ribbon-callout-swatch{display:inline-block;width:22px;height:14px;border-radius:3px;border:2px solid;margin-bottom:3px;flex:0 0 auto}
+/* Desplegable alto (plantillas de sección: 10 opciones) con scroll */
+.ribbon-cover-dropdown--tall{max-height:320px;overflow-y:auto}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TABLE OF CONTENTS

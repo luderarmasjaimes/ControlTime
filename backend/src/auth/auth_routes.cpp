@@ -4,23 +4,38 @@
 #include "auth_storage_pg.hpp"
 #include "auth_storage_file.hpp"
 #include "permissions.hpp"
+#include "../biometric/face_analysis.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
 
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <mutex>
+#include <optional>
+#include <set>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "storage/pg_pool.hpp"
 #include "storage/pg_result.hpp"
 
 using http_utils::makeJsonResponse;
+using http_utils::makePngResponse;
 using http_utils::routePathOnly;
 using config::AppConfig;
 using config::AuthStorageMode;
 
 namespace auth {
+
+static std::mutex gAvatarHdMutex;
 
 static std::string trimAuthParam(std::string s) {
   const char *ws = " \t\n\r";
@@ -242,6 +257,11 @@ handleSwitchTenant(const http::request<http::string_body> &req,
                    {"role", user->role}});
   http_utils::setAuthCookies(res, tokenPair.refreshToken, tokenPair.csrfToken,
                              cfg.gJwtRefreshTtlDays * 24 * 3600);
+  // ADR-082: el cambio de tenant emite un access token nuevo (con el tenant_id
+  // nuevo en los claims) — la cookie tiene que actualizarse con él, o el
+  // navegador seguiría mandando el token del tenant ANTERIOR.
+  http_utils::setAccessTokenCookie(res, tokenPair.token,
+                                   tokenPair.expiresInSeconds);
   return res;
 #else
   return makeJsonResponse(http::status::internal_server_error,
@@ -551,6 +571,144 @@ handleUserTenantPost(const http::request<http::string_body> &req,
   return handleGrantUserTenant(req, query);
 }
 
+static bool isSafeAvatarUserId(const std::string &userId) {
+  return !userId.empty() && userId.size() <= 128 &&
+         std::all_of(userId.begin(), userId.end(), [](unsigned char c) {
+           return std::isalnum(c) || c == '-' || c == '_';
+         });
+}
+
+static std::optional<AuthUser> findCurrentAvatarUser(
+    const AppConfig &cfg, const std::string &dataRoot,
+    const std::string &userId) {
+  if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+    return findUserByIdPg(cfg.gDatabaseUrl, userId);
+#else
+    return std::nullopt;
+#endif
+  }
+
+  const auto users = loadAuthUsers(dataRoot);
+  const auto it = std::find_if(users.begin(), users.end(),
+                               [&](const AuthUser &u) {
+                                 return u.id == userId;
+                               });
+  return it == users.end() ? std::nullopt
+                           : std::optional<AuthUser>(*it);
+}
+
+/** GET /api/auth/avatar/hd
+ * Devuelve exclusivamente el avatar del usuario de la sesión. Nunca acepta
+ * un user_id del cliente: evita IDOR y mantiene el derivado biométrico privado.
+ * Los registros nuevos ya dejan un máster local 2880x3840; para usuarios
+ * anteriores se crea una única vez una ampliación Lanczos desde su miniatura.
+ */
+static http::response<http::string_body> handleMyAvatarHd(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+  if (!isSafeAvatarUserId(session->userId)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_user_id"}});
+  }
+
+  auto &cfg = AppConfig::instance();
+  const std::string dataRoot =
+      config::getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+  const std::filesystem::path hdDir =
+      std::filesystem::path(dataRoot) / "auth" / "avatars_hd";
+  const std::filesystem::path hdPath = hdDir / (session->userId + ".png");
+
+  try {
+    std::scoped_lock lk(gAvatarHdMutex);
+    // Revalidar que el usuario siga activo antes de servir incluso un archivo
+    // ya cacheado; un JWT aún no expirado no debe recuperar la foto después
+    // de una baja administrativa.
+    const auto user =
+        findCurrentAvatarUser(cfg, dataRoot, session->userId);
+    if (!user) {
+      return makeJsonResponse(
+          http::status::not_found,
+          json::object{{"error", "avatar_not_available"}});
+    }
+    if (std::filesystem::is_regular_file(hdPath)) {
+      const auto fileSize = std::filesystem::file_size(hdPath);
+      if (fileSize > 0 && fileSize <= 32U * 1024U * 1024U) {
+        std::ifstream in(hdPath, std::ios::binary);
+        std::string png((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+        if (!png.empty()) return makePngResponse(std::move(png));
+      }
+    }
+
+    if (user->avatarCartoonBase64.empty()) {
+      return makeJsonResponse(
+          http::status::not_found,
+          json::object{{"error", "avatar_not_available"}});
+    }
+
+    std::vector<unsigned char> encodedThumb;
+    if (!biometric::decodeBase64(user->avatarCartoonBase64, encodedThumb)) {
+      return makeJsonResponse(
+          http::status::unprocessable_entity,
+          json::object{{"error", "avatar_thumbnail_invalid"}});
+    }
+    const cv::Mat thumb =
+        cv::imdecode(encodedThumb, cv::IMREAD_COLOR);
+    if (thumb.empty()) {
+      return makeJsonResponse(
+          http::status::unprocessable_entity,
+          json::object{{"error", "avatar_thumbnail_invalid"}});
+    }
+
+    cv::Mat hd;
+    cv::resize(thumb, hd, cv::Size(2880, 3840), 0.0, 0.0,
+               cv::INTER_LANCZOS4);
+    cv::Mat softened;
+    cv::GaussianBlur(hd, softened, cv::Size(), 1.1);
+    cv::addWeighted(hd, 1.08, softened, -0.08, 0.0, hd);
+
+    std::vector<unsigned char> encodedHd;
+    const std::vector<int> pngParams = {
+        cv::IMWRITE_PNG_COMPRESSION, 5};
+    if (!cv::imencode(".png", hd, encodedHd, pngParams)) {
+      throw std::runtime_error("No se pudo codificar el avatar HD.");
+    }
+
+    std::filesystem::create_directories(hdDir);
+    const auto tempPath = hdPath.string() + ".tmp";
+    {
+      std::ofstream out(tempPath, std::ios::binary | std::ios::trunc);
+      out.write(reinterpret_cast<const char *>(encodedHd.data()),
+                static_cast<std::streamsize>(encodedHd.size()));
+      if (!out) {
+        throw std::runtime_error("No se pudo persistir el avatar HD.");
+      }
+    }
+    if (std::filesystem::exists(hdPath)) {
+      std::filesystem::remove(hdPath);
+    }
+    std::filesystem::rename(tempPath, hdPath);
+    std::filesystem::permissions(
+        hdPath,
+        std::filesystem::perms::owner_read |
+            std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::replace);
+    return makePngResponse(std::string(
+        reinterpret_cast<const char *>(encodedHd.data()), encodedHd.size()));
+  } catch (const std::exception &ex) {
+    return makeJsonResponse(
+        http::status::internal_server_error,
+        json::object{{"error", "avatar_hd_generation_failed"},
+                     {"detail", ex.what()}});
+  }
+}
+
 void registerRoutes(router::Router &r) {
   auto &cfg = AppConfig::instance();
 
@@ -589,6 +747,115 @@ void registerRoutes(router::Router &r) {
           return makeJsonResponse(http::status::ok,
                                   json::object{{"companies", companies}});
         });
+
+  // POST /api/auth/companies — catálogo administrado y tenant real.
+  // Solo un admin autenticado puede incorporar una minera. La comparación
+  // case-insensitive evita duplicados de razón social por mayúsculas/espacios.
+  r.post("/api/auth/companies",
+         [&cfg](const http::request<http::string_body> &req,
+                const std::unordered_map<std::string, std::string> &query) {
+           const auto session = resolveAuthSession(req, query);
+           if (!session) {
+             return makeJsonResponse(http::status::unauthorized,
+                                     json::object{{"error", "unauthorized"}});
+           }
+           if (session->role != "admin") {
+             return makeJsonResponse(http::status::forbidden,
+                                     json::object{{"error", "admin_required"}});
+           }
+           if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+             return makeJsonResponse(
+                 http::status::not_implemented,
+                 json::object{{"error", "postgres_required"}});
+           }
+#if HAS_LIBPQ
+           try {
+             const auto parsed = json::parse(req.body());
+             if (!parsed.is_object()) {
+               return makeJsonResponse(
+                   http::status::bad_request,
+                   json::object{{"error", "invalid_company_payload"}});
+             }
+             const auto *nameValue = parsed.as_object().if_contains("name");
+             if (!nameValue || !nameValue->is_string()) {
+               return makeJsonResponse(
+                   http::status::bad_request,
+                   json::object{{"error", "company_name_required"}});
+             }
+             const std::string name =
+                 trimAuthParam(json::value_to<std::string>(*nameValue));
+             if (name.size() < 2 || name.size() > 180) {
+               return makeJsonResponse(
+                   http::status::bad_request,
+                   json::object{{"error", "company_name_invalid"}});
+             }
+
+             auto lease =
+                 storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+             PGconn *conn = lease.get();
+             if (PQstatus(conn) != CONNECTION_OK ||
+                 !ensureAuthSchemaPg(conn)) {
+               return makeJsonResponse(
+                   http::status::service_unavailable,
+                   json::object{{"error", "database_unavailable"}});
+             }
+             const char *params[1] = {name.c_str()};
+             storage::PgResult existing{PQexecParams(
+                 conn,
+                 "SELECT name FROM auth_companies "
+                 "WHERE lower(btrim(name))=lower(btrim($1)) LIMIT 1",
+                 1, nullptr, params, nullptr, nullptr, 0)};
+             if (!existing.okTuples()) {
+               return makeJsonResponse(
+                   http::status::internal_server_error,
+                   json::object{{"error", "company_lookup_failed"}});
+             }
+             if (PQntuples(existing.get()) > 0) {
+               return makeJsonResponse(
+                   http::status::conflict,
+                   json::object{
+                       {"error", "company_already_exists"},
+                       {"company",
+                        std::string(PQgetvalue(existing.get(), 0, 0))}});
+             }
+
+             std::string tenantError;
+             const std::string tenantId = findOrCreateTenantForCompanyPg(
+                 cfg.gDatabaseUrl, name, session->userId, "admin",
+                 tenantError);
+             if (tenantId.empty()) {
+               return makeJsonResponse(
+                   http::status::internal_server_error,
+                   json::object{{"error", "tenant_provision_failed"},
+                                {"detail", tenantError}});
+             }
+             storage::PgResult inserted{PQexecParams(
+                 conn,
+                 "INSERT INTO auth_companies(name,active) VALUES($1,true) "
+                 "RETURNING name",
+                 1, nullptr, params, nullptr, nullptr, 0)};
+             if (!inserted.okTuples() || PQntuples(inserted.get()) != 1) {
+               return makeJsonResponse(
+                   http::status::internal_server_error,
+                   json::object{{"error", "company_create_failed"}});
+             }
+             appendAuthAuditLogPg(conn, "company_create", session->company,
+                                  session->username, true, name);
+             return makeJsonResponse(
+                 http::status::created,
+                 json::object{{"company", name},
+                              {"tenant_id", tenantId},
+                              {"active", true}});
+           } catch (const std::exception &) {
+             return makeJsonResponse(
+                 http::status::bad_request,
+                 json::object{{"error", "invalid_company_payload"}});
+           }
+#else
+           return makeJsonResponse(http::status::not_implemented,
+                                   json::object{{"error", "postgres_required"}});
+#endif
+         });
 
   // GET /api/auth/login/check-identity
   r.get("/api/auth/login/check-identity",
@@ -646,9 +913,50 @@ void registerRoutes(router::Router &r) {
           std::string company =
               query.count("company") ? query.at("company") : "";
           std::string ruc = query.count("ruc") ? query.at("ruc") : "";
+          std::string country =
+              query.count("country") ? query.at("country") : "PE";
 
+          const auto isRepeatedNumber = [](const std::string &value) {
+            return !value.empty() &&
+                   std::all_of(value.begin() + 1, value.end(),
+                               [&value](char c) { return c == value.front(); });
+          };
           bool valid = false;
-          if (ruc.length() == 11) {
+          if (country == "BR" && ruc.length() == 14) {
+            bool isNumeric = true;
+            for (char c : ruc) {
+              if (!std::isdigit(static_cast<unsigned char>(c))) {
+                isNumeric = false;
+                break;
+              }
+            }
+            if (isNumeric && !isRepeatedNumber(ruc)) {
+              const auto cnpjDigit = [&ruc](int length) {
+                static const int firstWeights[] =
+                    {5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2};
+                static const int secondWeights[] =
+                    {6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2};
+                const int *weights =
+                    length == 12 ? firstWeights : secondWeights;
+                int sum = 0;
+                for (int i = 0; i < length; ++i)
+                  sum += (ruc[i] - '0') * weights[i];
+                const int remainder = sum % 11;
+                return remainder < 2 ? 0 : 11 - remainder;
+              };
+              valid = cnpjDigit(12) == (ruc[12] - '0') &&
+                      cnpjDigit(13) == (ruc[13] - '0');
+            }
+          } else if ((country == "US" || country == "CA") &&
+                     ruc.length() == 9) {
+            valid = !isRepeatedNumber(ruc);
+            for (char c : ruc) {
+              if (!std::isdigit(static_cast<unsigned char>(c))) {
+                valid = false;
+                break;
+              }
+            }
+          } else if (ruc.length() == 11) {
             bool isNumeric = true;
             for (char c : ruc) {
               if (!std::isdigit(static_cast<unsigned char>(c))) {
@@ -773,6 +1081,7 @@ void registerRoutes(router::Router &r) {
 
   // Multi-tenant: listar unidades mineras del usuario + cambiar tenant activo
   // sin reautenticar (ver handlers arriba, antes de registerRoutes).
+  r.get("/api/auth/avatar/hd", handleMyAvatarHd);
   r.get("/api/auth/tenants", handleListMyTenants);
   r.post("/api/auth/tenants/switch", handleSwitchTenant);
 

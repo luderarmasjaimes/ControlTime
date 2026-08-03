@@ -64,7 +64,8 @@ std::string urlEncode(const std::string &value) {
 
 }  // namespace
 
-PdfExportResult exportReportPdf(const std::string &reportId, const std::string &sessionToken) {
+PdfExportResult exportReportPdf(const std::string &reportId, const std::string &sessionToken,
+                                const std::string &watermarkText) {
   PdfExportResult result;
   auto &cfg = config::AppConfig::instance();
   if (cfg.gPdfExportUrl.empty()) {
@@ -84,7 +85,11 @@ PdfExportResult exportReportPdf(const std::string &reportId, const std::string &
   // pidió el export — nunca credenciales nuevas ni bypass de auth.
   const std::string printUrl = cfg.gFrontendInternalOrigin + "/print-report.html?id=" +
                                urlEncode(reportId) + "&token=" + urlEncode(sessionToken);
-  const std::string requestBody = json::serialize(json::object{{"url", printUrl}});
+  // El watermark (ADR-080) viaja como texto ya resuelto (tenant/usuario/fecha
+  // insertados server-side, ver report_document_settings.cpp) — el sidecar
+  // solo lo dibuja, no conoce ni necesita conocer el modelo de datos.
+  const std::string requestBody = json::serialize(json::object{
+      {"url", printUrl}, {"watermark", json::object{{"text", watermarkText}}}});
 
   beast::error_code ec;
   asio::io_context ioc;
@@ -144,6 +149,10 @@ PdfExportResult exportReportPdf(const std::string &reportId, const std::string &
 
   result.ok = true;
   result.pdfBytes = std::move(res.body());
+  auto pwIt = res.find("X-Pdf-User-Password");
+  if (pwIt != res.end()) {
+    result.userPassword = std::string(pwIt->value());
+  }
   return result;
 }
 

@@ -525,7 +525,7 @@ std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
 std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &company,
                                         const std::string &identityKey,
-                                        const std::string &passwordHash,
+                                        const std::string &password,
                                         std::string &error,
                                         std::string *errorCodeOut) {
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
@@ -598,7 +598,7 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
     u.avatarCartoonBase64 = PQgetvalue(res.get(), 0, 10);
   }
 
-  if (u.passwordHash != passwordHash) {
+  if (!http_utils::verifyPassword(password, u.passwordHash)) {
     appendAuthAuditLogPg(conn, "login_password", company, u.username, false,
                          "invalid_password");
     error = kAuthWrongPasswordMsg;
@@ -606,6 +606,31 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
       *errorCodeOut = "wrong_password";
     }
     return std::nullopt;
+  }
+
+  if (http_utils::passwordNeedsRehash(u.passwordHash)) {
+    try {
+      const std::string upgradedHash = http_utils::hashPassword(password);
+      const char *upgradeParams[3] = {
+          upgradedHash.c_str(), u.id.c_str(), u.passwordHash.c_str()};
+      storage::PgResult upgraded{PQexecParams(
+          conn,
+          "UPDATE auth_users SET password_hash=$1 "
+          "WHERE id=$2::uuid AND password_hash=$3",
+          3, nullptr, upgradeParams, nullptr, nullptr, 0)};
+      if (upgraded.okCommand() && PQcmdTuples(upgraded.get()) != nullptr &&
+          std::string(PQcmdTuples(upgraded.get())) == "1") {
+        u.passwordHash = upgradedHash;
+      } else {
+        std::cerr << "[AUTH_PASSWORD] rehash Argon2id no persistido para user_id="
+                  << u.id << std::endl;
+      }
+    } catch (const std::exception &ex) {
+      // No bloquear un login legacy válido por una falla de migración; queda
+      // visible y se reintentará en el próximo acceso.
+      std::cerr << "[AUTH_PASSWORD] rehash Argon2id falló para user_id="
+                << u.id << ": " << ex.what() << std::endl;
+    }
   }
 
   u.tenantId = resolveTelemetryTenantIdPg(static_cast<void *>(conn), u.id, u.company);
@@ -1157,6 +1182,97 @@ bool revokeAllRefreshTokensForUserPg(const std::string &databaseUrl,
       "AND revoked_at IS NULL",
       1, nullptr, params, nullptr, nullptr, 0)};
   return res.okCommand();
+}
+
+// ── Migración de credenciales a Argon2id (auditoría 2026-08-02) ───────────
+
+namespace {
+
+/** @brief Cuenta filas de auth_users que cumplen una condición sobre password_hash. */
+int countPasswordHashes(PGconn *conn, const char *predicate) {
+  const std::string sql =
+      std::string("SELECT COUNT(*)::int FROM auth_users WHERE ") + predicate;
+  storage::PgResult res{PQexec(conn, sql.c_str())};
+  if (!res.okTuples() || PQntuples(res.get()) == 0) return -1;
+  try {
+    return std::stoi(PQgetvalue(res.get(), 0, 0));
+  } catch (...) {
+    return -1;
+  }
+}
+
+}  // namespace
+
+PasswordMigrationResult migrateLegacyPasswordHashesPg(const std::string &databaseUrl) {
+  PasswordMigrationResult out;
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    out.error = "db_unavailable";
+    return out;
+  }
+  if (!ensureAuthSchemaPg(conn)) {
+    out.error = "schema_unavailable";
+    return out;
+  }
+
+  // Solo hashes legados CRUDOS: ni Argon2id auténtico ni ya envuelto.
+  static const char kSelectLegacy[] =
+      "SELECT id::text, password_hash FROM auth_users "
+      "WHERE password_hash NOT LIKE '$argon2id$%' "
+      "  AND password_hash NOT LIKE 'legacy1:%'";
+  storage::PgResult rows{PQexec(conn, kSelectLegacy)};
+  if (!rows.okTuples()) {
+    out.error = PQresultErrorMessage(rows.get());
+    return out;
+  }
+
+  out.scanned = PQntuples(rows.get());
+  if (out.scanned == 0) {
+    out.ran = true;
+    out.remainingRaw = 0;
+    out.remainingWrapped =
+        countPasswordHashes(conn, "password_hash LIKE 'legacy1:%'");
+    return out;
+  }
+
+  for (int i = 0; i < out.scanned; ++i) {
+    const std::string userId = PQgetvalue(rows.get(), i, 0);
+    const std::string legacyHash = PQgetvalue(rows.get(), i, 1);
+    try {
+      const std::string wrapped = http_utils::wrapLegacyHash(legacyHash);
+      // Condicionado al hash antiguo: si entre el SELECT y el UPDATE el usuario
+      // inició sesión y su fila ya se rehashó a Argon2id auténtico, este UPDATE
+      // no afecta ninguna fila y se deja el hash bueno intacto.
+      const char *params[3] = {wrapped.c_str(), userId.c_str(),
+                               legacyHash.c_str()};
+      storage::PgResult upd{PQexecParams(
+          conn,
+          "UPDATE auth_users SET password_hash=$1 "
+          "WHERE id=$2::uuid AND password_hash=$3",
+          3, nullptr, params, nullptr, nullptr, 0)};
+      if (upd.okCommand() && PQcmdTuples(upd.get()) != nullptr &&
+          std::string(PQcmdTuples(upd.get())) == "1") {
+        ++out.migrated;
+      } else {
+        ++out.failed;
+        std::cerr << "[AUTH_PASSWORD] migracion: UPDATE sin efecto para user_id="
+                  << userId << std::endl;
+      }
+    } catch (const std::exception &ex) {
+      ++out.failed;
+      std::cerr << "[AUTH_PASSWORD] migracion fallo para user_id=" << userId
+                << ": " << ex.what() << std::endl;
+    }
+  }
+
+  out.ran = true;
+  out.remainingRaw = countPasswordHashes(
+      conn,
+      "password_hash NOT LIKE '$argon2id$%' AND password_hash NOT LIKE 'legacy1:%'");
+  out.remainingWrapped =
+      countPasswordHashes(conn, "password_hash LIKE 'legacy1:%'");
+  return out;
 }
 
 } // namespace auth

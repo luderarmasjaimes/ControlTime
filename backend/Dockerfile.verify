@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     librdkafka-dev \
     libssl-dev \
+    libargon2-dev \
     catch2 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

@@ -109,7 +109,7 @@ std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
 std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &company,
                                         const std::string &identityKey,
-                                        const std::string &passwordHash,
+                                        const std::string &password,
                                         std::string &error,
                                         std::string *errorCodeOut = nullptr);
 
@@ -160,6 +160,34 @@ bool revokeRefreshTokenPg(const std::string &databaseUrl,
 /** @brief Revoca todos los refresh tokens vigentes de un usuario (logout global / incidente de seguridad). @return true si el UPDATE se ejecutó sin error. */
 bool revokeAllRefreshTokensForUserPg(const std::string &databaseUrl,
                                      const std::string &userId);
+
+// ── Migración de credenciales a Argon2id (auditoría 2026-08-02) ───────────
+
+/** @brief Resultado de la migración masiva de hashes legados. */
+struct PasswordMigrationResult {
+  bool ran = false;        ///< false si no había nada que migrar o no hubo BD.
+  int scanned = 0;         ///< filas con hash legado crudo encontradas.
+  int migrated = 0;        ///< filas efectivamente envueltas en Argon2id.
+  int failed = 0;          ///< filas que no se pudieron migrar.
+  int remainingRaw = 0;    ///< hashes legados crudos que siguen en la tabla.
+  int remainingWrapped = 0;///< envueltos, pendientes de rehash real en su login.
+  std::string error;
+};
+
+/**
+ * @brief Envuelve en Argon2id TODOS los hashes de contraseña legados.
+ *
+ * Idempotente y segura de ejecutar en cada arranque: solo toca filas cuyo
+ * `password_hash` no empieza por `$argon2id$` ni por `legacy1:`. Cada fila se
+ * actualiza con un UPDATE condicionado al hash antiguo, así que un login
+ * concurrente que ya haya hecho el rehash real nunca se pisa.
+ *
+ * Elimina de la base el material débil (`std::hash` de 64 bits, salt fijo, sin
+ * estiramiento) sin necesitar las contraseñas en claro y sin expulsar a nadie.
+ * La conversión a un Argon2id auténtico ocurre después, por usuario, en su
+ * siguiente login correcto.
+ */
+PasswordMigrationResult migrateLegacyPasswordHashesPg(const std::string &databaseUrl);
 #endif
 
 } // namespace auth

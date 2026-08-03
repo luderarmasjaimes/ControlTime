@@ -2,14 +2,15 @@ import React from 'react';
 import {
   Type,
   BarChart3,
-  Target,
+  Gauge,
   Image as ImageIcon,
   Table as TableIcon,
-  Box,
+  Blocks,
   Map as MapIcon,
   FilePlus2,
   Copy,
   Video,
+  Clapperboard,
   ClipboardList,
   Activity,
   Pin,
@@ -17,6 +18,15 @@ import {
   ChevronRight,
   FileText,
   ListOrdered,
+  FolderArchive,
+  BookMarked,
+  Sparkles,
+  Info,
+  LayoutGrid,
+  Captions,
+  Rows3,
+  LineChart,
+  Factory,
 } from 'lucide-react';
 
 interface LibraryItem {
@@ -30,7 +40,7 @@ interface LibraryItem {
 const items: LibraryItem[] = [
   { type: 'text', label: 'Párrafo y listas', icon: <Type size={18} />, short: 'Texto', tip: 'Insertar un bloque de texto: párrafos y listas' },
   { type: 'chart', label: 'Series y ejes', icon: <BarChart3 size={18} />, short: 'Gráfico', tip: 'Insertar un gráfico de series y ejes' },
-  { type: 'kpi', label: 'Indicador numérico', icon: <Target size={18} />, short: 'KPI', tip: 'Insertar un indicador KPI (valor numérico y tendencia)' },
+  { type: 'kpi', label: 'Indicador numérico', icon: <Gauge size={18} />, short: 'KPI', tip: 'Insertar un indicador KPI (valor numérico y tendencia)' },
   { type: 'image', label: 'Figura o foto', icon: <ImageIcon size={18} />, short: 'Imagen', tip: 'Insertar una imagen: figura o fotografía' },
   { type: 'video', label: 'Grabación embebida', icon: <Video size={18} />, short: 'Video', tip: 'Grabar e insertar un video (cámara web o pantalla/ventana)' },
   { type: 'table', label: 'Filas y columnas', icon: <TableIcon size={18} />, short: 'Tabla', tip: 'Insertar una tabla de filas y columnas' },
@@ -43,11 +53,16 @@ interface LeftLibraryProps {
   onAddPage?: () => void;
   onDuplicatePage?: () => void;
   onAddFindings?: () => void;
+  onAddAnnexes?: () => void;
+  onAddReferences?: () => void;
+  onAddApa7Citation?: () => void;
+  onAddTechnicalBlock?: (kind: string) => void;
+  onAddSectionTemplate?: (kind: string) => void;
+  onAddStaticChart?: (kind: string) => void;
   onExportVideo?: () => void;
   onAddCover?: () => void;
   onAddToc?: () => void;
   onInsertCompanyImage?: () => void;
-  isRecording?: boolean;
 }
 
 // React.memo: App.jsx ahora pasa callbacks estables (useCallback) para todos
@@ -58,11 +73,16 @@ const LeftLibrary = React.memo(function LeftLibrary({
   onAddPage,
   onDuplicatePage,
   onAddFindings,
+  onAddAnnexes,
+  onAddReferences,
+  onAddApa7Citation,
+  onAddTechnicalBlock,
+  onAddSectionTemplate,
+  onAddStaticChart,
   onExportVideo,
   onAddCover,
   onAddToc,
   onInsertCompanyImage,
-  isRecording,
 }: LeftLibraryProps) {
   const [isHovered, setIsHovered] = React.useState(false);
   const [isPinned, setIsPinned] = React.useState(false);
@@ -82,7 +102,7 @@ const LeftLibrary = React.memo(function LeftLibrary({
 
       <div className="panel-title-row">
         <h3 className="panel-title panel-title--library" title="Biblioteca de contenidos: inserte bloques en la página activa">
-          <Box size={18} color="var(--accent)" aria-hidden />
+          <Blocks size={18} color="var(--accent)" aria-hidden />
           {isExpanded && <span>Contenidos</span>}
         </h3>
         {isExpanded && (
@@ -154,7 +174,7 @@ const LeftLibrary = React.memo(function LeftLibrary({
             {isExpanded && <span className="tool-action-label">Portada</span>}
           </button>
           <button type="button" className="tool-action" onClick={onInsertCompanyImage} title="Insertar una foto de la unidad minera como imagen independiente, centrada, movible y redimensionable">
-            <ImageIcon size={18} aria-hidden />
+            <Factory size={18} aria-hidden />
             {isExpanded && <span className="tool-action-label">Imagen Empresa</span>}
           </button>
           <button type="button" className="tool-action" onClick={onAddToc} title="Insertar índice / tabla de contenidos (se genera desde los títulos del informe)">
@@ -173,16 +193,46 @@ const LeftLibrary = React.memo(function LeftLibrary({
             <ClipboardList size={18} aria-hidden />
             {isExpanded && <span className="tool-action-label">Hallazgos</span>}
           </button>
+          <button type="button" className="tool-action" onClick={onAddAnnexes} title="Insertar sección ANEXOS (aparece en la Tabla de Contenidos)">
+            <FolderArchive size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Anexos</span>}
+          </button>
+          <button type="button" className="tool-action" onClick={onAddReferences} title="Insertar sección Bibliografía / Referencias (aparece en la Tabla de Contenidos)">
+            <BookMarked size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Referencias</span>}
+          </button>
+          <button type="button" className="tool-action" onClick={onAddApa7Citation} title="Agregar una cita bibliográfica con formato APA 7 (IA local da formato a datos que usted ya verificó, nunca busca ni inventa fuentes)">
+            <Sparkles size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Cita APA 7</span>}
+          </button>
+          <button type="button" className="tool-action" onClick={() => onAddTechnicalBlock?.('callout-info')} title="Insertar una caja de resaltado (Nota). En Insertar → Bloques Técnicos hay las 5 variantes: Nota, Conforme, Observación, Crítico y Dictamen ejecutivo">
+            <Info size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Caja resaltado</span>}
+          </button>
+          <button type="button" className="tool-action" onClick={() => onAddTechnicalBlock?.('kpi-strip')} title="Insertar una tira de 4 tarjetas KPI (valor + meta), como el dashboard ejecutivo del modelo minero">
+            <LayoutGrid size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Tarjetas KPI</span>}
+          </button>
+          <button type="button" className="tool-action" onClick={() => onAddTechnicalBlock?.('caption')} title="Insertar un pie de figura con estilo (itálica azul, centrado): «Figura N. …»">
+            <Captions size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Pie de figura</span>}
+          </button>
+          <button type="button" className="tool-action" onClick={() => onAddSectionTemplate?.('estado-sistema')} title="Insertar una sección con tabla especializada (empieza con «Estado por sistema», tabla semáforo). En Insertar → Secciones están las 10 plantillas: inventario, TARP, hallazgos, plan de acción, ficha de sensor, checklist, firmas…">
+            <Rows3 size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Sección técnica</span>}
+          </button>
+          <button type="button" className="tool-action" onClick={() => onAddStaticChart?.('chart-combo')} title="Insertar un gráfico con datos (combo de doble eje). En Insertar → Gráficos con datos están los 3 tipos: línea con meta, barras horizontales y combo de doble eje">
+            <LineChart size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Gráfico con datos</span>}
+          </button>
           <button
             type="button"
-            className={`tool-action${isRecording ? ' tool-action--recording' : ''}`}
+            className="tool-action"
             onClick={onExportVideo}
-            title={isRecording ? 'Detener la grabación del informe' : 'Grabar un vídeo del lienzo (máximo 30 segundos)'}
+            title="Grabar un vídeo de pantalla/ventana e insertarlo en la página activa"
           >
-            <Video size={18} aria-hidden />
-            {isExpanded && (
-              <span className="tool-action-label">{isRecording ? 'Grabando…' : 'Grabar vídeo'}</span>
-            )}
+            <Clapperboard size={18} aria-hidden />
+            {isExpanded && <span className="tool-action-label">Grabar vídeo</span>}
           </button>
         </div>
       </div>

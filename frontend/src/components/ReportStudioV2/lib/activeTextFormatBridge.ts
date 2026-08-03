@@ -31,3 +31,25 @@ export function registerActiveTextFormatHandler(handler: FormatHandler | null): 
 export function tryApplyToActiveTextSelection(patch: Partial<BaseTextStyle>): boolean {
   return activeHandler ? activeHandler(patch) : false;
 }
+
+/**
+ * Mismo puente que arriba, pero para el botón "Aa" (MAYÚSCULAS/minúsculas
+ * estilo Word) — a diferencia de negrita/color/tamaño, este NO es un parche
+ * de estilo (BaseTextStyle): muta el TEXTO en sí. Necesita su propio canal
+ * porque `tryApplyToActiveTextSelection` solo sabe transportar `Partial<
+ * BaseTextStyle>`.
+ */
+type CaseHandler = () => boolean;
+
+let activeCaseHandler: CaseHandler | null = null;
+
+export function registerActiveCaseHandler(handler: CaseHandler | null): void {
+  activeCaseHandler = handler;
+}
+
+/** Igual criterio que `tryApplyToActiveTextSelection`: `true` = ya se
+ * aplicó a la selección activa; `false` = el llamador debe caer a "todo el
+ * bloque". */
+export function tryApplyCaseToActiveTextSelection(): boolean {
+  return activeCaseHandler ? activeCaseHandler() : false;
+}

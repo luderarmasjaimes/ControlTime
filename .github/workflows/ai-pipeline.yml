@@ -1,0 +1,42 @@
+name: AI Pipeline (decide → generate → review)
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "db_scripts/**"
+      - "ai_engine/**"
+      - "specs/**"
+  workflow_dispatch:
+    inputs:
+      spec_task:
+        description: "Descripción tarea (ej. Implementar SPEC-014 offline)"
+        required: true
+        default: "Verificar SPEC-007 ReportStudio"
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    env:
+      AURIXA_LLM_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r ai_platform/requirements.txt
+
+      - name: Index RAG
+        run: python -m ai_platform rag index
+
+      - name: Run pipeline
+        run: |
+          TASK="${{ github.event.inputs.spec_task || 'Verificar cambios PR contra SPEC y ADR' }}"
+          python -m ai_platform pipeline "$TASK" --files backend/ frontend/
+
+      - name: Run unit tests ai_platform
+        run: python -m pytest ai_platform/tests -q

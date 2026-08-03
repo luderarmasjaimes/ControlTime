@@ -26,6 +26,17 @@ export interface TextStyleSpan {
   color?: string;
   fontSize?: number;
   fontFamily?: string;
+  /** Color de resaltado (highlight) de fondo detrás del texto de este
+   * rango — 'transparent' o ausente = sin resaltar. Distinto de
+   * `props.backgroundColor` del bloque (el fondo de TODO el cuadro de
+   * texto): esto es el resaltado tipo marcador de Word, por selección. */
+  highlightColor?: string;
+  /** Marca este rango como un encabezado del documento (mismos ids que
+   * HEADING_STYLES en lib/headingStyles.ts: 'title'|'h1'..'h6') para que
+   * la Tabla de Contenidos lo detecte igual que un bloque entero con
+   * `props.headingStyle` — ver TableOfContents.tsx. undefined = texto
+   * normal, no aparece en el TOC. */
+  headingStyle?: string;
 }
 
 export interface BaseTextStyle {
@@ -35,11 +46,15 @@ export interface BaseTextStyle {
   color: string;
   fontSize: number;
   fontFamily: string;
+  highlightColor: string;
+  headingStyle: string;
 }
 
 export type EffectiveTextStyle = BaseTextStyle;
 
-const STYLE_KEYS: (keyof BaseTextStyle)[] = ['bold', 'italic', 'underline', 'color', 'fontSize', 'fontFamily'];
+const STYLE_KEYS: (keyof BaseTextStyle)[] = [
+  'bold', 'italic', 'underline', 'color', 'fontSize', 'fontFamily', 'highlightColor', 'headingStyle',
+];
 
 /** Descarta spans inválidos/fuera de rango y los ordena por inicio —
  * primera línea de defensa para datos legados o corruptos. */
@@ -59,6 +74,8 @@ export function sanitizeSpans(rawSpans: unknown, textLength: number): TextStyleS
       if (typeof raw.color === 'string') span.color = raw.color;
       if (typeof raw.fontSize === 'number') span.fontSize = raw.fontSize;
       if (typeof raw.fontFamily === 'string') span.fontFamily = raw.fontFamily;
+      if (typeof raw.highlightColor === 'string') span.highlightColor = raw.highlightColor;
+      if (typeof raw.headingStyle === 'string') span.headingStyle = raw.headingStyle;
       return span;
     })
     .filter((s): s is TextStyleSpan => s !== null)
@@ -153,7 +170,13 @@ function segmentsToSpans(segments: StyledSegment[], base: BaseTextStyle): TextSt
  * la lista de spans resultante. Para propiedades booleanas (bold/italic/
  * underline) se replica el comportamiento de Word: si TODO el rango ya
  * tiene la propiedad activa, se desactiva; si no, se activa para todo el
- * rango (aunque estuviera parcialmente activa).
+ * rango (aunque estuviera parcialmente activa). Este toggle solo aplica
+ * cuando `options.toggle` no es `false` — los presets de encabezado (ver
+ * `applyHeadingStyleToSelection` en PageCanvas.tsx) necesitan asignar
+ * bold/italic/underline como valores LITERALES (p.ej. forzar italic:false),
+ * no alternarlos; con el toggle siempre activo, un preset que pide
+ * italic:false terminaba invertido a true porque cualquier valor definido
+ * (incluido `false`) disparaba la lógica de alternancia.
  */
 export function applyStyleToRange(
   text: string,
@@ -162,20 +185,23 @@ export function applyStyleToRange(
   rangeStart: number,
   rangeEnd: number,
   patch: Partial<BaseTextStyle>,
+  options?: { toggle?: boolean },
 ): TextStyleSpan[] {
   const start = Math.max(0, Math.min(text.length, Math.min(rangeStart, rangeEnd)));
   const end = Math.max(0, Math.min(text.length, Math.max(rangeStart, rangeEnd)));
   if (end <= start) return spans;
 
   const resolvedPatch: Partial<BaseTextStyle> = { ...patch };
-  for (const key of ['bold', 'italic', 'underline'] as const) {
-    if (patch[key] === undefined) continue;
-    // Toggle: si CADA carácter del rango ya tiene la propiedad activa,
-    // el clic la desactiva; en cualquier otro caso, la activa para todo
-    // el rango — igual que el botón Negrita/Cursiva/Subrayado de Word.
-    const segmentsInRange = buildStyledSegments(text.slice(start, end), reindexSpans(spans, start, end), base);
-    const allActive = segmentsInRange.length > 0 && segmentsInRange.every((seg) => seg.style[key] === true);
-    (resolvedPatch as any)[key] = !allActive;
+  if (options?.toggle !== false) {
+    for (const key of ['bold', 'italic', 'underline'] as const) {
+      if (patch[key] === undefined) continue;
+      // Toggle: si CADA carácter del rango ya tiene la propiedad activa,
+      // el clic la desactiva; en cualquier otro caso, la activa para todo
+      // el rango — igual que el botón Negrita/Cursiva/Subrayado de Word.
+      const segmentsInRange = buildStyledSegments(text.slice(start, end), reindexSpans(spans, start, end), base);
+      const allActive = segmentsInRange.length > 0 && segmentsInRange.every((seg) => seg.style[key] === true);
+      (resolvedPatch as any)[key] = !allActive;
+    }
   }
 
   const before = buildStyledSegments(text.slice(0, start), spans, base);
@@ -275,9 +301,11 @@ export interface CssStyleLike {
   color: string;
   fontSize: string;
   fontFamily: string;
+  backgroundColor?: string;
 }
 
 export function styleToCss(style: EffectiveTextStyle): CssStyleLike {
+  const highlight = style.highlightColor;
   return {
     fontWeight: style.bold ? 700 : 400,
     fontStyle: style.italic ? 'italic' : 'normal',
@@ -285,5 +313,8 @@ export function styleToCss(style: EffectiveTextStyle): CssStyleLike {
     color: style.color,
     fontSize: `${style.fontSize}px`,
     fontFamily: style.fontFamily,
+    // 'transparent' o vacío = sin resaltado; no se emite backgroundColor
+    // para no pintar un rectángulo transparente inútil sobre cada span.
+    ...(highlight && highlight !== 'transparent' ? { backgroundColor: highlight } : {}),
   };
 }

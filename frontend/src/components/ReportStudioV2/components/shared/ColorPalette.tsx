@@ -34,9 +34,15 @@ interface ColorPaletteProps {
   /** Se llama justo antes de abrir el popover — útil para capturar la
    *  selección del textarea antes de que el clic le quite el foco. */
   onOpen?: () => void;
+  /** Muestra un botón "Sin color" arriba de la grilla que llama a
+   * `onClear` (o a `onChange('transparent')` si no se da `onClear`) — para
+   * usos donde "ningún color" es un estado real y distinto de cualquier
+   * swatch (p.ej. resaltado de texto: por defecto no hay ninguno). */
+  allowClear?: boolean;
+  onClear?: () => void;
 }
 
-export default function ColorPalette({ value, onChange, label, title, onOpen }: ColorPaletteProps) {
+export default function ColorPalette({ value, onChange, label, title, onOpen, allowClear, onClear }: ColorPaletteProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -65,12 +71,25 @@ export default function ColorPalette({ value, onChange, label, title, onOpen }: 
         onMouseDown={(e) => { e.preventDefault(); }}
         onClick={() => { if (!open) onOpen?.(); setOpen((v) => !v); }}
       >
-        <span className="color-palette-swatch-preview" style={{ background: value || '#000000' }} />
+        <span
+          className={`color-palette-swatch-preview${!value || value === 'transparent' ? ' color-palette-swatch-preview--empty' : ''}`}
+          style={{ background: value && value !== 'transparent' ? value : undefined }}
+        />
         {label && <span className="color-palette-label">{label}</span>}
         <span className="color-palette-caret">▾</span>
       </button>
       {open && (
         <div className="color-palette-popover" onMouseDown={(e) => e.preventDefault()}>
+          {allowClear && (
+            <button
+              type="button"
+              className="color-palette-clear"
+              onClick={() => { (onClear ?? (() => onChange('transparent')))(); setOpen(false); }}
+            >
+              <span className="color-palette-swatch-preview color-palette-swatch-preview--empty" />
+              Sin color
+            </button>
+          )}
           <div className="color-palette-grid">
             {REPORT_COLOR_SWATCHES.map((c) => (
               <button

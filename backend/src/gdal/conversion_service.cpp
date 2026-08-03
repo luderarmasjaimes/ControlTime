@@ -5,8 +5,11 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <regex>
+#include <set>
 #include <sstream>
 
 #include <opencv2/opencv.hpp>
@@ -48,12 +51,34 @@ bool parseConvertRequest(const json::object &obj, ConvertRequest &out,
     if (obj.if_contains("resampling") && obj.at("resampling").is_string())
         out.resampling = json::value_to<std::string>(obj.at("resampling"));
 
+    std::transform(out.compression.begin(), out.compression.end(),
+                   out.compression.begin(), [](unsigned char c) {
+                       return static_cast<char>(std::toupper(c));
+                   });
+    std::transform(out.resampling.begin(), out.resampling.end(),
+                   out.resampling.begin(), [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+
     if (out.minZoom < 0 || out.maxZoom < out.minZoom || out.maxZoom > 24) {
         error = "invalid zoom range";
         return false;
     }
     if (out.quality < 1 || out.quality > 100) {
         error = "quality must be between 1 and 100";
+        return false;
+    }
+    static const std::set<std::string> kCompression = {"JPEG", "PNG"};
+    static const std::set<std::string> kResampling = {
+        "nearest", "bilinear", "cubic", "cubicspline",
+        "lanczos", "average", "rms", "mode",
+    };
+    if (!kCompression.contains(out.compression)) {
+        error = "compression must be JPEG or PNG";
+        return false;
+    }
+    if (!kResampling.contains(out.resampling)) {
+        error = "invalid resampling algorithm";
         return false;
     }
     return true;

@@ -347,8 +347,12 @@ fetchFaceEmbeddingFromAiEngine(const std::vector<unsigned char> &imageBytes) {
   }
 
   beast::flat_buffer buffer;
-  http::response<http::string_body> res;
-  http::read(stream, buffer, res, ec);
+  // El JSON incluye miniatura + maestro PNG 4K en base64. El límite por
+  // defecto de Beast puede ser insuficiente para retratos con mucho detalle.
+  http::response_parser<http::string_body> parser;
+  parser.body_limit(64U * 1024U * 1024U);
+  http::read(stream, buffer, parser, ec);
+  auto res = parser.release();
   stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 
   if (ec) {
@@ -495,6 +499,11 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
       return out;
     }
     out.imageBase64 = json::value_to<std::string>(obj.at("image_base64"));
+    if (obj.if_contains("image_hd_base64") &&
+        obj.at("image_hd_base64").is_string()) {
+      out.imageHdBase64 =
+          json::value_to<std::string>(obj.at("image_hd_base64"));
+    }
     return out;
   } catch (...) {
     out.error = "ai_engine_parse_failed";
@@ -504,6 +513,13 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
 
 AiEngineCartoonResult
 fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes) {
+  // El sidecar local conserva la silueta con MediaPipe y entrega miniatura +
+  // maestro 4K. Se prefiere para evitar ampliar un tensor AnimeGAN de 512 px.
+  AiEngineCartoonResult sidecar = fetchCartoonAvatarFromAiEngine(imageBytes);
+  if (sidecar.ok()) {
+    return sidecar;
+  }
+
   AiEngineCartoonResult out;
   if (informeCartoonOnnxRuntimeLinked() && !gCartoonOnnxModelPath.empty() &&
       fs::exists(gCartoonOnnxModelPath)) {
@@ -516,7 +532,9 @@ fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes) {
       return out;
     }
   }
-  return fetchCartoonAvatarFromAiEngine(imageBytes);
+  out.error = sidecar.error.empty() ? "all_local_avatar_generators_failed"
+                                    : sidecar.error;
+  return out;
 }
 
 } // namespace biometric

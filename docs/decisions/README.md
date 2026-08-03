@@ -174,6 +174,141 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > El hallazgo G2 (creación de empresas sin endpoint dedicado, deduplicación
 > de nombres) sigue sin decisión — este ADR corrige el aislamiento, no
 > reemplaza ese flujo pendiente.
+>
+> **Auditoría integral 2026-07-24**: 68 → **73 ADRs**. Se formalizaron:
+> **068** IA editorial multimodelo + referencia externa acotada; **069**
+> migración de producción frontend a TypeScript estricto; **070** bloques y
+> plantillas técnicas por composición; **071** TOC fijo en página 2 con
+> continuaciones; **072** conversión GDAL runtime administrada, que supersede
+> el diferimiento de ADR-028. Se corrigieron contradicciones reales:
+> `specs/adr` era histórico pero RAG/agents/CI aún lo trataban como vigente;
+> O6 `<1s` no coincidía con los benchmarks LLM; el índice afirmaba
+> `sections[]` y MapLibre aunque el runtime usa páginas planas y Leaflet; y
+> los documentos de brecha seguían declarando TypeScript 0%. La fuente
+> canónica queda `docs/decisions/`, sin renumerar ni borrar historia.
+>
+> **Auditoría integral 2026-07-25**: 73 → **74 ADRs**. Se agregó **073**
+> (`modal-propio-reemplaza-dialogos-nativos-consistencia-ribbon`, ámbito
+> `reports`): modal propio (`SaveTitleModal`, mismas clases `ra-*` que el
+> resto de la plataforma) reemplaza `window.prompt()` al nombrar un informe
+> nuevo; contraste corregido en la barra flotante contextual; `.ribbon-body`
+> pasa a `flex-wrap` para que los grupos de ADR-070 no queden ocultos tras
+> scroll horizontal. Se auditó el código real contra 3 ADRs que YA
+> afirmaban decisiones específicas, y se encontraron 3 divergencias reales
+> entre lo documentado y el runtime (no solo trabajo nuevo sin ADR, sino
+> ADRs cuyo texto no coincidía con el código):
+> - **ADR-053** declaraba solo estilos de tabla; el control funcional
+>   (resize de columnas, autoajuste, insertar/eliminar fila/columna,
+>   auto-crecimiento) se había implementado el 2026-07-22 sin ADR, junto con
+>   dos bugs reales cerrados (bucle de versión descontrolado v1→v103 por
+>   realimentación de `colWidths`; controles nuevos bloqueados por el shield
+>   CSS `pointer-events:none`) — documentado retroactivamente en su propia
+>   actualización.
+> - **ADR-068** (§1, "Corrección fiel") afirmaba que LanguageTool era la
+>   autoridad de la corrección rápida — el código real usaba un reemplazo de
+>   13 palabras hardcodeadas sin relación con LanguageTool. Cerrado:
+>   `handleCorrectQuick` ahora sí llama a LanguageTool. Además se verificó
+>   Tavily con una API key real del usuario (antes solo se había probado el
+>   camino "no configurado").
+> - **ADR-071** afirmaba "Ribbon y biblioteca llaman al mismo
+>   `addTocElement()`" — el botón del ribbon en realidad solo abría un panel
+>   de navegación flotante sin insertar nada. Cerrado: ambos disparan la
+>   misma acción real.
+>
+> Ninguna de las tres era un conflicto *entre* ADRs (ninguna decisión previa
+> quedó contradicha por otra) — las tres eran **el ADR afirmando algo que el
+> código no hacía todavía**, encontrado únicamente al probar la aplicación
+> real en navegador (no por lectura de código ni de la documentación misma).
+> No se dejó ningún hallazgo de esta pasada sin cerrar en su propio ADR.
+>
+> **Actualización 2026-07-27**: 74 → **75 ADRs**. Se agregó **074**
+> (`avatar-biometrico-local-hd-bajo-demanda`, ámbito `ia`): avatar generado
+> localmente, miniatura de sesión separada del maestro 4K, endpoint
+> autenticado self-only y visor accesible bajo demanda. ADR-074 reconcilia
+> explícitamente las frases históricas de ADR-004/027 (“biometría latente”)
+> con el runtime y con la actualización vigente de ADR-025: login/avatar
+> facial existen, pero EPP continúa diferida y el gate legal no se elimina.
+>
+> **Actualización 2026-07-27 (segunda pasada)**: 75 → **76 ADRs**. Se agregó
+> **075** (`internacionalizacion-pais-idioma-acceso`, ámbito `plataforma`):
+> selector inicial país/idioma, cuatro locales, acceso/registro y navegación
+> traducidos, teléfonos E.164 y validación fiscal por país. Se revisó
+> compatibilidad con ADR-035/040/042/066/067/073; no cambia tenant, RBAC,
+> soberanía ni alcance biométrico.
+>
+> **Actualización 2026-07-27 (tercera pasada)**: 76 → **78 ADRs**. La
+> verificación E2E descubrió un fallo intermitente de UUID y una revisión de
+> seguridad mostró que `makeId()` también alimentaba secretos. Se agregaron
+> **076** (`separacion-identificadores-secretos-csprng`, implemented) y **077**
+> (`migracion-password-argon2id-versionada`, implemented). El primero separa IDs
+> DB-safe de secretos CSPRNG; el segundo convierte el pendiente de salt/
+> `std::hash` de ADR-043 en una migración gradual ejecutable. La matriz
+> completa está en `AUDITORIA_ACCESO_I18N_2026-07-27.md`.
+>
+> **Actualización 2026-07-27 (cuarta pasada)**: 78 → **79 ADRs**. ADR-078
+> cierra el alta administrada de empresas: autorización admin, deduplicación
+> case-insensitive, tenant real y auditoría.
+>
+> **Nota de auditoría 2026-08-03 (antes de la pasada de abajo)**: al llegar a
+> esta sesión ya existían **081 archivos reales** (000-081, sin huecos) pero
+> este log narrativo y las tablas por ámbito seguían citando 79 — **079**
+> (`rbac-workflow-informes-inmutabilidad-firma`), **080**
+> (`marca-de-agua-y-password-pdf`) y **081**
+> (`cors-multiorigen-frontend-externo`) nunca se agregaron acá ni a la tabla
+> de `reports`/`plataforma` correspondiente, pese a tener contenido completo
+> y `Status: implemented/accepted` en su propio archivo. Brecha de
+> trazabilidad preexistente, no introducida en esta pasada — se documenta acá
+> (mismo criterio que este log ya usó para el hallazgo G2 de ADR-061: nombrar
+> el gap con evidencia, no resolverlo unilateralmente fuera de su propio
+> alcance) para que quien haga la próxima auditoría integral las incorpore a
+> las tablas. No se tocó el contenido de 079/080/081, solo se deja constancia
+> de que existen y de que el índice está desactualizado respecto a ellas.
+>
+> **Actualización 2026-08-03**: 79 (narrativa) → **85 ADRs de archivo**
+> (existían 81 sin gaps + ADR-082 formalizado + 2 nuevos de esta pasada; ver
+> nota de arriba sobre 079-081). Se agregaron **083**
+> (`exportacion-pptx-modo-presentacion-sidecar-hibrido`) y **084**
+> (`conversion-pptx-video-narracion-diapositiva`), ambos ámbito `reports`:
+> exportación del informe a PPTX en modo presentación (mismo sidecar
+> Chromium del PDF, texto de bloques `text` editable/buscable en PowerPoint
+> vía overlay nativo) y conversión de ese PPTX a video con narración opcional
+> por diapositiva (`ffmpeg`, audio grabado o notas de orador). También se
+> formalizó **082**
+> (`autenticacion-cookie-httponly-csrf-double-submit`), decisión ya
+> implementada y citada en el código pero sin archivo propio: access token
+> en cookie `HttpOnly`, CSRF double-submit en mutaciones y compatibilidad
+> Bearer para integraciones.
+>
+> Dos correcciones de auditoría se agregaron a ADR previos (sin editar su
+> texto original, con bloque fechado arriba, según la convención de este
+> log): **ADR-016** — declaraba almacenamiento en MinIO para el export server
+> side; verificado que el PDF nunca persistió a MinIO (proxy síncrono puro,
+> bytes reenviados en la misma respuesta) — ADR-083/084 son el primer export
+> que sí persiste un artefacto, y usan disco local confinado
+> (`BEEMETRY_EXPORT_DATA_ROOT`), el mismo patrón ya real de ADR-047/072, no
+> MinIO. **ADR-023** — el presupuesto O3 (`<5s`) no encaja tal cual con un
+> export asíncrono de job+polling (PPTX hasta 60s, video hasta 180s
+> configurados); se propone (sin implementar todavía) un código de
+> presupuesto separado para este tipo de export, mismo criterio que ADR-068
+> ya usó para partir O6. Ninguna de las dos es un conflicto *entre* ADRs —
+> ambas son el mismo patrón ya varias veces encontrado en este log: el ADR
+> afirmando algo (MinIO, un presupuesto único) que el código real no hacía o
+> no podía cumplir tal cual.
+>
+> De paso se encontró y cerró una brecha RBAC real durante la propia
+> implementación de ADR-084 (mismo criterio de ADR-079/063 — cerrar el
+> hallazgo en el mismo cambio que lo detecta): subir narración de audio/notas
+> a una diapositiva usaba el mismo umbral `informes.view` que exportar un
+> PDF/PPTX de solo lectura; como contribuye contenido nuevo al informe, se
+> corrigió a exigir `informes.edit`, dejando la generación/descarga de
+> export sin cambios. Se encontraron además dos defectos reales durante la
+> verificación de ADR-084 (documentados en su propio archivo, no aquí):
+> `pptxgenjs` no nombra las imágenes de forma secuencial simple como se
+> supuso al principio, y mezclar el video mudo con audio usando `-c:v copy`
+> truncaba contenido visual real pese a que la duración reportada por
+> `ffprobe` parecía correcta — ambos verificados y corregidos contra
+> herramientas reales (`ffmpeg`/`ffprobe`, inspección de un `.pptx` real),
+> no solo por lectura de código.
 
 ### Ámbito `plataforma` — fundaciones transversales
 | # | Slug | Status | Resumen |
@@ -182,7 +317,7 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 001 | `despliegue-soberano-on-prem` | ✅ implemented (2026-07-06) | Todo on-prem (VPS Lima, Docker); sin nube externa para dato crítico. |
 | 002 | `backend-cpp-gateway-central` | ✅ implemented (2026-07-06) | Gateway C++ único autenticado; proxy a sidecars (refinado por 031). |
 | 004 | `arquitectura-poliglota-cpp-sidecars` | ✅ implemented (2026-07-06) | Hot path C++; IA/ML/CV en sidecars (Python/Ollama/LanguageTool) por HTTP. |
-| 023 | `presupuestos-rendimiento-slas` | ✅ implemented, alcance cliente (2026-07-07) | SLAs como restricciones: <20ms, autosave<0.5s, export<5s, 10k, IA<1s, 0% pérdida. |
+| 023 | `presupuestos-rendimiento-slas` | ✅ implemented, refinado por 068 (2026-07-24) | SLAs como restricciones; O6 <1s aplica a corrección automática. Rewrite/APA local son asíncronos con latencia medida (p50 ~7s/~18s). |
 | 029 | `rbac-identidad-plataforma-jwt` | ✅ implemented, corregido (2026-07-19) | Identidad de plataforma: RBAC multitenant + JWT; login user/pass en v0.1. Refresh token migrado de `localStorage` a cookie `HttpOnly`+CSRF double-submit — ver actualización en el ADR. |
 | 030 | `auditoria-100-acciones-server` | ✅ implemented (2026-07-07) | Auditoría 100% autoritativa en servidor, transversal, con hash encadenado. |
 | 031 | `backend-plataforma-compartida-multicomponente` | ✅ implemented (2026-07-06) | Backend = plataforma compartida; ReportStudio es el primer componente por prioridad. |
@@ -191,19 +326,25 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 036 | `rbac-siete-roles-unificados` | ✅ implemented (2026-07-13) | Reconcilia el RBAC de 4 roles con los 6 de `roleConstants.ts` + `viewer` = 7 roles únicos. |
 | 037 | `alta-usuarios-administrada-sin-biometria` | ✅ implemented (2026-07-13) | Admin crea usuarios remotos sin biometría; enrolamiento diferido al primer login presencial. |
 | 038 | `delegacion-acceso-tenant-activo-emisor` | ✅ implemented (2026-07-13) | Otorgar/revocar acceso multitenant siempre escopeado al tenant activo de quien lo emite. |
-| 040 | `sistema-diseno-navegacion-enterprise` | ✅ implemented (2026-07-13) | Nav unificado slate+ámbar, dos niveles siempre visibles, una sola línea con scroll. |
+| 040 | `sistema-diseno-navegacion-enterprise` | ✅ implemented, mejorado (2026-07-27) | Cabecera compacta; carriles contiguos de Áreas/Opciones con iconos grandes, flechas automáticas, scroll y relieve 3D sutil. |
 | 041 | `resiliencia-token-fetch-crudo` | ✅ implemented (2026-07-13) | Refresco automático de token en `fetch()` crudo del dashboard; documenta triplicación de la lógica (consolidada 2026-07-13). |
-| 042 | `nomenclatura-menus-lenguaje-llano-minero` | ✅ implemented (2026-07-13) | Renombrado de menús a lenguaje llano para usuarios de operación minera. |
-| 043 | `endurecimiento-seguridad-pre-pentest` | ✅ implemented (2026-07-13) | Cierra IDOR crítico en cámaras, endpoints sin auth (GDAL/KPIs), CORS y salt de contraseña (salt rotation documentada, no ejecutada — requiere ventana de mantenimiento). |
-| 058 | `auditoria-seguridad-integral-jul2026` | ✅ implemented (2026-07-19) | XSS almacenado (tablas) e IDOR sin auth (`/api/sensors/data`) cerrados y verificados en vivo; CVEs de dependencias a 0; HSTS agregado. Pendiente: pentest externo (sin agendar) y `echarts@6` (CVE moderada, migración deliberada). |
+| 042 | `nomenclatura-menus-lenguaje-llano-minero` | ✅ implemented, mejorado (2026-07-27) | Etiquetas operativas cortas: Gestión, Control, Terreno, Mapas, Permisos, Informes; Usuarios, Accesos y Umbrales. |
+| 043 | `endurecimiento-seguridad-pre-pentest` | ✅ controles internos implementados | Cierra IDOR/endpoints sin auth/CORS; CSPRNG y Argon2id cerrados por ADR-076/077. Pentest externo sigue independiente. |
+| 058 | `auditoria-seguridad-integral-jul2026` | ✅ implemented (2026-07-19) | XSS almacenado e IDOR sin auth cerrados; CVEs altas llevadas a 0 y HSTS agregado. Pendientes: pentest externo y `echarts@6` (1 CVE moderada). |
 | 059 | `plan-maestro-pruebas-qa` | ✅ accepted, primera fase implementada (2026-07-21) | 5 capas de prueba formalizadas (unit frontend, unit backend, e2e frontend, smoke/integración backend, regresión de cierre de etapa) con cronograma y exit criteria por gate. Verificado en vivo: `smoke-auth-e2e.ps1` extendido corrido de punta a punta contra el `beemetry-api` real, `Resultado: OK`. |
 | 060 | `framework-pruebas-backend-catch2` | ✅ implemented, verificado (2026-07-21) | Catch2 v3 (apt) como framework de tests del backend; target `beemetry_backend_tests` cubriendo `http_utils.cpp`. `ctest`: 100% passed; corrida detallada: 27 aserciones en 7 test cases, todas passed. |
 | 061 | `catalogo-casos-prueba-qa` | ✅ accepted, documentado (2026-07-21) | Catálogo de 69 casos de prueba QA (Capa 5 de ADR-059, adelantada) sobre 14 funcionalidades pedidas por Gerencia. Encontró 2 brechas reales (video no implementado; creación de empresas sin endpoint) y 1 defecto (RBAC: 6 vs 7 roles en `roleConstants.ts`). |
 | 063 | `correccion-rbac-siete-roles-asignables` | ✅ implemented, verificado (2026-07-21) | `ADMIN_ASSIGNABLE_ROLES` (7 roles) reemplaza `USER_ROLES` (6) en las 3 pantallas de administración de roles; corrige matriz de permisos del backend que solo devolvía 4 de 7 roles. Cierra TC-RBAC-05 de ADR-061. |
 | 066 | `login-usa-razon-social-minera-no-contratista` | ✅ implemented, verificado (2026-07-21) | El registro/login de un contratista usa la razón social de la EMPRESA MINERA asociada (no la propia) para determinar `company`/tenant — antes se sobreescribía con `contractorLegalName`, dejando al contratista sin tenant real. Verificado: `tenant_id` ahora resuelve real. Cierra el hallazgo de `Auditoria_Registro_RUC_Tenant_2026-07-21.md`. |
 | 067 | `autoregistro-provisiona-tenant-real` | ✅ implemented, verificado (2026-07-21) | `POST /api/auth/register` nunca creaba una fila real en `auth_user_tenant` — 23/28 usuarios reales caían en un fallback compartido que resultó ser el tenant REAL de otra empresa (Antamina), no un tenant demo aislado. Se agrega `findOrCreateTenantForCompanyPg` (tenant dedicado + membresía real en el registro) y se hace backfill de los 23 usuarios legacy con su propio tenant. Verificado: empresa nunca antes vista se autoregistra y crea un informe en el primer login sin intervención manual. |
+| 069 | `migracion-frontend-typescript-estricto` | ✅ implemented, verificado (2026-07-24) | Producción frontend migrada a TypeScript estricto: 111 `.ts/.tsx`; los 6 `.js/.jsx` restantes son tests/config. `tsc`, build y Vitest verdes. |
+| 075 | `internacionalizacion-pais-idioma-acceso` | ✅ implemented · probado · desplegado | País→idioma ES/EN/FR/PT-BR, fiscal/prefijo y diálogos propios; imágenes activas y smoke aprobado. |
+| 076 | `separacion-identificadores-secretos-csprng` | ✅ implemented · probado · desplegado | OpenSSL CSPRNG para ID/refresh/`jti`/API keys; Catch2 y E2E aprobados. |
+| 077 | `migracion-password-argon2id-versionada` | ✅ implemented · transición legacy operativa | Argon2id + rehash oportunista; inventario 14 Argon2id/40 legacy tras smoke del 2026-07-29. |
+| 078 | `alta-administrada-empresa-tenant-deduplicada` | ✅ implemented · probado · desplegado | POST admin, deduplicación de razón social, tenant real y auditoría; smoke E2E aprobado el 2026-07-29. |
+| 081 | `cors-multiorigen-frontend-externo` | ✅ implemented (2026-08-02) | `BEEMETRY_CORS_ALLOWED_ORIGIN` admite lista separada por comas; `router::Router::dispatch()` refleja por request el origen que matchea. Habilita una segunda app frontend (repo propio) contra el mismo backend, sin tocar cookies/CSRF (despliegue same-site). |
 
-**Ámbito `plataforma`: 22/24 implemented, 1 partial, 1 proposed.**
+**Ámbito `plataforma`: 27/29 implemented, 1 partial, 1 proposed** (conteo previo a 079-081; ver ADRs individuales para su status).
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |
@@ -231,7 +372,7 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | # | Slug | Status | Resumen |
 |---|---|---|---|
 | 010 | `modelo-documento-json-bloques` | ✅ implemented, premisa de texto corregida (2026-07-17) | Documento = JSON tipado de bloques. Texto: string plano + spans (ADR-050) — la premisa original ("ProseMirror-JSON") no aplicaba a ReportStudioV2, ver actualización en el ADR. |
-| 011 | `estructura-formal-secciones-cover-toc` | ✅ implemented, alcance revisado (2026-07-07) | Árbol `sections[]` + `cover`/`toc` serializables + `headingStyle`. |
+| 011 | `estructura-formal-secciones-cover-toc` | ✅ implemented, alcance revisado (2026-07-07) | `cover`/`toc` serializables + `headingStyle`; no existe árbol `sections[]`, el modelo sigue en páginas planas. |
 | 012 | `binding-dato-widget-referencia-versionada` | ✅ implemented, alcance acotado (2026-07-07) | Widget = referencia + snapshot versionado; snapshot al firmar (no en cada tick). |
 | 013 | `editor-tiptap-konva` | ✅ implemented, alcance corregido (2026-07-17) | Layout de página con Konva (vigente). Texto: Tiptap solo en el módulo "Report" v1 (fuera de ReportStudioV2) — Report v2 usa el modelo de ADR-050, ver actualización en el ADR. |
 | 014 | `estado-editor-zustand` | ✅ implemented (2026-07-06) | Store Zustand único (no Redux); límite claro cliente↔servidor. |
@@ -239,7 +380,7 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 016 | `export-server-side-asincrono` | ✅ implemented (2026-07-06) | Export canónico server-side (Chromium headless); cliente solo fallback. |
 | 017 | `workflow-canonico-informe` | ✅ implemented (2026-07-06) | Máquina de estados única front↔BD (draft→in_review→approved→signed→archived). |
 | 018 | `firma-documental-vs-integridad-archivo` | ✅ implemented, alcance v0.1 (2026-07-06) | Firma de aprobación humana (v0.1); hash SHA-256 de integridad diferido a futuro por diseño. |
-| 019 | `resolucion-diferida-numeracion-toc-refs` | ✅ implemented, mayormente (2026-07-07) | Numeración/TOC/"Página X de Y" con anclas resueltas en render. |
+| 019 | `resolucion-diferida-numeracion-toc-refs` | ⚠️ partial (2026-07-24) | Numeración/TOC/"Página X de Y" implementados; referencias cruzadas automáticas aún no existen. |
 | 020 | `mapa-bloque-tipado-georeferencia` | ✅ implemented, alcance v0.1 (2026-07-06) | v0.1: snapshot a imagen (popup); bloque tipado con geo-ref real diferido a futuro por diseño. |
 | 021 | `ownership-metadatos-ciclo-vida` | ✅ implemented (2026-07-07) | `document.meta.version` (contador local) vs `version_number` (BD, autoritativo) — separación resuelta en la UI. |
 | 022 | `offline-cola-versionada-indexeddb` | ✅ implemented — cierre completo (2026-07-13) | Persistencia offline real (SQLite/WASM en vez de IndexedDB) + resolución de conflicto real: concurrencia optimista server-side (`expected_version`/409), prompt de reconciliación al reconectar, y elección sobrescribir-vs-guardar-como-nuevo al guardar. Más: checkpoint forzado cada 3 min en línea (pedido de negocio adicional). |
@@ -258,25 +399,34 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 062 | `insercion-video-grabado-webcam-pantalla` | 🔄 superseded by 064, 065 (2026-07-21) | Decisión original de inserción de video (ambos orígenes juntos). Separada a pedido de Gerencia en dos ADR independientes por origen de grabación — contenido conservado sin editar, ver nota en el archivo. |
 | 064 | `grabacion-video-camara-web-lienzo` | ✅ implemented (2026-07-21) | Grabación de video por cámara web (`getUserMedia`, nuevo — no existía ninguna grabación de video por cámara antes), insertable en el lienzo. Mitad de ADR-062, separada. |
 | 065 | `grabacion-video-pantalla-ventana-lienzo` | ✅ implemented (2026-07-21) | Grabación de pantalla/ventana (`getDisplayMedia`, reutiliza el mecanismo del botón "Grabar" preexistente — antes solo exportaba/descargaba), insertable en el lienzo. Mitad de ADR-062, separada. |
+| 070 | `bloques-tecnicos-plantillas-semanticas-composicion` | ✅ implemented (2026-07-24) | Callouts, KPI, captions, 10 secciones y 3 gráficos por composición de `text/table/chart`; tablas con semántica/tamaño natural compartidos por editor y visor. |
+| 071 | `toc-pagina-dos-continuaciones-automaticas` | ✅ implemented, corregido (2026-07-25) | TOC único en página 2, paginado automáticamente en continuaciones serializadas. El botón del ribbon SÍ inserta el bloque real ahora (antes solo abría un panel de navegación, ver actualización). |
+| 073 | `modal-propio-reemplaza-dialogos-nativos-consistencia-ribbon` | ✅ implemented, ampliado (2026-07-27) | `SaveTitleModal` y host global accesible reemplazan todos los `prompt/alert/confirm` activos; contraste corregido y ribbon con `flex-wrap`. |
+| 080 | `marca-de-agua-y-password-pdf` | ✅ accepted (2026-08-02) | Vista previa de impresión real, marca de agua por tenant/usuario/fecha y PDF cifrado con contraseña generada por descarga (`qpdf`). *(Fila agregada 2026-08-03 — el ADR ya existía sin fila en esta tabla, ver nota de auditoría arriba.)* |
+| 083 | `exportacion-pptx-modo-presentacion-sidecar-hibrido` | ✅ implemented (2026-08-03) | Export a PPTX (modo presentación, mismo sidecar Chromium del PDF): captura por página + overlay de texto NATIVO editable/buscable para bloques `text`, gateado por `layoutMode`, job asíncrono real sobre `report_export_job`. Corrige de paso un bug preexistente en `ReadOnlyViewer` (sin `layoutMode`) que también afectaba al PDF. |
+| 084 | `conversion-pptx-video-narracion-diapositiva` | ✅ implemented (2026-08-03) | Convierte el PPTX de ADR-083 a MP4 (`ffmpeg`, corte o fundido) con narración opcional por diapositiva (audio grabado o notas de orador, TTS diferido). Bug real de truncado de video corregido (`-c:v copy` con VFR) y brecha RBAC cerrada (narración exige `informes.edit`, no solo `informes.view`). |
 
-**Ámbito `reports`: 27/28 implemented (1 superseded — ADR-062, reemplazado por 064 y 065, ambos implementados) — ver "Progreso del proyecto de reportabilidad" abajo.**
+**Ámbito `reports`: 31/33 implemented, 1 partial y 1 superseded** (más ADR-079, ámbito `plataforma` mismo dominio — ver nota de auditoría arriba; tabla aún no reconciliada para 079/081, que no cambian este subtotal de `reports`). Ver "Progreso del proyecto de reportabilidad" abajo (cálculo no recalculado en esta pasada — cubre 010-073, no incluye 080/083/084).
 
 ### Ámbito `ia` — inteligencia artificial local
 | # | Slug | Status | Resumen |
 |---|---|---|---|
-| 024 | `ia-local-ollama-languagetool` | ✅ implemented (2026-07-06) | IA de redacción local: Ollama + LanguageTool (es-PE); nada en la nube. |
-| 025 | `biometria-vision-epp-diferidas` | 🚫 deferred, confirmado (2026-07-06) | Biometría/EPP diferidas por restricción legal (no persistir sin base legal). |
+| 024 | `ia-local-ollama-languagetool` | ✅ implemented, refinado por 068 | Redacción/corrección local con Ollama + LanguageTool; ADR-068 agrega búsqueda bibliográfica externa acotada, no IA cloud para redactar. |
+| 025 | `biometria-vision-epp-diferidas` | 🚫 EPP deferred; login facial activo con gate legal (2026-07-24) | Se reconcilia el runtime: login facial existe; visión EPP y ampliaciones biométricas siguen diferidas. |
+| 068 | `ia-editorial-multimodelo-referencias-externas-controladas` | ✅ implemented (2026-07-24) | LanguageTool + `gemma2:2b` rewrite + `qwen2.5:7b` APA. Búsqueda bibliográfica externa opt-in, explícita y acotada; nunca cuerpo del informe/telemetría. |
+| 074 | `avatar-biometrico-local-hd-bajo-demanda` | ✅ implemented, verificado (2026-07-27) | MediaPipe/OpenCV local + fallback ONNX, miniatura en sesión y maestro 2880×3840 privado bajo demanda; modal doble clic/cierre exterior. |
 
-**Ámbito `ia`: 1/2 implemented, 1 deferred por diseño (no cuenta como pendiente).**
+**Ámbito `ia`: 3 implemented y 1 deferred por diseño (EPP no cuenta como pendiente v0.1).**
 
 ### Ámbito `geo` — cartografía y geoespacial
 | # | Slug | Status | Resumen |
 |---|---|---|---|
-| 026 | `cartografia-offline-mbtiles-maplibre` | ✅ implemented (2026-07-07) | Mapas offline MBTiles + mbtileserver + MapLibre GL (Leaflet deprecado). |
-| 028 | `gdal-conversion-raster-diferida` | 🚫 deferred, confirmado (2026-07-06) | Conversión raster GDAL diferida a versión futura; v0.1 usa MBTiles. |
+| 026 | `cartografia-offline-mbtiles-maplibre` | ✅ implemented (2026-07-07) | Mapas offline MBTiles + mbtileserver + Leaflet; capas externas solo como enriquecimiento conectado/cachable, no dependencia operativa. |
+| 028 | `gdal-conversion-raster-diferida` | 🔄 superseded by 072 (2026-07-24) | Decisión histórica de diferimiento; dejó de reflejar el runtime. |
 | 056 | `csp-service-worker-tiles-mapa` | ✅ implemented (2026-07-18) | CSP dedicada para el Service Worker de cacheo de tiles (`tile-cache-sw.js`) — la CSP general de la SPA rompía el 100% de los tiles externos; timeout adaptativo + catálogo WMS saneado. |
+| 072 | `gdal-cli-runtime-admin-confinado` | ⚠️ partial; código implementado, rebuild final y QA raster pendientes (2026-07-24) | GDAL CLI on-demand admin-only, rutas confinadas a `/data`, parámetros allowlist y jobs autenticados/tenant-owned. |
 
-**Ámbito `geo`: 2/3 implemented, 1 deferred por diseño (no cuenta como pendiente).**
+**Ámbito `geo`: 2 activos implementados, 1 partial y 1 superseded (ADR-028).**
 
 ### Ámbito `realtime` — visualización de datos en tiempo real
 | # | Slug | Status | Resumen |
@@ -292,18 +442,36 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Progreso del proyecto de reportabilidad (ámbito `reports`)
 
-Cálculo basado **en los 27 ADRs activos de ámbito `reports` redactados hasta
-hoy** (010-022, 039, 044-053, 055, 064, 065 — no cuenta ADR-062, superseded
-por esos dos últimos) — no incluye trabajo futuro sin ADR todavía, ni los
-gates de release que no son decisiones arquitectónicas (pentest, QA
-funcional, GO-LIVE — ver más abajo, se rastrean aparte).
+Cálculo basado **en los 30 ADRs activos de ámbito `reports` redactados hasta
+hoy** (010-022, 039, 044-053, 055, 064, 065, 070, 071, 073 — no cuenta
+ADR-062, superseded por 064/065) — no incluye trabajo futuro sin ADR
+todavía, ni los gates de release que no son decisiones arquitectónicas
+(pentest, QA funcional, GO-LIVE — ver más abajo, se rastrean aparte).
 
 | Estado | ADRs | Peso |
 |---|---|---|
-| Implementado sin reservas (incl. alcance v0.1 explícitamente reducido por diseño) | 010, 011, 012, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 039, 044, 045, 046, 047, 048, 049, 050, 051, 052, 053, 055, 064, 065 | 27 × 1.0 = 27.0 |
-| **Total** | **27 ADRs** | **27.0 / 27** |
+| Implementado sin reservas (incl. alcance v0.1 explícitamente reducido por diseño) | 010, 011, 012, 013, 014, 015, 016, 017, 018, 020, 021, 022, 039, 044, 045, 046, 047, 048, 049, 050, 051, 052, 053, 055, 064, 065, 070, 071, 073 | 29 × 1.0 = 29.0 |
+| Parcial | 019 (faltan referencias cruzadas automáticas) | 1 × 0.5 = 0.5 |
+| **Total** | **30 ADRs** | **29.5 / 30** |
 
-### → **Avance del proyecto de reportabilidad: 100%** (27 / 27 ADRs planificados)
+### → **Avance del proyecto de reportabilidad: 98.3%** (29.5 / 30 ADRs activos)
+
+**Actualización 2026-07-25**: ADR-073 cierra tres divergencias reales entre
+ADR y runtime encontradas al probar la aplicación en vivo (no por lectura de
+código): ADR-053 no documentaba el control funcional de tabla ni dos bugs ya
+cerrados (bucle de versión, shield CSS bloqueando controles); ADR-068
+afirmaba corrección fiel por LanguageTool pero el botón rápido usaba un stub
+de 13 palabras; ADR-071 afirmaba que ribbon y biblioteca llamaban a la misma
+acción de TOC, pero el botón del ribbon solo abría un panel de navegación.
+Las tres quedan corregidas y verificadas en navegador real. Ninguna es un
+conflicto *entre* ADRs — todas eran el ADR describiendo una intención que el
+código todavía no cumplía.
+
+**Actualización 2026-07-24**: ADR-070 formaliza bloques/plantillas técnicas
+por composición y ADR-071 la paginación real del TOC. Ambos reutilizan el
+modelo existente y pasan tipos/build. La reclasificación honesta de ADR-019
+evita contar referencias cruzadas como terminadas; el porcentaje tampoco
+sustituye el gate manual de QA ni el pentest.
 
 **Actualización 2026-07-21 (segunda pasada, mismo día)**: ADR-062 (inserción
 de video, ambos orígenes juntos) se separó a pedido de Gerencia en **ADR-064**
@@ -313,21 +481,22 @@ cada una con su propio contexto/trade-offs/verificación. ADR-062 queda
 en vivo hasta el límite de hardware del sandbox de pruebas (no hay cámara ni
 posibilidad de compartir pantalla en ese entorno) — una grabación real de
 punta a punta de cada origen queda pendiente de prueba manual antes de
-certificación QA plena (ADR-061, Capa 5). No cambia el 100% del ámbito.
+certificación QA plena (ADR-061, Capa 5). En el cálculo de esa fecha no
+cambiaba el 100%; ADR-019 fue reclasificado partial el 2026-07-24.
 
 **Actualización 2026-07-21 (primera pasada)**: se agregó ADR-062 (inserción
 de video grabado por cámara web/pantalla, insertable en el lienzo). Se marcó
 "implementado, verificado parcialmente" — el flujo completo de UI se
 verificó en vivo contra el backend real, pero una grabación de punta a punta
 con hardware real de cámara/pantalla quedó pendiente de una prueba manual.
-No cambia el 100% del ámbito porque el propio ADR-059 (Capa 5) ya contempla
+No cambiaba el 100% calculado entonces porque el propio ADR-059 (Capa 5) ya contempla
 la regresión manual completa antes del gate R4 como paso posterior a la
 implementación.
 
 **Actualización 2026-07-20**: se agregó ADR-055 (`editor-indicador-seleccion-propio`,
 formalizando un bug fix del 2026-07-18 que no tenía ADR escrito — ver §
 "Actualización 2026-07-20" arriba del índice). El proyecto de reportabilidad
-sigue al 100%; no cambia el avance, solo el conteo total de ADRs que lo
+siguió al 100% en el corte de esa fecha; no cambió el avance, solo el conteo total de ADRs que lo
 respaldan.
 
 **Actualización 2026-07-17 (tercera pasada)**: se agregaron 8 ADRs nuevos
@@ -338,7 +507,8 @@ documentan trabajo nuevo de esta sesión: formato de texto por selección
 de paso una premisa incorrecta de ADR-010/013 sobre Tiptap/ProseMirror),
 copiar/pegar de objetos en el lienzo, navegación de teclado + zoom
 10%-400% + tamaño de hoja por página, y estilos visuales de tabla. Los 24
-ADRs de `reports` siguen al 100% — ninguno quedó parcial.
+ADRs de `reports` quedaron al 100% en ese corte. ADR-019 fue reclasificado
+partial en la auditoría posterior del 2026-07-24.
 
 **Actualización 2026-07-13 (segunda pasada, misma fecha)**: ADR-022 se cerró
 por completo — era el único ADR de `reports` que quedaba parcial. El negocio
@@ -355,32 +525,40 @@ original. Ver ADR-022 para el detalle técnico completo y la verificación
 end-to-end (backend real + navegador real, sin recargar la página, con una
 "segunda terminal" real vía HTTP directo).
 
-**Con esto, los 16 ADRs planificados del proyecto de reportabilidad están
-100% implementados y verificados.** No queda ningún ADR parcial en este
-ámbito.
+**Con esto, los 29 ADRs activos quedan registrados con evidencia de
+implementación.** Las excepciones, riesgos de release y verificaciones manuales
+se mantienen declaradas abajo; el índice no usa el conteo para ocultar trabajo
+pendiente.
 
 Fuera del cálculo de ADRs (no son decisiones arquitectónicas) pero
 **bloqueante para el release real** — backlog operativo:
+- **Retirar el verificador legacy ADR-077** cuando su inventario llegue a
+  cero; las 40 cuentas históricas migran al login/reset sin interrupción.
+- **Configurar el dominio real de producción** en
+  `BEEMETRY_CORS_ALLOWED_ORIGIN`; el compose productivo ya falla si falta,
+  pero el valor depende del DNS/HTTPS definitivo del despliegue.
 - Pentest de seguridad pre-release (pendiente, no iniciado).
 - QA funcional formal v0.1 (cobertura parcial vía smoke tests repetidos;
-  falta un pase exhaustivo firmado).
+  falta un pase exhaustivo firmado, incluida cámara/pantalla y una conversión
+  raster GDAL con inspección visual).
+- Implementar las referencias cruzadas automáticas pendientes de ADR-019.
 - Release v0.1: Deploy + Documentación + GO-LIVE formal.
 
 ### Fecha referencial de término
 
-**Estimado: fines de julio 2026 (referencial, no comprometido)** — con el
-100% de los ADRs de reportabilidad ya cerrados, lo único que queda es el
-backlog operativo de arriba:
+**Estimado anterior: fines de julio 2026 (referencial, no comprometido).**
+La auditoría del 2026-07-24 invalida tratar esa fecha como lista para
+producción: además del 1.7% arquitectónico pendiente de ADR-019, quedan los
+gates y bloqueantes del backlog anterior.
 - Pentest externo: típicamente 1-2 semanas de calendario una vez agendado
-  (no iniciado a la fecha de este reporte — es el mayor y único factor de
-  incertidumbre real de la fecha; ya no depende de trabajo de desarrollo).
+  (no iniciado a la fecha de este reporte y uno de los factores principales
+  de incertidumbre).
 - QA funcional + GO-LIVE: 3-5 días una vez el pentest no tenga hallazgos
   críticos abiertos.
 
-Si el pentest se agenda esta semana, **2026-07-31** sigue siendo una fecha
-objetivo razonable. Si se demora en agendarse, la fecha se corre en la misma
-medida — es el único paso de este plan que no depende del equipo de
-desarrollo.
+La fecha **2026-07-31** solo puede mantenerse como objetivo condicionado, no
+como compromiso: Argon2id y ECharts ya están cerrados, pero exige completar
+QA, ADR-019 y no recibir hallazgos críticos del pentest.
 
 ---
 

@@ -5,7 +5,7 @@ Solución base para baja latencia con:
 - Backend C++ (`Boost.Asio` + `Boost.Beast` + `OpenCV`) para orquestar conversiones.
 - Pipeline de conversión `ECW -> MBTiles` con `GDAL` y parámetros configurables.
 - Servidor de tiles dedicado (`mbtileserver`) consumido por frontend web.
-- Frontend avanzado con `MapLibre GL JS` y monitoreo de jobs en tiempo real (polling).
+- Frontend cartográfico con `Leaflet` y monitoreo de jobs en tiempo real (polling).
 - Despliegue Linux usando `Docker Compose`.
 
 ## Arquitectura
@@ -19,7 +19,7 @@ Solución base para baja latencia con:
 ## Estructura
 
 - `backend/`: API C++ y motor de conversión.
-- `frontend/`: UI MapLibre + panel de control.
+- `frontend/`: UI Leaflet + panel de control.
 - `data/`: entrada/salida compartida para conversiones y tiles.
 - `docker-compose.yml`: orquestación completa Linux.
 

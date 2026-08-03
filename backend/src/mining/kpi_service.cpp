@@ -30,6 +30,11 @@ namespace mining {
 http::response<http::string_body>
 handleGetKpis(const http::request<http::string_body>& req,
               const std::unordered_map<std::string, std::string>& query) {
+  // Fix (auditoría de seguridad 2026-07-13): sin auth.
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+  }
   json::array rows;
   const std::string category =
       (query.count("category") && !query.at("category").empty()) ? query.at("category") : "";
@@ -251,6 +256,12 @@ handleUpsertKpis(const http::request<http::string_body>& req,
 http::response<http::string_body>
 handleSyncFromDashboard(const http::request<http::string_body>& req,
                         const std::unordered_map<std::string, std::string>& query) {
+  // Fix (auditoría de seguridad 2026-07-13): endpoint de ESCRITURA (fuerza un
+  // resync de KPIs) sin ningún chequeo de auth.
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+  }
   if (gAuthStorageMode != AuthStorageMode::Postgres) {
     return makeJsonResponse(http::status::bad_request, json::object{{"error", "postgres_required"}});
   }
@@ -393,6 +404,11 @@ handleSyncFromDashboard(const http::request<http::string_body>& req,
 http::response<http::string_body>
 handleSyncFromExternal(const http::request<http::string_body>& req,
                        const std::unordered_map<std::string, std::string>& query) {
+  // Fix (auditoría de seguridad 2026-07-13): endpoint de ESCRITURA sin auth.
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+  }
   if (gAuthStorageMode != AuthStorageMode::Postgres) {
     return makeJsonResponse(http::status::ok,
                             json::object{{"status", "ok"}, {"synced", 0}, {"message", "postgres_required"}});
@@ -518,6 +534,11 @@ handleSyncFromExternal(const http::request<http::string_body>& req,
 http::response<http::string_body>
 handleGetKpiPoints(const http::request<http::string_body>& req,
                    const std::unordered_map<std::string, std::string>& query) {
+  // Fix (auditoría de seguridad 2026-07-13): sin auth.
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+  }
   const std::string code = query.count("code") ? query.at("code") : "";
   if (code.empty()) {
     return makeJsonResponse(http::status::bad_request, json::object{{"error", "code_required"}});

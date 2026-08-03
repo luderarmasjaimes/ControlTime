@@ -6,6 +6,7 @@
 #include "../http/http_utils.hpp"
 #include "../auth/auth_session.hpp"
 #include "../auth/permissions.hpp"
+#include "alarm_notifier.hpp"
 
 #ifndef HAS_LIBPQ
 #  if __has_include(<libpq-fe.h>)
@@ -249,6 +250,20 @@ handleCreateChannel(const http::request<http::string_body>& req,
     if (label.empty() || configJson.empty())
         return makeJsonResponse(http::status::bad_request,
                                 json::object{{"error", "faltan_campos"}});
+
+    // Validar el DESTINO antes de persistirlo (auditoría de seguridad
+    // 2026-08-02). Hasta ahora la config se guardaba tal cual y solo se
+    // comprobaba en el momento del envío: eso permitía dejar registrado un
+    // webhook apuntando a la red interna (metadatos cloud, db, el propio
+    // backend) y que el servidor lo solicitara en cada alarma — SSRF a
+    // petición de un admin de tenant. Rechazarlo aquí además le da al
+    // operador un error inmediato en vez de un canal que falla en silencio.
+    {
+        std::string targetError;
+        if (!mining_iot::validateChannelTarget(type, configJson, targetError))
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", targetError}});
+    }
 
     auto lease = storage::PgPool::instance().acquire(AppConfig::instance().gDatabaseUrl);
     PGconn* conn = lease.get();

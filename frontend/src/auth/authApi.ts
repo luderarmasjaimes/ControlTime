@@ -1,4 +1,10 @@
-import { getSession, updateSessionTokens, clearSession, readCookie } from './authStorage'
+import {
+    getSession,
+    updateSessionTokens,
+    clearSession,
+    readCookie,
+    authHeaders as sharedAuthHeaders,
+} from './authStorage'
 
 import { log } from '../lib/logger';
 
@@ -55,26 +61,36 @@ async function parseJsonResponse(response: Response): Promise<any> {
     return payload
 }
 
+/**
+ * ADR-082: la credencial viaja en la cookie HttpOnly `access_token`, no en un
+ * header que este código pueda construir (ni leer, que es el objetivo). Lo
+ * único que aporta el JS es el token CSRF del double-submit — ver
+ * `authStorage.authHeaders`.
+ */
 function authHeaders(): Record<string, string> {
-    const session = getSession()
-    if (session?.token) {
-        return {
-            Authorization: `Bearer ${session.token}`,
-        }
-    }
-    return {}
+    return sharedAuthHeaders()
 }
 
 /**
  * ADR-029, "Actualización 2026-07-19": header de doble envío contra CSRF
- * (double-submit cookie). El backend pone una cookie `csrf_token` legible
+ * (double-submit cookie). El backend pone una cookie `csrf_token_v2` legible
  * por JS a propósito (a diferencia de `refresh_token`, HttpOnly); este
  * código la repite en el header para que el servidor pueda verificar que
  * quien llama puede LEER cookies de este origen (un sitio de terceros no
  * puede, aunque el navegador de la víctima sí mande la cookie sola).
+ *
+ * "Actualización 2026-07-21": la cookie pasó de `csrf_token` (Path=/api/auth)
+ * a `csrf_token_v2` (Path=/) porque `document.cookie` NUNCA exponía la
+ * versión vieja a este código (que corre en páginas de la SPA como "/" o
+ * "/report", nunca "/api/auth") — todo refresh fallaba con
+ * `csrf_token_mismatch` en cuanto el access token de 15 min vencía,
+ * disparando el logout silencioso que mostraba "Sesión expirada" una y otra
+ * vez pese a que el usuario seguía autenticado. El nombre nuevo (no solo el
+ * Path) evita además que la cookie vieja, aún viva hasta 7 días en sesiones
+ * activas de antes de este fix, siga generando el mismo mismatch.
  */
 function csrfHeaders(): Record<string, string> {
-    const csrf = readCookie('csrf_token')
+    const csrf = readCookie('csrf_token_v2')
     return csrf ? { 'X-CSRF-Token': csrf } : {}
 }
 
@@ -136,6 +152,12 @@ export async function authFetch(path: string, init: RequestInit = {}): Promise<R
     const doFetch = () =>
         fetch(`${backendBaseUrl()}${path}`, {
             ...init,
+            // ADR-082: `credentials: 'include'` es obligatorio ahora que la
+            // credencial es una cookie. En same-origin el default ya la
+            // mandaría, pero `VITE_BACKEND_URL` permite apuntar el frontend a
+            // un backend de otro origen, y ahí el default ('same-origin') la
+            // omitiría y toda la app quedaría sin autenticar.
+            credentials: 'include',
             headers: { ...(init.headers || {}), ...authHeaders() },
         })
 
@@ -151,6 +173,29 @@ export async function authFetch(path: string, init: RequestInit = {}): Promise<R
         }
     }
     return response
+}
+
+/** Avatar HD privado del usuario autenticado.
+ * Se descarga como Blob solo al abrir el visor para no cargar varios MB en
+ * localStorage, en el JWT ni durante cada render de la cabecera.
+ */
+export async function fetchMyAvatarHd(): Promise<Blob> {
+    const response = await authFetch('/api/auth/avatar/hd')
+    if (!response.ok) {
+        let message = `Avatar HD no disponible (HTTP ${response.status})`
+        try {
+            const payload = await response.json()
+            if (typeof payload?.error === 'string') message = payload.error
+        } catch {
+            // La respuesta puede no ser JSON (proxy o error de red intermedio).
+        }
+        throw new Error(message)
+    }
+    const blob = await response.blob()
+    if (!blob.type.startsWith('image/')) {
+        throw new Error('La respuesta del avatar no es una imagen válida.')
+    }
+    return blob
 }
 
 async function postJson(path: string, body: unknown, options: { timeoutMs?: number } = {}): Promise<any> {
@@ -186,6 +231,12 @@ export async function fetchCompanies(): Promise<any[]> {
     const response = await fetch(`${backendBaseUrl()}/api/auth/companies`)
     const payload = await parseJsonResponse(response)
     return Array.isArray(payload.companies) ? payload.companies : []
+}
+
+export async function createCompany(name: string): Promise<any> {
+    return postJson('/api/auth/companies', {
+        name: String(name || '').trim(),
+    })
 }
 
 interface RegisterUserPayload {
@@ -428,22 +479,47 @@ export async function fetchAuthAudit({ page = 1, pageSize = 50, company, usernam
     return parseJsonResponse(response)
 }
 
-export function getAuthAuditCsvUrl({ company, username, action, success }: {
+/**
+ * Descarga el CSV de auditoría autenticando por header.
+ *
+ * Antes esto devolvía una URL con `?auth_token=<jwt>` para colgarla de un
+ * `<a href>` (auditoría de seguridad 2026-08-02). Un access token completo en
+ * la barra de direcciones acaba escrito en claro en el access log de nginx, en
+ * el historial del navegador y —al ser `target="_blank"`— en el header
+ * `Referer`. Se descarga vía `authFetch` (Bearer en header, con refresh
+ * automático en 401) y se entrega al usuario como Blob, así el token no sale
+ * nunca de la memoria del JS.
+ */
+export async function downloadAuthAuditCsv({ company, username, action, success }: {
     company?: string;
     username?: string;
     action?: string;
     success?: boolean;
-} = {}): string {
+} = {}): Promise<void> {
     const query = new URLSearchParams()
     if (company) query.set('company', company)
     if (username) query.set('username', username)
     if (action) query.set('action', action)
     if (typeof success === 'boolean') query.set('success', success ? 'true' : 'false')
-    const token = getSession()?.token
-    if (token) {
-        query.set('auth_token', token)
+
+    const response = await authFetch(`/api/auth/audit/export.csv?${query.toString()}`)
+    if (!response.ok) {
+        throw new Error(`export_failed_${response.status}`)
     }
-    return `${backendBaseUrl()}/api/auth/audit/export.csv?${query.toString()}`
+    const blob = await response.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    try {
+        const link = document.createElement('a')
+        link.href = objectUrl
+        link.download = 'auditoria.csv'
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+    } finally {
+        // Liberar en el siguiente tick: revocar de inmediato puede cancelar la
+        // descarga antes de que el navegador haya leído el Blob.
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+    }
 }
 export async function verifyBiometricFrame(imageBase64: string): Promise<any> {
     const response = await authFetch('/api/auth/biometric/verify-frame', {
@@ -508,10 +584,11 @@ export async function fetchUserMaintenanceAudit({ company, page = 1, pageSize = 
     return parseJsonResponse(response)
 }
 
-export async function validateCompany(company?: string, ruc?: string): Promise<boolean> {
+export async function validateCompany(company?: string, ruc?: string, countryIso2?: string): Promise<boolean> {
     const query = new URLSearchParams()
     if (company) query.set('company', company)
     if (ruc) query.set('ruc', ruc)
+    if (countryIso2) query.set('country', countryIso2.toUpperCase())
 
     const response = await fetch(`${backendBaseUrl()}/api/auth/validate-company?${query.toString()}`)
     const payload = await parseJsonResponse(response)
@@ -519,19 +596,19 @@ export async function validateCompany(company?: string, ruc?: string): Promise<b
 }
 
 const FALLBACK_PLATFORM_COUNTRIES = [
-    { iso2: 'US', label: 'Estados Unidos', phone_prefix: '1', region: 'north_america' },
-    { iso2: 'CA', label: 'Canadá', phone_prefix: '1', region: 'north_america' },
-    { iso2: 'MX', label: 'México', phone_prefix: '52', region: 'north_america' },
-    { iso2: 'PE', label: 'Perú', phone_prefix: '51', region: 'latam' },
-    { iso2: 'CL', label: 'Chile', phone_prefix: '56', region: 'latam' },
-    { iso2: 'CO', label: 'Colombia', phone_prefix: '57', region: 'latam' },
-    { iso2: 'BR', label: 'Brasil', phone_prefix: '55', region: 'latam' },
-    { iso2: 'AR', label: 'Argentina', phone_prefix: '54', region: 'latam' },
-    { iso2: 'EC', label: 'Ecuador', phone_prefix: '593', region: 'latam' },
-    { iso2: 'BO', label: 'Bolivia', phone_prefix: '591', region: 'latam' },
-    { iso2: 'GT', label: 'Guatemala', phone_prefix: '502', region: 'latam' },
-    { iso2: 'CU', label: 'Cuba', phone_prefix: '53', region: 'caribbean' },
-    { iso2: 'DO', label: 'República Dominicana', phone_prefix: '1', region: 'caribbean' },
+    { iso2: 'US', label: 'Estados Unidos', phone_prefix: '1', region: 'north_america', default_locale: 'en-US' },
+    { iso2: 'CA', label: 'Canadá', phone_prefix: '1', region: 'north_america', default_locale: 'fr-CA' },
+    { iso2: 'MX', label: 'México', phone_prefix: '52', region: 'north_america', default_locale: 'es-MX' },
+    { iso2: 'PE', label: 'Perú', phone_prefix: '51', region: 'latam', default_locale: 'es-PE' },
+    { iso2: 'CL', label: 'Chile', phone_prefix: '56', region: 'latam', default_locale: 'es-CL' },
+    { iso2: 'CO', label: 'Colombia', phone_prefix: '57', region: 'latam', default_locale: 'es-CO' },
+    { iso2: 'BR', label: 'Brasil', phone_prefix: '55', region: 'latam', default_locale: 'pt-BR' },
+    { iso2: 'AR', label: 'Argentina', phone_prefix: '54', region: 'latam', default_locale: 'es-AR' },
+    { iso2: 'EC', label: 'Ecuador', phone_prefix: '593', region: 'latam', default_locale: 'es-EC' },
+    { iso2: 'BO', label: 'Bolivia', phone_prefix: '591', region: 'latam', default_locale: 'es-BO' },
+    { iso2: 'GT', label: 'Guatemala', phone_prefix: '502', region: 'latam', default_locale: 'es-GT' },
+    { iso2: 'CU', label: 'Cuba', phone_prefix: '53', region: 'caribbean', default_locale: 'es-CU' },
+    { iso2: 'DO', label: 'República Dominicana', phone_prefix: '1', region: 'caribbean', default_locale: 'es-DO' },
 ]
 
 const FALLBACK_UI_LANGUAGES = [

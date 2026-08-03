@@ -5,14 +5,18 @@ import {
   CheckCircle2, ScanFace, UserPlus, Building2, Plus, ShieldOff
 } from 'lucide-react';
 import { ADMIN_ASSIGNABLE_ROLES, getRoleLabel, getRoleColor } from '../../../../auth/roleConstants';
-import { getSession } from '../../../../auth/authStorage';
+import { getSession, authHeaders as sharedAuthHeaders } from '../../../../auth/authStorage';
 import { applyUserMaintenanceUnified, listCompanyUsersUnified, listMaintenanceAuditUnified } from '../../lib/userMaintenanceStorage';
 import { log } from '../../../../lib/logger';
+import { useI18n } from '../../../../i18n/I18nProvider';
+import { requestConfirmation } from '../../../UI/ConfirmActionDialog';
 // Modal movido internamente para evitar errores de resolucion dinamica en tiempo de ejecucion
 
 function authHeaders(): Record<string, string> {
-  const token = getSession()?.token || '';
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  // ADR-082: la credencial es la cookie HttpOnly `access_token`, que el
+  // navegador adjunta sola. Aqui solo viaja el token CSRF del double-submit,
+  // que el backend exige en toda peticion que mute estado.
+  return sharedAuthHeaders();
 }
 
 interface TenantAssignment {
@@ -52,6 +56,7 @@ interface IntegratedBiometricModalProps {
 }
 
 function UserManagementView() {
+  const { t } = useI18n();
   const session = getSession();
   const company = session?.company || '';
 
@@ -187,7 +192,7 @@ function UserManagementView() {
   };
 
   const revokeTenant = async (username: string, tenantName: string) => {
-    if (!window.confirm(`¿Revocar el acceso de ${username} a ${tenantName}?`)) return;
+    if (!(await requestConfirmation(t('confirm.revokeTenant', { user: username, tenant: tenantName })))) return;
     try {
       const res = await fetch(`/api/auth/users/${encodeURIComponent(username)}/tenants/remove`, {
         method: 'POST', headers: authHeaders(),

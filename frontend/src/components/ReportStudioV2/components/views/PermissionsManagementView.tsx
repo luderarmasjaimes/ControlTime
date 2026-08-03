@@ -2,9 +2,11 @@ import React, { memo, useState, useEffect, useCallback } from 'react';
 import {
   ShieldCheck, Check, X, Save, RotateCcw, AlertTriangle,
 } from 'lucide-react';
-import { getSession } from '../../../../auth/authStorage';
+import { getSession, authHeaders as sharedAuthHeaders } from '../../../../auth/authStorage';
 import { log } from '../../../../lib/logger';
 import { ADMIN_ASSIGNABLE_ROLES } from '../../../../auth/roleConstants';
+import { useI18n } from '../../../../i18n/I18nProvider';
+import { requestConfirmation } from '../../../UI/ConfirmActionDialog';
 
 // ADMIN_ASSIGNABLE_ROLES (roleConstants.ts) ya incluye los 7 roles reales
 // de la plataforma, incluido 'viewer' -- el backend es autoritativo: admin
@@ -21,11 +23,14 @@ interface PermissionDef {
 type PermissionMatrix = Record<string, Set<string>>;
 
 function authHeaders(): Record<string, string> {
-  const token = getSession()?.token || '';
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  // ADR-082: la credencial es la cookie HttpOnly `access_token`, que el
+  // navegador adjunta sola. Aqui solo viaja el token CSRF del double-submit,
+  // que el backend exige en toda peticion que mute estado.
+  return sharedAuthHeaders();
 }
 
 function PermissionsManagementView() {
+  const { t } = useI18n();
   const session = getSession();
   const company = session?.company || '';
 
@@ -102,8 +107,8 @@ function PermissionsManagementView() {
     }
   };
 
-  const resetMatrix = () => {
-    if (!window.confirm('¿Descartar los cambios no guardados y recargar desde el servidor?')) return;
+  const resetMatrix = async () => {
+    if (!(await requestConfirmation(t('confirm.resetPermissions')))) return;
     loadMatrix();
   };
 

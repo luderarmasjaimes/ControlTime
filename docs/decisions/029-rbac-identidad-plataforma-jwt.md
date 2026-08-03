@@ -6,6 +6,22 @@
 **Autores**: EC
 **Ámbito**: plataforma
 
+**Actualización 2026-07-27 (contrato runtime y entropía):** la cookie legible
+vigente es `csrf_token_v2` con `Path=/`, para que la SPA pueda leerla desde
+cualquier ruta y repetirla en `X-CSRF-Token`; `refresh_token` permanece
+`HttpOnly` y acotada a `Path=/api/auth`. El backend vence explícitamente la
+cookie legacy `csrf_token`. El smoke real verificó rechazo 403 sin header,
+refresh con rotación y logout. ADR-076 cerró la brecha de entropía: refresh
+tokens, `jti`, IDs y API keys se generan con `RAND_bytes`; los secretos usan
+256 bits y siguen almacenándose únicamente hasheados.
+
+**Actualización 2026-07-27 (avatar derivado):** ADR-074 supersede únicamente
+la frase histórica “la biometría como factor está diferida”. El login facial
+ya está activo y el avatar local es un derivado visual de ese enrolamiento;
+ambos usan la misma sesión JWT y siguen sujetos al gate legal de ADR-025. La
+visión EPP permanece diferida. No cambia ninguna decisión de tokens, RBAC,
+cookies ni aislamiento multitenant de este ADR.
+
 **Actualización 2026-07-19 (corrección de auditoría + cierre):** el texto
 original de este ADR (abajo, sin editar, ver convención de
 `docs/decisions/README.md`) describe el refresh token como "**server-side**"
@@ -34,13 +50,13 @@ la auditoría y cerrada hoy con esta actualización:
 - **Protección CSRF (double-submit cookie)**: mover el refresh a cookie
   reintroduce el riesgo inverso — el navegador manda la cookie sola en
   cualquier request al dominio, incluida una petición forjada desde un sitio
-  de terceros. Mitigación: una segunda cookie `csrf_token` (NO HttpOnly, a
+  de terceros. Mitigación: una segunda cookie `csrf_token_v2` (NO HttpOnly, a
   propósito — el cliente legítimo la lee) que el cliente debe repetir en el
   header `X-CSRF-Token` en cada llamada a `/api/auth/refresh` o
   `/api/auth/logout`; el servidor exige que ambos coincidan
   (`csrfHeaderMatchesCookie` en `main.cpp`). Un sitio de terceros puede
   lograr que el navegador de la víctima **envíe** la cookie de
-  `refresh_token`, pero no puede **leer** `csrf_token` (same-origin policy)
+  `refresh_token`, pero no puede **leer** `csrf_token_v2` (same-origin policy)
   para repetirlo en el header — sin eso, el servidor rechaza con
   `403 csrf_token_mismatch`.
 - **`Secure` condicionado a `AppConfig::gAuthCookieSecure`** (default
@@ -71,6 +87,12 @@ No se re-emitió texto nuevo de "alternativas descartadas" — la decisión
 original de este ADR (access JWT corto + refresh server-side rotado) sigue
 vigente sin cambios; lo único corregido es **dónde** vive el refresh token
 en el cliente y que ahora hay una defensa CSRF explícita para esa cookie.
+
+> **Nota de lectura:** las frases posteriores que dicen que `/refresh`
+> “recibe `refresh_token`” en JSON o que el frontend “guarda el par de tokens”
+> describen el estado original de 2026-07-06. Quedaron supersedidas por la
+> actualización HttpOnly de 2026-07-19 y la corrección `csrf_token_v2` de
+> 2026-07-21/27; se conservan únicamente como historial de la decisión.
 
 ## Contexto
 

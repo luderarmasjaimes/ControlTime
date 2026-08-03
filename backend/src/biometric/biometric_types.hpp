@@ -76,6 +76,8 @@ struct AiEngineEmbeddingResult {
 
 struct AiEngineCartoonResult {
   std::string imageBase64;
+  /** Maestro PNG 4K; no se incluye en JWT/session/localStorage. */
+  std::string imageHdBase64;
   std::string error;
   bool ok() const { return !imageBase64.empty() && error.empty(); }
 };

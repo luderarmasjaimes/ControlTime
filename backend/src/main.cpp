@@ -8,11 +8,24 @@
 #include <boost/json.hpp>
 #include <opencv2/opencv.hpp>
 
+// SO_RCVTIMEO para el timeout de las conexiones keep-alive (ver
+// setSocketReceiveTimeout más abajo: beast::tcp_stream::expires_after no
+// aplica a las lecturas síncronas que usa este servidor).
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#include <sys/time.h>
+#endif
+
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
+#include <regex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -49,6 +62,8 @@
 #include "gdal/gdal_routes.hpp"
 #include "gdal/conversion_service.hpp"
 #include "text/text_routes.hpp"
+#include "support/support_routes.hpp"
+#include "support/mining_chatbot_service.hpp"
 #include "text_spell_service.hpp"
 #include "onnx_cartoon.hpp"
 #include "vision_pipeline.hpp"
@@ -104,6 +119,7 @@ using auth::authUserSessionJson;
 using auth::readAuthAuditTail;
 using auth::auditRowsToCsv;
 #if HAS_LIBPQ
+using auth::migrateLegacyPasswordHashesPg;
 using auth::readAuthAuditPg;
 using auth::registerUserPg;
 using auth::findOrCreateTenantForCompanyPg;
@@ -140,6 +156,10 @@ withAuthCookies(http::response<http::string_body> res, const AuthTokenPair &pair
     auto &cfg = AppConfig::instance();
     const int maxAgeSeconds = cfg.gJwtRefreshTtlDays * 24 * 3600;
     http_utils::setAuthCookies(res, pair.refreshToken, pair.csrfToken, maxAgeSeconds);
+    // ADR-082: el access token va en su propia cookie HttpOnly, con el TTL del
+    // access token (no el del refresh) — así caduca a la vez que el JWT que
+    // contiene y no queda una cookie muerta rondando siete días.
+    http_utils::setAccessTokenCookie(res, pair.token, pair.expiresInSeconds);
     return res;
 }
 
@@ -468,6 +488,18 @@ handleRegister(const http::request<http::string_body> &req,
                 if (provisionedTenantId.empty()) {
                     std::cerr << "[AUTH_REGISTER] tenant provisioning failed for company='"
                               << company << "': " << tenantError << std::endl;
+                } else {
+                    // Bug real (QA 2026-07-27): provisionedTenantId se calculaba
+                    // pero nunca se asignaba a `created.tenantId` -- el token
+                    // emitido en ESTA misma respuesta de registro (issueAuthSession
+                    // más abajo) quedaba con tenant_id vacío en el JWT, aunque la
+                    // fila en auth_user_tenant ya existiera correctamente. Efecto
+                    // observable: POST /api/reports con el token de la respuesta
+                    // de registro fallaba con "tenant_required"; recién funcionaba
+                    // tras un login nuevo (que sí resuelve el tenant real desde
+                    // BD). Exactamente la regresión que este mismo bloque de
+                    // código dice prevenir en su comentario de arriba.
+                    created.tenantId = provisionedTenantId;
                 }
 #else
                 return makeJsonResponse(
@@ -537,12 +569,14 @@ handleRegister(const http::request<http::string_body> &req,
                     };
                     bgLog("thread_start");
                     std::string b64;
+                    std::string hdB64;
                     if (bgCartoonOpt.has_value()) {
                         try {
                             auto cartoonB = bgCartoonOpt->get();
                             bgLog("bust_future_done");
                             if (cartoonB.ok()) {
                                 b64 = std::move(cartoonB.imageBase64);
+                                hdB64 = std::move(cartoonB.imageHdBase64);
                             }
                         } catch (const std::exception &ex) {
                             std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: "
@@ -556,6 +590,7 @@ handleRegister(const http::request<http::string_body> &req,
                         auto cartoon = fetchCartoonAvatarBestEffort(bgRawReg);
                         if (cartoon.ok()) {
                             b64 = std::move(cartoon.imageBase64);
+                            hdB64 = std::move(cartoon.imageHdBase64);
                         }
                     }
                     if (b64.empty() && !bgPortrait.empty()) {
@@ -563,6 +598,7 @@ handleRegister(const http::request<http::string_body> &req,
                         auto cartoon2 = fetchCartoonAvatarBestEffort(bgPortrait);
                         if (cartoon2.ok()) {
                             b64 = std::move(cartoon2.imageBase64);
+                            hdB64 = std::move(cartoon2.imageHdBase64);
                         }
                     }
                     if (b64.empty()) {
@@ -570,6 +606,44 @@ handleRegister(const http::request<http::string_body> &req,
                         return;
                     }
                     bgLog("cartoon_ok_updating_store");
+                    if (!hdB64.empty()) {
+                        std::vector<unsigned char> hdBytes;
+                        if (decodeBase64(hdB64, hdBytes) && !hdBytes.empty()) {
+                            try {
+                                const fs::path avatarDir =
+                                    fs::path(dataRoot) / "auth" / "avatars_hd";
+                                fs::create_directories(avatarDir);
+                                const fs::path finalPath =
+                                    avatarDir / (userId + ".png");
+                                const fs::path tmpPath =
+                                    avatarDir / (userId + ".png.tmp");
+                                {
+                                    std::ofstream out(tmpPath, std::ios::binary |
+                                                                   std::ios::trunc);
+                                    out.write(
+                                        reinterpret_cast<const char *>(hdBytes.data()),
+                                        static_cast<std::streamsize>(hdBytes.size()));
+                                    if (!out.good()) {
+                                        throw std::runtime_error(
+                                            "avatar_hd_write_failed");
+                                    }
+                                }
+                                if (fs::exists(finalPath)) {
+                                    fs::remove(finalPath);
+                                }
+                                fs::rename(tmpPath, finalPath);
+                                fs::permissions(
+                                    finalPath,
+                                    fs::perms::owner_read |
+                                        fs::perms::owner_write,
+                                    fs::perm_options::replace);
+                                bgLog("avatar_hd_cached");
+                            } catch (const std::exception &ex) {
+                                std::cerr << "[AUTH_REGISTER_CARTOON_BG] hd: "
+                                          << ex.what() << std::endl;
+                            }
+                        }
+                    }
                     std::scoped_lock lk(gAuthMutex);
                     if (storageModeCapture == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
@@ -627,12 +701,40 @@ std::mutex gLoginRateMtx;
 std::unordered_map<std::string, LoginRateEntry> gLoginRateMap;
 constexpr int kRateMaxFails  = 5;
 constexpr int kRateWindowSec = 300;  // ventana deslizante 5 min
+// Techo duro de entradas vivas (auditoría de seguridad 2026-08-02). La clave
+// del mapa es `company|username` — texto ARBITRARIO del atacante — y hasta
+// ahora solo se borraba en el login CORRECTO: una ráfaga de intentos con
+// usuarios inventados hacía crecer el mapa sin límite hasta agotar la memoria
+// del proceso (DoS de la plataforma entera, no solo del login). nginx limita
+// a 5 r/m por IP, pero eso no cubre una botnet ni el acceso directo al :8081
+// desde dentro de la red Docker. Con la purga por ventana + este techo, el
+// tamaño queda acotado por el propio TTL de 5 min.
+constexpr std::size_t kRateMaxEntries = 20000;
+
+/** @brief Elimina entradas cuya ventana ya expiró. Llamar con gLoginRateMtx tomado. */
+void loginRatePruneLocked(std::chrono::steady_clock::time_point now) {
+    for (auto it = gLoginRateMap.begin(); it != gLoginRateMap.end();) {
+        const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                             now - it->second.win).count();
+        if (age > kRateWindowSec) it = gLoginRateMap.erase(it);
+        else ++it;
+    }
+}
 } // anonymous namespace
 
 static bool loginRateCheck(const std::string &key) {
     std::lock_guard<std::mutex> lk(gLoginRateMtx);
-    auto &e = gLoginRateMap[key];
     const auto now = std::chrono::steady_clock::now();
+    if (gLoginRateMap.size() >= kRateMaxEntries) {
+        loginRatePruneLocked(now);
+        // Si tras purgar sigue lleno, el sistema está bajo un ataque activo de
+        // relleno: se rechaza en vez de seguir creciendo (fail-closed).
+        if (gLoginRateMap.size() >= kRateMaxEntries &&
+            gLoginRateMap.find(key) == gLoginRateMap.end()) {
+            return false;
+        }
+    }
+    auto &e = gLoginRateMap[key];
     if (std::chrono::duration_cast<std::chrono::seconds>(now - e.win).count()
             > kRateWindowSec) {
         e.fails = 0;
@@ -651,6 +753,36 @@ static void loginRateClear(const std::string &key) {
     gLoginRateMap.erase(key);
 }
 
+namespace {
+/**
+ * @brief Cuenta el intento como FALLIDO salvo que se marque `success()`.
+ *
+ * El login facial tiene ~7 puntos de salida por error repartidos entre la rama
+ * Postgres y la de archivo. Incrementar el contador a mano en cada uno es
+ * frágil: basta con que un `return` nuevo se olvide para que ese camino quede
+ * sin límite de intentos y reabra el bucle de fuerza bruta. Con este guard el
+ * fallo es el comportamiento por DEFECTO — solo el camino de éxito lo
+ * desactiva — así que cualquier salida futura queda cubierta sin tocar nada.
+ */
+class LoginAttemptGuard {
+public:
+    explicit LoginAttemptGuard(std::string key) : key_(std::move(key)) {}
+    LoginAttemptGuard(const LoginAttemptGuard &) = delete;
+    LoginAttemptGuard &operator=(const LoginAttemptGuard &) = delete;
+    /** @brief Marca el intento como correcto: limpia el contador y no penaliza. */
+    void success() {
+        succeeded_ = true;
+        loginRateClear(key_);
+    }
+    ~LoginAttemptGuard() {
+        if (!succeeded_) loginRateIncrement(key_);
+    }
+private:
+    std::string key_;
+    bool succeeded_ = false;
+};
+} // anonymous namespace
+
 // ADR-029, "Actualización 2026-07-19": el refresh token viaja SOLO por la
 // cookie HttpOnly `refresh_token` (nunca más en el body JSON, ver
 // http_utils::setAuthCookies) -- se lee del header `Cookie` de la request,
@@ -660,7 +792,17 @@ static void loginRateClear(const std::string &key) {
 // el navegador de la víctima MANDE la cookie de refresh_token sola, pero no
 // puede LEERLA (same-origin policy) para repetirla en el header.
 static bool csrfHeaderMatchesCookie(const http::request<http::string_body> &req) {
-    const std::string cookieCsrf = http_utils::extractCookie(req, "csrf_token");
+    // Nombre "v2": el cookie `csrf_token` (Path=/api/auth, bug corregido hoy
+    // — ver setAuthCookies) puede seguir vivo en el navegador de sesiones ya
+    // logueadas (Max-Age 7 días). Si se reutilizara el mismo nombre, el
+    // navegador mandaría AMBAS cookies del mismo nombre en `Cookie` (la más
+    // específica por path primero, RFC 6265), y `extractCookie` siempre
+    // devuelve la primera coincidencia -- quedaría leyendo la vieja
+    // (Path=/api/auth) mientras el JS del cliente lee la nueva (Path=/),
+    // reproduciendo el mismo `csrf_token_mismatch` indefinidamente para
+    // cualquier sesión activa desde antes del fix. Cambiar el nombre evita
+    // la colisión por completo: la cookie vieja queda inerte y expira sola.
+    const std::string cookieCsrf = http_utils::extractCookie(req, "csrf_token_v2");
     if (cookieCsrf.empty()) {
         return false;
     }
@@ -790,7 +932,7 @@ handleLoginPassword(const http::request<http::string_body> &req,
                 std::string dbError;
                 std::string errCode;
                 auto user = loginPasswordPg(cfg.gDatabaseUrl, company, username,
-                                            hashPassword(password), dbError,
+                                            password, dbError,
                                             &errCode);
                 if (!user) {
                     loginRateIncrement(rateKey);
@@ -808,10 +950,10 @@ handleLoginPassword(const http::request<http::string_body> &req,
                     json::object{{"error", "postgres support is not compiled"}});
 #endif
             } else {
-                const AuthUser *match = nullptr;
+                AuthUser *match = nullptr;
                 size_t matchCount = 0;
-                const auto users = loadAuthUsers(dataRoot);
-                for (const auto &u : users) {
+                auto users = loadAuthUsers(dataRoot);
+                for (auto &u : users) {
                     if (u.company != company) continue;
                     if (authIdentityKeyMatchesFsUser(username, u)) {
                         match = &u;
@@ -836,7 +978,7 @@ handleLoginPassword(const http::request<http::string_body> &req,
                         json::object{{"error", std::string(kAuthAmbiguousIdentityMsg)},
                                      {"code", "ambiguous_identity"}});
                 }
-                if (match->passwordHash != hashPassword(password)) {
+                if (!http_utils::verifyPassword(password, match->passwordHash)) {
                     loginRateIncrement(rateKey);
                     appendAuthAuditLog(dataRoot, "login_password", company,
                                        match->username, false, "invalid_password");
@@ -844,6 +986,10 @@ handleLoginPassword(const http::request<http::string_body> &req,
                         http::status::unauthorized,
                         json::object{{"error", std::string(kAuthWrongPasswordMsg)},
                                      {"code", "wrong_password"}});
+                }
+                if (http_utils::passwordNeedsRehash(match->passwordHash)) {
+                    match->passwordHash = hashPassword(password);
+                    saveAuthUsers(dataRoot, users);
                 }
                 appendAuthAuditLog(dataRoot, "login_password", company,
                                    match->username, true, "ok");
@@ -939,6 +1085,24 @@ handleLoginFace(const http::request<http::string_body> &req,
                   << " identity=" << identityLogin
                   << " has_template=" << (hasTemplate ? "1" : "0")
                   << " has_image=" << (hasImage ? "1" : "0") << std::endl;
+
+        // Rate limiting a nivel de cuenta, igual que el login por contraseña
+        // (auditoría de seguridad 2026-08-02). Este endpoint acepta un
+        // `face_template` numérico ARBITRARIO enviado por el cliente y lo
+        // compara por similitud coseno contra el embedding almacenado: sin
+        // límite, un atacante puede iterar vectores hasta cruzar el umbral y
+        // autenticarse como cualquier usuario del que conozca el DNI, sin
+        // necesitar jamás su rostro. Es el camino de menor resistencia de todo
+        // el sistema de auth y era el único login sin contador de fallos.
+        // El prefijo separa el cupo del de contraseña: quemar los 5 intentos
+        // faciales no debe bloquear el login normal del mismo usuario.
+        const std::string faceRateKey = "face|" + company + "|" + identityLogin;
+        if (!loginRateCheck(faceRateKey)) {
+            return makeJsonResponse(http::status::too_many_requests,
+                json::object{{"error",  "too_many_failed_attempts"},
+                             {"detail", "Cuenta bloqueada 5 min. Intente más tarde."}});
+        }
+        LoginAttemptGuard faceAttempt(faceRateKey);
 
         const double legacyThreshold = cfg.gFaceLegacyCosineThreshold;
 
@@ -1103,6 +1267,7 @@ handleLoginFace(const http::request<http::string_body> &req,
                      "de nuevo."}});
         }
 
+        faceAttempt.success();
         const auto sessionToken = issueAuthSession(bestUser);
         std::cout << "[AUTH_FACE] success user=" << bestUser.username
                   << " company=" << bestUser.company
@@ -1451,69 +1616,350 @@ static void handleLiveKpiSse(beast::tcp_stream& stream,
 }
 
 // =========================================================================
+//  SSE: chatbot minero -- streaming token a token de Ollama al navegador.
+//  POST /api/support/chat/stream → text/event-stream.
+//  Requiere sesión autenticada. Mismo body que /api/support/chat/message
+//  ({qualifying, messages}), pero en vez de esperar la respuesta completa de
+//  Ollama (stream:false, ver support::handleChatMessage), abre una conexión
+//  propia con stream:true y reenvía cada fragmento apenas llega -- el
+//  usuario ve el texto aparecer progresivamente en vez de esperar ~5-10s en
+//  silencio (pedido explícito 2026-07-29 tras optimizar la latencia total).
+// =========================================================================
+static void handleChatStreamSse(beast::tcp_stream& stream,
+                                const http::request<http::string_body>& req) {
+    beast::error_code ec;
+
+    const auto session = resolveAuthSession(req, {});
+    if (!session) {
+        static const std::string k401 =
+            "HTTP/1.1 401 Unauthorized\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 21\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"error\":\"unauthorized\"}";
+        asio::write(stream, asio::buffer(k401), ec);
+        return;
+    }
+
+    json::object qualifying;
+    json::array messages;
+    try {
+        auto val = json::parse(req.body());
+        if (!val.is_object()) throw std::runtime_error("invalid_json");
+        const auto &obj = val.as_object();
+        if (obj.contains("qualifying") && obj.at("qualifying").is_object()) {
+            qualifying = obj.at("qualifying").as_object();
+        }
+        if (!obj.contains("messages") || !obj.at("messages").is_array()) {
+            throw std::runtime_error("missing_messages");
+        }
+        messages = obj.at("messages").as_array();
+        if (messages.empty() || messages.size() > 40) {
+            throw std::runtime_error("invalid_messages");
+        }
+    } catch (const std::exception &ex) {
+        const std::string errBody = json::serialize(json::object{{"error", ex.what()}});
+        std::ostringstream resp;
+        resp << "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n"
+             << "Content-Length: " << errBody.size() << "\r\nConnection: close\r\n\r\n" << errBody;
+        const std::string full = resp.str();
+        asio::write(stream, asio::buffer(full), ec);
+        return;
+    }
+
+    const std::string ollamaBase = getenvOr("BEEMETRY_OLLAMA_URL", "");
+    if (ollamaBase.empty()) {
+        static const std::string kUnavail =
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+            "Content-Length: 30\r\nConnection: close\r\n\r\n"
+            "{\"error\":\"ollama_not_configured\"}";
+        asio::write(stream, asio::buffer(kUnavail), ec);
+        return;
+    }
+
+    // Cabeceras SSE (misma convención que handleLiveKpiSse arriba).
+    static const std::string kHead =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: keep-alive\r\n\r\n";
+    asio::write(stream, asio::buffer(kHead), ec);
+    if (ec) return;
+
+    auto sendSseEvent = [&](const json::value &payload) {
+        const std::string data = "data: " + json::serialize(payload) + "\n\n";
+        asio::write(stream, asio::buffer(data), ec);
+    };
+
+    // Parseo mínimo de BEEMETRY_OLLAMA_URL (http://host:port) -- copia local,
+    // mismo criterio que el resto del backend ("cada módulo mantiene su
+    // propia copia mínima del cliente HTTP").
+    std::string ollamaHost, ollamaPort = "80", ollamaTarget = "/";
+    {
+        static const std::regex kHttpRegex(
+            R"(^http://([A-Za-z0-9\.\-_]+)(?::([0-9]{1,5}))?(\/.*)?$)", std::regex::icase);
+        std::smatch m;
+        std::string base = ollamaBase;
+        while (!base.empty() && base.back() == '/') base.pop_back();
+        if (std::regex_match(base, m, kHttpRegex)) {
+            ollamaHost = m[1].str();
+            if (m.size() > 2 && m[2].matched) ollamaPort = m[2].str();
+        }
+    }
+    if (ollamaHost.empty()) {
+        sendSseEvent(json::object{{"error", "ollama_invalid_url"}});
+        return;
+    }
+
+    try {
+        asio::io_context ollamaIoc;
+        asio::ip::tcp::resolver resolver{ollamaIoc};
+        beast::tcp_stream ollamaStream{ollamaIoc};
+        int timeoutMs = 180000;
+        try { timeoutMs = std::clamp(std::stoi(getenvOr("BEEMETRY_OLLAMA_CHATBOT_TIMEOUT_MS", "60000")), 5000, 180000); }
+        catch (...) { timeoutMs = 60000; }
+        ollamaStream.expires_after(std::chrono::milliseconds(timeoutMs));
+
+        const auto results = resolver.resolve(ollamaHost, ollamaPort, ec);
+        if (ec) { sendSseEvent(json::object{{"error", "ollama_resolve_failed"}}); return; }
+        ollamaStream.connect(results, ec);
+        if (ec) { sendSseEvent(json::object{{"error", "ollama_connect_failed"}}); return; }
+
+        const auto promptResult = support::buildChatPromptForStreaming(qualifying, messages, session->tenantId);
+        json::object reqBody;
+        reqBody["model"] = config::AppConfig::instance().gOllamaChatbotModel;
+        reqBody["stream"] = true;
+        reqBody["prompt"] = promptResult.prompt;
+        reqBody["keep_alive"] = "10m";
+        json::object opts;
+        opts["temperature"] = 0.4;
+        // Ver comentario equivalente en mining_chatbot_service.cpp::handleChatMessage:
+        // un listado real de sensores necesita más tokens que un chat corto.
+        opts["num_predict"] = promptResult.hasSensorRows ? 500 : 180;
+        reqBody["options"] = opts;
+        const std::string payload = json::serialize(json::value(reqBody));
+
+        http::request<http::string_body> ollamaReq{http::verb::post, "/api/generate", 11};
+        ollamaReq.set(http::field::host, ollamaHost);
+        ollamaReq.set(http::field::content_type, "application/json");
+        ollamaReq.body() = payload;
+        ollamaReq.prepare_payload();
+        http::write(ollamaStream, ollamaReq, ec);
+        if (ec) { sendSseEvent(json::object{{"error", "ollama_write_failed"}}); return; }
+
+        // Lectura incremental: Ollama envía un objeto JSON por línea
+        // (newline-delimited) mientras genera. http::response_parser con
+        // string_body va acumulando el body en cada read_some() -- se
+        // consume el delta nuevo cada vuelta y se separa por '\n'
+        // (buffer local por si una línea llega partida entre dos reads).
+        http::response_parser<http::string_body> parser;
+        parser.body_limit(16 * 1024 * 1024);
+        beast::flat_buffer readBuf;
+        std::size_t consumed = 0;
+        std::string lineBuf;
+        bool anyForwarded = false;
+        while (!parser.is_done()) {
+            http::read_some(ollamaStream, readBuf, parser, ec);
+            if (ec && ec != http::error::end_of_stream) {
+                break;
+            }
+            const std::string &body = parser.get().body();
+            if (body.size() > consumed) {
+                lineBuf.append(body, consumed, body.size() - consumed);
+                consumed = body.size();
+                std::size_t nl;
+                while ((nl = lineBuf.find('\n')) != std::string::npos) {
+                    std::string line = lineBuf.substr(0, nl);
+                    lineBuf.erase(0, nl + 1);
+                    if (line.empty()) continue;
+                    try {
+                        auto chunkVal = json::parse(line);
+                        if (!chunkVal.is_object()) continue;
+                        const auto &co = chunkVal.as_object();
+                        if (co.contains("response") && co.at("response").is_string()) {
+                            const std::string frag = json::value_to<std::string>(co.at("response"));
+                            // Filtro CJK por fragmento (ver mining_chatbot_service.hpp) --
+                            // se omite silenciosamente el fragmento, sin cortar el stream.
+                            if (!frag.empty() && !support::fragmentHasCjk(frag)) {
+                                sendSseEvent(json::object{{"chunk", frag}});
+                                anyForwarded = true;
+                            }
+                        }
+                        if (co.contains("done") && co.at("done").is_bool() && co.at("done").as_bool()) {
+                            sendSseEvent(json::object{{"done", true}});
+                            return;
+                        }
+                    } catch (...) {
+                        // Línea parcial/corrupta -- se descarta, el stream continúa.
+                    }
+                }
+            }
+            if (ec == http::error::end_of_stream) break;
+        }
+        if (!anyForwarded) {
+            sendSseEvent(json::object{{"error", "ollama_empty_response"}});
+        } else {
+            sendSseEvent(json::object{{"done", true}});
+        }
+    } catch (const std::exception &ex) {
+        std::cerr << "[chat_stream] excepcion: " << ex.what() << std::endl;
+        sendSseEvent(json::object{{"error", "ollama_stream_exception"}});
+    }
+}
+
+// =========================================================================
 //  TCP session handler
 // =========================================================================
+// Segundos que una conexión keep-alive espera ociosa por la siguiente request
+// antes de que el servidor la cierre y libere el hilo. Configurable con
+// BEEMETRY_HTTP_KEEPALIVE_TIMEOUT (0 = desactiva keep-alive, comportamiento
+// legacy de una request por conexión).
+static int httpKeepAliveTimeoutSeconds() {
+    static const int v = [] {
+        if (const char *e = std::getenv("BEEMETRY_HTTP_KEEPALIVE_TIMEOUT")) {
+            try { return std::max(0, std::stoi(e)); } catch (...) {}
+        }
+        return 15;
+    }();
+    return v;
+}
+
+// Tope de requests por conexión: evita que un cliente monopolice un hilo de
+// forma indefinida y fuerza una reconexión periódica (que es también lo que
+// permite rebalancear si algún día hay más de una réplica del backend).
+static constexpr int kMaxRequestsPerConnection = 100;
+
+// Aplica SO_RCVTIMEO al socket. `expires_after()` de beast::tcp_stream SOLO
+// tiene efecto sobre operaciones ASÍNCRONAS — este servidor usa http::read()
+// síncrono/bloqueante, así que sin un timeout a nivel socket una conexión
+// keep-alive ociosa dejaría su hilo bloqueado en read() para siempre
+// (con el modelo hilo-por-conexión de este servidor, eso es una fuga de
+// hilos). SO_RCVTIMEO sí corta un read() bloqueante.
+static void setSocketReceiveTimeout(beast::tcp_stream &stream, int seconds) {
+#ifdef _WIN32
+    // Windows espera un DWORD en milisegundos, no un `struct timeval`.
+    DWORD ms = static_cast<DWORD>(seconds) * 1000u;
+    ::setsockopt(stream.socket().native_handle(), SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char *>(&ms), sizeof(ms));
+#else
+    struct timeval tv{};
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    ::setsockopt(stream.socket().native_handle(), SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char *>(&tv), sizeof(tv));
+#endif
+}
+
 static void session(beast::tcp_stream stream) {
     beast::flat_buffer buffer;
     beast::error_code ec;
-    http::request<http::string_body> req;
-    http::read(stream, buffer, req, ec);
-    if (ec) return;
+    const int keepAliveTimeout = httpKeepAliveTimeoutSeconds();
 
-    if (websocket::is_upgrade(req)) {
-        // Resuelve tenant desde la sesión (token en query string ?auth_token=
-        // o header Authorization, ver auth::extractAuthTokenFromRequest --
-        // el handshake WS del navegador no permite headers custom, así que
-        // el cliente debe pasar el token como query param). Sin sesión
-        // válida, la conexión igual se acepta (compat con el eco original y
-        // con clientes que no necesitan push, p.ej. tests), pero
-        // simplemente no se registra en WsRegistry => no recibe push de
-        // ningún tenant (fail-closed: nunca queda suscrito "por defecto" a
-        // datos de otro tenant).
-        const auto query = http_utils::parseQueryString(std::string(req.target()));
-        const auto authSession = auth::resolveAuthSession(req, query);
-        const std::string tenantId = authSession ? authSession->tenantId : std::string();
+    // Bucle keep-alive (2026-08-02). Antes este handler leía UNA request,
+    // respondía y cerraba el socket: cada llamada a la API costaba un
+    // handshake TCP completo + el spawn de un hilo del SO nuevo (ver el accept
+    // loop en main(), que hace std::thread(session, ...).detach()). Una carga
+    // típica del dashboard dispara decenas de requests, así que el coste era
+    // decenas de handshakes + decenas de hilos por pantalla. Reutilizando la
+    // conexión, esa misma pantalla usa 1 handshake y 1 hilo.
+    for (int served = 0; served < kMaxRequestsPerConnection; ++served) {
+        http::request<http::string_body> req;
+        http::read(stream, buffer, req, ec);
+        if (ec) return;
 
-        // IMPORTANTE: el socket liberado de `stream` pertenece al io_context
-        // *global* del accept loop (ver `asio::io_context ioc{1}` en main()),
-        // que jamás se pumpea con `.run()` -- el accept loop usa
-        // `acceptor.accept()` SÍNCRONO en un bucle infinito, así que ningún
-        // `async_*` colgado de ese io_context terminaría de ejecutarse jamás
-        // (confirmado en pruebas: `ws_.async_accept()` nunca completaba, el
-        // handshake WS se colgaba indefinidamente sin error ni log -- el eco
-        // "original" de este archivo nunca funcionó realmente sobre la red).
-        // Cada conexión WS ya corre en su propio hilo dedicado (detached, ver
-        // el bucle de accept), así que la forma más simple y correcta de
-        // arreglarlo sin rediseñar el modelo de concurrencia del resto del
-        // servidor es: crear un io_context propio para ESTE hilo y
-        // bloquearlo en `ioc.run()` hasta que la sesión WS termine. El socket
-        // ya conectado se puede re-adjuntar (asio::ip::tcp::socket admite
-        // moverse de un io_context a otro vía su release_socket()/protocolo
-        // nativo) usando `native_handle()` + `assign()`.
-        auto wsIoc = std::make_shared<net::io_context>(1);
-        auto releasedSocket = stream.release_socket();
-        const auto proto = releasedSocket.local_endpoint().protocol();
-        const auto nativeHandle = releasedSocket.release();
-        tcp::socket wsSocket(*wsIoc, proto, nativeHandle);
-        // Se pasa `req` (ya leído arriba vía http::read) al accept: evita
-        // que Beast intente releer el handshake HTTP del socket (ver
-        // comentario en websocket_session.hpp::run(req) -- causaba
-        // "gracefully closed" en pruebas reales contra el stack).
-        std::make_shared<WebSocketSession>(std::move(wsSocket), tenantId)->run(req);
-        wsIoc->run();
-        return;
+        // Las ramas WS y SSE de abajo se apropian del socket para toda la vida
+        // de la conexión (o la liberan a otro io_context), así que siempre
+        // hacen `return` — nunca vuelven al bucle keep-alive.
+        if (websocket::is_upgrade(req)) {
+            // Resuelve tenant desde la sesión (token en query string ?auth_token=
+            // o header Authorization, ver auth::extractAuthTokenFromRequest --
+            // el handshake WS del navegador no permite headers custom, así que
+            // el cliente debe pasar el token como query param). Sin sesión
+            // válida, la conexión igual se acepta (compat con el eco original y
+            // con clientes que no necesitan push, p.ej. tests), pero
+            // simplemente no se registra en WsRegistry => no recibe push de
+            // ningún tenant (fail-closed: nunca queda suscrito "por defecto" a
+            // datos de otro tenant).
+            const auto query = http_utils::parseQueryString(std::string(req.target()));
+            const auto authSession = auth::resolveAuthSession(req, query);
+            const std::string tenantId = authSession ? authSession->tenantId : std::string();
+
+            // IMPORTANTE: el socket liberado de `stream` pertenece al io_context
+            // *global* del accept loop (ver `asio::io_context ioc{1}` en main()),
+            // que jamás se pumpea con `.run()` -- el accept loop usa
+            // `acceptor.accept()` SÍNCRONO en un bucle infinito, así que ningún
+            // `async_*` colgado de ese io_context terminaría de ejecutarse jamás
+            // (confirmado en pruebas: `ws_.async_accept()` nunca completaba, el
+            // handshake WS se colgaba indefinidamente sin error ni log -- el eco
+            // "original" de este archivo nunca funcionó realmente sobre la red).
+            // Cada conexión WS ya corre en su propio hilo dedicado (detached, ver
+            // el bucle de accept), así que la forma más simple y correcta de
+            // arreglarlo sin rediseñar el modelo de concurrencia del resto del
+            // servidor es: crear un io_context propio para ESTE hilo y
+            // bloquearlo en `ioc.run()` hasta que la sesión WS termine. El socket
+            // ya conectado se puede re-adjuntar (asio::ip::tcp::socket admite
+            // moverse de un io_context a otro vía su release_socket()/protocolo
+            // nativo) usando `native_handle()` + `assign()`.
+            auto wsIoc = std::make_shared<net::io_context>(1);
+            auto releasedSocket = stream.release_socket();
+            const auto proto = releasedSocket.local_endpoint().protocol();
+            const auto nativeHandle = releasedSocket.release();
+            tcp::socket wsSocket(*wsIoc, proto, nativeHandle);
+            // Se pasa `req` (ya leído arriba vía http::read) al accept: evita
+            // que Beast intente releer el handshake HTTP del socket (ver
+            // comentario en websocket_session.hpp::run(req) -- causaba
+            // "gracefully closed" en pruebas reales contra el stack).
+            std::make_shared<WebSocketSession>(std::move(wsSocket), tenantId)->run(req);
+            wsIoc->run();
+            return;
+        }
+
+        // SSE de KPIs en vivo (push, sin polling)
+        if (req.target().starts_with("/api/live/kpi")) {
+            handleLiveKpiSse(stream, req);
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+            return;
+        }
+
+        // SSE del chatbot minero (streaming token a token de Ollama)
+        if (req.method() == http::verb::post && req.target().starts_with("/api/support/chat/stream")) {
+            handleChatStreamSse(stream, req);
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+            return;
+        }
+
+        std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+        auto res = gRouter.dispatch(req, dataRoot);
+
+        // Red de seguridad de framing: con una conexión de una sola request,
+        // una respuesta sin Content-Length se delimitaba sola al cerrar el
+        // socket. Reutilizando la conexión eso ya no vale — sin Content-Length
+        // el cliente no sabe dónde termina el cuerpo y la conexión queda
+        // desincronizada (la siguiente respuesta se lee como basura). Hoy
+        // todos los constructores de http_utils ya llaman prepare_payload();
+        // repetirlo aquí es idempotente (recalcula el mismo Content-Length) y
+        // evita que un handler futuro que lo olvide corrompa la conexión.
+        res.prepare_payload();
+
+        // El cliente decide: si mandó `Connection: close` (o HTTP/1.0 sin
+        // keep-alive) se respeta y se cierra. Beast emite la cabecera
+        // `Connection` correcta a partir de este flag.
+        const bool reuse = req.keep_alive() && keepAliveTimeout > 0 &&
+                           served + 1 < kMaxRequestsPerConnection;
+        res.keep_alive(reuse);
+
+        http::write(stream, res, ec);
+        if (ec || !reuse) break;
+
+        // Ventana de espera por la siguiente request en esta conexión. Se
+        // aplica DESPUÉS de responder la primera: así el camino de una sola
+        // request (y las ramas WS/SSE de arriba, que ya retornaron) se comporta
+        // exactamente igual que antes, y el timeout solo gobierna el tiempo
+        // ocioso entre requests. Si expira, http::read() falla y el hilo se
+        // libera.
+        setSocketReceiveTimeout(stream, keepAliveTimeout);
     }
 
-    // SSE de KPIs en vivo (push, sin polling)
-    if (req.target().starts_with("/api/live/kpi")) {
-        handleLiveKpiSse(stream, req);
-        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
-        return;
-    }
-
-    std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
-    auto res = gRouter.dispatch(req, dataRoot);
-    http::write(stream, res, ec);
     stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
 }
 
@@ -1539,6 +1985,47 @@ int main() {
         auto &cfg = AppConfig::instance();
         cfg.loadFromEnv();
 
+        // ── Migración de credenciales a Argon2id (auditoría 2026-08-02) ──
+        // Idempotente: en arranques posteriores no encuentra nada que hacer y
+        // sale en una consulta. Se ejecuta ANTES de aceptar tráfico para que no
+        // quede ni una ventana sirviendo peticiones con hashes legados crudos
+        // en la base. Un fallo aquí no impide arrancar: se registra y el
+        // esquema legado sigue verificando, como antes.
+#if HAS_LIBPQ
+        if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+            const auto mig = migrateLegacyPasswordHashesPg(cfg.gDatabaseUrl);
+            if (!mig.error.empty()) {
+                std::cerr << "[AUTH_PASSWORD] migracion Argon2id no ejecutada: "
+                          << mig.error << std::endl;
+            } else if (mig.scanned > 0) {
+                std::cout << "[AUTH_PASSWORD] migracion Argon2id: "
+                          << mig.migrated << "/" << mig.scanned
+                          << " hashes legados envueltos, " << mig.failed
+                          << " fallidos." << std::endl;
+            }
+            if (mig.remainingRaw > 0) {
+                std::cerr << "[AUTH_PASSWORD] ATENCION: quedan "
+                          << mig.remainingRaw
+                          << " hashes legados CRUDOS en auth_users." << std::endl;
+            }
+            if (mig.remainingWrapped > 0) {
+                std::cout << "[AUTH_PASSWORD] " << mig.remainingWrapped
+                          << " credenciales envueltas pendientes de rehash real "
+                             "(se completa en el proximo login de cada usuario)."
+                          << std::endl;
+            }
+        }
+#endif
+        if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+            const int migratedFile = auth::migrateLegacyPasswordHashesFile(
+                getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data"));
+            if (migratedFile > 0) {
+                std::cout << "[AUTH_PASSWORD] migracion Argon2id (modo File): "
+                          << migratedFile << " credenciales envueltas."
+                          << std::endl;
+            }
+        }
+
         const std::string address = getenvOr("BEEMETRY_MAPAS_BIND_ADDRESS", "0.0.0.0");
         const int port = std::stoi(getenvOr("BEEMETRY_MAPAS_PORT", "8081"));
 
@@ -1557,6 +2044,7 @@ int main() {
         map_mod::registerRoutes(gRouter);
         gdal_mod::registerRoutes(gRouter);
         text_mod::registerRoutes(gRouter);
+        support_mod::registerRoutes(gRouter);
         registerRemainingRoutes(gRouter);
 
         // ADR-034: motor de alarmas (evaluador de reglas en segundo plano,

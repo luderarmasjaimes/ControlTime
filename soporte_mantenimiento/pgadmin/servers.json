@@ -1,0 +1,24 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "AURIXA - sensors_db (TimescaleDB)",
+      "Group": "AURIXA",
+      "Host": "aurixa-db",
+      "Port": 5432,
+      "MaintenanceDB": "sensors_db",
+      "Username": "sensors",
+      "SSLMode": "prefer",
+      "Comment": "BD de telemetria minera. Password: sensors_pass"
+    },
+    "2": {
+      "Name": "AURIXA - formula (motor FORMULA)",
+      "Group": "AURIXA",
+      "Host": "aurixa-formula-db",
+      "Port": 5432,
+      "MaintenanceDB": "formula",
+      "Username": "formula",
+      "SSLMode": "prefer",
+      "Comment": "BD del motor FORMULA. Password: formula"
+    }
+  }
+}

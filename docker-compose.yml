@@ -403,6 +403,12 @@ services:
       # error claro en vez de bloquear el arranque del backend.
       - BEEMETRY_PDF_EXPORT_URL=http://pdf_export:4000
       - BEEMETRY_PDF_EXPORT_TIMEOUT_MS=45000
+      # Export PPTX/MP4 (modo presentación, mismo sidecar Chromium): carpeta
+      # compartida con pdf_export (mismo volumen ./data:/data que ya monta
+      # este servicio) donde caen los archivos generados. Vacío = deshabilitado.
+      - BEEMETRY_EXPORT_DATA_ROOT=/data/export
+      - BEEMETRY_PPTX_EXPORT_TIMEOUT_MS=60000
+      - BEEMETRY_VIDEO_EXPORT_TIMEOUT_MS=180000
       # Origen público desde el que Chromium debe llegar al frontend para
       # renderizar el informe (nombre de servicio interno, no localhost).
       - BEEMETRY_FRONTEND_INTERNAL_ORIGIN=http://frontend
@@ -410,10 +416,32 @@ services:
       - BEEMETRY_LANGUAGETOOL_URL=http://languagetool:8010
       - BEEMETRY_LANGUAGETOOL_TIMEOUT_MS=60000
       # Ollama opcional: reescritura local en /api/text/rewrite. Ejecutar: scripts/ensure-ollama-model.ps1
+      # gemma2:2b reemplaza a tinyllama (2026-07-22) -- tinyllama alucinaba
+      # contenido sin relación con el texto de entrada, verificado en vivo.
       - BEEMETRY_OLLAMA_URL=http://ollama:11434
-      - BEEMETRY_OLLAMA_MODEL=${BEEMETRY_OLLAMA_MODEL:-tinyllama}
+      - BEEMETRY_OLLAMA_MODEL=${BEEMETRY_OLLAMA_MODEL:-gemma2:2b}
+      - BEEMETRY_OLLAMA_APA7_MODEL=${BEEMETRY_OLLAMA_APA7_MODEL:-qwen2.5:7b}
       - BEEMETRY_OLLAMA_TIMEOUT_MS=180000
+      # Tavily (api.tavily.com): proveedor de búsqueda PREFERIDO para
+      # referencias bibliográficas -- free tier mensual recurrente (1000
+      # búsquedas/mes), pensado para IA/RAG. Si se define, tiene prioridad
+      # sobre Serper. Crear cuenta gratis en tavily.com.
+      - BEEMETRY_TAVILY_API_KEY=${BEEMETRY_TAVILY_API_KEY:-}
+      # Serper.dev: proveedor de RESPALDO (se usa solo si Tavily no está
+      # configurado) para /api/text/search-references -- vacío por defecto,
+      # ese endpoint responde 503 "search_not_configured" hasta que se
+      # defina Tavily o Serper en el .env del host.
+      - BEEMETRY_SERPER_API_KEY=${BEEMETRY_SERPER_API_KEY:-}
       - BEEMETRY_TEXT_SPELL_MAX_CHARS=30000
+      # WhatsApp Business Cloud API (Meta) -- chatbot minero / escalamiento a
+      # soporte humano (backend/src/support/). Credenciales SOLO vía .env
+      # del host (nunca hardcodeadas aquí ni en el repo).
+      - BEEMETRY_WHATSAPP_API_VERSION=${BEEMETRY_WHATSAPP_API_VERSION:-v22.0}
+      - BEEMETRY_WHATSAPP_PHONE_NUMBER_ID=${BEEMETRY_WHATSAPP_PHONE_NUMBER_ID:-}
+      - BEEMETRY_WHATSAPP_BUSINESS_ACCOUNT_ID=${BEEMETRY_WHATSAPP_BUSINESS_ACCOUNT_ID:-}
+      - BEEMETRY_WHATSAPP_ACCESS_TOKEN=${BEEMETRY_WHATSAPP_ACCESS_TOKEN:-}
+      - BEEMETRY_WHATSAPP_SUPPORT_TO_E164=${BEEMETRY_WHATSAPP_SUPPORT_TO_E164:-}
+      - BEEMETRY_OLLAMA_CHATBOT_MODEL=${BEEMETRY_OLLAMA_CHATBOT_MODEL:-qwen2.5:7b}
       - BEEMETRY_CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
       - BEEMETRY_OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
       - BEEMETRY_AI_ENGINE_TIMEOUT_MS=3000
@@ -440,6 +468,23 @@ services:
       # Un despliegue real detrás de un balanceador con TLS (ADR-054) debe
       # quitar este override (el default en código ya es `true`).
       - BEEMETRY_AUTH_COOKIE_SECURE=${BEEMETRY_AUTH_COOKIE_SECURE:-false}
+      # Same-origin local; en producción debe ser el/los origen(es) HTTPS
+      # público(s) exacto(s). ADR-081: admite lista separada por comas para
+      # soportar más de un frontend (mismo backend).
+      - BEEMETRY_CORS_ALLOWED_ORIGIN=${BEEMETRY_CORS_ALLOWED_ORIGIN:-http://localhost:5173}
+      # ADR-077: Argon2id. El salt es aleatorio por credencial; estos parámetros
+      # son ajustables sin almacenar secretos globales.
+      - BEEMETRY_ARGON2_TIME_COST=${BEEMETRY_ARGON2_TIME_COST:-3}
+      - BEEMETRY_ARGON2_MEMORY_KIB=${BEEMETRY_ARGON2_MEMORY_KIB:-65536}
+      - BEEMETRY_ARGON2_PARALLELISM=${BEEMETRY_ARGON2_PARALLELISM:-1}
+      # Solo para verificar hashes históricos hasta que todos migren al login.
+      - BEEMETRY_AUTH_LEGACY_PASSWORD_SALT=${BEEMETRY_AUTH_LEGACY_PASSWORD_SALT:-mining_local_salt_change_me}
+      # Sin default: si no está en .env, el backend rechaza exportar/importar
+      # .mreport con "export_key_not_configured" en vez de cifrarlos con una
+      # clave que está publicada en este repositorio (auditoría 2026-08-02).
+      # Para desarrollo local: BEEMETRY_ALLOW_DEV_SECRETS=true.
+      - BEEMETRY_REPORT_EXPORT_KEY=${BEEMETRY_REPORT_EXPORT_KEY:-}
+      - BEEMETRY_ALLOW_DEV_SECRETS=${BEEMETRY_ALLOW_DEV_SECRETS:-}
       - BEEMETRY_MINING_GATEWAY_PORT=8443
       - BEEMETRY_TLS_CERT_PATH=/etc/mining-gateway/certs/server.crt
       - BEEMETRY_TLS_KEY_PATH=/etc/mining-gateway/certs/server.key
@@ -690,25 +735,48 @@ services:
     expose:
       - "11434"
     environment:
-      # Keep tinyllama hot in memory permanently (no first-call cold start)
+      # Keep the model hot in memory permanently (no first-call cold start)
       - OLLAMA_KEEP_ALIVE=-1
       - OLLAMA_NUM_PARALLEL=4
       - OLLAMA_MAX_LOADED_MODELS=2
-    # Precarga el modelo en el primer arranque (idempotente: si ya existe es no-op)
+      # ADR-068 (2026-07-24): tinyllama (1.1B) alucinaba contenido sin
+      # ninguna relación con el texto de entrada en /api/text/rewrite,
+      # verificado en vivo -- inutilizable incluso para reescritura simple,
+      # y mucho menos para dar formato a citas APA 7 sin inventar datos.
+      # gemma2:2b (probado en vivo: reescritura fiel al original + formato
+      # APA 7 correcto de una cita real dada) requiere ~3.1GB de RAM.
+      #
+      # Benchmark de esfuerzo continuo 2026-07-22 (20 iteraciones c/u, rewrite
+      # + APA7) comparando gemma2:2b vs qwen2.5:7b: qwen2.5:7b fue 100% fiel
+      # en APA7 (gemma2:2b cayó a 75%, devolviendo un placeholder literal
+      # "Author, Year..." con autor vacío), pero en rewrite qwen2.5:7b filtró
+      # texto en chino dentro de una respuesta en español en 2/20 corridas
+      # (reproducible con el mismo caso de prueba) y fue ~2.4x más lento
+      # (p50 18s vs 7s). Por eso se usa un modelo por tarea: qwen2.5:7b SOLO
+      # para APA7 (acción puntual, tolera más latencia), gemma2:2b para
+      # rewrite (interactivo, no mostró el filtrado de chino). Ambos se
+      # mantienen cargados en RAM (OLLAMA_MAX_LOADED_MODELS=2 abajo) -- por
+      # eso el límite de memoria subió de 4GB a 12GB (host con margen real
+      # verificado al momento de este cambio).
+      - BEEMETRY_OLLAMA_MODEL=${BEEMETRY_OLLAMA_MODEL:-gemma2:2b}
+      - BEEMETRY_OLLAMA_APA7_MODEL=${BEEMETRY_OLLAMA_APA7_MODEL:-qwen2.5:7b}
+    # Precarga ambos modelos en el primer arranque (idempotente: si ya existen es no-op)
     entrypoint: ["/bin/sh","-c"]
     command:
       - |
         /bin/ollama serve &
         SERVER_PID=$$!
         until /bin/ollama list >/dev/null 2>&1; do sleep 1; done
-        /bin/ollama pull tinyllama || true
-        # Trigger model load into RAM (keeps it hot due to KEEP_ALIVE=-1)
-        /bin/ollama run tinyllama "ready" >/dev/null 2>&1 || true
+        /bin/ollama pull "$$BEEMETRY_OLLAMA_MODEL" || true
+        /bin/ollama pull "$$BEEMETRY_OLLAMA_APA7_MODEL" || true
+        # Trigger ambos modelos a cargar en RAM (se mantienen calientes por KEEP_ALIVE=-1)
+        /bin/ollama run "$$BEEMETRY_OLLAMA_MODEL" "ready" >/dev/null 2>&1 || true
+        /bin/ollama run "$$BEEMETRY_OLLAMA_APA7_MODEL" "ready" >/dev/null 2>&1 || true
         wait $$SERVER_PID
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q tinyllama || exit 1"]
+      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q \"${BEEMETRY_OLLAMA_MODEL:-gemma2:2b}\" && ollama list 2>/dev/null | grep -q \"${BEEMETRY_OLLAMA_APA7_MODEL:-qwen2.5:7b}\" || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 30
@@ -716,11 +784,17 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2'
-          memory: 2048M
+          # Corrección 2026-07-29: estaba en 2 CPU en un host de 20 núcleos --
+          # la inferencia de Ollama corre 100% en CPU (sin GPU mapeada) y es
+          # el cuello de botella real detrás de la demora reportada en el
+          # chatbot minero (más determinante que el modelo elegido). 6 deja
+          # margen para el resto de contenedores (mining_gateway usa 6,
+          # OpenCV 4, ver BEEMETRY_MINING_GATEWAY_THREADS/OPENCV_THREADS).
+          cpus: '6'
+          memory: 12288M
         reservations:
           cpus: '0.5'
-          memory: 512M
+          memory: 1024M
 
   frontend:
     container_name: beemetry-web
@@ -772,6 +846,23 @@ services:
     environment:
       - PDF_RENDER_ALLOWED_HOST=frontend
       - PDF_RENDER_TIMEOUT_MS=30000
+      # ADR-080: contraseña de PROPIETARIO del PDF cifrado (permisos —
+      # imprimir sí, copiar/editar no). Nunca se entrega al usuario final;
+      # solo la contraseña de usuario (generada por descarga) se muestra en
+      # el frontend. Obligatoria en producción (ver docker-compose.prod.yml),
+      # el fallback del código solo aplica en desarrollo local.
+      # Sin default: el valor de desarrollo es público (está en el repo) y
+      # dejaría todos los PDF exportados sin protección real. Si falta, el
+      # servicio no arranca salvo PDF_ALLOW_DEV_SECRETS=true (auditoría
+      # 2026-08-02).
+      - PDF_OWNER_PASSWORD_SECRET=${PDF_OWNER_PASSWORD_SECRET:-}
+      - PDF_ALLOW_DEV_SECRETS=${PDF_ALLOW_DEV_SECRETS:-}
+      # Misma carpeta que BEEMETRY_EXPORT_DATA_ROOT en el backend (comparten
+      # el volumen ./data:/data) — el backend solo persiste esta ruta como
+      # report_export_job.storage_uri y sirve el archivo desde ahí.
+      - EXPORT_DATA_ROOT=/data/export
+    volumes:
+      - ./data:/data
     networks:
       - default
     expose:

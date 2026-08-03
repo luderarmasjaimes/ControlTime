@@ -5,6 +5,12 @@
 **Autores**: EC
 **Ámbito**: plataforma
 
+**Actualización 2026-07-27:** Catch2 y `ctest` se integraron en la etapa
+builder productiva: la imagen no se genera si falla el backend. ADR-076/077
+añaden regresiones de formato/unicidad CSPRNG, secretos de 256 bits, Argon2id
+con salt aleatorio, contraseña inválida y detección/verificación legacy. La
+última compilación reportó **100 % tests passed, 0 failed**.
+
 ## Contexto
 
 El relevamiento hecho para redactar el Plan Maestro de Pruebas QA (ADR-059) confirmó que el backend C++ **nunca tuvo un solo test automatizado**: cero archivos de test bajo `backend/`, sin GoogleTest/Catch2/doctest, sin target de test en `CMakeLists.txt`. El frontend sí tiene cobertura real (Vitest: 5 suites; Playwright: 5 specs e2e) — la brecha es específicamente del lado del servidor.

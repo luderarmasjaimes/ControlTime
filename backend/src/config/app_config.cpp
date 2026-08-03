@@ -1,10 +1,13 @@
 #include "app_config.hpp"
 
+#include <openssl/rand.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
-#include <random>
+#include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 // Detección de libpq para decidir el modo de almacenamiento.
@@ -29,11 +32,15 @@ std::string getenvOr(const char *key, const std::string &fallback) {
 
 /** @brief Clave aleatoria de 256 bits (hex) — solo como último recurso si JWT_SECRET no está fijado. */
 static std::string makeEphemeralSecret() {
-    std::random_device rd;
-    std::mt19937_64 rng(rd());
-    std::uniform_int_distribution<unsigned long long> dist;
+    unsigned char bytes[32];
+    if (RAND_bytes(bytes, sizeof(bytes)) != 1) {
+        throw std::runtime_error("OpenSSL CSPRNG unavailable for JWT secret");
+    }
     std::ostringstream oss;
-    oss << std::hex << dist(rng) << dist(rng) << dist(rng) << dist(rng);
+    oss << std::hex << std::setfill('0');
+    for (const auto value : bytes) {
+        oss << std::setw(2) << static_cast<unsigned int>(value);
+    }
     return oss.str();
 }
 
@@ -65,22 +72,15 @@ void AppConfig::loadFromEnv() {
                      "reinicio/reescalado). Fije JWT_SECRET en produccion."
                   << std::endl;
     }
-    // Auditoría de seguridad 2026-07-13: BEEMETRY_AUTH_PASSWORD_SALT no está
-    // definido en este entorno — hashPassword() (http_utils.cpp) cae a un
-    // literal hardcodeado. A diferencia de JWT_SECRET, NO se puede generar
-    // una clave efímera aquí como mitigación: los hashes de contraseña ya
-    // persistidos en la base de datos real fueron calculados con ese mismo
-    // literal — cambiar el valor (efímero o no) invalidaría de golpe el
-    // login de TODOS los usuarios existentes. Se deja como advertencia
-    // visible en logs de arranque; corregirlo de raíz requiere fijar la
-    // variable Y coordinar un reset/rehash de contraseñas existentes en una
-    // ventana de mantenimiento — no algo para resolver solo, silenciosamente.
-    if (getenvOr("BEEMETRY_AUTH_PASSWORD_SALT", "").empty()) {
-        std::cerr << "[AUTH_PASSWORD] ADVERTENCIA: BEEMETRY_AUTH_PASSWORD_SALT "
-                     "no definido; usando salt hardcodeado de desarrollo. Fijar "
-                     "esta variable en produccion requiere ademas re-hashear o "
-                     "forzar reset de las contrasenas existentes (cambiar solo "
-                     "la variable invalida todos los logins actuales)."
+    // ADR-077: las credenciales nuevas usan Argon2id con salt aleatorio por
+    // contraseña. Esta variable solo conserva compatibilidad con el esquema
+    // legado durante el rehash oportunista al siguiente login correcto.
+    if (getenvOr("BEEMETRY_AUTH_LEGACY_PASSWORD_SALT", "").empty() &&
+        getenvOr("BEEMETRY_AUTH_PASSWORD_SALT", "").empty()) {
+        std::cerr << "[AUTH_PASSWORD] AVISO MIGRACION: no se definio "
+                     "BEEMETRY_AUTH_LEGACY_PASSWORD_SALT; el verificador legado "
+                     "usara el valor historico. Las credenciales nuevas ya usan "
+                     "Argon2id y las antiguas se actualizan al iniciar sesion."
                   << std::endl;
     }
     try {
@@ -119,6 +119,47 @@ void AppConfig::loadFromEnv() {
     } catch (...) {
         gPdfExportTimeoutMs = 45000;
     }
+    gExportDataRoot = getenvOr("BEEMETRY_EXPORT_DATA_ROOT", "");
+    try {
+        gPptxExportTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_PPTX_EXPORT_TIMEOUT_MS", "60000")), 1000, 300000);
+    } catch (...) {
+        gPptxExportTimeoutMs = 60000;
+    }
+    try {
+        gVideoExportTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_VIDEO_EXPORT_TIMEOUT_MS", "180000")), 1000, 900000);
+    } catch (...) {
+        gVideoExportTimeoutMs = 180000;
+    }
+    gIgpApiBaseUrl = getenvOr("BEEMETRY_IGP_API_BASE_URL", "https://ultimosismo.igp.gob.pe");
+    try {
+        gIgpTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_IGP_TIMEOUT_MS", "4000")), 500, 15000);
+    } catch (...) {
+        gIgpTimeoutMs = 4000;
+    }
+
+    gWhatsappApiBaseUrl = getenvOr("BEEMETRY_WHATSAPP_API_BASE_URL", "graph.facebook.com");
+    gWhatsappApiVersion = getenvOr("BEEMETRY_WHATSAPP_API_VERSION", "v22.0");
+    gWhatsappPhoneNumberId = getenvOr("BEEMETRY_WHATSAPP_PHONE_NUMBER_ID", "");
+    gWhatsappAccessToken = getenvOr("BEEMETRY_WHATSAPP_ACCESS_TOKEN", "");
+    gWhatsappBusinessAccountId = getenvOr("BEEMETRY_WHATSAPP_BUSINESS_ACCOUNT_ID", "");
+    gWhatsappSupportToE164 = getenvOr("BEEMETRY_WHATSAPP_SUPPORT_TO_E164", "");
+    gWhatsappTemplateName = getenvOr("BEEMETRY_WHATSAPP_TEMPLATE_NAME", "hello_world");
+    gWhatsappTemplateLang = getenvOr("BEEMETRY_WHATSAPP_TEMPLATE_LANG", "en_US");
+    try {
+        gWhatsappTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_WHATSAPP_TIMEOUT_MS", "8000")), 1000, 30000);
+    } catch (...) {
+        gWhatsappTimeoutMs = 8000;
+    }
+    if (gWhatsappAccessToken.empty()) {
+        std::cerr << "[WHATSAPP] BEEMETRY_WHATSAPP_ACCESS_TOKEN vacio -- el escalamiento a "
+                     "soporte humano por WhatsApp respondera whatsapp_not_configured."
+                  << std::endl;
+    }
+    gOllamaChatbotModel = getenvOr("BEEMETRY_OLLAMA_CHATBOT_MODEL", "gemma2:2b");
     gAiEngineUrl = getenvOr("BEEMETRY_AI_ENGINE_URL", "");
     gCartoonOnnxModelPath = getenvOr("BEEMETRY_CARTOON_ONNX_MODEL", "");
     try {

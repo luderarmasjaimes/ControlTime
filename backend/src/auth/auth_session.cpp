@@ -43,20 +43,109 @@ std::mutex gFileRefreshTokensMutex;
 std::unordered_map<std::string, FileRefreshTokenEntry> gFileRefreshTokens;
 } // namespace
 
+namespace {
+
+/**
+ * @brief ¿Es esta request el handshake de upgrade a WebSocket?
+ *
+ * Se comprueba `Upgrade: websocket` (case-insensitive, RFC 6455 §4.2.1) sobre
+ * la request cruda, sin depender de Boost.Beast, para poder usarlo también
+ * desde rutas HTTP normales.
+ */
+bool isWebSocketUpgrade(const http::request<http::string_body> &req) {
+  const auto it = req.find(http::field::upgrade);
+  if (it == req.end()) return false;
+  std::string value(it->value());
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return value.find("websocket") != std::string::npos;
+}
+
+}  // namespace
+
 std::string extractAuthTokenFromRequest(
     const http::request<http::string_body> &req,
-    const std::unordered_map<std::string, std::string> &query) {
-  if (auto it = query.find("auth_token"); it != query.end()) {
-    return it->second;
-  }
+    const std::unordered_map<std::string, std::string> &query,
+    AuthTokenSource *sourceOut) {
+  const auto emit = [sourceOut](AuthTokenSource s, std::string token) {
+    if (sourceOut != nullptr) *sourceOut = s;
+    return token;
+  };
+  if (sourceOut != nullptr) *sourceOut = AuthTokenSource::None;
+
+  // El header Authorization es SIEMPRE la vía preferente: lo usan los clientes
+  // de API/integraciones y no está sujeto a CSRF.
   if (auto auth = req.find(http::field::authorization); auth != req.end()) {
     const std::string value(auth->value());
     static const std::string kBearer = "Bearer ";
     if (value.rfind(kBearer, 0) == 0) {
-      return value.substr(kBearer.size());
+      const std::string bearer = value.substr(kBearer.size());
+      // Un "Bearer " vacío se ignora y se sigue con la cookie. Durante la
+      // migración a cookies (ADR-082) hay clientes que arman el header a
+      // partir de un token que ya no guardan; sin esta guarda, ese header
+      // vacío ganaría a la cookie válida y los dejaría sin sesión.
+      if (!bearer.empty()) {
+        return emit(AuthTokenSource::Header, bearer);
+      }
+    }
+  }
+
+  // Cookie HttpOnly `access_token` (ADR-082): la vía normal de la SPA. El JS de
+  // la página no puede leerla, así que un XSS no puede exfiltrar la sesión.
+  if (const std::string cookieToken = http_utils::extractCookie(req, "access_token");
+      !cookieToken.empty()) {
+    return emit(AuthTokenSource::Cookie, cookieToken);
+  }
+
+  // `?auth_token=` queda restringido al handshake WebSocket (auditoría de
+  // seguridad 2026-08-02). La API del navegador `new WebSocket(url)` no
+  // permite headers custom, así que ahí el query param es la única opción
+  // real (ver frontend/src/lib/alarmStream.ts). Pero aceptarlo en TODA ruta
+  // HTTP convertía el access token en un valor que acaba escrito en claro en
+  // el access log de nginx, en el historial del navegador, en la cache de
+  // proxies intermedios y en el header `Referer` enviado a cualquier origen
+  // externo enlazado desde esa página — un token de sesión completo filtrado
+  // por cuatro canales pasivos distintos. Limitarlo al upgrade mantiene el
+  // WebSocket funcionando y elimina la fuga en el resto de la superficie.
+  if (isWebSocketUpgrade(req)) {
+    if (auto it = query.find("auth_token"); it != query.end()) {
+      return emit(AuthTokenSource::QueryParam, it->second);
     }
   }
   return {};
+}
+
+bool csrfTokenMatches(const http::request<http::string_body> &req) {
+  const std::string cookie = http_utils::extractCookie(req, "csrf_token_v2");
+  if (cookie.empty()) return false;
+  const auto header = req.find("X-CSRF-Token");
+  if (header == req.end()) return false;
+  const std::string sent(header->value());
+  if (sent.size() != cookie.size()) return false;
+  unsigned char diff = 0;
+  for (std::size_t i = 0; i < sent.size(); ++i) {
+    diff |= static_cast<unsigned char>(sent[i]) ^ static_cast<unsigned char>(cookie[i]);
+  }
+  return diff == 0;
+}
+
+bool requiresCsrfRejection(const http::request<http::string_body> &req,
+                           AuthTokenSource source) {
+  // Solo la autenticación por cookie es CSRF-able: es la única credencial que
+  // el navegador adjunta por su cuenta a una petición originada en otro sitio.
+  if (source != AuthTokenSource::Cookie) return false;
+  switch (req.method()) {
+    case http::verb::get:
+    case http::verb::head:
+    case http::verb::options:
+      // Métodos seguros: no mutan estado. (Los handlers de este backend
+      // respetan esa semántica; si alguno dejara de hacerlo, tendría que
+      // exigir CSRF explícitamente.)
+      return false;
+    default:
+      break;
+  }
+  return !csrfTokenMatches(req);
 }
 
 void resetGlassesEmaState(GlassesEmaState &s) {
@@ -136,7 +225,7 @@ std::string resolveRoleForUsername(const std::string &username) {
 }
 
 std::string makeSessionToken() {
-  return http_utils::makeId() + http_utils::makeId();
+  return http_utils::secureRandomHex(32);
 }
 
 /** @brief Construye+firma el access token JWT para `user`, con TTL de config::AppConfig::gJwtAccessTtlMinutes. */

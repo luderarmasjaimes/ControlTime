@@ -12,7 +12,7 @@ import {
   Underline,
   Highlighter,
 } from 'lucide-react';
-import { useEditorStore, defaultBorderByType, resolvePagePaperSetup, type ReportElement, type ReportPage } from '../../store/useEditorStore';
+import { useEditorStore, defaultBorderByType, resolvePagePaperSetup, tocSliceForElementId, type ReportElement, type ReportPage } from '../../store/useEditorStore';
 import { getReportLayoutMetrics } from '../../lib/reportLayoutMetrics';
 import { getSession } from '../../../../auth/authStorage';
 import { resolveMiningUnitName } from '../../lib/sessionChrome';
@@ -36,12 +36,13 @@ import {
 import { textForSpellOrRewrite } from '../../lib/textSpellUtils';
 import { measurePerfAsync } from '../../lib/performanceMonitor';
 import { resolveReportImageSrc } from '../../lib/reportImageSrc';
+import { fixRecordedVideoElement } from '../../lib/videoDurationFix';
 import LiveChartBlock from '../dashboard/LiveChartBlock';
 import TableBlock from './TableBlock';
 import SensorWidget from './SensorWidget';
 import MiningKpiWidget from './MiningKpiWidget';
+import SeismicReportWidget from './SeismicReportWidget';
 import FloatingContextualToolbar from './FloatingContextualToolbar';
-import { generateTocData } from './TableOfContents';
 import { getTenantLogoDataUrl } from '../../lib/tenantLogo';
 import ColorPalette from '../shared/ColorPalette';
 import {
@@ -56,7 +57,9 @@ import {
   getEffectiveStyleAt,
 } from '../../lib/textSpans';
 import { registerActiveTextFormatHandler, registerActiveCaseHandler } from '../../lib/activeTextFormatBridge';
+import { applyListToText, stripListMarkers } from '../../lib/listFormatting';
 import { SELECTION_HEADING_OPTIONS, findHeadingStyle } from '../../lib/headingStyles';
+import { findCoverTemplate } from '../../lib/coverTemplates';
 
 const GRID = 12;
 
@@ -171,26 +174,6 @@ function getTextProps(element: ReportElement): TextProps {
     highlightColor: String(props.highlightColor ?? DEFAULT_TEXT_PROPS.highlightColor),
     spans: sanitizeSpans(props.spans, text.length),
   };
-}
-
-function applyListToText(rawText: string, listType: string): string {
-  if (listType === 'none') {
-    return rawText;
-  }
-
-  const lines = rawText.split('\n');
-  if (listType === 'bullet') {
-    return lines.map((line) => (line.trim() ? `• ${line.replace(/^•\s*/, '')}` : line)).join('\n');
-  }
-
-  return lines
-    .map((line, index) => {
-      if (!line.trim()) {
-        return line;
-      }
-      return `${index + 1}. ${line.replace(/^\d+\.\s*/, '')}`;
-    })
-    .join('\n');
 }
 
 function normalizeDictationText(rawText: string): string {
@@ -788,11 +771,25 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   // formato (ver más abajo) quedaría desactualizado hasta la próxima tecla.
   // Se incrementa en onSelect/onMouseUp/onKeyUp del textarea.
   const [selectionTick, setSelectionTick] = useState(0);
+  // Cursor visual propio (bug real reportado 2026-07-27): el <textarea>
+  // invisible es quien controla dónde aparece el caret NATIVO del
+  // navegador, pero su propio motor de layout (centrado/alineado, negrita,
+  // tamaños grandes tipo "Título") no calcula el ancho del texto pixel a
+  // pixel IGUAL que el overlay fantasma de abajo — con texto centrado o
+  // en negrita/tamaño grande, ambos divergen lo suficiente para que el
+  // caret nativo se vea "flotando" dentro de una palabra en vez de al
+  // final del texto, aunque el índice de carácter (selectionStart) sea
+  // correcto (escribir sí inserta en el lugar correcto — el problema es
+  // puramente visual). Se resuelve dibujando un caret propio, posicionado
+  // con la Range API sobre el DOM REAL del overlay (que es exactamente lo
+  // que el usuario ve) en vez de confiar en el caret nativo del textarea.
+  const ghostWrapRef = useRef<HTMLDivElement | null>(null);
+  const [caretRect, setCaretRect] = useState<{ left: number; top: number; height: number } | null>(null);
   const layoutMode = useEditorStore((s) =>
     s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
   );
   // Tamaño/orientación EFECTIVOS de esta página: su propio override si lo
-  // tiene (ADR pendiente: secciones por página, estilo Word), si no el del
+  // tiene (ADR-052: tamaño/orientación por página), si no el del
   // documento — ver `resolvePagePaperSetup`.
   const docPaperSize = useEditorStore((s) => s.doc.meta?.paperSize);
   const docOrientation = useEditorStore((s) => s.doc.meta?.orientation);
@@ -1012,6 +1009,85 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
       registerActiveCaseHandler(null);
     };
   }, [openTextEditorId]);
+
+  // Recalcula el cursor visual propio (ver comentario de `caretRect` más
+  // arriba) cada vez que cambia la selección o el texto. Solo cubre el
+  // caso de cursor COLAPSADO (sin nada seleccionado, el 99% del tecleo
+  // normal) — con una selección real, el resaltado propio que ya pinta el
+  // overlay (ver `getLiveSelectionRange`) sigue siendo suficiente
+  // indicación visual, y el caret nativo del navegador para ese caso no
+  // es el que el usuario reportó como confuso.
+  useEffect(() => {
+    if (!openTextEditorId) {
+      setCaretRect(null);
+      return;
+    }
+    const ta = activeTextareaRef.current;
+    const ghost = ghostWrapRef.current;
+    if (!ta || !ghost) {
+      setCaretRect(null);
+      return;
+    }
+    const start = ta.selectionStart ?? 0;
+    const end = ta.selectionEnd ?? 0;
+    if (start !== end) {
+      setCaretRect(null);
+      return;
+    }
+    try {
+      let remaining = start;
+      let targetNode: Node | null = null;
+      let targetOffset = 0;
+      const walk = (node: Node): boolean => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const len = node.textContent?.length ?? 0;
+          if (remaining <= len) {
+            targetNode = node;
+            targetOffset = remaining;
+            return true;
+          }
+          remaining -= len;
+          return false;
+        }
+        for (const child of Array.from(node.childNodes)) {
+          if (walk(child)) return true;
+        }
+        return false;
+      };
+      walk(ghost);
+      if (!targetNode) {
+        setCaretRect(null);
+        return;
+      }
+      const range = document.createRange();
+      range.setStart(targetNode, targetOffset);
+      range.collapse(true);
+      let rect: DOMRect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0 && rect.top === 0 && rect.left === 0) {
+        const rects = range.getClientRects();
+        if (rects.length > 0) rect = rects[0];
+      }
+      const ghostRect = ghost.getBoundingClientRect();
+      // Altura de respaldo cuando el Range no devuelve una caja con alto
+      // (pasa con un párrafo vacío: no hay glifo que medir). Se toma del
+      // tamaño de fuente del bloque que se está editando — `textProps` de
+      // más abajo es una variable local del map de render y aquí no está en
+      // alcance, así que se resuelve el elemento por su id, igual que hacen
+      // los otros efectos keyed en `openTextEditorId`.
+      const editingEl = page.elements.find((e) => e.id === openTextEditorId);
+      const fallbackFontSize = editingEl
+        ? getTextProps(editingEl).fontSize
+        : DEFAULT_TEXT_PROPS.fontSize;
+      setCaretRect({
+        left: rect.left - ghostRect.left,
+        top: rect.top - ghostRect.top,
+        height: rect.height || fallbackFontSize * 1.2,
+      });
+    } catch {
+      setCaretRect(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTextEditorId, selectionTick, liveEdit]);
 
   useEffect(() => {
     return () => {
@@ -1543,7 +1619,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                     height: Math.max(80, element.height - 34),
                   }}
                 >
-                  <LiveChartBlock width={Math.max(120, element.width - 8)} height={Math.max(80, element.height - 34)} />
+                  <LiveChartBlock width={Math.max(120, element.width - 8)} height={Math.max(80, element.height - 34)} data={element.props} />
                 </div>
               </Html>
             ))}
@@ -1570,27 +1646,104 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
             ))}
 
           {page.elements
-            .filter((element) => element.type === 'table')
+            .filter((element) => element.type === 'seismic-report')
             .map((element) => (
-              <Html key={`${element.id}-table`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+              <Html key={`${element.id}-seismic-report`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
                 <div
-                  className={
-                    canvasTableEditId === element.id ? 'report-canvas-table-edit-host' : 'report-canvas-html-shield'
-                  }
+                  className="report-canvas-html-shield"
                   onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
                   style={{ width: element.width - 8, height: element.height - 8 }}
                 >
-                  <TableBlock
-                    {...element.props}
-                    onUpdateCells={(newRows) => {
-                      updateElement(page.page_number, element.id, {
-                        props: { ...element.props, rows: newRows },
-                      });
-                    }}
+                  <SeismicReportWidget
+                    title={element.props?.title}
+                    source={element.props?.source}
+                    startDate={element.props?.startDate}
+                    endDate={element.props?.endDate}
+                    connected={element.props?.connected !== false}
+                    snapshot={element.props?.snapshot || null}
+                    width={Math.max(200, element.width - 8)}
+                    height={Math.max(140, element.height - 8)}
                   />
                 </div>
               </Html>
             ))}
+
+          {page.elements
+            .filter((element) => element.type === 'table')
+            .map((element) => {
+              const rows: string[][] = element.props?.rows || [];
+              const colCount = rows[0]?.length || 3;
+
+              // Crecimiento automático del BLOQUE (nunca lo encoge solo —
+              // encoger es manual, vía resize de columna) al tamaño natural
+              // real de la tabla renderizada (ver TableBlock.tsx::onNaturalSize).
+              // Mismo criterio de clamping que el auto-tamaño de texto arriba
+              // (getAutoSizeForPatch): nunca más allá del área de contenido.
+              const handleNaturalSize = (naturalW: number, naturalH: number) => {
+                const maxW = CONTENT_RIGHT - element.x;
+                const maxH = PAGE_HEIGHT - element.y - 8;
+                const nextW = Math.min(maxW, Math.max(element.width, naturalW + 8));
+                const nextH = Math.min(maxH, Math.max(element.height, naturalH + 8));
+                if (nextW !== element.width || nextH !== element.height) {
+                  updateElement(page.page_number, element.id, { width: nextW, height: nextH });
+                }
+              };
+
+              const setRows = (newRows: string[][]) => {
+                updateElement(page.page_number, element.id, { props: { ...element.props, rows: newRows } });
+              };
+
+              return (
+                <Html key={`${element.id}-table`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+                  <div
+                    className={
+                      canvasTableEditId === element.id ? 'report-canvas-table-edit-host' : 'report-canvas-html-shield'
+                    }
+                    onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
+                    style={{ width: element.width - 8, height: element.height - 8, overflow: 'visible' }}
+                  >
+                    <TableBlock
+                      {...element.props}
+                      containerWidth={element.width - 8}
+                      selected={selectedElementId === element.id}
+                      editing={canvasTableEditId === element.id}
+                      onExitEdit={() => setCanvasTableEditId(null)}
+                      onUpdateCells={setRows}
+                      onUpdateColWidths={(widths) => {
+                        updateElement(page.page_number, element.id, { props: { ...element.props, colWidths: widths } });
+                      }}
+                      onAddRow={() => {
+                        setRows([...rows, Array(colCount).fill('')]);
+                      }}
+                      onRemoveRow={(rowIndex) => {
+                        if (rows.length <= 1) return;
+                        setRows(rows.filter((_, i) => i !== rowIndex));
+                      }}
+                      onAddColumn={() => {
+                        const newRows = rows.map((row) => [...row, '']);
+                        const prevWidths: number[] = element.props?.colWidths;
+                        const patch: Record<string, unknown> = { rows: newRows };
+                        if (Array.isArray(prevWidths) && prevWidths.length === colCount) {
+                          patch.colWidths = [...prevWidths, 120];
+                        }
+                        updateElement(page.page_number, element.id, { props: { ...element.props, ...patch } });
+                      }}
+                      onRemoveColumn={(colIndex) => {
+                        if (colCount <= 1) return;
+                        const newRows = rows.map((row) => row.filter((_, i) => i !== colIndex));
+                        const prevWidths: number[] = element.props?.colWidths;
+                        const patch: Record<string, unknown> = { rows: newRows };
+                        if (Array.isArray(prevWidths) && prevWidths.length === colCount) {
+                          patch.colWidths = prevWidths.filter((_, i) => i !== colIndex);
+                        }
+                        updateElement(page.page_number, element.id, { props: { ...element.props, ...patch } });
+                      }}
+                      onNaturalSize={handleNaturalSize}
+                    />
+                  </div>
+                </Html>
+              );
+            })}
 
           {page.elements
             .filter((element) => element.type === 'header')
@@ -1679,6 +1832,14 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               const chromeCompany = session?.company;
               const chromeUnit = resolveMiningUnitName(session);
               const chromeAuthor = session?.fullName || session?.username;
+              // 5 diseños reales por audiencia (Gerencia/Control Interno/
+              // Auditoría Interna/Campo/Normativo) — antes las 5 opciones del
+              // ribbon insertaban el mismo diseño único (hallazgo QA
+              // 2026-07-27, ver ADR-048). `p.bgColor`/`p.textColor`/
+              // `p.classification`/`p.title` explícitos del usuario SIEMPRE
+              // ganan sobre la plantilla — esto solo rellena lo que el
+              // usuario no personalizó.
+              const tpl = findCoverTemplate(p.coverTemplate);
               return (
                 <Html key={`${element.id}-cover`} groupProps={{ x: element.x, y: element.y, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
                   <div
@@ -1687,7 +1848,8 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                     style={{
                       width: element.width, height: element.height, overflow: 'hidden',
                       position: 'relative', display: 'flex', flexDirection: 'column',
-                      boxSizing: 'border-box', color: p.textColor || '#ffffff',
+                      boxSizing: 'border-box', color: p.textColor || tpl.textColor,
+                      fontFamily: tpl.bodyFontFamily || 'inherit',
                       // ADR-048 (revisado): la carátula ya NO admite una foto
                       // como fondo propio (generaba un mosaico repetido y, al
                       // ser un bloque bloqueado, esa foto no se podía mover ni
@@ -1696,12 +1858,12 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                       // filtro type==='image', insertado centrado sobre esta
                       // misma página vía "Insertar Imagen Empresa"). El color
                       // de fondo es configurable (props.bgColor); si no se
-                      // definió ninguno se usa el degradé de plataforma.
-                      background: p.bgColor || 'linear-gradient(160deg, #0f172a 0%, #1e293b 55%, #334155 100%)',
+                      // definió ninguno se usa el fondo de la plantilla elegida.
+                      background: p.bgColor || tpl.background,
                     }}>
                     {/* Franja de clasificación — todo el ancho de la hoja */}
-                    <div style={{ background: 'rgba(15,23,42,0.9)', color: '#fbbf24', fontSize: 12, fontWeight: 800, letterSpacing: 2, textAlign: 'center', padding: '10px 0', textTransform: 'uppercase' }}>
-                      {p.classification || 'CONFIDENCIAL'}
+                    <div style={{ background: tpl.classificationBg, color: tpl.classificationColor, fontSize: 12, fontWeight: 800, letterSpacing: 2, textAlign: 'center', padding: '10px 0', textTransform: 'uppercase' }}>
+                      {p.classification || tpl.classificationLabel}
                     </div>
                     {/* Logotipo de la empresa — esquina superior derecha */}
                     <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '20px 40px 0' }}>
@@ -1715,20 +1877,20 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                        se inserta ahí arriba del texto (pedido explícito: "la
                        imagen mas arriba y el texto debajo de la imagen"). */}
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', padding: '24px 56px', textAlign: 'center' }}>
-                      <h1 style={{ fontSize: 44, fontWeight: 900, margin: '0 0 16px', lineHeight: 1.15, textShadow: '0 2px 16px rgba(0,0,0,0.45)' }}>
-                        {p.title || 'Informe Técnico'}
+                      <h1 style={{ fontSize: 44, fontWeight: 900, margin: '0 0 16px', lineHeight: 1.15, textShadow: '0 2px 16px rgba(0,0,0,0.45)', fontFamily: tpl.titleFontFamily }}>
+                        {p.title || tpl.titleFallback}
                       </h1>
                       {(chromeCompany || chromeUnit) && (
-                        <div style={{ width: 64, height: 3, borderRadius: 2, background: '#fbbf24', margin: '0 0 16px', opacity: 0.9 }} />
+                        <div style={{ width: 64, height: 3, borderRadius: 2, background: tpl.accentColor, margin: '0 0 16px', opacity: 0.9 }} />
                       )}
                       {chromeCompany && <div style={{ fontSize: 22, fontWeight: 700, textShadow: '0 1px 8px rgba(0,0,0,0.4)' }}>{chromeCompany}</div>}
                       {chromeUnit && <div style={{ fontSize: 16, opacity: 0.9, marginTop: 4, letterSpacing: 0.5 }}>{chromeUnit}</div>}
                     </div>
                     {/* Metadatos + marca Beemetry — franja inferior */}
                     <div style={{
-                      borderTop: '1px solid rgba(255,255,255,0.25)', padding: '18px 40px',
+                      borderTop: `1px solid ${tpl.accentColor}55`, padding: '18px 40px',
                       display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', justifyContent: 'space-between',
-                      background: 'rgba(15,23,42,0.35)',
+                      background: tpl.footerBg,
                     }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, fontSize: 12 }}>
                         {p.docCode && <span><b>Código:</b> {p.docCode}</span>}
@@ -1792,8 +1954,8 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               );
             })}
 
-          {/* Videos insertados (webcam o pantalla/ventana grabada, ADR pendiente
-             de formalizar) -- a diferencia de las imágenes, el <video> necesita
+          {/* Videos insertados (webcam o pantalla/ventana grabada, ADR-064/065)
+             -- a diferencia de las imágenes, el <video> necesita
              pointerEvents activo para que sus controles nativos (play/pausa/
              volumen) respondan al click; esto hace que arrastrar el bloque
              deba hacerse por el borde/marco, no tocando el reproductor mismo
@@ -1818,6 +1980,10 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                     <video
                       src={element.src}
                       controls
+                      // ADR-064/065: los .webm de MediaRecorder no traen
+                      // Duration/índice de búsqueda -- sin este fix se ven
+                      // en negro con "0:00" (ver lib/videoDurationFix.ts).
+                      ref={(el) => fixRecordedVideoElement(el)}
                       style={{ width: '100%', height: '100%', display: 'block' }}
                     />
                   ) : (
@@ -1838,7 +2004,11 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               // sin distinguir encabezados) — divergía de generateTocData()
               // en TableOfContents.tsx, que sí filtra por headingStyle real.
               // Unificado a una sola fuente de verdad para la numeración.
-              const tocEntries = generateTocData(useEditorStore.getState().doc);
+              // Actualización: cada bloque toc (original o de continuación,
+              // ver useEditorStore.ts::syncTocPages) solo muestra SU tramo de
+              // entradas, nunca la lista completa repetida en cada página.
+              const isContinuation = typeof p.tocContinuationIndex === 'number';
+              const tocEntries = tocSliceForElementId(useEditorStore.getState().doc, element.id);
               return (
                 <Html key={`${element.id}-toc`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
                   <div
@@ -1849,7 +2019,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                       border: '1px solid #e2e8f0', borderRadius: 6, background: '#ffffff', boxSizing: 'border-box', padding: 18,
                     }}>
                     <h2 style={{ fontSize: 18, fontWeight: 800, color: '#0f172a', margin: '0 0 12px', borderBottom: '2px solid #0f172a', paddingBottom: 6 }}>
-                      {p.title || 'Tabla de Contenidos'}
+                      {p.title || 'Tabla de Contenidos'}{isContinuation ? ' (continuación)' : ''}
                     </h2>
                     {tocEntries.length === 0 ? (
                       <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
@@ -2128,7 +2298,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               // la barra flotante propia como por el puente con el ribbon
               // (activeTextFormatBridge.ts): si no hay selección, el ribbon
               // cae a su comportamiento histórico de "todo el bloque".
-              const applyFormatToSelection = (patch: Partial<BaseTextStyle>): boolean => {
+              const applyFormatToSelection = (patch: Partial<BaseTextStyle>, options?: { toggle?: boolean }): boolean => {
                 const ta = activeTextareaRef.current;
                 if (!ta) return false;
                 // Preferir el rango congelado (picker de color); si no hay,
@@ -2138,7 +2308,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 const end = captured ? captured.end : (ta.selectionEnd ?? 0);
                 selectionRangeRef.current = null;
                 if (start === end) return false;
-                const nextSpans = applyStyleToRange(liveText, liveSpans, textBaseStyle, start, end, patch);
+                const nextSpans = applyStyleToRange(liveText, liveSpans, textBaseStyle, start, end, patch, options);
                 setLiveEdit({ id: element.id, text: liveText, width: liveWidth, height: liveHeight, spans: nextSpans });
                 updateElement(page.page_number, element.id, {
                   props: { ...mergedProps, text: liveText, spans: nextSpans },
@@ -2277,6 +2447,9 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               // estilo de cuerpo normal, igual que "Normal" en el ribbon.
               const applyHeadingStyleToSelection = (headingId: string) => {
                 const preset = findHeadingStyle(headingId || 'normal') ?? findHeadingStyle('normal')!;
+                // toggle:false — bold/italic/underline aquí son valores
+                // LITERALES del preset (p.ej. h2 exige italic:false), no
+                // un alternar tipo botón; ver comentario en applyStyleToRange.
                 applyFormatToSelection({
                   headingStyle: headingId || '',
                   fontFamily: preset.fontFamily,
@@ -2285,7 +2458,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                   italic: preset.italic,
                   underline: preset.underline,
                   color: preset.color,
-                });
+                }, { toggle: false });
               };
 
               // "Cambiar MAYÚSCULAS/minúsculas" al estilo Word (Mayús+F3):
@@ -2651,7 +2824,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
 
                 if (event.shiftKey && key === '0') {
                   event.preventDefault();
-                  updateTextProps({ listType: 'none' });
+                  updateTextProps({ listType: 'none', text: stripListMarkers(textProps.text) });
                 }
               };
 
@@ -3023,6 +3196,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                              máquina de tecleo/IME ya afinada en Fase 1/2. */}
                           <div
                             aria-hidden
+                            ref={ghostWrapRef}
                             style={{
                               position: 'absolute',
                               top: 0,
@@ -3086,6 +3260,28 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                             {liveText === '' && <span style={{ opacity: 0 }}>&nbsp;</span>}
                           </div>
 
+                          {/* Cursor visual propio — ver comentario de `caretRect`
+                             más arriba. Reemplaza al caret nativo del textarea
+                             (que se oculta con caretColor:transparent más abajo
+                             mientras este esté activo) para que SIEMPRE coincida
+                             con el texto que el usuario realmente ve, sin
+                             importar alineación/negrita/tamaño de fuente. */}
+                          {caretRect && (
+                            <div
+                              aria-hidden
+                              style={{
+                                position: 'absolute',
+                                left: caretRect.left,
+                                top: caretRect.top,
+                                width: 2,
+                                height: caretRect.height,
+                                background: textProps.fontColor,
+                                pointerEvents: 'none',
+                                animation: 'reportstudio-caret-blink 1s step-end infinite',
+                              }}
+                            />
+                          )}
+
                           <textarea
                             ref={activeTextareaRef}
                             className="text-editor-area-seamless"
@@ -3096,11 +3292,19 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                               fontFamily: textProps.fontFamily,
                               fontSize: `${textProps.fontSize}px`,
                               // Texto invisible — el overlay de arriba es lo
-                              // que realmente se ve; el textarea solo aporta
-                              // el caret (visible via caretColor) y la
-                              // selección nativa del navegador.
+                              // que realmente se ve. El caret nativo del
+                              // textarea se oculta (transparent) cuando el
+                              // cursor visual propio (`caretRect`) está
+                              // disponible — mostrar los dos a la vez
+                              // duplicaría el cursor y, peor, el nativo
+                              // quedaría desalineado del texto real (bug
+                              // reportado 2026-07-27, ver caretRect arriba).
+                              // Si por algún motivo no se pudo calcular
+                              // (caretRect null), cae al caret nativo como
+                              // respaldo — sigue siendo mejor que ningún
+                              // cursor visible.
                               color: 'transparent',
-                              caretColor: textProps.fontColor,
+                              caretColor: caretRect ? 'transparent' : textProps.fontColor,
                               textAlign: textProps.textAlign as any,
                               lineHeight: textProps.lineHeight,
                               fontWeight: textProps.bold ? 700 : 400,

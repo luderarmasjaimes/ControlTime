@@ -22,7 +22,8 @@ function Invoke-Api {
         [string]$Method,
         [Parameter(Mandatory = $true)]
         [string]$Path,
-        [object]$Body
+        [object]$Body,
+        [hashtable]$Headers = @{}
     )
 
     $url = "$BackendUrl$Path"
@@ -37,19 +38,21 @@ function Invoke-Api {
 
     if ($Method -eq "GET") {
         try {
-            return Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 30
+            return Invoke-RestMethod -Method Get -Uri $url -Headers $Headers -TimeoutSec 30
         }
         catch {
-            throw "No se pudo conectar al backend en $BackendUrl. Levanta el backend y vuelve a ejecutar. Detalle: $($_.Exception.Message)"
+            $detail = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+            throw "GET $url fallo. Detalle: $detail"
         }
     }
 
     $jsonBody = if ($null -ne $Body) { $Body | ConvertTo-Json -Depth 6 } else { $null }
     try {
-        return Invoke-RestMethod -Method Post -Uri $url -ContentType "application/json" -Body $jsonBody -TimeoutSec 30
+        return Invoke-RestMethod -Method Post -Uri $url -Headers $Headers -ContentType "application/json" -Body $jsonBody -TimeoutSec 30
     }
     catch {
-        throw "No se pudo conectar al backend en $BackendUrl. Levanta el backend y vuelve a ejecutar. Detalle: $($_.Exception.Message)"
+        $detail = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+        throw "POST $url fallo. Detalle: $detail"
     }
 }
 
@@ -69,10 +72,11 @@ Write-Section "SMOKE AUTH E2E"
 Write-Host "Backend: $BackendUrl"
 Write-Host "Empresa: $Company"
 
-$nonce = Get-Date -Format "yyyyMMddHHmmss"
+$nonce = "$(Get-Date -Format 'yyyyMMddHHmmssfff')_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 $username = "admin_$nonce"
 $password = "SmokeAuth!2026"
-$dni = "9$($nonce.Substring($nonce.Length - 7))"
+$dniSeed = [Convert]::ToUInt32(([Guid]::NewGuid().ToString('N').Substring(0,7)), 16)
+$dni = (($dniSeed % 90000000) + 10000000).ToString()
 $faceTemplate = New-FaceTemplate
 
 $registerPayload = @{
@@ -123,9 +127,31 @@ if (-not $DryRun) {
     Write-Host "Login facial OK (score=$($loginFace.score))"
 }
 
-Write-Section "STEP 4 - AUDIT FILTER"
-$auditPath = "/api/auth/audit?page=1&page_size=20&username=$username&auth_token=$authToken"
-$audit = Invoke-Api -Method GET -Path $auditPath
+Write-Section "STEP 4 - ADMIN COMPANY DEDUP"
+if ($DryRun) {
+    Write-Host "[DRY-RUN] POST $BackendUrl/api/auth/companies (duplicado case-insensitive)"
+}
+else {
+    $duplicateStatus = 0
+    try {
+        Invoke-WebRequest -Method Post -Uri "$BackendUrl/api/auth/companies" `
+            -Headers @{ Authorization = "Bearer $authToken" } `
+            -ContentType "application/json" `
+            -Body (@{ name = "  $($Company.ToUpperInvariant())  " } | ConvertTo-Json) `
+            -TimeoutSec 30 -UseBasicParsing | Out-Null
+    }
+    catch {
+        $duplicateStatus = [int]$_.Exception.Response.StatusCode
+    }
+    if ($duplicateStatus -ne 409) {
+        throw "Deduplicacion de empresa fallo: se esperaba HTTP 409 y se obtuvo $duplicateStatus"
+    }
+    Write-Host "Empresa duplicada rechazada con 409 (case-insensitive) OK"
+}
+
+Write-Section "STEP 5 - AUDIT FILTER"
+$auditPath = "/api/auth/audit?page=1&page_size=20&username=$username"
+$audit = Invoke-Api -Method GET -Path $auditPath -Headers @{ Authorization = "Bearer $authToken" }
 if (-not $DryRun) {
     if (-not $audit.logs -or $audit.count -lt 2 -or $audit.total -lt 2) {
         throw "Auditoria incompleta: no se encontraron eventos esperados"
@@ -133,19 +159,20 @@ if (-not $DryRun) {
     Write-Host "Auditoria OK (eventos_pagina=$($audit.count), total=$($audit.total), pagina=$($audit.page))"
 }
 
-Write-Section "STEP 5 - AUDIT CSV EXPORT"
+Write-Section "STEP 6 - AUDIT CSV EXPORT"
 if ($DryRun) {
     Write-Host "[DRY-RUN] GET $BackendUrl/api/auth/audit/export.csv?username=$username"
 }
 else {
-    $csvResponse = Invoke-WebRequest -Method Get -Uri "$BackendUrl/api/auth/audit/export.csv?username=$username&auth_token=$authToken" -TimeoutSec 30 -UseBasicParsing
+    $csvResponse = Invoke-WebRequest -Method Get -Uri "$BackendUrl/api/auth/audit/export.csv?username=$username" `
+        -Headers @{ Authorization = "Bearer $authToken" } -TimeoutSec 30 -UseBasicParsing
     if ($csvResponse.StatusCode -ne 200 -or -not ($csvResponse.Content -match "event_time,event_action")) {
         throw "Export CSV de auditoria fallido"
     }
     Write-Host "Export CSV OK"
 }
 
-Write-Section "STEP 6 - REFRESH TOKEN VIA COOKIE + PROTECCION CSRF (ADR-029)"
+Write-Section "STEP 7 - REFRESH TOKEN VIA COOKIE + PROTECCION CSRF (ADR-029)"
 # El refresh token ya no viaja en el body JSON (ver ADR-029, "Actualizacion
 # 2026-07-19") -- viaja en una cookie HttpOnly que el backend pone en el
 # login/registro; -SessionVariable hace que Invoke-WebRequest la guarde y
@@ -167,14 +194,17 @@ else {
     Write-Host "Login OK: refresh_token NO esta en el body (correcto, ADR-029)"
 
     $refreshCookie = $session.Cookies.GetCookies("$BackendUrl/api/auth/") | Where-Object { $_.Name -eq "refresh_token" }
-    $csrfCookie = $session.Cookies.GetCookies("$BackendUrl/api/auth/") | Where-Object { $_.Name -eq "csrf_token" }
+    # ADR-041/actualización 2026-07-21: la cookie legible usa nombre
+    # csrf_token_v2 y Path=/ para que document.cookie pueda verla desde toda
+    # la SPA. El script conservaba el nombre legacy y producía un falso fallo.
+    $csrfCookie = $session.Cookies.GetCookies("$BackendUrl/api/auth/") | Where-Object { $_.Name -eq "csrf_token_v2" }
     if (-not $refreshCookie -or -not $csrfCookie) {
-        throw "FALLO: no se recibieron las cookies refresh_token/csrf_token esperadas"
+        throw "FALLO: no se recibieron las cookies refresh_token/csrf_token_v2 esperadas"
     }
     if (-not $refreshCookie.HttpOnly) {
         throw "FALLO: la cookie refresh_token deberia ser HttpOnly"
     }
-    Write-Host "Cookies OK: refresh_token (HttpOnly) + csrf_token presentes"
+    Write-Host "Cookies OK: refresh_token (HttpOnly) + csrf_token_v2 presentes"
 
     # Sin header X-CSRF-Token: debe rechazar (403), mismo comportamiento que
     # protege contra un sitio de terceros que solo puede lograr que el
@@ -203,7 +233,7 @@ else {
     Write-Host "Refresh con CSRF correcto OK: nuevo access_token, sin refresh_token en el body"
 
     # Logout: mismo criterio de CSRF, y debe limpiar ambas cookies (Max-Age=0).
-    $newCsrfCookie = $session.Cookies.GetCookies("$BackendUrl/api/auth/") | Where-Object { $_.Name -eq "csrf_token" }
+    $newCsrfCookie = $session.Cookies.GetCookies("$BackendUrl/api/auth/") | Where-Object { $_.Name -eq "csrf_token_v2" }
     $logoutResp = Invoke-WebRequest -Method Post -Uri "$BackendUrl/api/auth/logout" `
         -Headers @{ Authorization = "Bearer $($refreshBody.access_token)"; "X-CSRF-Token" = $newCsrfCookie.Value } `
         -WebSession $session -TimeoutSec 30 -UseBasicParsing

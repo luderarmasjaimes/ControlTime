@@ -35,7 +35,7 @@ static std::vector<fs::path> cascadeSearchDirs() {
     }
     dirs.push_back(p);
   };
-  const char *haarDir = std::getenv("OPENCV_HAAR_DIR");
+  const char *haarDir = std::getenv("BEEMETRY_OPENCV_HAAR_DIR");
   if (haarDir && *haarDir) {
     pushUnique(fs::path(haarDir));
   }

@@ -10,7 +10,7 @@ import { clusterMarkers, isCluster, type ClusterableMarker } from '../../lib/map
 import { planForConnectivity, isCompactPayload, decodeCompactMarkers } from '../../lib/mapFieldMode';
 import { saveMarkerSnapshot, loadMarkerSnapshot, formatSnapshotAge } from '../../lib/mapOfflineCache';
 import { createTimeoutWmsLayer } from '../../lib/timeoutWmsLayer';
-import { getSession } from '../../auth/authStorage';
+import { getSession, authHeaders as sharedAuthHeaders } from '../../auth/authStorage';
 
 import { log } from '../../lib/logger';
 
@@ -22,8 +22,9 @@ import { log } from '../../lib/logger';
  * mismo patrón ya usado en ImageInsertModal.tsx (Authorization: Bearer).
  */
 const authHeaders = (): Record<string, string> => {
-    const session = getSession();
-    return session?.token ? { Authorization: `Bearer ${session.token}` } : {};
+    // ADR-082: la credencial es la cookie HttpOnly `access_token`, que el
+    // navegador adjunta sola. Aqui solo viaja el token CSRF del double-submit.
+    return sharedAuthHeaders();
 };
 
 const WMS_CATALOG_DATA: any = WMS_CATALOG;

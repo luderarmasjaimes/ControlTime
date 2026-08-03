@@ -1209,7 +1209,46 @@ def _bust_roi_matte_fallback(
     return roi, mask
 
 
-def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[str]:
+def _compose_avatar_canvas(
+    out: np.ndarray,
+    alpha_sm: np.ndarray,
+    matte_oval: bool,
+    canvas_w: int,
+    canvas_h: int,
+) -> np.ndarray:
+    """Compone el avatar sin reestilizarlo; sirve miniatura y maestro 4K."""
+    th, tw = out.shape[:2]
+    scale = min(canvas_w * 0.92 / tw, canvas_h * 0.92 / th)
+    nw = max(64, int(round(tw * scale)))
+    nh = max(64, int(round(th * scale)))
+    interpolation = cv2.INTER_LANCZOS4 if scale > 1.0 else cv2.INTER_AREA
+    up = cv2.resize(out, (nw, nh), interpolation=interpolation)
+    alpha_big = cv2.resize(alpha_sm, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    alpha_big = cv2.GaussianBlur(alpha_big, (3, 3), 0)
+    mup_f = alpha_big[..., None]
+
+    canvas = np.ones((canvas_h, canvas_w, 3), dtype=np.uint8) * 255
+    if np.any(alpha_big > 0.08):
+        ys, xs = np.where(alpha_big > 0.2)
+        pcx = float(np.mean(xs))
+        pcy = float(np.mean(ys))
+    else:
+        pcx, pcy = nw * 0.5, nh * 0.5
+    target_cx = canvas_w * 0.5
+    target_cy = canvas_h * (0.39 if not matte_oval else 0.42)
+    ox = int(round(target_cx - pcx))
+    oy = int(round(target_cy - pcy))
+    ox = max(0, min(ox, canvas_w - nw))
+    oy = max(0, min(oy, canvas_h - nh))
+
+    reg = canvas[oy : oy + nh, ox : ox + nw]
+    reg[:] = (
+        reg.astype(np.float32) * (1.0 - mup_f) + up.astype(np.float32) * mup_f
+    ).astype(np.uint8)
+    return canvas
+
+
+def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[Tuple[str, str]]:
     """
     Un único avatar PNG por imagen, 100 % local:
     segmentación selfie / GrabCut, fondo blanco, estilo con CLAHE + realce suave
@@ -1260,7 +1299,10 @@ def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[str]:
             blur0 = cv2.GaussianBlur(roi, (0, 0), sigmaX=1.0)
             roi = cv2.addWeighted(roi, 1.06, blur0, -0.06, 0)
         rh, rw = roi.shape[:2]
-        max_side = 920 if not matte_oval else 768
+        # El trabajo se conserva hasta 1600 px para no destruir detalle de la
+        # captura antes de componer el máster 4K. Sigue siendo una operación
+        # asíncrona de registro, no del render interactivo de la cabecera.
+        max_side = 1600 if not matte_oval else 1280
         sc = min(max_side / float(max(rh, rw)), 1.0)
         tw = max(96, int(round(rw * sc)))
         th = max(96, int(round(rh * sc)))
@@ -1337,39 +1379,22 @@ def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[str]:
                 + ink_strength * ink
             ).astype(np.uint8)
 
-        CANVAS_W, CANVAS_H = 768, 1024
-        scale2 = min(CANVAS_W * 0.92 / tw, CANVAS_H * 0.92 / th)
-        nw = max(64, int(round(tw * scale2)))
-        nh = max(64, int(round(th * scale2)))
-        up = cv2.resize(out, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
-        alpha_big = cv2.resize(alpha_sm, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        alpha_big = cv2.GaussianBlur(alpha_big, (3, 3), 0)
-        mup_f = alpha_big[..., None]
-
-        canvas = np.ones((CANVAS_H, CANVAS_W, 3), dtype=np.uint8) * 255
-        aflat = alpha_big.reshape(-1)
-        if np.any(aflat > 0.08):
-            ys, xs = np.where(alpha_big > 0.2)
-            pcx = float(np.mean(xs))
-            pcy = float(np.mean(ys))
-        else:
-            pcx, pcy = nw * 0.5, nh * 0.5
-        target_cx = CANVAS_W * 0.5
-        target_cy = CANVAS_H * (0.39 if not matte_oval else 0.42)
-        ox = int(round(target_cx - pcx))
-        oy = int(round(target_cy - pcy))
-        ox = max(0, min(ox, CANVAS_W - nw))
-        oy = max(0, min(oy, CANVAS_H - nh))
-
-        reg = canvas[oy : oy + nh, ox : ox + nw]
-        reg[:] = (
-            reg.astype(np.float32) * (1.0 - mup_f) + up.astype(np.float32) * mup_f
-        ).astype(np.uint8)
-
-        ok, buf = cv2.imencode(".png", canvas, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-        if not ok:
+        thumb = _compose_avatar_canvas(out, alpha_sm, matte_oval, 768, 1024)
+        # Maestro 4K vertical (3:4). Se persiste fuera de la sesión y se
+        # descarga únicamente al ampliar el avatar.
+        hd = _compose_avatar_canvas(out, alpha_sm, matte_oval, 2880, 3840)
+        ok_thumb, buf_thumb = cv2.imencode(
+            ".png", thumb, [cv2.IMWRITE_PNG_COMPRESSION, 3]
+        )
+        ok_hd, buf_hd = cv2.imencode(
+            ".png", hd, [cv2.IMWRITE_PNG_COMPRESSION, 5]
+        )
+        if not ok_thumb or not ok_hd:
             return None
-        return base64.b64encode(buf.tobytes()).decode("ascii")
+        return (
+            base64.b64encode(buf_thumb.tobytes()).decode("ascii"),
+            base64.b64encode(buf_hd.tobytes()).decode("ascii"),
+        )
     except Exception:
         return None
 
@@ -1386,10 +1411,23 @@ def cartoon_avatar():
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({"ok": False, "error": "invalid_image"}), 400
-    b64 = _cartoonify_face_bgr(img)
-    if not b64:
+    avatars = _cartoonify_face_bgr(img)
+    if not avatars:
         return jsonify({"ok": False, "error": "cartoonify_failed"}), 200
-    return jsonify({"ok": True, "image_base64": b64, "format": "png"})
+    thumb_b64, hd_b64 = avatars
+    return jsonify(
+        {
+            "ok": True,
+            "image_base64": thumb_b64,
+            "image_hd_base64": hd_b64,
+            "format": "png",
+            "width": 768,
+            "height": 1024,
+            "hd_width": 2880,
+            "hd_height": 3840,
+            "generator": "local_mediapipe_opencv",
+        }
+    )
 
 
 @app.route("/face_embedding", methods=["POST"])

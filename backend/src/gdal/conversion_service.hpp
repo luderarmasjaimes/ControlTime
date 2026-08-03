@@ -25,6 +25,8 @@ struct ConvertRequest {
 
 struct Job {
     std::string id;
+    std::string ownerUserId;
+    std::string ownerTenantId;
     std::string status;
     std::string createdAt;
     std::string updatedAt;

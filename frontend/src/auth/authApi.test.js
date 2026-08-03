@@ -1,18 +1,26 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     checkLoginIdentity,
     fetchAuthAudit,
     fetchCompanies,
-    getAuthAuditCsvUrl,
+    fetchMyAvatarHd,
+    downloadAuthAuditCsv,
     loginWithFace,
     loginWithPassword,
     registerUser,
 } from './authApi'
 
 describe('authApi', () => {
+    beforeEach(() => {
+        // ADR-082: `authHeaders()` lee la cookie CSRF de document.cookie para
+        // el double-submit. Sin sembrarla, las peticiones saldrian sin header.
+        document.cookie = 'csrf_token_v2=csrf_abc; path=/'
+    })
+
     afterEach(() => {
         vi.restoreAllMocks()
         localStorage.clear()
+        document.cookie = 'csrf_token_v2=; path=/; max-age=0'
     })
 
     it('fetches companies from backend', async () => {
@@ -27,6 +35,29 @@ describe('authApi', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1)
         const calledUrl = String(fetchMock.mock.calls[0][0])
         expect(calledUrl).toContain('/api/auth/companies')
+    })
+
+    it('fetches the authenticated user HD avatar as an image blob', async () => {
+        localStorage.setItem(
+            'mining_auth_session_v1',
+            JSON.stringify({ username: 'luder', token: 'tok_avatar' })
+        )
+        const expected = new Blob(['png-bytes'], { type: 'image/png' })
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+            ok: true,
+            status: 200,
+            blob: async () => expected,
+        })
+
+        const avatar = await fetchMyAvatarHd()
+
+        expect(avatar).toBe(expected)
+        expect(String(fetchMock.mock.calls[0][0])).toContain('/api/auth/avatar/hd')
+        // ADR-082: la credencial es la cookie HttpOnly `access_token`, que el
+        // navegador adjunta sola. Lo que este codigo NO debe hacer nunca mas es
+        // montar un Authorization desde algo guardado en localStorage.
+        expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined()
+        expect(fetchMock.mock.calls[0][1].credentials).toBe('include')
     })
 
     it('sends registration payload with biometric template', async () => {
@@ -302,31 +333,47 @@ describe('authApi', () => {
         expect(calledUrl).toContain('username=luder')
         expect(calledUrl).toContain('action=login_face')
         expect(calledUrl).toContain('success=true')
-        expect(fetchMock.mock.calls[0][1]).toMatchObject({
-            headers: {
-                Authorization: 'Bearer tok_123',
-            },
-        })
+        // ADR-082: sin Authorization; la cookie viaja sola y el JS solo aporta
+        // el token CSRF del double-submit.
+        expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined()
+        expect(fetchMock.mock.calls[0][1].credentials).toBe('include')
+        expect(fetchMock.mock.calls[0][1].headers['X-CSRF-Token']).toBe('csrf_abc')
     })
 
-    it('builds CSV export URL with filters', () => {
+    it('exports CSV with filters, authenticating by header and never by URL', async () => {
         localStorage.setItem(
             'mining_auth_session_v1',
             JSON.stringify({ username: 'admin_user', token: 'tok_123' })
         )
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+            ok: true,
+            status: 200,
+            blob: async () => new Blob(['a,b\n1,2'], { type: 'text/csv' }),
+        })
+        // jsdom no implementa la Object URL API: se inyectan stubs (vi.stubGlobal
+        // no aplica a métodos de URL, así que se asignan y se restauran a mano).
+        URL.createObjectURL = vi.fn(() => 'blob:fake')
+        URL.revokeObjectURL = vi.fn()
 
-        const url = getAuthAuditCsvUrl({
+        await downloadAuthAuditCsv({
             company: 'Minera Raura',
             username: 'luder',
             action: 'login_password',
             success: false,
         })
 
+        const [url, init] = fetchMock.mock.calls[0]
         expect(url).toContain('/api/auth/audit/export.csv?')
         expect(url).toContain('company=Minera+Raura')
         expect(url).toContain('username=luder')
         expect(url).toContain('action=login_password')
         expect(url).toContain('success=false')
-        expect(url).toContain('auth_token=tok_123')
+        // ADR-082: la credencial nunca viaja en la URL (quedaria en el access
+        // log de nginx, el historial y el Referer) NI en un header que el JS
+        // pueda construir — va en la cookie HttpOnly.
+        expect(url).not.toContain('auth_token')
+        expect(url).not.toContain('tok_123')
+        expect(init.headers.Authorization).toBeUndefined()
+        expect(init.credentials).toBe('include')
     })
 })

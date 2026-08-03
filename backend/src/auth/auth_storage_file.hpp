@@ -26,6 +26,18 @@ std::vector<AuthUser> loadAuthUsers(const std::string &dataRoot);
 void saveAuthUsers(const std::string &dataRoot,
                    const std::vector<AuthUser> &users);
 
+/**
+ * @brief Envuelve en Argon2id los hashes legados del almacén de archivo.
+ *
+ * Equivalente en modo File de `migrateLegacyPasswordHashesPg`. El modo File es
+ * de desarrollo/offline, pero `users.json` es un archivo en disco igual de
+ * volcable que una tabla, así que no tiene sentido dejar ahí hashes de 64 bits
+ * con salt fijo mientras se limpia Postgres.
+ *
+ * @return Número de credenciales envueltas (0 si no había ninguna legada).
+ */
+int migrateLegacyPasswordHashesFile(const std::string &dataRoot);
+
 bool updateUserAvatarCartoonFile(const std::string &dataRoot,
                                  const std::string &userId,
                                  const std::string &avatarBase64);

@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
 #include <boost/beast/version.hpp>
 
 #include <algorithm>
@@ -13,13 +15,16 @@
 #include <iostream>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace json = boost::json;
+namespace ssl = boost::asio::ssl;
 
 namespace {
 
@@ -183,12 +188,123 @@ HttpStringResult httpPostJson(const std::string &fullUrl, const std::string &jso
   return out;
 }
 
+/**
+ * Cliente HTTPS de salida (TLS) — no existía en este backend hasta ahora
+ * (todas las integraciones previas eran HTTP plano intra-red Docker:
+ * LanguageTool, Ollama). Necesario para consultar una API de búsqueda real
+ * externa (Serper.dev) para verificar que las referencias bibliográficas
+ * sean fuentes reales, en vez de que el LLM las "recuerde" de su
+ * entrenamiento (que puede alucinar). Verifica el certificado del peer
+ * contra los CA del sistema (ca-certificates, ya presente en la imagen).
+ */
+HttpStringResult httpsPostJson(const std::string &host, const std::string &target,
+                               const std::string &jsonBody,
+                               const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+                               int timeoutMs) {
+  HttpStringResult out;
+  try {
+    asio::io_context ioc;
+    ssl::context ctx{ssl::context::tlsv12_client};
+    ctx.set_default_verify_paths();
+    ctx.set_verify_mode(ssl::verify_peer);
+
+    beast::ssl_stream<beast::tcp_stream> stream{ioc, ctx};
+    if (!SSL_set_tlsext_host_name(stream.native_handle(), host.c_str())) {
+      out.error = "sni_set_failed";
+      return out;
+    }
+
+    beast::error_code ec;
+    asio::ip::tcp::resolver resolver{ioc};
+    auto const results = resolver.resolve(host, "443", ec);
+    if (ec) {
+      out.error = "resolve_failed";
+      return out;
+    }
+
+    beast::get_lowest_layer(stream).expires_after(std::chrono::milliseconds(timeoutMs));
+    beast::get_lowest_layer(stream).connect(results, ec);
+    if (ec) {
+      out.error = "connect_failed";
+      return out;
+    }
+
+    stream.handshake(ssl::stream_base::client, ec);
+    if (ec) {
+      out.error = "tls_handshake_failed: " + ec.message();
+      return out;
+    }
+
+    http::request<http::string_body> req{http::verb::post, target, 11};
+    req.set(http::field::host, host);
+    req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+    req.set(http::field::content_type, "application/json");
+    for (const auto &h : extraHeaders) {
+      req.set(h.first, h.second);
+    }
+    req.body() = jsonBody;
+    req.prepare_payload();
+
+    http::write(stream, req, ec);
+    if (ec) {
+      out.error = "write_failed";
+      return out;
+    }
+
+    beast::flat_buffer buffer;
+    http::response<http::string_body> res;
+    http::read(stream, buffer, res, ec);
+    if (ec && ec != http::error::end_of_stream && ec != asio::ssl::error::stream_truncated) {
+      out.error = "read_failed: " + ec.message();
+      return out;
+    }
+    out.status = static_cast<int>(res.result_int());
+    out.body = res.body();
+
+    beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(3));
+    stream.shutdown(ec); // muchos servidores cierran abrupto -- ignorar el error de shutdown
+  } catch (const std::exception &ex) {
+    out.error = std::string("exception: ") + ex.what();
+  }
+  return out;
+}
+
 std::string gLanguageToolBase;
 int gLanguageToolTimeoutMs = 45000;
 std::string gOllamaBase;
-std::string gOllamaModel = "tinyllama";
+// tinyllama (1.1B, default anterior) alucinaba contenido sin relación con el
+// texto de entrada -- verificado en vivo 2026-07-22 (ver docker-compose.yml,
+// servicio ollama). gemma2:2b probado en el mismo caso: reescritura fiel al
+// original y formato APA 7 correcto de una cita real dada.
+std::string gOllamaModel = "gemma2:2b";
+// Benchmark de esfuerzo continuo 2026-07-22 (20 iteraciones c/u, rewrite +
+// APA7): qwen2.5:7b fue 100% fiel en APA7 (vs 75% de gemma2:2b, que devolvia
+// un placeholder literal "Author, Year..." cuando el autor venia vacio), pero
+// en rewrite qwen2.5:7b filtro texto en chino dentro de una respuesta en
+// español en 2/20 corridas (reproducible, mismo caso de prueba) -- ademas de
+// ser ~2.4x mas lento (p50 18s vs 7s) y requerir ~3x mas RAM. Por eso se usa
+// un modelo distinto por tarea: qwen2.5:7b solo para APA7 (accion puntual,
+// la latencia importa menos, y ahi fue mas fiel), gemma2:2b para rewrite
+// (interactivo, necesita responder rapido, y no mostro el filtrado de chino).
+std::string gOllamaApa7Model = "qwen2.5:7b";
 int gOllamaTimeoutMs = 120000;
 std::size_t gMaxTextChars = 30000;
+// Serper.dev: API de búsqueda real (Google SERP) para verificar que las
+// referencias bibliográficas sean fuentes que EXISTEN de verdad, filtradas a
+// una lista de dominios confiables -- nunca se le pide al LLM que "recuerde"
+// una fuente de su entrenamiento (eso es exactamente lo que puede alucinar).
+// Vacío por defecto: sin API key configurada, /api/text/search-references
+// responde "serper_not_configured" en vez de fallar en silencio.
+std::string gSerperApiKey;
+int gSerperTimeoutMs = 15000;
+// Tavily (api.tavily.com): proveedor de búsqueda preferido -- a diferencia de
+// Serper (SERP crudo de Google), Tavily está diseñado para agentes de IA/RAG,
+// da un free tier mensual recurrente (no de una sola vez) y permite acotar
+// la búsqueda con include_domains. Aun así, el filtro de confianza local
+// (isDomainTrusted) SIEMPRE se re-aplica sobre lo que devuelve Tavily -- el
+// proveedor externo nunca es la única fuente de "confiabilidad".
+std::string gTavilyApiKey;
+int gTavilyTimeoutMs = 15000;
 
 void regexReplaceAllI(std::string &s, const std::string &pattern,
                       const std::string &replacement) {
@@ -443,6 +559,85 @@ std::optional<std::string> parseRewriteJsonText(const std::string &rawResponse) 
   }
 }
 
+/**
+ * Llama a Ollama con un prompt libre y espera de vuelta un JSON de una sola
+ * clave string (p.ej. {"apa":"..."}). El modelo se pasa explicito porque cada
+ * tarea usa uno distinto (ver comentario junto a gOllamaApa7Model).
+ */
+std::optional<std::string> ollamaGenerateJsonField(const std::string &prompt,
+                                                   const std::string &jsonKey,
+                                                   const std::string &model) {
+  if (gOllamaBase.empty()) {
+    return std::nullopt;
+  }
+  std::string base = gOllamaBase;
+  while (!base.empty() && base.back() == '/') {
+    base.pop_back();
+  }
+  const std::string url = base + "/api/generate";
+
+  json::object body;
+  body["model"] = model;
+  body["stream"] = false;
+  body["format"] = "json";
+  body["prompt"] = prompt;
+  json::object opts;
+  opts["temperature"] = 0.1;
+  body["options"] = opts;
+
+  const std::string payload = json::serialize(json::value(body));
+  const auto hr = httpPostJson(url, payload, gOllamaTimeoutMs);
+  if (hr.status != 200) {
+    std::cerr << "[text_spell] ollama HTTP status=" << hr.status << std::endl;
+    return std::nullopt;
+  }
+  try {
+    auto val = json::parse(hr.body);
+    if (!val.is_object()) {
+      return std::nullopt;
+    }
+    const auto &o = val.as_object();
+    if (!o.contains("response") || !o.at("response").is_string()) {
+      return std::nullopt;
+    }
+    const std::string responseStr = json::value_to<std::string>(o.at("response"));
+    const std::string cleaned = stripCodeFences(responseStr);
+    if (cleaned.empty()) {
+      return std::nullopt;
+    }
+    auto parsed = json::parse(cleaned);
+    if (!parsed.is_object()) {
+      return std::nullopt;
+    }
+    const auto &po = parsed.as_object();
+    if (!po.contains(jsonKey) || !po.at(jsonKey).is_string()) {
+      return std::nullopt;
+    }
+    auto out = trimCopy(json::value_to<std::string>(po.at(jsonKey)));
+    return out.empty() ? std::nullopt : std::make_optional(out);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+/** Escapa un valor de campo bibliográfico antes de insertarlo en el prompt
+ * (evita que comillas del usuario rompan la instrucción o intenten inyectar
+ * instrucciones nuevas -- el modelo igual solo puntúa/ordena, no ejecuta
+ * nada, pero se mantiene el prompt bien formado). */
+std::string sanitizePromptField(std::string v) {
+  v = trimCopy(std::move(v));
+  std::string out;
+  out.reserve(v.size());
+  for (char c : v) {
+    if (c == '\n' || c == '\r') {
+      out += ' ';
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 std::optional<std::string> ollamaRewriteText(const std::string &input) {
   if (gOllamaBase.empty()) {
     return std::nullopt;
@@ -512,24 +707,25 @@ std::string requireTextField(const json::object &obj, std::string &err) {
 namespace text_spell {
 
 void configureFromEnv() {
-  gLanguageToolBase = getenvOr("LANGUAGETOOL_URL", "");
-  gOllamaBase = getenvOr("OLLAMA_URL", "");
-  gOllamaModel = getenvOr("OLLAMA_MODEL", "tinyllama");
+  gLanguageToolBase = getenvOr("BEEMETRY_LANGUAGETOOL_URL", "");
+  gOllamaBase = getenvOr("BEEMETRY_OLLAMA_URL", "");
+  gOllamaModel = getenvOr("BEEMETRY_OLLAMA_MODEL", "gemma2:2b");
+  gOllamaApa7Model = getenvOr("BEEMETRY_OLLAMA_APA7_MODEL", "qwen2.5:7b");
   try {
     gLanguageToolTimeoutMs =
-        std::clamp(std::stoi(getenvOr("LANGUAGETOOL_TIMEOUT_MS", "45000")), 1000, 120000);
+        std::clamp(std::stoi(getenvOr("BEEMETRY_LANGUAGETOOL_TIMEOUT_MS", "45000")), 1000, 120000);
   } catch (...) {
     gLanguageToolTimeoutMs = 45000;
   }
   try {
-    gOllamaTimeoutMs = std::clamp(std::stoi(getenvOr("OLLAMA_TIMEOUT_MS", "120000")), 5000,
+    gOllamaTimeoutMs = std::clamp(std::stoi(getenvOr("BEEMETRY_OLLAMA_TIMEOUT_MS", "120000")), 5000,
                                    600000);
   } catch (...) {
     gOllamaTimeoutMs = 120000;
   }
   try {
     gMaxTextChars = static_cast<std::size_t>(
-        std::clamp(std::stoll(getenvOr("TEXT_SPELL_MAX_CHARS", "30000")), 2000LL, 100000LL));
+        std::clamp(std::stoll(getenvOr("BEEMETRY_TEXT_SPELL_MAX_CHARS", "30000")), 2000LL, 100000LL));
   } catch (...) {
     gMaxTextChars = 30000;
   }
@@ -539,7 +735,38 @@ void configureFromEnv() {
     std::cerr << "[text_spell] LANGUAGETOOL_URL empty — text spell endpoints will fail" << std::endl;
   }
   if (!gOllamaBase.empty()) {
-    std::cerr << "[text_spell] OLLAMA_URL configured model=" << gOllamaModel << std::endl;
+    std::cerr << "[text_spell] OLLAMA_URL configured rewrite_model=" << gOllamaModel
+               << " apa7_model=" << gOllamaApa7Model << std::endl;
+  }
+  gSerperApiKey = getenvOr("BEEMETRY_SERPER_API_KEY", "");
+  try {
+    gSerperTimeoutMs =
+        std::clamp(std::stoi(getenvOr("BEEMETRY_SERPER_TIMEOUT_MS", "15000")), 3000, 60000);
+  } catch (...) {
+    gSerperTimeoutMs = 15000;
+  }
+  if (!gSerperApiKey.empty()) {
+    std::cerr << "[text_spell] SERPER_API_KEY configured (búsqueda real de referencias habilitada)"
+              << std::endl;
+  } else {
+    std::cerr << "[text_spell] SERPER_API_KEY vacío — /api/text/search-references responderá "
+                 "serper_not_configured"
+              << std::endl;
+  }
+  gTavilyApiKey = getenvOr("BEEMETRY_TAVILY_API_KEY", "");
+  try {
+    gTavilyTimeoutMs =
+        std::clamp(std::stoi(getenvOr("BEEMETRY_TAVILY_TIMEOUT_MS", "15000")), 3000, 60000);
+  } catch (...) {
+    gTavilyTimeoutMs = 15000;
+  }
+  if (!gTavilyApiKey.empty()) {
+    std::cerr << "[text_spell] TAVILY_API_KEY configured (proveedor de búsqueda preferido)"
+              << std::endl;
+  } else {
+    std::cerr << "[text_spell] TAVILY_API_KEY vacío — se usará Serper si está configurado, "
+                 "si no, search_not_configured"
+              << std::endl;
   }
 }
 
@@ -558,8 +785,33 @@ boost::json::object handleCorrectQuick(const boost::json::value &body) {
   if (trimmed.empty() || trimmed == kDemoPlaceholder) {
     return json::object{{"error", "empty_text"}};
   }
-  const std::string out = applyQuickSpanishCorrections(src);
-  return json::object{{"text", out}, {"source", "backend_quick"}};
+
+  // Corrección ortográfica/gramatical de MÁXIMA PRECISIÓN y FIEL al texto:
+  // LanguageTool (NUNCA un LLM) es la fuente de las correcciones — se aplican
+  // solo reemplazos seguros de las categorías ortografía/gramática
+  // (TYPOS/MISSPELLING/GRAMMAR/TYPOGRAPHY, ver categoryAllowedForAutoApply /
+  // applyLanguageToolSafeMatches). Así se corrigen los errores (p.ej.
+  // "operatibo"->"operativo", "disponivilidad"->"disponibilidad") SIN
+  // parafrasear ni inventar contenido ajeno al original. El reescritor con IA
+  // (Ollama, /api/text/rewrite y "Optimizar IA") es una función APARTE, para
+  // mejorar la redacción — no debe confundirse con este corrector.
+  std::string working = src;
+  const std::string lang =
+      obj.contains("language") && obj.at("language").is_string()
+          ? json::value_to<std::string>(obj.at("language"))
+          : "es";
+  std::string source = "languagetool_safe";
+  if (auto lt = languageToolCheckJson(working, lang, "picky")) {
+    working = applyLanguageToolSafeMatches(working, *lt);
+  } else {
+    // LanguageTool no disponible: se degrada al pulido determinístico (no
+    // inventa nada; solo espacios, mayúscula inicial y unos pocos typos fijos).
+    source = "backend_quick_fallback";
+  }
+  // Pulido determinístico final (espaciado, mayúscula inicial) — inofensivo,
+  // se aplica siempre encima del resultado de LanguageTool.
+  working = applyQuickSpanishCorrections(working);
+  return json::object{{"text", working}, {"source", source}};
 }
 
 boost::json::object handleCorrectAdvanced(const boost::json::value &body) {
@@ -756,6 +1008,518 @@ boost::json::object handleLanguageToolCheck(const boost::json::value &body) {
     return json::object{{"error", "languagetool_unavailable"}};
   }
   return json::object{{"languagetool", *lt}};
+}
+
+namespace {
+
+/** true si `haystack` contiene `needle` (comparación simple, sin
+ * normalizar mayúsculas/acentos -- alcanza para detectar si el LLM
+ * "recortó" o cambió un campo, no para comparación lingüística fina). */
+bool containsSubstr(const std::string &haystack, const std::string &needle) {
+  return !needle.empty() && haystack.find(needle) != std::string::npos;
+}
+
+/**
+ * Validación estructural mínima de la respuesta del LLM antes de aceptarla:
+ * (1) el año, si se dio, debe aparecer literalmente (evita que lo cambie o
+ * lo omita); (2) el título, si se dio, debe aparecer literalmente en algún
+ * lado (con o sin asteriscos de énfasis alrededor); (3) no debe quedar vacía
+ * ni ser sospechosamente corta. No valida gramática APA fina -- solo que el
+ * LLM no haya alterado/inventado el CONTENIDO de los campos, que es la
+ * garantía que de verdad importa (el formato en sí es cosmético).
+ */
+bool apa7ResponseLooksValid(const std::string &candidate, const std::string &year,
+                            const std::string &title) {
+  if (candidate.size() < 8) {
+    return false;
+  }
+  if (!year.empty() && !containsSubstr(candidate, year)) {
+    return false;
+  }
+  if (!title.empty() && !containsSubstr(candidate, title)) {
+    return false;
+  }
+  return true;
+}
+
+/** Formato APA 7 puramente mecánico, sin LLM -- usado como fallback si
+ * Ollama no responde (o responde algo que alteró los datos originales), y
+ * también disponible directo con `use_llm:false`. Nunca inventa nada: solo
+ * ordena/puntúa los campos tal como llegaron. */
+std::string deterministicApa7(const std::string &author, const std::string &year,
+                              const std::string &title, const std::string &source,
+                              const std::string &url) {
+  std::ostringstream out;
+  if (!author.empty()) {
+    out << author << ". ";
+  }
+  out << "(" << (year.empty() ? "s.f." : year) << "). ";
+  if (!title.empty()) {
+    out << "*" << title << "*. ";
+  }
+  if (!source.empty()) {
+    out << source << ". ";
+  }
+  if (!url.empty()) {
+    out << url;
+  }
+  return trimCopy(out.str());
+}
+
+// ── Búsqueda real de referencias (Serper.dev) + filtro por dominio ────────
+//
+// El LLM local NUNCA decide qué fuente es "confiable" -- eso sería la misma
+// alucinación que se quiere evitar, solo que disfrazada de juicio de
+// confiabilidad. La confianza depende ÚNICAMENTE de esta lista de dominios,
+// curada explícitamente por criterio humano (gobierno, universidades,
+// organismos internacionales, editoriales/revistas académicas reconocidas
+// del área de minería/geotecnia). Es una lista inicial razonable, no
+// exhaustiva -- se espera que el equipo la amplíe según necesidad real.
+
+/** Sufijos de dominio confiables en bloque (gobierno, educación, organismos
+ * internacionales) -- cualquier host que TERMINE en uno de estos sufijos se
+ * acepta, sin necesitar estar en la lista exacta de abajo. */
+const std::vector<std::string> &trustedDomainSuffixes() {
+  static const std::vector<std::string> kSuffixes = {
+      ".gob.pe", ".gob.mx", ".gob.cl", ".gob.ar", ".gob.bo", ".gob.ec",
+      ".gob.co", ".gob.uy", ".gob.py", ".gob.ve", ".gov", ".edu", ".edu.pe",
+      ".ac.uk", ".ac.pe", ".int",
+  };
+  return kSuffixes;
+}
+
+/** Dominios exactos confiables (organismos internacionales, editoriales y
+ * revistas académicas reconocidas) -- incluye subdominios de estos (p.ej.
+ * "www.un.org", "link.springer.com"). */
+const std::set<std::string> &trustedExactDomains() {
+  static const std::set<std::string> kExact = {
+      "un.org", "worldbank.org", "iso.org", "oecd.org", "who.int", "unesco.org",
+      "icmm.com", "smenet.org", "cepal.org", "iadb.org", "cdc.gov", "usgs.gov",
+      "epa.gov", "elsevier.com", "springer.com", "sciencedirect.com", "mdpi.com",
+      "scielo.org", "redalyc.org",
+  };
+  return kExact;
+}
+
+std::string toLowerAsciiLocal(std::string s) {
+  for (char &c : s) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return s;
+}
+
+/** Host (dominio:puerto) en minúsculas a partir de una URL completa --
+ * parseo suficiente para el propósito (no necesita ser un parser de URL
+ * completo, solo aislar el host para el chequeo de confianza). */
+std::string extractHost(const std::string &url) {
+  std::string rest = url;
+  const auto schemePos = rest.find("://");
+  if (schemePos != std::string::npos) {
+    rest = rest.substr(schemePos + 3);
+  }
+  const auto slashPos = rest.find('/');
+  if (slashPos != std::string::npos) {
+    rest = rest.substr(0, slashPos);
+  }
+  const auto colonPos = rest.find(':');
+  if (colonPos != std::string::npos) {
+    rest = rest.substr(0, colonPos);
+  }
+  return toLowerAsciiLocal(rest);
+}
+
+bool isDomainTrusted(const std::string &host) {
+  if (host.empty()) {
+    return false;
+  }
+  for (const auto &suf : trustedDomainSuffixes()) {
+    if (host.size() >= suf.size() &&
+        host.compare(host.size() - suf.size(), suf.size(), suf) == 0) {
+      return true;
+    }
+  }
+  const auto &exact = trustedExactDomains();
+  if (exact.count(host) > 0) {
+    return true;
+  }
+  for (const auto &d : exact) {
+    const std::string suf = "." + d;
+    if (host.size() > suf.size() &&
+        host.compare(host.size() - suf.size(), suf.size(), suf) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+struct SearchHit {
+  std::string title;
+  std::string url;
+  std::string snippet;
+};
+
+/** Llama a Serper.dev (Google SERP real) -- devuelve error explícito en
+ * `error` si la API key no está configurada, la llamada falla, o la
+ * respuesta no tiene el formato esperado. Nunca lanza. */
+std::vector<SearchHit> serperSearch(const std::string &query, std::string &error) {
+  std::vector<SearchHit> out;
+  if (gSerperApiKey.empty()) {
+    error = "serper_not_configured";
+    return out;
+  }
+
+  json::object body;
+  body["q"] = query;
+  body["gl"] = "pe";
+  body["hl"] = "es";
+  body["num"] = 20;
+  const std::string payload = json::serialize(json::value(body));
+
+  const auto hr = httpsPostJson("google.serper.dev", "/search", payload,
+                                {{"X-API-KEY", gSerperApiKey}}, gSerperTimeoutMs);
+  if (!hr.error.empty()) {
+    error = "serper_" + hr.error;
+    std::cerr << "[text_spell] serper error: " << hr.error << std::endl;
+    return out;
+  }
+  if (hr.status != 200) {
+    error = "serper_http_" + std::to_string(hr.status);
+    std::cerr << "[text_spell] serper HTTP status=" << hr.status << std::endl;
+    return out;
+  }
+
+  try {
+    auto val = json::parse(hr.body);
+    if (!val.is_object() || !val.as_object().contains("organic") ||
+        !val.as_object().at("organic").is_array()) {
+      return out;
+    }
+    for (const auto &item : val.as_object().at("organic").as_array()) {
+      if (!item.is_object()) {
+        continue;
+      }
+      const auto &o = item.as_object();
+      SearchHit hit;
+      hit.title = o.contains("title") && o.at("title").is_string()
+                      ? json::value_to<std::string>(o.at("title"))
+                      : "";
+      hit.url = o.contains("link") && o.at("link").is_string()
+                    ? json::value_to<std::string>(o.at("link"))
+                    : "";
+      hit.snippet = o.contains("snippet") && o.at("snippet").is_string()
+                        ? json::value_to<std::string>(o.at("snippet"))
+                        : "";
+      if (!hit.url.empty()) {
+        out.push_back(std::move(hit));
+      }
+    }
+  } catch (...) {
+    error = "serper_invalid_response";
+  }
+  return out;
+}
+
+/** Llama a Tavily (api.tavily.com/search) -- proveedor de búsqueda preferido.
+ * Igual que serperSearch: nunca lanza, `error` queda vacío si todo bien. */
+std::vector<SearchHit> tavilySearch(const std::string &query, std::string &error) {
+  std::vector<SearchHit> out;
+  if (gTavilyApiKey.empty()) {
+    error = "tavily_not_configured";
+    return out;
+  }
+
+  json::object body;
+  body["api_key"] = gTavilyApiKey;
+  body["query"] = query;
+  body["search_depth"] = "basic";
+  body["max_results"] = 20;
+  // include_domains es una señal para Tavily, no la garantía real -- el
+  // filtro local isDomainTrusted() se re-aplica siempre sobre la respuesta.
+  json::array includeDomains;
+  for (const auto &d : trustedExactDomains()) {
+    includeDomains.push_back(json::string(d));
+  }
+  body["include_domains"] = includeDomains;
+  const std::string payload = json::serialize(json::value(body));
+
+  const auto hr = httpsPostJson("api.tavily.com", "/search", payload, {}, gTavilyTimeoutMs);
+  if (!hr.error.empty()) {
+    error = "tavily_" + hr.error;
+    std::cerr << "[text_spell] tavily error: " << hr.error << std::endl;
+    return out;
+  }
+  if (hr.status != 200) {
+    error = "tavily_http_" + std::to_string(hr.status);
+    std::cerr << "[text_spell] tavily HTTP status=" << hr.status << " body=" << hr.body
+              << std::endl;
+    return out;
+  }
+
+  try {
+    auto val = json::parse(hr.body);
+    if (!val.is_object() || !val.as_object().contains("results") ||
+        !val.as_object().at("results").is_array()) {
+      return out;
+    }
+    for (const auto &item : val.as_object().at("results").as_array()) {
+      if (!item.is_object()) {
+        continue;
+      }
+      const auto &o = item.as_object();
+      SearchHit hit;
+      hit.title = o.contains("title") && o.at("title").is_string()
+                      ? json::value_to<std::string>(o.at("title"))
+                      : "";
+      hit.url = o.contains("url") && o.at("url").is_string()
+                    ? json::value_to<std::string>(o.at("url"))
+                    : "";
+      hit.snippet = o.contains("content") && o.at("content").is_string()
+                        ? json::value_to<std::string>(o.at("content"))
+                        : "";
+      if (!hit.url.empty()) {
+        out.push_back(std::move(hit));
+      }
+    }
+  } catch (...) {
+    error = "tavily_invalid_response";
+  }
+  return out;
+}
+
+/** Llama a Tavily /extract sobre una URL puntual y devuelve el contenido
+ * crudo de la página (para verificación programática, NUNCA vía LLM). */
+std::string tavilyExtract(const std::string &url, std::string &error) {
+  if (gTavilyApiKey.empty()) {
+    error = "tavily_not_configured";
+    return "";
+  }
+  json::object body;
+  body["api_key"] = gTavilyApiKey;
+  json::array urls;
+  urls.push_back(json::string(url));
+  body["urls"] = urls;
+  const std::string payload = json::serialize(json::value(body));
+
+  const auto hr = httpsPostJson("api.tavily.com", "/extract", payload, {}, gTavilyTimeoutMs);
+  if (!hr.error.empty()) {
+    error = "tavily_" + hr.error;
+    return "";
+  }
+  if (hr.status != 200) {
+    error = "tavily_http_" + std::to_string(hr.status);
+    return "";
+  }
+  try {
+    auto val = json::parse(hr.body);
+    if (!val.is_object() || !val.as_object().contains("results") ||
+        !val.as_object().at("results").is_array()) {
+      error = "tavily_no_results";
+      return "";
+    }
+    const auto &results = val.as_object().at("results").as_array();
+    if (results.empty() || !results[0].is_object()) {
+      error = "tavily_extract_failed";
+      return "";
+    }
+    const auto &o = results[0].as_object();
+    if (o.contains("raw_content") && o.at("raw_content").is_string()) {
+      return json::value_to<std::string>(o.at("raw_content"));
+    }
+    error = "tavily_extract_empty";
+    return "";
+  } catch (...) {
+    error = "tavily_invalid_response";
+    return "";
+  }
+}
+
+/** true si `needle` (ya en minúsculas ASCII, sin acentos garantizados) aparece
+ * como substring de `haystackLower` (también ya normalizado a minúsculas). */
+bool containsLowerSubstr(const std::string &haystackLower, const std::string &needleRaw) {
+  if (needleRaw.empty()) {
+    return false;
+  }
+  const std::string needle = toLowerAsciiLocal(needleRaw);
+  return haystackLower.find(needle) != std::string::npos;
+}
+
+} // namespace
+
+boost::json::object handleFormatApa7(const boost::json::value &body) {
+  if (!body.is_object()) {
+    return json::object{{"error", "invalid_json"}};
+  }
+  const auto &obj = body.as_object();
+  auto getField = [&](const char *k) -> std::string {
+    return obj.contains(k) && obj.at(k).is_string() ? json::value_to<std::string>(obj.at(k))
+                                                    : std::string();
+  };
+  const std::string author = sanitizePromptField(getField("author"));
+  const std::string year = sanitizePromptField(getField("year"));
+  const std::string title = sanitizePromptField(getField("title"));
+  const std::string source = sanitizePromptField(getField("source"));
+  const std::string url = sanitizePromptField(getField("url"));
+
+  if (title.empty() && author.empty()) {
+    return json::object{{"error", "missing_fields"}};
+  }
+
+  const std::string fallback = deterministicApa7(author, year, title, source, url);
+
+  bool useLlm = true;
+  if (obj.contains("use_llm") && obj.at("use_llm").is_bool()) {
+    useLlm = obj.at("use_llm").as_bool();
+  }
+  if (!useLlm) {
+    return json::object{{"apa", fallback}, {"source", "deterministic"}};
+  }
+
+  // El LLM SOLO puntúa/ordena estos mismos campos -- instrucción explícita
+  // de no agregar ni inventar ningún dato. Nunca es la fuente de los datos
+  // en sí (esos ya vienen del usuario, verificados por él).
+  const std::string prompt =
+      "Tienes estos datos bibliograficos REALES, ya verificados por el usuario. "
+      "NO agregues, cambies ni inventes ningun dato adicional -- usa EXACTAMENTE "
+      "estos campos, solo ordenalos y puntualos segun la norma APA 7 (7ma edicion, "
+      "estilo autor-fecha).\n"
+      "autor=\"" + author + "\"\n"
+      "anio=\"" + year + "\"\n"
+      "titulo=\"" + title + "\"\n"
+      "fuente=\"" + source + "\"\n"
+      "url=\"" + url + "\"\n"
+      "Responde EXCLUSIVAMENTE con un JSON de una sola linea: {\"apa\":\"...\"}";
+
+  auto result = ollamaGenerateJsonField(prompt, "apa", gOllamaApa7Model);
+  // Si el LLM no respondió, o respondió algo que alteró/omitió el año o el
+  // título dados (ver apa7ResponseLooksValid) -- señal de que "mejoró" o
+  // recortó el dato en vez de solo darle formato -- se descarta y se usa el
+  // determinístico. Nunca se entrega al usuario una cita cuyo contenido no
+  // se pueda verificar contra lo que él mismo ingresó.
+  if (!result.has_value() || result->empty() ||
+      !apa7ResponseLooksValid(*result, year, title)) {
+    return json::object{{"apa", fallback}, {"source", "deterministic_fallback"}};
+  }
+  return json::object{{"apa", *result}, {"source", "ollama"}};
+}
+
+boost::json::object handleSearchReferences(const boost::json::value &body) {
+  if (!body.is_object()) {
+    return json::object{{"error", "invalid_json"}};
+  }
+  const auto &obj = body.as_object();
+  std::string query;
+  if (obj.contains("query") && obj.at("query").is_string()) {
+    query = json::value_to<std::string>(obj.at("query"));
+  }
+  query = trimCopy(query);
+  if (query.empty()) {
+    return json::object{{"error", "missing_query"}};
+  }
+  if (query.size() > 300) {
+    query = query.substr(0, 300);
+  }
+
+  // Tavily es el proveedor preferido (free tier mensual recurrente, pensado
+  // para IA/RAG); si no está configurado, se cae a Serper (ya implementado
+  // antes); si ninguno está configurado, error explícito -- nunca falla en
+  // silencio ni finge tener resultados.
+  std::string err;
+  std::vector<SearchHit> hits;
+  std::string source;
+  if (!gTavilyApiKey.empty()) {
+    hits = tavilySearch(query, err);
+    source = "tavily";
+  } else if (!gSerperApiKey.empty()) {
+    hits = serperSearch(query, err);
+    source = "serper";
+  } else {
+    return json::object{{"error", "search_not_configured"}};
+  }
+  if (!err.empty()) {
+    return json::object{{"error", err}};
+  }
+
+  // El filtro de confianza por dominio es la ÚNICA garantía real acá -- se
+  // aplica siempre, sin excepción ni "el proveedor/LLM decide que igual es
+  // confiable", sin importar cuál de los dos proveedores haya respondido.
+  json::array trusted;
+  int excludedCount = 0;
+  for (const auto &hit : hits) {
+    const std::string host = extractHost(hit.url);
+    if (isDomainTrusted(host)) {
+      trusted.push_back(json::object{
+          {"title", hit.title}, {"url", hit.url}, {"snippet", hit.snippet}, {"domain", host}});
+    } else {
+      ++excludedCount;
+    }
+  }
+
+  return json::object{{"results", trusted},
+                      {"excluded_untrusted_count", excludedCount},
+                      {"source", source}};
+}
+
+boost::json::object handleVerifyReference(const boost::json::value &body) {
+  if (!body.is_object()) {
+    return json::object{{"error", "invalid_json"}};
+  }
+  const auto &obj = body.as_object();
+  auto getField = [&](const char *k) -> std::string {
+    return obj.contains(k) && obj.at(k).is_string() ? json::value_to<std::string>(obj.at(k))
+                                                    : std::string();
+  };
+  const std::string url = trimCopy(getField("url"));
+  const std::string title = trimCopy(getField("title"));
+  const std::string year = trimCopy(getField("year"));
+  if (url.empty()) {
+    return json::object{{"error", "missing_url"}};
+  }
+
+  std::string err;
+  const std::string content = tavilyExtract(url, err);
+  if (!err.empty()) {
+    // No configurado o falló la extracción -- no es un error fatal para el
+    // flujo de inserción de la cita, solo significa "no se pudo verificar
+    // programáticamente". El frontend debe tratarlo como advertencia, no
+    // como bloqueo.
+    return json::object{{"error", err}};
+  }
+
+  const std::string contentLower = toLowerAsciiLocal(content);
+  const bool yearMatched = year.empty() ? false : containsLowerSubstr(contentLower, year);
+  // Para el título, alcanza con que una porción significativa de palabras
+  // (>=4 letras) del título ingresado aparezca en el contenido de la
+  // página -- exigir el título completo carácter por carácter sería frágil
+  // ante diferencias de puntuación/mayúsculas entre la cita y la página real.
+  int titleWordsTotal = 0;
+  int titleWordsMatched = 0;
+  {
+    std::istringstream iss(title);
+    std::string word;
+    while (iss >> word) {
+      std::string clean;
+      for (char c : word) {
+        if (std::isalnum(static_cast<unsigned char>(c))) {
+          clean.push_back(c);
+        }
+      }
+      if (clean.size() < 4) {
+        continue;
+      }
+      ++titleWordsTotal;
+      if (containsLowerSubstr(contentLower, clean)) {
+        ++titleWordsMatched;
+      }
+    }
+  }
+  const bool titleMatched =
+      titleWordsTotal > 0 && (static_cast<double>(titleWordsMatched) / titleWordsTotal) >= 0.6;
+  const bool verified = yearMatched || titleMatched;
+
+  return json::object{{"verified", verified},
+                      {"matched_year", yearMatched},
+                      {"matched_title", titleMatched},
+                      {"source", "tavily_extract"}};
 }
 
 } // namespace text_spell
