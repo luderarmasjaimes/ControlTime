@@ -10,25 +10,26 @@ test('Report v2 guarda informe y lo lista en Mis Informes', async ({ page }) => 
   await dismissUserMaintenancePrompt(page)
 
   await page.setViewportSize({ width: 1400, height: 900 })
-  await openCategory(page, 'Reportes')
-  await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click()
+  await openCategory(page, 'Informes')
+  await page.getByRole('button', { name: 'Abrir Informes', exact: true }).click()
 
   // Titulo unico por corrida para no chocar con informes de corridas previas
   // (el backend real persiste entre ejecuciones, a diferencia del
   // localStorage fake de antes).
   const reportTitle = `Informe E2E Report V2 ${Date.now()}`
-  page.once('dialog', async (dialog) => {
-    await dialog.accept(reportTitle)
-  })
-
   // Con login real, "Guardar" persiste vía POST /api/reports (backend real,
   // ver reportsStorage.ts/api.ts) -- ya no escribe en localStorage
   // ('mining_reports_v1' era solo el mirror del flujo offline/fake-token
   // anterior). Se espera la respuesta real de creación en vez de sondear esa
   // clave, que con un guardado online nunca se vuelve a poblar.
+  await page.getByRole('button', { name: 'Guardar', exact: true }).click()
+  const saveModal = page.locator('.ra-sub-modal')
+  await expect(saveModal.getByText(/Nombrar informe nuevo/i)).toBeVisible()
+  await saveModal.getByPlaceholder(/Informe Técnico Integral/i).fill(reportTitle)
+
   const [createResponse] = await Promise.all([
     page.waitForResponse((res) => res.url().includes('/api/reports') && res.request().method() === 'POST'),
-    page.getByRole('button', { name: 'Guardar', exact: true }).click(),
+    saveModal.getByRole('button', { name: 'Guardar', exact: true }).click(),
   ])
   expect(createResponse.ok()).toBeTruthy()
 
@@ -90,8 +91,8 @@ test('Report v2 abre visor de lectura desde administracion', async ({ page }) =>
   await dismissUserMaintenancePrompt(page)
   await page.setViewportSize({ width: 1400, height: 900 })
 
-  await openCategory(page, 'Reportes')
-  await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click()
+  await openCategory(page, 'Informes')
+  await page.getByRole('button', { name: 'Abrir Informes', exact: true }).click()
   await openMisInformes(page)
 
   const dateInputs = page.locator('.ra-filters input[type="date"]')

@@ -1643,6 +1643,7 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
 
     json::object qualifying;
     json::array messages;
+    support::ChatIntent intent = support::ChatIntent::Chat;
     try {
         auto val = json::parse(req.body());
         if (!val.is_object()) throw std::runtime_error("invalid_json");
@@ -1650,11 +1651,16 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
         if (obj.contains("qualifying") && obj.at("qualifying").is_object()) {
             qualifying = obj.at("qualifying").as_object();
         }
+        if (obj.contains("intent") && obj.at("intent").is_string()) {
+            intent = support::parseChatIntent(json::value_to<std::string>(obj.at("intent")));
+        }
         if (!obj.contains("messages") || !obj.at("messages").is_array()) {
             throw std::runtime_error("missing_messages");
         }
         messages = obj.at("messages").as_array();
-        if (messages.empty() || messages.size() > 40) {
+        // Mismo tope de abuso que support::handleChatMessage (el recorte por
+        // longitud real lo hace buildChatPromptForStreaming, no este guard).
+        if (messages.empty() || messages.size() > 200) {
             throw std::runtime_error("invalid_messages");
         }
     } catch (const std::exception &ex) {
@@ -1725,18 +1731,18 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
         ollamaStream.connect(results, ec);
         if (ec) { sendSseEvent(json::object{{"error", "ollama_connect_failed"}}); return; }
 
-        const auto promptResult = support::buildChatPromptForStreaming(qualifying, messages, session->tenantId);
+        const auto promptResult =
+            support::buildChatPromptForStreaming(qualifying, messages, session->tenantId, intent);
         json::object reqBody;
         reqBody["model"] = config::AppConfig::instance().gOllamaChatbotModel;
         reqBody["stream"] = true;
         reqBody["prompt"] = promptResult.prompt;
         reqBody["keep_alive"] = "10m";
-        json::object opts;
-        opts["temperature"] = 0.4;
-        // Ver comentario equivalente en mining_chatbot_service.cpp::handleChatMessage:
-        // un listado real de sensores necesita más tokens que un chat corto.
-        opts["num_predict"] = promptResult.hasSensorRows ? 500 : 180;
-        reqBody["options"] = opts;
+        // num_ctx / num_predict / stop compartidos con la ruta no-streaming
+        // (support::buildOllamaOptions) -- que divergieran era como se colaba
+        // la pérdida de contexto solo por el camino de streaming, que es el
+        // que usa el widget en producción.
+        reqBody["options"] = support::buildOllamaOptions(promptResult);
         const std::string payload = json::serialize(json::value(reqBody));
 
         http::request<http::string_body> ollamaReq{http::verb::post, "/api/generate", 11};

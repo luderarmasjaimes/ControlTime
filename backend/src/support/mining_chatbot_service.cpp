@@ -37,6 +37,9 @@ namespace {
 // cliente HTTP, convencion ya establecida en este codebase).
 std::string gOllamaBase;
 int gOllamaChatTimeoutMs = 60000;
+/** Ver support::chatbotNumCtx() en el .hpp: sin esto Ollama aplicaba su
+ * default por VRAM (4096 en este stack) y truncaba el prompt por su cuenta. */
+int gOllamaChatNumCtx = 8192;
 bool gConfigured = false;
 
 std::string getenvOr(const char *key, const std::string &def) {
@@ -52,6 +55,12 @@ void ensureConfigured() {
         std::clamp(std::stoi(getenvOr("BEEMETRY_OLLAMA_CHATBOT_TIMEOUT_MS", "60000")), 5000, 180000);
   } catch (...) {
     gOllamaChatTimeoutMs = 60000;
+  }
+  try {
+    gOllamaChatNumCtx =
+        std::clamp(std::stoi(getenvOr("BEEMETRY_OLLAMA_CHATBOT_NUM_CTX", "8192")), 2048, 32768);
+  } catch (...) {
+    gOllamaChatNumCtx = 8192;
   }
   gConfigured = true;
 }
@@ -244,9 +253,36 @@ std::string buildSystemPrompt(const json::object &qualifying) {
   return oss.str();
 }
 
-std::string toLowerAsciiChatbot(std::string s) {
-  for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return s;
+/**
+ * Normaliza un mensaje del usuario para la deteccion de tema: minusculas ASCII
+ * + plegado de las tildes/dieresis/enie del espanol (UTF-8 de 2 bytes) a su
+ * letra base. Sin el plegado, "PIEZOMETROS" escrito como "PIEZÓMETROS" no
+ * matcheaba ningun patron (std::tolower no toca bytes multibyte), y el usuario
+ * se quedaba sin los datos reales de sus sensores por una tilde.
+ */
+std::string normalizeForTopic(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  for (std::size_t i = 0; i < s.size();) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c == 0xC3 && i + 1 < s.size()) {
+      const unsigned char d = static_cast<unsigned char>(s[i + 1]);
+      // U+00C0..U+00FF en UTF-8 son 0xC3 seguido de 0x80..0xBF.
+      switch (d) {
+        case 0xA1: case 0x81: out += 'a'; i += 2; continue; // á Á
+        case 0xA9: case 0x89: out += 'e'; i += 2; continue; // é É
+        case 0xAD: case 0x8D: out += 'i'; i += 2; continue; // í Í
+        case 0xB3: case 0x93: out += 'o'; i += 2; continue; // ó Ó
+        case 0xBA: case 0x9A: out += 'u'; i += 2; continue; // ú Ú
+        case 0xBC: case 0x9C: out += 'u'; i += 2; continue; // ü Ü
+        case 0xB1: case 0x91: out += 'n'; i += 2; continue; // ñ Ñ
+        default: break;
+      }
+    }
+    out += static_cast<char>(std::tolower(c));
+    ++i;
+  }
+  return out;
 }
 
 bool containsAny(const std::string &haystackLower, const std::vector<std::string> &needles) {
@@ -257,43 +293,86 @@ bool containsAny(const std::string &haystackLower, const std::vector<std::string
 }
 
 /**
- * Detecta a que categoria de sensor se refiere el ultimo mensaje del usuario
- * (si a alguna) y devuelve los patrones ILIKE a aplicar contra el nombre del
- * TIPO de sensor o del sensor mismo en la base de datos. Los nombres de tipo
- * NO son consistentes entre distintos origenes de siembra de datos de este
- * proyecto (p.ej. dashboard.sql usa "Piezometro", pero los datos reales
- * sembrados en Postgres usan "Presion poros") -- por eso se matchea por
- * substrings/sinonimos en vez de un nombre exacto unico.
+ * Detecta a que categoria de sensor se refiere un mensaje del usuario (si a
+ * alguna) y devuelve los patrones ILIKE a aplicar contra el nombre del TIPO de
+ * sensor o del sensor mismo en la base de datos. Los nombres de tipo NO son
+ * consistentes entre distintos origenes de siembra de datos de este proyecto
+ * (p.ej. dashboard.sql usa "Piezometro", pero los datos reales sembrados en
+ * Postgres usan "Presion poros") -- por eso se matchea por substrings/
+ * sinonimos en vez de un nombre exacto unico.
+ *
+ * `message` debe venir ya normalizado por normalizeForTopic() (minusculas y
+ * sin tildes), por eso las palabras clave se listan sin acentuar.
  */
-std::vector<std::string> sensorLikePatternsForMessage(const std::string &messageLower) {
+std::vector<std::string> sensorLikePatternsForMessage(const std::string &message) {
   static const std::vector<std::pair<std::vector<std::string>, std::vector<std::string>>> kGroups = {
-      {{"piezometro", "piezómetro", "piezometros", "piezómetros"}, {"%piez%", "%poros%"}},
-      {{"inclinometro", "inclinómetro", "inclinometros", "inclinómetros", "inclinacion", "inclinación"}, {"%inclin%"}},
-      {{"extensometro", "extensómetro"}, {"%extens%"}},
+      {{"piezometro", "piezometros"}, {"%piez%", "%poros%"}},
+      {{"inclinometro", "inclinometros", "inclinacion"}, {"%inclin%"}},
+      {{"extensometro", "extensometros"}, {"%extens%"}},
       {{"radar", "gb-sar", "gbsar", "talud"}, {"%radar%", "%talud%"}},
-      {{"gps", "geodesico", "geodésico"}, {"%gps%", "%geodes%"}},
+      {{"gps", "geodesico"}, {"%gps%", "%geodes%"}},
       {{"relaves", "relave"}, {"%relave%"}},
       {{" ph ", "de ph", "nivel de ph"}, {"%ph%"}},
-      {{"caudal", "caudalimetro", "caudalímetro"}, {"%caudal%"}},
-      {{"pm10", "particulas", "partículas", "polvo"}, {"%pm10%", "%polvo%", "%particul%"}},
+      {{"caudal", "caudalimetro"}, {"%caudal%"}},
+      {{"pm10", "particulas", "polvo"}, {"%pm10%", "%polvo%", "%particul%"}},
       {{"co2", "gas "}, {"%co2%", "%gas%"}},
-      {{"vibracion", "vibración", "molino"}, {"%vibrac%", "%molino%"}},
+      {{"vibracion", "molino"}, {"%vibrac%", "%molino%"}},
       {{"temperatura"}, {"%temp%"}},
       {{"ruido"}, {"%ruido%"}},
-      {{"tuberia", "tubería"}, {"%tuber%"}},
+      {{"tuberia"}, {"%tuber%"}},
   };
   for (const auto &group : kGroups) {
-    if (containsAny(messageLower, group.first)) {
+    if (containsAny(message, group.first)) {
       return group.second;
     }
   }
   return {};
 }
 
-bool messageAsksAboutSensorsGeneric(const std::string &messageLower) {
+bool messageAsksAboutSensorsGeneric(const std::string &message) {
   static const std::vector<std::string> kGeneric = {
-      "sensor", "sensores", "telemetria", "telemetría", "instalado", "instalados", "equipo", "equipos"};
-  return containsAny(messageLower, kGeneric);
+      "sensor", "sensores", "telemetria", "instalado", "instalados", "equipo", "equipos"};
+  return containsAny(message, kGeneric);
+}
+
+/** Tema de sensores vigente en la conversacion (patrones ILIKE o "todos"). */
+struct SensorTopic {
+  std::vector<std::string> patterns;
+  bool generic = false;
+  bool active() const { return !patterns.empty() || generic; }
+};
+
+/** Cuantos mensajes del usuario hacia atras se consideran "el tema vigente". */
+constexpr int kTopicLookbackUserMessages = 8;
+
+/**
+ * Resuelve el tema mirando el historial, no solo el ULTIMO mensaje.
+ *
+ * Correccion 2026-08-03 (sintoma 2 del reporte: "si hago una nueva pregunta
+ * del tema tratado no responde lo esperado"): antes solo se miraba el ultimo
+ * mensaje del usuario, asi que en cuanto el seguimiento no repetia la palabra
+ * clave -- "de esos, cual esta en alerta?", "y el valor mas alto?", o
+ * cualquiera de los chips Resumir/Ampliar/Ideas -- el bloque 'DATOS REALES DE
+ * SENSORES' desaparecia del prompt y el modelo se quedaba sin los datos que
+ * acababa de usar. Medido en vivo contra este stack: 2499 tokens de prompt en
+ * el turno del listado vs 932 en el seguimiento inmediato.
+ *
+ * Se recorre de lo mas reciente a lo mas antiguo y gana la primera coincidencia
+ * (un cambio de tema explicito del usuario reemplaza al anterior).
+ */
+SensorTopic resolveSensorTopic(const json::array &messages) {
+  int userSeen = 0;
+  for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+    if (!it->is_object()) continue;
+    const auto &mo = it->as_object();
+    if (getStringField(mo, "role", "user") != "user") continue;
+    if (++userSeen > kTopicLookbackUserMessages) break;
+    const std::string norm = normalizeForTopic(getStringField(mo, "content"));
+    auto patterns = sensorLikePatternsForMessage(norm);
+    if (!patterns.empty()) return SensorTopic{std::move(patterns), false};
+    if (messageAsksAboutSensorsGeneric(norm)) return SensorTopic{{}, true};
+  }
+  return SensorTopic{};
 }
 
 struct SensorRow {
@@ -386,48 +465,140 @@ std::string formatSensorContext(const std::vector<SensorRow> &rows) {
   return oss.str();
 }
 
+/**
+ * Presupuesto de caracteres del historial que viaja en el prompt. El prompt
+ * total = sistema (~1.6k caracteres) + datos reales de sensores (hasta ~5k) +
+ * historial; con num_ctx=8192 (~24k caracteres de espanol) queda margen
+ * holgado incluso en el peor caso.
+ *
+ * El tope existe para que sea ESTE codigo el que decida que se descarta y no
+ * el runtime de Ollama: cuando el prompt excede num_ctx, Ollama lo trunca por
+ * su cuenta descartando el principio -- o sea el prompt de sistema y el bloque
+ * 'DATOS REALES DE SENSORES', justamente lo unico que no se puede perder.
+ * Recortando aqui los turnos mas antiguos, lo que se pierde es lo menos
+ * relevante y de forma explicita (se avisa al modelo con una linea).
+ */
+constexpr std::size_t kHistoryCharBudget = 9000;
+
+/**
+ * Renderiza el historial de lo mas reciente a lo mas antiguo hasta agotar el
+ * presupuesto, y lo devuelve en orden cronologico. El ultimo mensaje siempre
+ * entra completo aunque exceda el presupuesto: es la peticion actual del
+ * usuario (y con los chips Resumir/Ampliar lleva incrustado el texto a
+ * procesar), asi que recortarlo seria exactamente el bug que se corrige.
+ */
+std::vector<std::string> renderHistoryWithinBudget(const json::array &messages, bool &trimmedOut) {
+  std::vector<std::string> reversed;
+  std::size_t used = 0;
+  trimmedOut = false;
+  bool isNewest = true;
+  for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+    if (!it->is_object()) continue;
+    const auto &mo = it->as_object();
+    const std::string content = trimCopy(getStringField(mo, "content"));
+    if (content.empty()) continue;
+    const std::string role = getStringField(mo, "role", "user");
+    std::string line = (role == "assistant" ? "Asistente: " : "Usuario: ") + content;
+    if (!isNewest && used + line.size() > kHistoryCharBudget) {
+      trimmedOut = true;
+      break;
+    }
+    used += line.size();
+    isNewest = false;
+    reversed.push_back(std::move(line));
+  }
+  std::reverse(reversed.begin(), reversed.end());
+  return reversed;
+}
+
+int numPredictFor(ChatIntent intent, bool hasSensorRows) {
+  // Presupuesto de generacion por intencion. El valor unico de 180 tokens
+  // (~130 palabras) que habia antes cortaba a media frase tanto las respuestas
+  // conversacionales normales como -- sobre todo -- el chip "Ampliar", que por
+  // definicion pide MAS texto del que ya hay.
+  int base = 320;
+  switch (intent) {
+    case ChatIntent::Summarize: base = 400; break;
+    case ChatIntent::Expand:    base = 800; break;
+    case ChatIntent::Ideas:     base = 400; break;
+    case ChatIntent::Chat:      base = 320; break;
+  }
+  // Un listado real de sensores puede ser largo (hasta 60 filas, ~28 tokens
+  // por fila). Medido en vivo contra este stack con 60 piezometros: con 500
+  // tokens Ollama devolvia done_reason="length" tras la fila 12, y ese listado
+  // a medias era lo unico que quedaba en el historial para los turnos
+  // siguientes. 900 cubre ~32 filas completas; por encima de eso el modelo
+  // corta, pero ya no arrastra un listado partido como si fuera completo.
+  return hasSensorRows ? std::max(base, 900) : base;
+}
+
 } // namespace
+
+ChatIntent parseChatIntent(const std::string &raw) {
+  const std::string v = normalizeForTopic(trimCopy(raw));
+  if (v == "summarize" || v == "resumir") return ChatIntent::Summarize;
+  if (v == "expand" || v == "ampliar") return ChatIntent::Expand;
+  if (v == "ideas") return ChatIntent::Ideas;
+  return ChatIntent::Chat;
+}
+
+int chatbotNumCtx() {
+  ensureConfigured();
+  return gOllamaChatNumCtx;
+}
+
+json::object buildOllamaOptions(const ChatPromptResult &promptResult) {
+  json::object opts;
+  opts["temperature"] = 0.4;
+  opts["num_ctx"] = promptResult.numCtx;
+  opts["num_predict"] = promptResult.numPredict;
+  // El prompt es un dialogo en texto plano ("Usuario:"/"Asistente:"): sin
+  // secuencias de parada el modelo sigue solo la conversacion inventando el
+  // siguiente turno del usuario, y ese texto inventado se mostraba como parte
+  // de la respuesta y luego volvia al backend como historial real.
+  opts["stop"] = json::array{"\nUsuario:", "\nUsuario :", "\nUSUARIO:"};
+  return opts;
+}
 
 ChatPromptResult buildChatPromptForStreaming(const json::object &qualifying,
                                              const json::array &messages,
-                                             const std::string &tenantId) {
+                                             const std::string &tenantId,
+                                             ChatIntent intent) {
   std::string sensorContext;
   bool hasSensorRows = false;
   if (!tenantId.empty()) {
-    std::string lastUserMsg;
-    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
-      if (it->is_object()) {
-        const auto &mo = it->as_object();
-        if (getStringField(mo, "role", "user") == "user") {
-          lastUserMsg = getStringField(mo, "content");
-          break;
-        }
-      }
-    }
-    const std::string lower = toLowerAsciiChatbot(lastUserMsg);
-    const auto patterns = sensorLikePatternsForMessage(lower);
-    const bool generic = patterns.empty() && messageAsksAboutSensorsGeneric(lower);
-    if (!patterns.empty() || generic) {
-      const auto rows = fetchMatchingSensors(tenantId, patterns, generic);
+    const auto topic = resolveSensorTopic(messages);
+    if (topic.active()) {
+      const auto rows = fetchMatchingSensors(tenantId, topic.patterns, topic.generic);
       hasSensorRows = !rows.empty();
       sensorContext = formatSensorContext(rows);
     }
   }
+
+  bool trimmed = false;
+  const auto history = renderHistoryWithinBudget(messages, trimmed);
+
   std::ostringstream prompt;
   prompt << buildSystemPrompt(qualifying) << "\n\n";
   if (!sensorContext.empty()) {
     prompt << sensorContext;
   }
-  for (const auto &m : messages) {
-    if (!m.is_object()) continue;
-    const auto &mo = m.as_object();
-    const std::string role = getStringField(mo, "role", "user");
-    const std::string content = getStringField(mo, "content");
-    if (content.empty()) continue;
-    prompt << (role == "assistant" ? "Asistente: " : "Usuario: ") << content << "\n";
+  if (trimmed) {
+    prompt << "(Se omitieron turnos antiguos de esta conversacion por longitud; el contexto "
+              "relevante mas reciente esta completo debajo.)\n";
+  }
+  for (const auto &line : history) {
+    prompt << line << "\n";
   }
   prompt << "Asistente:";
-  return ChatPromptResult{prompt.str(), hasSensorRows};
+
+  ChatPromptResult out;
+  out.prompt = prompt.str();
+  out.hasSensorRows = hasSensorRows;
+  out.numPredict = numPredictFor(intent, hasSensorRows);
+  out.numCtx = chatbotNumCtx();
+  out.historyTrimmed = trimmed;
+  return out;
 }
 
 bool fragmentHasCjk(const std::string &fragment) { return textHasCjk(fragment); }
@@ -452,13 +623,21 @@ json::object handleChatMessage(const json::value &body, const std::string &tenan
   if (messages.empty()) {
     return json::object{{"error", "empty_messages"}};
   }
-  if (messages.size() > 40) {
+  // Tope de abuso, no de contexto: el recorte por presupuesto lo hace
+  // renderHistoryWithinBudget(). Antes eran 40 y una conversacion de soporte
+  // real (con los chips Resumir/Ampliar, que suman dos mensajes cada uno) la
+  // rompia de golpe con "conversation_too_long".
+  if (messages.size() > 200) {
     return json::object{{"error", "conversation_too_long"}};
   }
+  const ChatIntent intent =
+      parseChatIntent(obj.contains("intent") && obj.at("intent").is_string()
+                          ? json::value_to<std::string>(obj.at("intent"))
+                          : std::string{});
 
   // /api/generate (no /api/chat) por consistencia con text_spell_service.cpp
   // -- se construye el prompt completo con el historial en texto plano.
-  const auto promptResult = buildChatPromptForStreaming(qualifying, messages, tenantId);
+  const auto promptResult = buildChatPromptForStreaming(qualifying, messages, tenantId, intent);
 
   json::object reqBody;
   reqBody["model"] = gOllamaChatbotModel;
@@ -469,20 +648,9 @@ json::object handleChatMessage(const json::value &body, const std::string &tenan
   // que el usuario lea/escriba puede superarlo fácilmente -- una recarga del
   // modelo agrega varios segundos extra a la siguiente respuesta).
   reqBody["keep_alive"] = "10m";
-  json::object opts;
-  opts["temperature"] = 0.4;
-  // Acota la respuesta a ~180 tokens (~130-150 palabras en español): un chat
-  // de soporte debe ser breve por diseño (ver buildSystemPrompt, "de forma
-  // breve"); limitar la generación además reduce la latencia máxima, ya que
-  // el tiempo de generación crece linealmente con los tokens producidos.
-  // Excepción: si se inyectaron datos reales de sensores (promptResult.
-  // hasSensorRows), un listado real puede necesitar más tokens que una
-  // respuesta conversacional corta -- el límite corto estaba truncando
-  // listados reales de sensores a mitad de camino (bug real, reportado
-  // 2026-07-29: pedía todos los piezómetros y la respuesta se cortaba tras
-  // el primero).
-  opts["num_predict"] = promptResult.hasSensorRows ? 500 : 180;
-  reqBody["options"] = opts;
+  // num_ctx / num_predict / stop: ver buildOllamaOptions -- compartido con la
+  // ruta de streaming SSE para que ambas no puedan divergir.
+  reqBody["options"] = buildOllamaOptions(promptResult);
 
   std::string base = gOllamaBase;
   while (!base.empty() && base.back() == '/') base.pop_back();

@@ -294,6 +294,40 @@ HttpOnly` (sin `Secure` porque el compose local fuerza
 No se probó un login completo de extremo a extremo: no hay credenciales de
 demo en el repo y no procede usar cuentas reales de la base.
 
+### WhatsApp — el token caduca, no es un problema de configuración
+
+`BEEMETRY_WHATSAPP_ACCESS_TOKEN` se actualizó el 2026-08-03 y se validó contra
+Meta con una llamada **de solo lectura** (`GET /{phone_number_id}`, no envía
+mensajes): HTTP 200, número `+1 555-658-6228` (`verified_name: "Test Number"`).
+
+Pero `GET /debug_token` revela el problema de fondo:
+
+```
+type       : USER          ← token temporal del Graph API Explorer
+expires_at : 2026-08-03 22:00 UTC   ← ~1 h de vida
+scopes     : whatsapp_business_management, whatsapp_business_messaging
+```
+
+El token anterior ya estaba caducado (`OAuthException 190/463`). Sustituir un
+token temporal por otro temporal repite el fallo cada pocas horas — el
+escalamiento a soporte responderá `whatsapp_not_configured` sin aviso previo.
+
+**Lo que hay que hacer una vez:** generar un token de **System User** en
+Business Manager (Configuración del negocio → Usuarios del sistema → Generar
+token, con `whatsapp_business_messaging` + `whatsapp_business_management`).
+Esos no caducan y `debug_token` los muestra como `type: SYSTEM_USER`,
+`expires_at: 0`.
+
+Además, `+1 555-658-6228` es el **número de pruebas** que Meta asigna por
+defecto: solo entrega a destinatarios registrados en la lista de prueba de la
+app. Para producción hay que verificar el número real de la minera.
+
+Comprobar el token vigente en cualquier momento:
+
+```bash
+curl -s "https://graph.facebook.com/v22.0/debug_token?input_token=$TOKEN" -H "Authorization: Bearer $TOKEN"
+```
+
 ---
 
 ## 8. Seguridad — hardening de infraestructura (2026-07-10)

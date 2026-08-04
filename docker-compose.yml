@@ -442,6 +442,9 @@ services:
       - BEEMETRY_WHATSAPP_ACCESS_TOKEN=${BEEMETRY_WHATSAPP_ACCESS_TOKEN:-}
       - BEEMETRY_WHATSAPP_SUPPORT_TO_E164=${BEEMETRY_WHATSAPP_SUPPORT_TO_E164:-}
       - BEEMETRY_OLLAMA_CHATBOT_MODEL=${BEEMETRY_OLLAMA_CHATBOT_MODEL:-qwen2.5:7b}
+      # Ventana de contexto del chatbot (options.num_ctx). Debe coincidir con
+      # OLLAMA_CONTEXT_LENGTH del servicio `ollama` -- ver el comentario allí.
+      - BEEMETRY_OLLAMA_CHATBOT_NUM_CTX=${BEEMETRY_OLLAMA_CHATBOT_NUM_CTX:-8192}
       - BEEMETRY_CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
       - BEEMETRY_OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
       - BEEMETRY_AI_ENGINE_TIMEOUT_MS=3000
@@ -737,7 +740,18 @@ services:
     environment:
       # Keep the model hot in memory permanently (no first-call cold start)
       - OLLAMA_KEEP_ALIVE=-1
-      - OLLAMA_NUM_PARALLEL=4
+      # Corrección 2026-08-03 (pérdida de contexto del chatbot): el backend
+      # ahora pide num_ctx=8192 por petición (antes no pedía nada y Ollama
+      # aplicaba su default por VRAM, 4096 en este host, truncando el prompt
+      # por su cuenta). Ollama reserva n_ctx = num_ctx * NUM_PARALLEL, así que
+      # con 4 slots el KV cache de gemma2:2b pasaba de 1.6 GiB a 3.3 GiB en un
+      # host de 16 GB sin GPU. Con 2 slots el consumo queda igual que antes
+      # (1.6 GiB) y cada conversación dispone del doble de contexto, que es lo
+      # que hacía falta. OLLAMA_CONTEXT_LENGTH alinea el default del servidor
+      # con lo que pide el backend: si difirieran, Ollama recargaría el modelo
+      # cada vez que se alterna entre el chatbot y /api/text/rewrite.
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_CONTEXT_LENGTH=8192
       - OLLAMA_MAX_LOADED_MODELS=2
       # ADR-068 (2026-07-24): tinyllama (1.1B) alucinaba contenido sin
       # ninguna relación con el texto de entrada en /api/text/rewrite,

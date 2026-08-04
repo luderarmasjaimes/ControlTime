@@ -2,10 +2,27 @@
 
 #include <boost/json.hpp>
 #include <string>
+#include <vector>
 
 namespace json = boost::json;
 
 namespace support {
+
+/**
+ * @brief Intencion declarada por la UI para el turno actual. La manda el
+ * widget en el body como {"intent":"summarize"|"expand"|"ideas"|"chat"};
+ * cualquier valor desconocido (o ausente) cae en Chat.
+ *
+ * Existe por una razon concreta: el presupuesto de tokens de la respuesta no
+ * puede ser el mismo para todos los turnos. Un "Ampliar" pide explicitamente
+ * MAS texto que la respuesta anterior, y el limite unico de 180 tokens
+ * (pensado para chat corto) lo cortaba a media frase -- que es justo lo que
+ * el usuario reportaba como "la ampliacion no funciona".
+ */
+enum class ChatIntent { Chat, Summarize, Expand, Ideas };
+
+/** Convierte el campo "intent" del body a ChatIntent (case-insensitive). */
+ChatIntent parseChatIntent(const std::string &raw);
 
 /**
  * @brief Asistente de IA con contexto minero (Ollama, local). Recibe
@@ -46,11 +63,43 @@ struct ChatPromptResult {
    * conversacional corta, y el límite corto (pensado para chit-chat) estaba
    * truncando listados reales a mitad de camino. */
   bool hasSensorRows = false;
+  /** options.num_predict ya resuelto (intención + presencia de listado real). */
+  int numPredict = 320;
+  /** options.num_ctx ya resuelto. Ver chatbotNumCtx(). */
+  int numCtx = 8192;
+  /** true si se descartaron turnos antiguos por presupuesto (ver
+   * kHistoryCharBudget en el .cpp) -- solo para logging/diagnóstico. */
+  bool historyTrimmed = false;
 };
 
 ChatPromptResult buildChatPromptForStreaming(const json::object &qualifying,
                                              const json::array &messages,
-                                             const std::string &tenantId = "");
+                                             const std::string &tenantId = "",
+                                             ChatIntent intent = ChatIntent::Chat);
+
+/**
+ * @brief Ventana de contexto (options.num_ctx) a pedirle a Ollama, de
+ * BEEMETRY_OLLAMA_CHATBOT_NUM_CTX (default 8192, acotado a [2048, 32768]).
+ *
+ * Corrección 2026-08-03 -- causa raíz de la "pérdida de contexto" reportada:
+ * el backend NUNCA enviaba num_ctx, así que Ollama aplicaba su default por
+ * VRAM (verificado en vivo en este stack: `default_num_ctx=4096`). Un turno
+ * con listado real de sensores ya gasta ~1.9k tokens entre prompt de sistema
+ * y datos, de modo que a partir del 4º/5º intercambio el prompt superaba los
+ * 4096 y el runtime de Ollama lo truncaba SOLO -- y trunca descartando el
+ * PRINCIPIO, es decir el prompt de sistema y el bloque 'DATOS REALES DE
+ * SENSORES'. De ahí que el asistente dejara de reconocer el tema y volviera a
+ * pedir datos que el sistema ya le había dado.
+ */
+int chatbotNumCtx();
+
+/**
+ * @brief Opciones de /api/generate compartidas por la ruta no-streaming
+ * (handleChatMessage) y la de streaming SSE (main.cpp::handleChatStreamSse),
+ * para que no puedan divergir: temperature, num_ctx, num_predict y las
+ * secuencias de parada.
+ */
+json::object buildOllamaOptions(const ChatPromptResult &promptResult);
 
 /**
  * @brief true si `fragment` contiene al menos un carácter CJK (mismo rango

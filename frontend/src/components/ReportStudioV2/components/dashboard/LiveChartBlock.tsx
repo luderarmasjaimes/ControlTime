@@ -9,7 +9,16 @@ import createPlotlyComponent from 'react-plotly.js/factory';
 // plataforma ya usan echarts.
 import Plotly from 'plotly.js-basic-dist-min';
 
-const Plot = createPlotlyComponent(Plotly);
+// react-plotly.js/factory y plotly.js-basic-dist-min son módulos CommonJS.
+// Vite 8 puede entregar su exportación como el valor directo o envuelta en
+// `.default` según se ejecute en dev o en el bundle de producción. Invocar el
+// wrapper sin normalizar hacía colapsar todo ReportStudioV2 al abrirlo con
+// `TypeError: createPlotlyComponent is not a function`.
+const factoryModule: any = createPlotlyComponent;
+const plotlyModule: any = Plotly;
+const plotlyFactory = typeof factoryModule === 'function' ? factoryModule : factoryModule.default;
+const plotlyRuntime = plotlyModule?.default ?? plotlyModule;
+const Plot = plotlyFactory(plotlyRuntime);
 
 /**
  * Bloque de gráfico del editor de informes. Dos modos:

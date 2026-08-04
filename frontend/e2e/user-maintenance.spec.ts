@@ -16,8 +16,8 @@ test('Mantenimiento usuarios bloquea usuario y registra auditoria', async ({ pag
   await dismissUserMaintenancePrompt(page);
   await page.setViewportSize({ width: 1440, height: 920 });
 
-  await openCategory(page, 'Reportes');
-  await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click();
+  await openCategory(page, 'Informes');
+  await page.getByRole('button', { name: 'Abrir Informes', exact: true }).click();
   await openMisInformes(page);
 
   // El boton real dentro del panel "Mis Informes" se llama "Gestion de

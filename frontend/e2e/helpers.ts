@@ -14,14 +14,21 @@ import type { Page } from '@playwright/test'
  */
 export async function dismissUserMaintenancePrompt(page: Page): Promise<void> {
   const dismissBtn = page.getByRole('button', { name: 'Ahora no' })
-  if (await dismissBtn.isVisible().catch(() => false)) {
+  // El prompt se monta después de hidratar la sesión. `isVisible()` es una
+  // consulta instantánea y puede ejecutarse unos milisegundos antes, dejando
+  // el overlay abierto y volviendo intermitente el siguiente click. Esperar
+  // explícitamente conserva el carácter opcional sin introducir una carrera.
+  const appeared = await dismissBtn.waitFor({ state: 'visible', timeout: 5_000 })
+    .then(() => true)
+    .catch(() => false)
+  if (appeared) {
     await dismissBtn.click()
   }
 }
 
 /**
  * La navegación es de dos niveles (ADR-040): una categoría (p.ej.
- * "Reportes", "Mapas") que hay que abrir/expandir primero, y recién ahí
+ * "Informes", "Mapas") que hay que abrir/expandir primero, y recién ahí
  * aparecen sus módulos ("Abrir Report", "Abrir Report v2", "Abrir Map",
  * etc.) como botones propios. Las specs viejas asumían una lista plana de
  * módulos visibles de entrada -- desactualizado desde que se introdujo ese
@@ -69,8 +76,9 @@ export interface RealLoginCreds {
 const DEFAULT_BACKEND_URL = 'http://localhost:8082'
 
 /**
- * Hace un login REAL contra el backend (POST /api/auth/login/password) y
- * siembra la sesion resultante en localStorage antes de `page.goto('/')`.
+ * Hace un login REAL por el proxy same-origin de la aplicación
+ * (POST /api/auth/login/password) y siembra los metadatos de sesión en
+ * localStorage antes de `page.goto('/')`.
  *
  * Reemplaza el patron anterior de inyectar un token falso
  * (`token: 'tok_e2e_admin'`, etc.) que rompia con el endurecimiento de
@@ -95,7 +103,12 @@ export async function realLogin(
   creds: RealLoginCreds,
   backendUrl: string = process.env.VITE_BACKEND_URL || DEFAULT_BACKEND_URL,
 ): Promise<RealLoginResult> {
-  const response = await page.request.post(`${backendUrl}/api/auth/login/password`, {
+  // ADR-082: el access token vive en una cookie HttpOnly. El login debe pasar
+  // por el mismo origen del frontend para que la cookie quede asociada a ese
+  // host también cuando Playwright corre dentro de Docker. Un login directo a
+  // `host.docker.internal:8082` deja la cookie en otro dominio y todas las
+  // llamadas posteriores vía `/api` responden 401.
+  const response = await page.request.post('/api/auth/login/password', {
     data: creds,
   })
   const body = await response.json()
@@ -112,7 +125,9 @@ export async function realLogin(
     tenantId: user.tenant_id || '',
     role: (user.role || '').toLowerCase(),
     loginType: 'user',
-    token: user.access_token,
+    // ADR-082: nunca persistir el JWT en localStorage. Se devuelve más abajo
+    // solo en memoria para las siembras API directas de algunas specs.
+    token: '',
     accessTokenExpiresAt: new Date(Date.now() + (user.expires_in || 900) * 1000).toISOString(),
     loggedAt: new Date().toISOString(),
   }
