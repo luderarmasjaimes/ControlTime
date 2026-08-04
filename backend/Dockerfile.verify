@@ -1,0 +1,32 @@
+# Dockerfile.verify — build de verificación del backend C++.
+# Compila TODOS los módulos con libpq presente (HAS_LIBPQ=1), boost, opencv,
+# openssl y rdkafka. Omite ONNX (opcional → stub) y la descarga de modelos,
+# para verificar la compilación de los cambios de refactor de forma eficiente.
+#
+# Uso:  docker build -f backend/Dockerfile.verify -t beemetry-backend-verify backend
+FROM ubuntu:24.04 AS builder
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    libboost-all-dev \
+    libopencv-dev \
+    libpq-dev \
+    librdkafka-dev \
+    libssl-dev \
+    libargon2-dev \
+    catch2 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . /app
+RUN rm -rf /app/build /app/build-vcpkg /app/build-verify \
+    && cmake -S . -B build-verify -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build-verify --config Release -j"$(nproc)" \
+    && ctest --test-dir build-verify --output-on-failure
+
+# Deja el binario disponible para inspección/ejecución de verificación.
+CMD ["/bin/bash", "-lc", "ls -la /app/build-verify && echo BUILD_OK"]

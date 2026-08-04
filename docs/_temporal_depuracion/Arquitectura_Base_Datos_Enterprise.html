@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise Database Architecture - ControlTime IT Management</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #020617;        /* Slate 950 */
+            --primary-light: #1E293B;  /* Slate 800 */
+            --accent: #0EA5E9;         /* Sky 500 */
+            --accent-alt: #0284C7;     /* Sky 600 */
+            --text-main: #334155;      /* Slate 700 */
+            --text-muted: #64748B;     /* Slate 500 */
+            --bg-body: #F8FAFC;        /* Slate 50 */
+            --bg-card: #FFFFFF;        /* White */
+            --border-color: #E2E8F0;   /* Slate 200 */
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary) 0%, #0F172A 100%);
+            color: white;
+            padding: 80px 40px;
+            border-bottom: 4px solid var(--accent);
+            border-radius: 0 0 24px 24px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+        }
+
+        .header .badge {
+            display: inline-block;
+            background: rgba(14, 165, 233, 0.2);
+            color: #7DD3FC;
+            padding: 6px 14px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            border: 1px solid rgba(14, 165, 233, 0.4);
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 3.5rem;
+            font-weight: 900;
+            margin: 0 0 15px 0;
+            letter-spacing: -1px;
+            line-height: 1.1;
+        }
+
+        .header p {
+            font-size: 1.15rem;
+            color: #94A3B8;
+            max-width: 800px;
+            margin: 0;
+        }
+
+        /* Typography */
+        h2 {
+            font-size: 2.2rem;
+            color: var(--primary);
+            margin: 60px 0 30px 0;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 12px;
+        }
+
+        h3 {
+            font-size: 1.6rem;
+            color: var(--primary-light);
+            margin: 40px 0 20px 0;
+            font-weight: 800;
+        }
+        
+        p {
+            font-size: 1.05rem;
+        }
+
+        /* PlantUML Box */
+        .puml-container {
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 30px;
+            margin: 40px 0;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            position: relative;
+            overflow-x: auto;
+        }
+
+        .puml-container::before {
+            content: 'PlantUML Standard Source (Diagrama Técnico)';
+            position: absolute;
+            top: 0; right: 0;
+            background: var(--accent);
+            color: white;
+            padding: 6px 16px;
+            font-size: 11px;
+            font-weight: 700;
+            border-radius: 0 12px 0 12px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .puml-container pre {
+            margin: 0;
+            color: #A7F3D0; /* Emerald 200 para el texto general PUML */
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 13.5px;
+            line-height: 1.5;
+            white-space: pre;
+        }
+
+        /* Text Highlighting in PUML for better readability */
+        .puml-keyword { color: #FCD34D; } /* Amber 300 */
+        .puml-string { color: #93C5FD; } /* Blue 300 */
+        .puml-comment { color: #6B7280; font-style: italic; } /* Gray 500 */
+
+        /* Grid */
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 24px;
+            margin: 40px 0;
+        }
+
+        .info-card {
+            background: var(--bg-card);
+            padding: 24px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .info-card h4 {
+            color: var(--accent-alt);
+            margin: 0 0 12px 0;
+            font-size: 1.2rem;
+            font-weight: 800;
+        }
+
+        ul.tech-list {
+            padding-left: 20px;
+            color: var(--text-main);
+        }
+        
+        ul.tech-list li {
+            margin-bottom: 8px;
+        }
+
+        /* Footer */
+        footer {
+            margin-top: 80px;
+            padding: 40px;
+            text-align: center;
+            color: var(--text-muted);
+            border-top: 1px solid var(--border-color);
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+
+    <header class="header">
+        <div class="container" style="padding: 0; box-shadow: none; border-bottom: none; border-radius: 0;">
+            <div class="badge">Master Data Architecture - Nivel Experto Enterprise</div>
+            <h1>Ingeniería de Bases de Datos, <br>ETL y Escalabilidad IoT</h1>
+            <p>Reporte técnico de gran envergadura (Deep-Dive). Modela a detalle absoluto todos los esquemas lógicos, vínculos inter-sistemas, inyecciones telemétricas masivas, comportamiento de Triggers (Motor Fan-Out) y la arquitectura de despliegue Docker/PostgreSQL-TimescaleDB para plataformas mineras de LATAM y Norteamérica.</p>
+        </div>
+    </header>
+
+    <div class="container">
+
+        <section id="configuracion">
+            <h2>1. Configuración de Base de Datos y Despliegue en Tiempo Real</h2>
+            <div class="info-grid">
+                <div class="info-card">
+                    <h4>Topología de Red (Docker & Volumenes)</h4>
+                    <p>La base de datos principal no opera de forma aislada, es el corazón de una red segura basada en puentes físicos:</p>
+                    <ul class="tech-list">
+                        <li><strong>Motor Principal:</strong> Imagen oficial <code>timescale/timescaledb:latest-pg15</code>. Expuesto internamente en red aislada bajo el puerto 5432.</li>
+                        <li><strong>Extensión PostGIS:</strong> Habilitado dinámicamente (`CREATE EXTENSION IF NOT EXISTS postgis`) para resolver consultas poligonales espaciales de trazabilidad Lidar.</li>
+                        <li><strong>Volúmenes Físicos:</strong> Mapeo directo <code>db_data:/var/lib/postgresql/data</code> garantizando persistencia ante destrucción del contenedor.</li>
+                        <li><strong>Provisión en Frío:</strong> Sincronización inmutable. 28 scripts nucleares en <code>./db_scripts</code> inyectados secuencialmente vía <code>/docker-entrypoint-initdb.d/</code> cubren desde el Schema Init hasta los roles de auditoría multidimensional.</li>
+                    </ul>
+                </div>
+                <div class="info-card">
+                    <h4>Políticas Operativas (Throughput & HA)</h4>
+                    <p>El cluster exige rendimiento predictivo bajo avalanchas de telemetría IoT:</p>
+                    <ul class="tech-list">
+                        <li><strong>Tolerancia de Fallo a nivel App:</strong> Las rutinas C++ encapsulan reintentos transaccionales (Connection Pooling asíncrono con LibPQ).</li>
+                        <li><strong>Healthchecks Estrictos:</strong> Orquestador Docker sondea repetitivamente <code>pg_isready -U sensors -d sensors_db</code>, blindando los micro-servicios. Ningún gateway arranca si la capa DB sucumbe.</li>
+                        <li><strong>Concurrencia:</strong> Diseño Multi-Tenant forzado a nivel de llave foránea (`tenant_id UUID`). Las consultas siempre filtran por inquilino usando índices b-tree compuestos `CREATE INDEX idx_... (tenant_id, time DESC)`.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section id="ecosistema">
+            <h2>2. Ecosistema Informático: Interacción de Servidores y Motores DB</h2>
+            <p>Se visualiza la capa integradora principal. Separación estricta entre Base de Datos de Telemetría Transaccional (`sensors_db`), Repositorio Analítico Geométrico (`formula_db`) y canales hacia integradores externos (ETL).</p>
+
+            <div class="puml-container">
+<pre>
+<span class="puml-keyword">@startuml</span>
+skinparam DefaultFontName "Inter"
+skinparam componentStyle rectangle
+skinparam rectangle {
+    BackgroundColor #FFFFFF
+    BorderColor #1E293B
+    RoundCorner 15
+}
+skinparam database {
+    BackgroundColor #F8FAFC
+    BorderColor #2563EB
+}
+
+title <b>Diagrama de Bloques: Interconexión Integral de Sistemas / Servidores de Datos</b>
+
+package "Red Segura (Docker Bridge Network)" {
+    
+    database "Main Transaccional\nTimescaleDB / PostgreSQL 15\n<b>[sensors_db]</b>" as DB_MAIN {
+        [Motor Hiper-escalable TS]
+        [Triggers & Fan-Out PLSQL]
+    }
+    
+    database "Motor Aislado Fórmulas\nPostgreSQL 15\n<b>[formula DB]</b>" as DB_FORM {
+        [Metadata Minera y Reportes]
+    }
+    
+    component "Gateway de Extracción (C++)\nAsync Threads (LibPQ)" as CPP_GATE
+    
+    component "AI Visual Engine\nMotor Analítico" as AI_ENG
+    component "MBTileserver\nCartografía Mapas" as TILE
+}
+
+cloud "Infraestructura Empresarial Externa" {
+    database "SCADA / PI System\n<b>KPI External Source</b>" as DB_EXT
+    component "Endpoints Webhooks\n(Twilio, Mailgun, ERP SAP)" as WEBHOOK
+}
+
+CPP_GATE ==[#2563EB,thickness=2]=> DB_MAIN : Pool Consultas (Lectura/Escritura IoT)
+CPP_GATE ..[#64748b]..> DB_FORM : Sincronización Eventual
+CPP_GATE =[#10B981,thickness=2]=> AI_ENG : Petición Validación Biométrica
+CPP_GATE -[#F59E0B,dashed]-> DB_EXT : Fetch Batch ETL (KPI_EXTERNAL_DATABASE_URL)
+DB_MAIN -[#EF4444,dashed]-> CPP_GATE : Pooling /Outbox (Notificando Webhooks)
+CPP_GATE -[#EF4444,dashed]-> WEBHOOK : POST / Dispatcher (Notificaciones/Alertas)
+
+<span class="puml-keyword">@enduml</span>
+</pre>
+            </div>
+        </section>
+
+        <section id="er-detallado">
+            <h2>3. Modelo Entidad-Relación Profundo: IoT, Biometría y RBAC</h2>
+            <p>Desglose a nivel arquitecto de todas las entidades núcleo de control operativo. Define claramente los dominios de multi-tenancy, autenticación facial (vectores JSONB de 512D) y la taxonomía industrial jerárquica (Assets/Sensores -> Telemtry Raw).</p>
+
+            <div class="puml-container">
+<pre>
+<span class="puml-keyword">@startuml</span>
+hide circle
+skinparam linetype ortho
+skinparam DefaultFontName "Inter"
+skinparam class {
+    BackgroundColor White
+    BorderColor #334155
+    HeaderBackgroundColor #F1F5F9
+}
+
+title <b>Modelo Relacional de Base de Datos - Enterprise Level</b>
+
+' ----- DOMINIO 1: TENANCY Y MULTI-PAÍS -----
+entity "tenants" as t_tenant {
+  * **tenant_id : UUID [PK]**
+  --
+  * tenant_name : TEXT (UNIQUE)
+  * default_locale : TEXT
+  primary_country_iso2 : CHAR(2) [FK]
+  metadata : JSONB
+}
+
+entity "ref_country" as t_country {
+  * **iso2 : CHAR(2) [PK]**
+  --
+  name_en : TEXT
+  currency_code : CHAR(3)
+}
+
+' ----- DOMINIO 2: BIOMETRÍA Y SEGURIDAD -----
+entity "auth_users" as t_user {
+  * **id : UUID [PK]**
+  --
+  * username : VARCHAR (UNIQUE)
+  * password_hash : TEXT
+  * role : VARCHAR
+  dni : VARCHAR
+  face_template : JSONB (Array Float 512D)
+}
+
+entity "auth_user_tenant" as t_user_tenant {
+  * **user_id : UUID [PK, FK]**
+  * **tenant_id : UUID [PK, FK]**
+  --
+  is_default : BOOLEAN
+}
+
+entity "sec_role" as t_role {
+  * **role_id : UUID [PK]**
+  --
+  * role_code : TEXT
+  tenant_id : UUID [FK]
+}
+
+entity "platform_audit_log" as t_audit {
+  * **id : BIGSERIAL [PK]**
+  --
+  tenant_id : UUID [FK]
+  user_id : UUID [FK]
+  * action_type : TEXT
+  detail : JSONB
+  success : BOOLEAN
+}
+
+' ----- DOMINIO 3: ESTRUCTURA MINERA (IOT) -----
+entity "sites" as t_site {
+  * **site_id : UUID [PK]**
+  --
+  * tenant_id : UUID [FK]
+  * site_name : TEXT
+  latitude/longitude : DOUBLE
+}
+
+entity "sensors" as t_sensor {
+  * **sensor_id : UUID [PK]**
+  --
+  * tenant_id : UUID [FK]
+  site_id : UUID [FK]
+  * sensor_type : TEXT
+  metadata : JSONB
+}
+
+entity "telemetry_raw (HYPERTABLE)" as t_telemetry {
+  * **telemetry_id : BIGINT [PK]**
+  * **captured_at : TIMESTAMPTZ [PK]**
+  --
+  * sensor_id : UUID [FK]
+  * tenant_id : UUID [FK]
+  value_numeric : DOUBLE
+  quality_code : SMALLINT
+}
+
+' Relaciones estructurales
+t_tenant "1" -- "0..*" t_site
+t_site "1" -- "0..*" t_sensor
+t_sensor "1" -- "0..*" t_telemetry : "Añade series temporales"
+
+t_country "1" o-- "0..*" t_tenant
+t_user "1" -- "0..*" t_user_tenant
+t_tenant "1" -- "0..*" t_user_tenant
+
+t_role "1" -- "0..*" t_user : "vía auth_user_role"
+t_user "1" -- "0..*" t_audit
+
+note left of t_telemetry
+  <b>TIMESCALEDB HYPERTABLE</b>
+  Optimizada masivamente para particionamiento 
+  temporal automático en inserción (Chunks).
+  Velocidad ultra-rápida de persistencia.
+end note
+
+<span class="puml-keyword">@enduml</span>
+</pre>
+            </div>
+        </section>
+
+        <section id="flujos-insercion">
+            <h2>4. Flujo de Inserción Crítica (Datos Telemétricos & AI Buffer)</h2>
+            <p>Modelado del comportamiento en memoria del Backend ante bombardeo IoT corporativo. El Gateway escribe la telemetría, el gestor RAM evalúa los umbrales límite definidos (reglas). Si se viola una norma, se delega al buffer relacional <code>sensor_process_alarm_queue</code> sin interrumpir el flujo.</p>
+
+            <div class="puml-container">
+<pre>
+<span class="puml-keyword">@startuml</span>
+skinparam sequenceMessageAlign center
+skinparam DefaultFontName "Inter"
+skinparam sequence {
+    LifeLineBorderColor #334155
+    BoxBackgroundColor #F8FAFC
+}
+
+title <b>Secuencia IoT: Avalancha de Telemetría hacia Hypertable e Inserción de Alarmas</b>
+
+actor "Sensores/SCADA\n(HTTP/MQTT)" as IoT
+box "Capa de Microservicio C++ (Mining Gateway)" #F1F5F9
+participant "Controlador\n(/api/sensors/data)" as CTL
+participant "Motor Evaluador\n(Reglas RAM)" as ENG
+end box
+
+database "TimescaleDB\n(sensors_db)" as DB
+participant "Tabla Hypertable\n`telemetry_raw`" as HYP
+participant "Buffer DB\n`sensor_process_alarm_queue`" as ALQ
+
+IoT -> CTL : POST JSON bulk [{sensor_code, val, ts}, ...]
+activate CTL
+
+CTL -> HYP : INSERT INTO telemetry_raw (Batch Mode LibPQ)
+activate HYP
+note right of HYP: TimescaleDB distribuye los registros\nen chunks paralelos por [captured_at]
+HYP -->> CTL : OK (Fast Commit)
+deactivate HYP
+
+CTL -> ENG : Evaluar anomalías sobre datos ingestados
+activate ENG
+alt Valor_Numeric > Threshold (Peligro)
+    ENG -> ALQ : INSERT INTO sensor_process_alarm_queue
+    activate ALQ
+    note over ALQ, ENG: Escribe en cola rápida sin colapsar tabla final
+    ALQ -->> ENG : OK
+    deactivate ALQ
+end
+deactivate ENG
+
+CTL -->> IoT : HTTP 200 (Accepted)
+deactivate CTL
+
+<span class="puml-keyword">@enduml</span>
+</pre>
+            </div>
+        </section>
+
+        <section id="etl-triggers">
+            <h2>5. Arquitectura de Triggers Asíncronos, Alertas (Fan-Out) e Integradores ETL</h2>
+            <p>La maravilla asíncrona arquitectónica reside en los triggers embebidos (PL/pgSQL). Este diagrama de estados transicionales detalla la coreografía desencadenada por una falla, cruzando a través de <b>tablas outbox y ETL syncs</b>.</p>
+
+            <div class="puml-container">
+<pre>
+<span class="puml-keyword">@startuml</span>
+skinparam DefaultFontName "Inter"
+
+title <b>Patrón Arquitectónico Fan-Out (Triggers DB & ETL Outbox)</b>
+
+[*] --> Falla_Capturada
+
+state Falla_Capturada : Insert en `sensor_process_alarm_queue`
+state Falla_Capturada {
+  [*] -> Trigger_01
+  Trigger_01 : **trg_sensor_process_alarm_queue_to_alert()**
+  Trigger_01 : Convierte cola volátil en alerta persistente.
+}
+
+state Alerta_Creada : Insert en tabla `alerts`
+Falla_Capturada --> Alerta_Creada
+
+state Fan_Out_Engine {
+  [*] -> Trigger_02
+  Trigger_02 : **trg_alerts_after_insert_fanout()**
+  Trigger_02 : 1. Evalúa tabla `org_notify_route`
+  Trigger_02 : 2. Cruza con `org_notify_recipient`
+}
+Alerta_Creada --> Fan_Out_Engine
+
+state ETL_Outbox_Spool {
+  [*] -> Bandeja_Salida
+  Bandeja_Salida : `org_notification_outbox`
+  Bandeja_Salida : Multiplexa Múltiples registros (SMS, Webhooks, Emails)
+  Bandeja_Salida : Status inicia en 'pending'
+}
+Fan_Out_Engine --> ETL_Outbox_Spool
+
+state C_Worker_Pooling {
+  [*] -> Pollers
+  Pollers : Demonios C++ revisan `outbox` periódicamente.
+  Pollers : Llamadas HTTP Seguras a Webhooks Externos (SAP, Jira, Twilio).
+  Pollers -> Upsert_ETL : Modifican a 'sent' o reintentan (Retry-Mechanism)
+}
+ETL_Outbox_Spool --> C_Worker_Pooling
+
+note right of C_Worker_Pooling
+    <b>INTEGRACIÓN EXTERNA (ETL BATCH):</b>
+    Independiente del Flujo Transaccional. Las tablas 
+    `etl_sync_peer` y `etl_job_run` controlan orquestadores 
+    para extraer BigData desde la DB hacia Bodegas Centrales 
+    (`KPI_EXTERNAL_DATABASE_URL`).
+end note
+
+<span class="puml-keyword">@enduml</span>
+</pre>
+            </div>
+            
+            <div class="info-card" style="margin-top: 30px;">
+                <h4>Detalle de Funciones Nucleares DB (Triggers Analizados):</h4>
+                <ul class="tech-list" style="font-family: 'Courier New', Courier, monospace; font-size: 0.95rem;">
+                    <li><strong>update_modified_column():</strong> Mantenimiento C.R.U.D. estándar. Actualiza <code>updated_at</code> al instante actual antes de aplicar mutaciones a entidades madre (Projects, Reports).</li>
+                    <li><strong>trg_fn_sensor_process_alarm_queue_to_alert():</strong> Limpieza. Una vez evaluada la alerta prioritaria, se limpia la cola rápida y se deposita formalmente como infracción tipificada en <code>alerts</code> preservando Metadata JSONB y Trazabilidad.</li>
+                    <li><strong>fn_alarm_enqueue_deliveries() / fn_org_notify_fanout:</strong> Loop procedural robusto que itera la matriz de severidades, grupos de operarios y áreas mineras. Es la "central telefónica" de la base de datos capaz de empotrar 50 mensajes de salida por cada 1 insumo del sistema. Garantiza cero acoplamiento (Desacoplo de la transacción primaria IoT).</li>
+                    <li><strong>trg_fn_auth_audit_security_after_insert():</strong> Vigilante (Watchdog) Biométrica. Dispara notificaciones instantáneas hacia CISOs y equipos lógicos si hay accesos recurrentes denegados o biometría fallida cruzada contra las alarmas en el esquema <code>org_notify_route</code> (Categoría 'security').</li>
+                </ul>
+            </div>
+        </section>
+
+        <footer>
+            ControlTime Systems - Departamento de Arquitectura Gubernamental
+            <br>&copy; 2026. Documentación 100% UML Orientado a Enterprise Data Platforms. Tolerancia y Escalabilidad Comprobada.
+        </footer>
+    </div>
+</body>
+</html>

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gantt Maestro VPS LATAM | Aurixa Architecture</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.dhtmlx.com/gantt/edge/dhtmlxgantt.js"></script>
+    <link href="https://cdn.dhtmlx.com/gantt/edge/dhtmlxgantt.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg-deep: #020617;
+            --bg-card: rgba(15, 23, 42, 0.7);
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.4);
+            --text-main: #f8fafc;
+            --text-dim: #94a3b8;
+            --success: #10b981;
+            --border: rgba(255, 255, 255, 0.08);
+            --glass: rgba(15, 23, 42, 0.8);
+        }
+
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-deep);
+            font-family: 'Outfit', sans-serif;
+            color: var(--text-main);
+            overflow: hidden;
+        }
+
+        .header {
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 20px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 1000;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .logo-box {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent), #a855f7);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        .title-text h1 {
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .title-text p {
+            margin: 0;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .status-badge {
+            padding: 6px 12px;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        #gantt_here {
+            width: 100%;
+            height: calc(100vh - 85px);
+            background: var(--bg-deep);
+        }
+
+        /* Premium DHTMLX Overrides */
+        .gantt_container { background-color: transparent !important; border: none !important; }
+        .gantt_grid_scale, .gantt_task_scale { 
+            background: #0f172a !important; 
+            color: var(--text-dim) !important;
+            border-bottom: 1px solid var(--border) !important;
+            height: 60px !important;
+            line-height: 30px !important;
+        }
+        .gantt_grid_data .gantt_row, .gantt_task_row {
+            background-color: transparent !important;
+            border-bottom: 1px solid var(--border) !important;
+        }
+        .gantt_grid_data .gantt_row.gantt_selected, .gantt_task_row.gantt_selected {
+            background-color: rgba(99, 102, 241, 0.1) !important;
+        }
+        .gantt_cell { 
+            color: var(--text-main) !important; 
+            border-right: 1px solid var(--border) !important; 
+            font-size: 13px;
+        }
+        .gantt_task_line {
+            border-radius: 8px !important;
+            border: none !important;
+            height: 24px !important;
+            margin-top: 8px !important;
+        }
+        .gantt_task_line.project-task {
+            background: linear-gradient(90deg, #6366f1, #8b5cf6) !important;
+        }
+        .gantt_task_line.regular-task {
+            background: linear-gradient(90deg, #3b82f6, #06b6d4) !important;
+        }
+        .gantt_task_content { color: white; font-weight: 600; padding-left: 10px; }
+        .gantt_side_content { color: var(--text-dim) !important; font-weight: 500; }
+        
+        /* Tooltip */
+        .gantt_tooltip {
+            background: var(--glass) !important;
+            backdrop-filter: blur(10px) !important;
+            border: 1px solid var(--border) !important;
+            color: white !important;
+            padding: 15px !important;
+            border-radius: 12px !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5) !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo-container">
+            <div class="logo-box">⛰️</div>
+            <div class="title-text">
+                <h1>Plan de Ejecución Tecnológica: VPS Linux LATAM</h1>
+                <p>Infraestructura de Alta Disponibilidad | Software Libre & IA</p>
+            </div>
+        </div>
+        <div class="status-badge">Arquitectura Senior v2.0</div>
+    </div>
+    <div id="gantt_here"></div>
+    <script>
+        gantt.config.date_format = "%d-%m-%Y";
+        gantt.config.scale_height = 60;
+        gantt.config.row_height = 45;
+        gantt.config.scales = [
+            {unit: "month", step: 1, format: "%F %Y"},
+            {unit: "week", step: 1, format: "S%W"}
+        ];
+
+        gantt.templates.task_class = function(start, end, task){
+            return task.type === "project" ? "project-task" : "regular-task";
+        };
+
+        gantt.config.columns = [
+            {name: "text", label: "Fase / Actividad Operativa", tree: true, width: 380},
+            {name: "duration", label: "Días", align: "center", width: 60},
+            {name: "users", label: "Responsables", width: 150, template: function(task) {
+                if(!task.users) return "";
+                const users = Array.isArray(task.users) ? task.users : [task.users];
+                return users.map(u => `<span style="background:rgba(99,102,241,0.15); color:#c7d2fe; padding:3px 8px; border-radius:6px; font-size:10px; margin-right:5px; font-weight:700; border:1px solid rgba(99,102,241,0.2);">${u}</span>`).join('');
+            }}
+        ];
+
+        gantt.config.readonly = true;
+        gantt.config.open_tree_initially = true;
+        gantt.init("gantt_here");
+
+        const tasksData = {
+            data: [{"id": 1, "text": "1. An\u00e1lisis y Dise\u00f1o de Soluci\u00f3n Local", "type": "project", "open": true}, {"id": 2, "text": "Definici\u00f3n de Capacidades y Alcance del Proyecto", "start_date": "20-05-2026", "duration": 8, "parent": 1, "users": ["ARQ"]}, {"id": 3, "text": "Dise\u00f1o de la Base de Datos Industrial (Postgres + Timescale)", "duration": 8, "parent": 1, "users": ["ARQ", "DBA"]}, {"id": 4, "text": "Dise\u00f1o Visual de la Plataforma Web (Experiencia Pro Max)", "duration": 10, "parent": 1, "users": ["UX"]}, {"id": 5, "text": "Dise\u00f1o de Aplicativos M\u00f3viles para Supervisi\u00f3n en Campo", "duration": 8, "parent": 1, "users": ["MOB"]}, {"id": 6, "text": "2. Infraestructura y Servidores en Lima", "type": "project", "open": true}, {"id": 7, "text": "Aprovisionamiento y Tuning de Servidores Linux VPS (Lima)", "duration": 7, "parent": 6, "users": ["SYS"]}, {"id": 8, "text": "Instalaci\u00f3n del Almac\u00e9n de Datos de Alta Velocidad", "duration": 7, "parent": 6, "users": ["DBA"]}, {"id": 9, "text": "Conexi\u00f3n Segura con Sistemas Antiguos (Migraci\u00f3n de Datos)", "duration": 10, "parent": 6, "users": ["DBA", "BE1"]}, {"id": 10, "text": "3. Cerebro Digital e Inteligencia Artificial", "type": "project", "open": true}, {"id": 11, "text": "Motor Central de Recepci\u00f3n de Datos de Sensores (Tiempo Real)", "duration": 15, "parent": 10, "users": ["BE1"]}, {"id": 12, "text": "Sistema de Reconocimiento Facial y An\u00e1lisis de Textos (IA)", "duration": 15, "parent": 10, "users": ["BE2"]}, {"id": 13, "text": "Integraci\u00f3n del Cerebro IA con el Flujo de Datos Operativos", "duration": 10, "parent": 10, "users": ["BE1", "BE2"]}, {"id": 14, "text": "4. Interfaz de Usuario y Movilidad", "type": "project", "open": true}, {"id": 15, "text": "Portal Web de Reportes y Control Maestro", "duration": 14, "parent": 14, "users": ["FE1"]}, {"id": 16, "text": "Visualizaci\u00f3n de Mapas Satelitales y C\u00e1maras de Seguridad", "duration": 14, "parent": 14, "users": ["FE2"]}, {"id": 17, "text": "App M\u00f3vil para Notificaciones de Alerta y Biometr\u00eda", "duration": 15, "parent": 14, "users": ["MOB"]}, {"id": 18, "text": "Sincronizaci\u00f3n Total entre Web, M\u00f3vil y Servidores", "duration": 10, "parent": 14, "users": ["ARQ", "BE1", "FE1", "MOB"]}, {"id": 19, "text": "5. Calidad y Blindaje del Sistema", "type": "project", "open": true}, {"id": 20, "text": "Verificaci\u00f3n del Correcto Funcionamiento de las APIs", "duration": 7, "parent": 19, "users": ["QA"]}, {"id": 21, "text": "Pruebas de Uso Real en Pantallas e Impresi\u00f3n de Reportes", "duration": 7, "parent": 19, "users": ["QA"]}, {"id": 22, "text": "Pruebas de Carga Extrema (Simulaci\u00f3n de 10,000+ Sensores)", "duration": 5, "parent": 19, "users": ["QA", "SYS"]}, {"id": 23, "text": "Manuales de Usuario y Gu\u00edas T\u00e9cnicas de Operaci\u00f3n", "duration": 5, "parent": 19, "users": ["QA", "ARQ"]}, {"id": 24, "text": "6. Puesta en Marcha y Go-Live", "type": "project", "open": true}, {"id": 25, "text": "Despliegue en el Centro de Datos Local (Lima)", "duration": 5, "parent": 24, "users": ["SYS"]}, {"id": 26, "text": "Aprobaci\u00f3n Final y Firma de Conformidad Minera", "duration": 3, "parent": 24, "users": ["ARQ", "Directorio"]}, {"id": 27, "text": "Periodo de Acompa\u00f1amiento y Marcha Blanca", "duration": 10, "parent": 24, "users": ["ARQ", "BE1", "FE1", "DBA", "SYS"]}, {"id": 28, "text": "Lanzamiento Operativo a Nivel LATAM", "duration": 2, "parent": 24, "users": ["ARQ"]}],
+            links: [{"id": 1, "source": 2, "target": 3, "type": "0"}, {"id": 2, "source": 2, "target": 4, "type": "0"}, {"id": 3, "source": 4, "target": 5, "type": "0"}, {"id": 4, "source": 3, "target": 7, "type": "0"}, {"id": 5, "source": 3, "target": 8, "type": "0"}, {"id": 6, "source": 8, "target": 9, "type": "0"}, {"id": 7, "source": 7, "target": 11, "type": "0"}, {"id": 8, "source": 7, "target": 12, "type": "0"}, {"id": 9, "source": 11, "target": 13, "type": "0"}, {"id": 10, "source": 12, "target": 13, "type": "0"}, {"id": 11, "source": 4, "target": 15, "type": "0"}, {"id": 12, "source": 4, "target": 16, "type": "0"}, {"id": 13, "source": 5, "target": 17, "type": "0"}, {"id": 14, "source": 13, "target": 18, "type": "0"}, {"id": 15, "source": 13, "target": 20, "type": "0"}, {"id": 16, "source": 18, "target": 21, "type": "0"}, {"id": 17, "source": 21, "target": 22, "type": "0"}, {"id": 18, "source": 22, "target": 23, "type": "0"}, {"id": 19, "source": 22, "target": 25, "type": "0"}, {"id": 20, "source": 25, "target": 26, "type": "0"}, {"id": 21, "source": 26, "target": 27, "type": "0"}, {"id": 22, "source": 27, "target": 28, "type": "0"}]
+        };
+
+        gantt.parse(tasksData);
+    </script>
+</body>
+</html>

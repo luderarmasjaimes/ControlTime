@@ -1,0 +1,35 @@
+# Modelos IA preferidos por especialidad (ADR-004, ADR-010)
+# Override con variables de entorno: AURIXA_MODEL_BACKEND=claude-opus
+
+defaults:
+  architecture: claude-opus
+  backend_cpp: claude
+  frontend_react: gpt-5
+  sql_optimization: deepseek
+  documentation: gemini
+  refactoring: cursor
+  review: gpt-5
+  qa: gpt-5-mini
+  planning: gpt-5
+
+providers:
+  claude:
+    env_key: ANTHROPIC_API_KEY
+    models: [claude-opus, claude-sonnet, claude]
+  openai:
+    env_key: OPENAI_API_KEY
+    models: [gpt-5, gpt-5-mini, gpt-4o]
+  google:
+    env_key: GOOGLE_API_KEY
+    models: [gemini-2.5-pro, gemini]
+  deepseek:
+    env_key: DEEPSEEK_API_KEY
+    models: [deepseek-chat]
+  cursor:
+    env_key: null
+    models: [composer]
+
+# Cloud fallback para IA aplicada (BE2) — solo si tenant lo permite
+cloud_fallback:
+  enabled: false
+  providers: [openai, google, deepseek]

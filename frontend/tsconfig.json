@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Migración incremental (0% -> N%): permite que .js/.jsx y .ts/.tsx
+       convivan en el mismo proyecto sin forzar una migración de una sola vez.
+       allowJs+checkJs:false = los .js/.jsx existentes se transpilan igual
+       que siempre (Vite/esbuild), sin ganar (ni perder) chequeo de tipos. */
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+
+    /* Bundler mode (Vite) */
+    "moduleResolution": "bundler",
+    "types": ["node", "vite/client"],
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+
+    /* Linting — estricto para archivos YA migrados a TS; no aplica a .js/.jsx
+       (checkJs:false) ni bloquea el build (Vite no tipa, solo transpila). */
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src"]
+}

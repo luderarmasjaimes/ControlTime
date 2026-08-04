@@ -1,2382 +1,1306 @@
+// --------------------------------------------------------------------------
+// main.cpp  –  Modular entry point for mapas_backend
+// --------------------------------------------------------------------------
+
 #include <boost/asio.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/version.hpp>
+#include <boost/beast.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/json.hpp>
+#include <opencv2/opencv.hpp>
 
-#if __has_include(<libpq-fe.h>)
-#define HAS_LIBPQ 1
-#include <libpq-fe.h>
-#elif __has_include(<postgresql/libpq-fe.h>)
-#define HAS_LIBPQ 1
-#include <postgresql/libpq-fe.h>
+// SO_RCVTIMEO para el timeout de las conexiones keep-alive (ver
+// setSocketReceiveTimeout más abajo: beast::tcp_stream::expires_after no
+// aplica a las lecturas síncronas que usa este servidor).
+#ifdef _WIN32
+#include <winsock2.h>
 #else
-#define HAS_LIBPQ 0
+#include <sys/socket.h>
+#include <sys/time.h>
 #endif
 
-#include "vision_pipeline.hpp"
-#include "websocket_session.hpp"
-#include <opencv2/opencv.hpp>
-#include <opencv2/dnn.hpp>
-
-#include <atomic>
 #include <algorithm>
-#include <array>
-#include <cctype>
-#include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
+#include <future>
 #include <iostream>
-#include <map>
-#include <mutex>
-#include <optional>
-#include <random>
 #include <regex>
-#include <sstream>
-#include <stdexcept>
 #include <string>
 #include <thread>
-#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
-namespace asio = boost::asio;
-namespace beast = boost::beast;
-namespace http = beast::http;
-namespace json = boost::json;
-namespace fs = std::filesystem;
-
-struct ConvertRequest {
-  std::string inputPath;
-  std::string outputName;
-  std::string outputPath;
-  int minZoom = 0;
-  int maxZoom = 18;
-  std::string compression = "JPEG";
-  int quality = 85;
-  std::string resampling = "BILINEAR";
-};
-
-struct Job {
-  std::string id;
-  std::string status;
-  std::string createdAt;
-  std::string updatedAt;
-  std::string outputPath;
-  std::vector<std::string> logs;
-};
-
-struct AuthUser {
-  std::string id;
-  std::string company;
-  std::string firstName;
-  std::string lastName;
-  std::string dni;
-  std::string username;
-  std::string role = "operator";
-  std::string passwordHash;
-  std::vector<double> faceTemplate;
-  std::string createdAt;
-};
-
-std::mutex gJobsMutex;
-std::map<std::string, Job> gJobs;
-std::mutex gAuthMutex;
-
-struct AuthSession {
-  std::string token;
-  std::string userId;
-  std::string username;
-  std::string company;
-  std::string role;
-  std::chrono::system_clock::time_point expiresAt;
-};
-
-std::mutex gAuthSessionMutex;
-std::unordered_map<std::string, AuthSession> gAuthSessions;
-
-const std::vector<std::string> kMiningCompanies = {
-    "Minera Raura", "Compania Minera Volcan", "Minera Antamina",
-    "Minera Cerro Verde"};
-
-std::string getenvOr(const char *key, const std::string &fallback);
-std::string makeId();
-
-enum class AuthStorageMode { Postgres, File };
-enum class BiometricProvider { Legacy, DermalogCli };
-
-AuthStorageMode gAuthStorageMode = AuthStorageMode::File;
-std::string gDatabaseUrl;
-BiometricProvider gBiometricProvider = BiometricProvider::Legacy;
-std::string gDermalogCliPath;
-bool gDermalogRequired = false;
-bool gBiometricDnnEnabled = false;
-std::string gBiometricDnnModelPath;
-std::string gBiometricDnnLabelsCsv;
-float gBiometricDnnThreshold = 0.72f;
-int gSessionTtlMinutes = 480;
-
-struct FaceAnalysis {
-  bool ok = false;
-  std::vector<double> faceTemplate;
-  std::vector<std::string> issues;
-  double qualityScore = 0.0;
-  std::string provider = "legacy";
-};
-
-struct AuditFilter {
-  size_t limit = 50;
-  size_t offset = 0;
-  std::optional<std::string> company;
-  std::optional<std::string> username;
-  std::optional<std::string> action;
-  std::optional<bool> success;
-};
-
-struct AuditPageResult {
-  json::array logs;
-  size_t total = 0;
-  size_t limit = 50;
-  size_t offset = 0;
-};
-
-int hexToInt(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-  if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-  return -1;
-}
-
-std::string urlDecode(const std::string &src) {
-  std::string out;
-  out.reserve(src.size());
-  for (size_t i = 0; i < src.size(); ++i) {
-    if (src[i] == '+') {
-      out.push_back(' ');
-      continue;
-    }
-    if (src[i] == '%' && i + 2 < src.size()) {
-      const int hi = hexToInt(src[i + 1]);
-      const int lo = hexToInt(src[i + 2]);
-      if (hi >= 0 && lo >= 0) {
-        out.push_back(static_cast<char>((hi << 4) | lo));
-        i += 2;
-        continue;
-      }
-    }
-    out.push_back(src[i]);
-  }
-  return out;
-}
-
-std::unordered_map<std::string, std::string>
-parseQueryString(const std::string &target) {
-  std::unordered_map<std::string, std::string> out;
-  const auto qPos = target.find('?');
-  if (qPos == std::string::npos || qPos + 1 >= target.size()) {
-    return out;
-  }
-
-  std::string query = target.substr(qPos + 1);
-  std::stringstream ss(query);
-  std::string pair;
-  while (std::getline(ss, pair, '&')) {
-    if (pair.empty()) {
-      continue;
-    }
-    const auto eq = pair.find('=');
-    if (eq == std::string::npos) {
-      out[urlDecode(pair)] = "";
-      continue;
-    }
-    out[urlDecode(pair.substr(0, eq))] = urlDecode(pair.substr(eq + 1));
-  }
-  return out;
-}
-
-std::string routePathOnly(const std::string &target) {
-  const auto qPos = target.find('?');
-  return qPos == std::string::npos ? target : target.substr(0, qPos);
-}
-
-std::string nowIso8601() {
-  auto now = std::chrono::system_clock::now();
-  std::time_t tt = std::chrono::system_clock::to_time_t(now);
-  std::tm utc{};
-#ifdef _WIN32
-  gmtime_s(&utc, &tt);
-#else
-  gmtime_r(&tt, &utc);
-#endif
-  std::ostringstream oss;
-  oss << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
-  return oss.str();
-}
-
-std::string toLowerCopy(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
-}
-
-std::vector<std::string> splitCsvLower(const std::string &csv) {
-  std::vector<std::string> out;
-  std::stringstream ss(csv);
-  std::string item;
-  while (std::getline(ss, item, ',')) {
-    auto first = item.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) {
-      continue;
-    }
-    auto last = item.find_last_not_of(" \t\r\n");
-    out.push_back(toLowerCopy(item.substr(first, last - first + 1)));
-  }
-  return out;
-}
-
-std::string resolveRoleForUsername(const std::string &username) {
-  const auto candidate = toLowerCopy(username);
-  const auto configured = splitCsvLower(getenvOr("AUTH_ADMIN_USERS", "admin"));
-  for (const auto &admin : configured) {
-    if (candidate == admin) {
-      return "admin";
-    }
-  }
-  if (candidate.rfind("admin_", 0) == 0) {
-    return "admin";
-  }
-  return "operator";
-}
-
-std::string makeSessionToken() {
-  return makeId() + makeId();
-}
-
-AuthSession issueAuthSession(const AuthUser &user) {
-  AuthSession session;
-  session.token = makeSessionToken();
-  session.userId = user.id;
-  session.username = user.username;
-  session.company = user.company;
-  session.role = user.role;
-  session.expiresAt = std::chrono::system_clock::now() +
-                      std::chrono::minutes(gSessionTtlMinutes);
-
-  std::scoped_lock lk(gAuthSessionMutex);
-  gAuthSessions[session.token] = session;
-  return session;
-}
-
-void pruneExpiredAuthSessions() {
-  std::scoped_lock lk(gAuthSessionMutex);
-  const auto now = std::chrono::system_clock::now();
-  for (auto it = gAuthSessions.begin(); it != gAuthSessions.end();) {
-    if (it->second.expiresAt <= now) {
-      it = gAuthSessions.erase(it);
-    } else {
-      ++it;
-    }
-  }
-}
-
-std::optional<AuthSession>
-resolveAuthSession(const http::request<http::string_body> &req,
-                   const std::unordered_map<std::string, std::string> &query) {
-  std::string token;
-  if (auto it = query.find("auth_token"); it != query.end()) {
-    token = it->second;
-  }
-
-  if (token.empty()) {
-    if (auto auth = req.find(http::field::authorization); auth != req.end()) {
-      const std::string value(auth->value());
-      static const std::string kBearer = "Bearer ";
-      if (value.rfind(kBearer, 0) == 0) {
-        token = value.substr(kBearer.size());
-      }
-    }
-  }
-
-  if (token.empty()) {
-    return std::nullopt;
-  }
-
-  pruneExpiredAuthSessions();
-  std::scoped_lock lk(gAuthSessionMutex);
-  const auto it = gAuthSessions.find(token);
-  if (it == gAuthSessions.end()) {
-    return std::nullopt;
-  }
-  return it->second;
-}
-
-bool decodeBase64(const std::string &input, std::vector<unsigned char> &out) {
-  static const std::string chars =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::array<int, 256> table{};
-  table.fill(-1);
-  for (size_t i = 0; i < chars.size(); ++i) {
-    table[static_cast<unsigned char>(chars[i])] = static_cast<int>(i);
-  }
-
-  int val = 0;
-  int bits = -8;
-  out.clear();
-  out.reserve((input.size() * 3) / 4);
-
-  for (unsigned char c : input) {
-    if (std::isspace(c)) {
-      continue;
-    }
-    if (c == '=') {
-      break;
-    }
-    const int d = table[c];
-    if (d == -1) {
-      return false;
-    }
-    val = (val << 6) + d;
-    bits += 6;
-    if (bits >= 0) {
-      out.push_back(static_cast<unsigned char>((val >> bits) & 0xFF));
-      bits -= 8;
-    }
-  }
-  return !out.empty();
-}
-
-std::vector<double> extractLegacyTemplateFromMat(const cv::Mat &image) {
-  cv::Mat gray;
-  if (image.channels() == 3) {
-    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-  } else if (image.channels() == 4) {
-    cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
-  } else {
-    gray = image.clone();
-  }
-
-  cv::Mat resized;
-  cv::resize(gray, resized, cv::Size(24, 24), 0, 0, cv::INTER_AREA);
-
-  std::vector<double> tpl;
-  tpl.reserve(static_cast<size_t>(resized.rows * resized.cols));
-  double maxVal = 1.0;
-  cv::minMaxLoc(resized, nullptr, &maxVal);
-  if (maxVal <= 0.0) {
-    maxVal = 1.0;
-  }
-  for (int y = 0; y < resized.rows; ++y) {
-    for (int x = 0; x < resized.cols; ++x) {
-      tpl.push_back(static_cast<double>(resized.at<unsigned char>(y, x)) /
-                    maxVal);
-    }
-  }
-  return tpl;
-}
-
-struct CascadeBundle {
-  bool faceLoaded = false;
-  bool eyeLoaded = false;
-  bool smileLoaded = false;
-  cv::CascadeClassifier face;
-  cv::CascadeClassifier eye;
-  cv::CascadeClassifier smile;
-};
-
-std::vector<fs::path> cascadeSearchDirs() {
-  std::vector<fs::path> dirs;
-  auto pushUnique = [&](const fs::path &p) {
-    if (p.empty()) {
-      return;
-    }
-    for (const auto &existing : dirs) {
-      if (existing == p) {
-        return;
-      }
-    }
-    dirs.push_back(p);
-  };
-
-  const char *haarDir = std::getenv("OPENCV_HAAR_DIR");
-  if (haarDir && *haarDir) {
-    pushUnique(fs::path(haarDir));
-  }
-
-  const char *openCvDir = std::getenv("OpenCV_DIR");
-  if (openCvDir && *openCvDir) {
-    pushUnique(fs::path(openCvDir) / "etc" / "haarcascades");
-  }
-
-  pushUnique(fs::path("/usr/share/opencv4/haarcascades"));
-  pushUnique(fs::path("/usr/share/opencv/haarcascades"));
-  pushUnique(fs::path("/usr/local/share/opencv4/haarcascades"));
-  pushUnique(fs::path("C:/opencv/build/etc/haarcascades"));
-
-  return dirs;
-}
-
-bool loadCascadeFile(cv::CascadeClassifier &classifier,
-                     const std::string &fileName) {
-  const auto dirs = cascadeSearchDirs();
-  for (const auto &dir : dirs) {
-    const auto full = dir / fileName;
-    if (!fs::exists(full)) {
-      continue;
-    }
-    if (classifier.load(full.string())) {
-      return true;
-    }
-  }
-  return false;
-}
-
-CascadeBundle &getCascadeBundle() {
-  static CascadeBundle bundle;
-  static std::once_flag once;
-  std::call_once(once, [] {
-    bundle.faceLoaded = loadCascadeFile(bundle.face, "haarcascade_frontalface_default.xml");
-    bundle.eyeLoaded = loadCascadeFile(bundle.eye, "haarcascade_eye_tree_eyeglasses.xml") ||
-                      loadCascadeFile(bundle.eye, "haarcascade_eye.xml");
-    bundle.smileLoaded = loadCascadeFile(bundle.smile, "haarcascade_smile.xml");
-  });
-  return bundle;
-}
-
-cv::Rect largestRect(const std::vector<cv::Rect> &rects) {
-  if (rects.empty()) {
-    return cv::Rect();
-  }
-  return *std::max_element(rects.begin(), rects.end(), [](const cv::Rect &a,
-                                                           const cv::Rect &b) {
-    return a.area() < b.area();
-  });
-}
-
-double faceSymmetryScore(const cv::Mat &faceGray) {
-  if (faceGray.empty() || faceGray.cols < 8 || faceGray.rows < 8) {
-    return 100.0;
-  }
-
-  const int half = faceGray.cols / 2;
-  cv::Mat left = faceGray(cv::Rect(0, 0, half, faceGray.rows));
-  cv::Mat right = faceGray(cv::Rect(faceGray.cols - half, 0, half, faceGray.rows));
-  cv::Mat rightFlipped;
-  cv::flip(right, rightFlipped, 1);
-  cv::Mat diff;
-  cv::absdiff(left, rightFlipped, diff);
-  return cv::mean(diff)[0];
-}
-
-void pushIssueUnique(std::vector<std::string> &issues,
-                     const std::string &issue) {
-  if (std::find(issues.begin(), issues.end(), issue) == issues.end()) {
-    issues.push_back(issue);
-  }
-}
-
-std::vector<float> flattenDnnOutput(const cv::Mat &out) {
-  std::vector<float> values;
-  if (out.empty()) {
-    return values;
-  }
-  cv::Mat flat = out.reshape(1, 1);
-  values.reserve(static_cast<size_t>(flat.total()));
-  for (int i = 0; i < flat.cols; ++i) {
-    values.push_back(flat.at<float>(0, i));
-  }
-  return values;
-}
-
-std::vector<float> softmax(const std::vector<float> &v) {
-  if (v.empty()) {
-    return {};
-  }
-  float maxV = *std::max_element(v.begin(), v.end());
-  std::vector<float> exps;
-  exps.reserve(v.size());
-  double sum = 0.0;
-  for (float x : v) {
-    const double e = std::exp(static_cast<double>(x - maxV));
-    exps.push_back(static_cast<float>(e));
-    sum += e;
-  }
-  if (sum <= 0.0) {
-    return std::vector<float>(v.size(), 0.0f);
-  }
-  for (auto &x : exps) {
-    x = static_cast<float>(x / sum);
-  }
-  return exps;
-}
-
-struct AccessoryDnnContext {
-  bool initialized = false;
-  bool loaded = false;
-  cv::dnn::Net net;
-  std::vector<std::string> labels;
-  int inputSize = 224;
-  std::string initError;
-};
-
-AccessoryDnnContext &getAccessoryDnnContext() {
-  static AccessoryDnnContext ctx;
-  if (ctx.initialized) {
-    return ctx;
-  }
-  ctx.initialized = true;
-
-  if (!gBiometricDnnEnabled || gBiometricDnnModelPath.empty()) {
-    if (!gBiometricDnnEnabled) {
-      ctx.initError = "dnn_disabled";
-    } else {
-      ctx.initError = "dnn_model_path_missing";
-    }
-    return ctx;
-  }
-
-  if (!fs::exists(gBiometricDnnModelPath)) {
-    ctx.initError = "dnn_model_not_found";
-    return ctx;
-  }
-
-  try {
-    ctx.net = cv::dnn::readNet(gBiometricDnnModelPath);
-    ctx.labels = splitCsvLower(gBiometricDnnLabelsCsv);
-    if (ctx.labels.empty()) {
-      ctx.labels = {"glasses", "hat", "mask", "makeup", "eyes_closed",
-                    "mouth_open", "frontal"};
-    }
-    ctx.loaded = true;
-    ctx.initError.clear();
-  } catch (...) {
-    ctx.loaded = false;
-    ctx.initError = "dnn_model_load_failed";
-  }
-  return ctx;
-}
-
-json::object biometricDnnRuntimeStatusJson() {
-  auto &ctx = getAccessoryDnnContext();
-  json::array labels;
-  for (const auto &label : ctx.labels) {
-    labels.push_back(json::value(label));
-  }
-
-  json::object out{{"enabled", gBiometricDnnEnabled},
-                   {"model_path", gBiometricDnnModelPath},
-                   {"model_exists", fs::exists(gBiometricDnnModelPath)},
-                   {"loaded", ctx.loaded},
-                   {"threshold", gBiometricDnnThreshold},
-                   {"labels", labels}};
-  if (!ctx.initError.empty()) {
-    out["init_error"] = ctx.initError;
-  }
-  return out;
-}
-
-void applyDnnAccessoryChecks(const cv::Mat &faceBgr,
-                             std::vector<std::string> &issues) {
-  auto &ctx = getAccessoryDnnContext();
-  if (!ctx.loaded || faceBgr.empty()) {
-    return;
-  }
-
-  try {
-    cv::Mat blob = cv::dnn::blobFromImage(faceBgr, 1.0 / 255.0,
-                                          cv::Size(ctx.inputSize, ctx.inputSize),
-                                          cv::Scalar(), true, false);
-    ctx.net.setInput(blob);
-    cv::Mat out = ctx.net.forward();
-    auto probs = flattenDnnOutput(out);
-    if (probs.empty()) {
-      return;
-    }
-
-    const bool appearsNormalized =
-        std::all_of(probs.begin(), probs.end(), [](float x) {
-          return x >= 0.0f && x <= 1.0f;
-        });
-    if (!appearsNormalized) {
-      probs = softmax(probs);
-    }
-
-    const size_t n = std::min(probs.size(), ctx.labels.size());
-    for (size_t i = 0; i < n; ++i) {
-      const auto &label = ctx.labels[i];
-      const float score = probs[i];
-      if (score < gBiometricDnnThreshold) {
-        continue;
-      }
-
-      if (label == "glasses" || label == "eyeglasses" ||
-          label == "sunglasses") {
-        pushIssueUnique(issues, "suspected_glasses");
-      } else if (label == "hat" || label == "cap" || label == "helmet" ||
-                 label == "hood") {
-        pushIssueUnique(issues, "suspected_hat");
-      } else if (label == "mask" || label == "scarf" ||
-                 label == "accessory" || label == "occlusion") {
-        pushIssueUnique(issues, "suspected_face_accessory");
-      } else if (label == "makeup" || label == "cosmetic") {
-        pushIssueUnique(issues, "suspected_heavy_makeup");
-      } else if (label == "eyes_closed") {
-        pushIssueUnique(issues, "eyes_not_open_or_not_visible");
-      } else if (label == "mouth_open") {
-        pushIssueUnique(issues, "mouth_not_closed");
-      } else if (label == "non_frontal" || label == "profile") {
-        pushIssueUnique(issues, "face_not_frontal");
-      }
-    }
-  } catch (...) {
-    pushIssueUnique(issues, "dnn_inference_failed");
-  }
-}
-
-cv::Mat normalizeFaceGray(const cv::Mat &faceGray) {
-  cv::Mat denoised;
-  cv::bilateralFilter(faceGray, denoised, 5, 25.0, 25.0);
-
-  auto clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
-  cv::Mat equalized;
-  clahe->apply(denoised, equalized);
-  return equalized;
-}
-
-double edgeDensity(const cv::Mat &gray) {
-  if (gray.empty()) {
-    return 0.0;
-  }
-  cv::Mat edges;
-  cv::Canny(gray, edges, 70.0, 150.0);
-  return static_cast<double>(cv::countNonZero(edges)) /
-         static_cast<double>(std::max(1, gray.rows * gray.cols));
-}
-
-double darkPixelRatio(const cv::Mat &gray, int threshold) {
-  if (gray.empty()) {
-    return 0.0;
-  }
-  cv::Mat mask;
-  cv::threshold(gray, mask, threshold, 255, cv::THRESH_BINARY_INV);
-  return static_cast<double>(cv::countNonZero(mask)) /
-         static_cast<double>(std::max(1, gray.rows * gray.cols));
-}
-
-double brightPixelRatio(const cv::Mat &gray, int threshold) {
-  if (gray.empty()) {
-    return 0.0;
-  }
-  cv::Mat mask;
-  cv::threshold(gray, mask, threshold, 255, cv::THRESH_BINARY);
-  return static_cast<double>(cv::countNonZero(mask)) /
-         static_cast<double>(std::max(1, gray.rows * gray.cols));
-}
-
-double skinPixelRatio(const cv::Mat &bgr) {
-  if (bgr.empty()) {
-    return 0.0;
-  }
-  cv::Mat ycrcb;
-  cv::cvtColor(bgr, ycrcb, cv::COLOR_BGR2YCrCb);
-  cv::Mat skinMask;
-  cv::inRange(ycrcb, cv::Scalar(0, 133, 77), cv::Scalar(255, 173, 127),
-              skinMask);
-  return static_cast<double>(cv::countNonZero(skinMask)) /
-         static_cast<double>(std::max(1, bgr.rows * bgr.cols));
-}
-
-double meanSaturation(const cv::Mat &bgr) {
-  if (bgr.empty()) {
-    return 0.0;
-  }
-  cv::Mat hsv;
-  cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
-  std::vector<cv::Mat> channels;
-  cv::split(hsv, channels);
-  if (channels.size() < 2) {
-    return 0.0;
-  }
-  return cv::mean(channels[1])[0];
-}
-
-FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image,
-                                    const std::string &mode) {
-  FaceAnalysis result;
-  result.provider = "legacy";
-  const bool strictRegister = mode == "register";
-
-  std::vector<unsigned char> raw;
-  if (!decodeBase64(base64Image, raw)) {
-    result.issues.push_back("invalid_base64_image");
-    return result;
-  }
-
-  cv::Mat img = cv::imdecode(raw, cv::IMREAD_COLOR);
-  if (img.empty()) {
-    result.issues.push_back("invalid_image_payload");
-    return result;
-  }
-
-  cv::Mat gray;
-  cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
-
-  auto &cascade = getCascadeBundle();
-  std::vector<cv::Rect> faces;
-  if (cascade.faceLoaded) {
-    cascade.face.detectMultiScale(gray, faces, 1.1, 4, 0, cv::Size(90, 90));
-  }
-
-  cv::Rect faceRect;
-  if (!faces.empty()) {
-    faceRect = largestRect(faces);
-  }
-
-  if (strictRegister) {
-    if (!cascade.faceLoaded) {
-      result.issues.push_back("face_detector_unavailable");
-    }
-    if (faces.empty()) {
-      result.issues.push_back("face_not_detected");
-    }
-  }
-
-  if (faceRect.area() <= 0) {
-    faceRect = cv::Rect(0, 0, gray.cols, gray.rows);
-  }
-
-  const double faceRatio =
-      static_cast<double>(faceRect.area()) /
-      static_cast<double>(std::max(1, gray.cols * gray.rows));
-  if (strictRegister && faceRatio < 0.1) {
-    result.issues.push_back("face_too_small");
-  }
-
-  const cv::Point2d frameCenter(gray.cols * 0.5, gray.rows * 0.5);
-  const cv::Point2d faceCenter(faceRect.x + faceRect.width * 0.5,
-                               faceRect.y + faceRect.height * 0.5);
-  const double offX = std::abs(faceCenter.x - frameCenter.x) /
-                      std::max(1.0, gray.cols * 0.5);
-  const double offY = std::abs(faceCenter.y - frameCenter.y) /
-                      std::max(1.0, gray.rows * 0.5);
-  if (strictRegister && (offX > 0.2 || offY > 0.2)) {
-    result.issues.push_back("face_off_center");
-  }
-
-  const double aspect =
-      static_cast<double>(faceRect.width) / std::max(1.0, static_cast<double>(faceRect.height));
-  if (strictRegister && (aspect < 0.62 || aspect > 1.08)) {
-    result.issues.push_back("face_not_frontal");
-  }
-
-  cv::Mat faceGrayRaw = gray(faceRect).clone();
-  cv::Mat faceGray = normalizeFaceGray(faceGrayRaw);
-  cv::Mat faceBgr = img(faceRect).clone();
-
-  cv::Scalar meanIntensity = cv::mean(faceGray);
-  if (meanIntensity[0] < 70.0 || meanIntensity[0] > 195.0) {
-    result.issues.push_back("lighting_out_of_range");
-  }
-
-  cv::Mat lap;
-  cv::Laplacian(faceGray, lap, CV_64F);
-  cv::Scalar mu, sigma;
-  cv::meanStdDev(lap, mu, sigma);
-  const double blurScore = sigma[0] * sigma[0];
-  const double minBlur = strictRegister ? 120.0 : 80.0;
-  if (blurScore < minBlur) {
-    result.issues.push_back("image_not_sharp");
-  }
-
-  cv::Scalar meanFace, stdFace;
-  cv::meanStdDev(faceGray, meanFace, stdFace);
-  if (strictRegister && stdFace[0] < 28.0) {
-    result.issues.push_back("low_dynamic_range");
-  }
-
-  const double symmetry = faceSymmetryScore(faceGray);
-  if (strictRegister && symmetry > 36.0) {
-    result.issues.push_back("head_pose_not_straight");
-  }
-
-  if (strictRegister && cascade.eyeLoaded) {
-    const int eyeRegionH = std::max(1, faceGray.rows / 2);
-    cv::Mat upperFace = faceGray(cv::Rect(0, 0, faceGray.cols, eyeRegionH));
-    std::vector<cv::Rect> eyes;
-    cascade.eye.detectMultiScale(upperFace, eyes, 1.08, 3, 0, cv::Size(18, 18));
-    if (eyes.size() < 2) {
-      result.issues.push_back("eyes_not_open_or_not_visible");
-    }
-  }
-
-  if (strictRegister && cascade.smileLoaded) {
-    const int mouthY = std::max(0, faceGray.rows / 2);
-    const int mouthH = std::max(1, faceGray.rows - mouthY);
-    cv::Mat lowerFace = faceGray(cv::Rect(0, mouthY, faceGray.cols, mouthH));
-    std::vector<cv::Rect> smiles;
-    cascade.smile.detectMultiScale(lowerFace, smiles, 1.7, 20, 0,
-                                   cv::Size(faceGray.cols / 6, faceGray.rows / 10));
-    const bool strongSmile = std::any_of(smiles.begin(), smiles.end(),
-                                         [&](const cv::Rect &r) {
-      return r.width > faceGray.cols * 0.35;
-    });
-    if (strongSmile) {
-      result.issues.push_back("mouth_not_closed");
-    }
-  }
-
-  if (strictRegister && faceGray.rows > 20 && faceGray.cols > 20) {
-    const int eyeY = std::max(0, static_cast<int>(faceGray.rows * 0.18));
-    const int eyeH = std::max(1, static_cast<int>(faceGray.rows * 0.32));
-    cv::Rect eyeBandRect(0, eyeY, faceGray.cols,
-                         std::min(eyeH, faceGray.rows - eyeY));
-    cv::Mat eyeBandGray = faceGray(eyeBandRect);
-    const double eyeEdges = edgeDensity(eyeBandGray);
-    const double eyeDark = darkPixelRatio(eyeBandGray, 40);
-    const double eyeBright = brightPixelRatio(eyeBandGray, 225);
-    if ((eyeEdges > 0.24 && eyeBright > 0.015) || eyeDark > 0.62) {
-      result.issues.push_back("suspected_glasses");
-    }
-
-    const int topH = std::max(1, static_cast<int>(faceGray.rows * 0.2));
-    cv::Rect topRect(0, 0, faceGray.cols, topH);
-    cv::Mat topGray = faceGray(topRect);
-    cv::Mat topBgr = faceBgr(topRect);
-    const double topDark = darkPixelRatio(topGray, 55);
-    const double topSkin = skinPixelRatio(topBgr);
-    if (topDark > 0.58 && topSkin < 0.1) {
-      result.issues.push_back("suspected_hat");
-    }
-
-    const int sideY = std::max(0, static_cast<int>(faceGray.rows * 0.35));
-    const int sideH = std::max(1, static_cast<int>(faceGray.rows * 0.45));
-    const int sideW = std::max(1, static_cast<int>(faceGray.cols * 0.18));
-    cv::Rect leftRect(0, sideY, sideW,
-                      std::min(sideH, faceGray.rows - sideY));
-    cv::Rect rightRect(std::max(0, faceGray.cols - sideW), sideY, sideW,
-                       std::min(sideH, faceGray.rows - sideY));
-    const double sideEdges =
-        (edgeDensity(faceGray(leftRect)) + edgeDensity(faceGray(rightRect))) *
-        0.5;
-    const double sideDark =
-        (darkPixelRatio(faceGray(leftRect), 48) +
-         darkPixelRatio(faceGray(rightRect), 48)) *
-        0.5;
-    if (sideEdges > 0.27 && sideDark > 0.42) {
-      result.issues.push_back("suspected_face_accessory");
-    }
-
-    const int cheekY = std::max(0, static_cast<int>(faceBgr.rows * 0.28));
-    const int cheekH = std::max(1, static_cast<int>(faceBgr.rows * 0.34));
-    const int cheekX = std::max(0, static_cast<int>(faceBgr.cols * 0.2));
-    const int cheekW = std::max(1, static_cast<int>(faceBgr.cols * 0.6));
-    cv::Rect cheekRect(cheekX, cheekY, std::min(cheekW, faceBgr.cols - cheekX),
-                       std::min(cheekH, faceBgr.rows - cheekY));
-    cv::Mat cheekBgr = faceBgr(cheekRect);
-    const double cheekSat = meanSaturation(cheekBgr);
-    const double cheekSkin = skinPixelRatio(cheekBgr);
-    if (cheekSat > 120.0 && cheekSkin > 0.2) {
-      result.issues.push_back("suspected_heavy_makeup");
-    }
-
-    applyDnnAccessoryChecks(faceBgr, result.issues);
-  }
-
-  result.faceTemplate = extractLegacyTemplateFromMat(faceGray);
-  const double blurNorm = std::clamp(blurScore / 260.0, 0.0, 1.0);
-  const double lightNorm =
-      1.0 - std::min(std::abs(meanIntensity[0] - 130.0) / 130.0, 1.0);
-  const double symNorm = std::clamp((44.0 - symmetry) / 44.0, 0.0, 1.0);
-  result.qualityScore = std::clamp((0.55 * blurNorm) + (0.25 * lightNorm) +
-                                       (0.20 * symNorm),
-                                   0.0, 1.0);
-  result.ok = result.issues.empty() && result.faceTemplate.size() >= 100;
-  return result;
-}
-
-FaceAnalysis analyzeFaceImageDermalogCli(const std::string &base64Image,
-                                         const std::string &mode) {
-  FaceAnalysis result;
-  result.provider = "dermalog_cli";
-
-  std::vector<unsigned char> raw;
-  if (!decodeBase64(base64Image, raw)) {
-    result.issues.push_back("invalid_base64_image");
-    return result;
-  }
-
-  if (gDermalogCliPath.empty() || !fs::exists(gDermalogCliPath)) {
-    result.issues.push_back("dermalog_cli_not_found");
-    return result;
-  }
-
-  const auto tmpDir = fs::temp_directory_path();
-  const auto imagePath = tmpDir / ("dermalog_face_" + makeId() + ".jpg");
-  const auto jsonPath = tmpDir / ("dermalog_face_" + makeId() + ".json");
-
-  {
-    std::ofstream ofs(imagePath, std::ios::binary | std::ios::trunc);
-    ofs.write(reinterpret_cast<const char *>(raw.data()),
-              static_cast<std::streamsize>(raw.size()));
-  }
-
-  const std::string cmd = "\"" + gDermalogCliPath + "\" --input \"" +
-                          imagePath.string() + "\" --mode " + mode +
-                          " --output-json \"" + jsonPath.string() + "\"";
-
-  const int rc = std::system(cmd.c_str());
-  if (rc != 0 || !fs::exists(jsonPath)) {
-    result.issues.push_back("dermalog_cli_execution_failed");
-    fs::remove(imagePath);
-    fs::remove(jsonPath);
-    return result;
-  }
-
-  try {
-    std::ifstream ifs(jsonPath);
-    std::stringstream buffer;
-    buffer << ifs.rdbuf();
-    auto payload = json::parse(buffer.str());
-    if (!payload.is_object()) {
-      result.issues.push_back("dermalog_invalid_json");
-    } else {
-      const auto &obj = payload.as_object();
-      if (auto q = obj.if_contains("quality"); q && q->is_object()) {
-        const auto &qObj = q->as_object();
-        if (auto score = qObj.if_contains("score"); score &&
-            (score->is_double() || score->is_int64())) {
-          result.qualityScore = score->is_double()
-                                    ? score->as_double()
-                                    : static_cast<double>(score->as_int64());
-        }
-        if (auto issues = qObj.if_contains("issues"); issues &&
-            issues->is_array()) {
-          for (const auto &issue : issues->as_array()) {
-            if (issue.is_string()) {
-              result.issues.push_back(
-                  json::value_to<std::string>(issue));
-            }
-          }
-        }
-      }
-
-      if (auto tpl = obj.if_contains("template"); tpl && tpl->is_array()) {
-        for (const auto &v : tpl->as_array()) {
-          if (v.is_double()) {
-            result.faceTemplate.push_back(v.as_double());
-          } else if (v.is_int64()) {
-            result.faceTemplate.push_back(static_cast<double>(v.as_int64()));
-          }
-        }
-      }
-
-      if (auto pass = obj.if_contains("pass"); pass && pass->is_bool()) {
-        result.ok = pass->as_bool();
-      }
-    }
-  } catch (...) {
-    result.issues.push_back("dermalog_json_parse_failed");
-  }
-
-  fs::remove(imagePath);
-  fs::remove(jsonPath);
-
-  if (result.faceTemplate.size() < 100) {
-    result.issues.push_back("template_too_short");
-  }
-  if (!result.ok) {
-    result.ok = result.issues.empty() && result.faceTemplate.size() >= 100;
-  }
-  return result;
-}
-
-FaceAnalysis analyzeFaceImage(const std::string &base64Image,
-                              const std::string &mode) {
-  if (gBiometricProvider == BiometricProvider::DermalogCli) {
-    auto fromSdk = analyzeFaceImageDermalogCli(base64Image, mode);
-    if (fromSdk.ok || gDermalogRequired) {
-      return fromSdk;
-    }
-  }
-  return analyzeFaceImageLegacy(base64Image, mode);
-}
-
-std::string makeId() {
-  static thread_local std::mt19937_64 rng{std::random_device{}()};
-  std::uniform_int_distribution<unsigned long long> dist;
-  std::ostringstream oss;
-  oss << std::hex << dist(rng) << dist(rng);
-  return oss.str();
-}
-
-std::string hashPassword(const std::string &password) {
-  static const std::string salt =
-      getenvOr("AUTH_PASSWORD_SALT", "mining_local_salt_change_me");
-  const auto mixed = salt + "::" + password;
-  const auto hashed = std::hash<std::string>{}(mixed);
-  std::ostringstream oss;
-  oss << std::hex << hashed;
-  return oss.str();
-}
-
-bool isValidDni(const std::string &dni) {
-  if (dni.size() < 8 || dni.size() > 12) {
-    return false;
-  }
-  return std::all_of(dni.begin(), dni.end(), [](unsigned char c) {
-    return std::isdigit(c) != 0;
-  });
-}
-
-fs::path authDirPath(const std::string &dataRoot) {
-  return fs::path(dataRoot) / "auth";
-}
-
-fs::path authUsersFile(const std::string &dataRoot) {
-  return authDirPath(dataRoot) / "users.json";
-}
-
-fs::path authAuditFile(const std::string &dataRoot) {
-  return authDirPath(dataRoot) / "auth_audit.log";
-}
-
-json::object authUserToJson(const AuthUser &u) {
-  json::array tpl;
-  for (double v : u.faceTemplate) {
-    tpl.push_back(v);
-  }
-
-  return { {"id", u.id},
-           {"company", u.company},
-           {"first_name", u.firstName},
-           {"last_name", u.lastName},
-           {"dni", u.dni},
-           {"username", u.username},
-           {"role", u.role},
-           {"password_hash", u.passwordHash},
-           {"face_template", tpl},
-           {"created_at", u.createdAt} };
-}
-
-bool jsonToAuthUser(const json::object &obj, AuthUser &out) {
-  if (!obj.if_contains("id") || !obj.if_contains("company") ||
-      !obj.if_contains("first_name") || !obj.if_contains("last_name") ||
-      !obj.if_contains("dni") || !obj.if_contains("username") ||
-      !obj.if_contains("password_hash") || !obj.if_contains("face_template") ||
-      !obj.if_contains("created_at")) {
-    return false;
-  }
-
-  if (!obj.at("id").is_string() || !obj.at("company").is_string() ||
-      !obj.at("first_name").is_string() || !obj.at("last_name").is_string() ||
-      !obj.at("dni").is_string() || !obj.at("username").is_string() ||
-      !obj.at("password_hash").is_string() ||
-      !obj.at("face_template").is_array() ||
-      !obj.at("created_at").is_string()) {
-    return false;
-  }
-
-  out.id = json::value_to<std::string>(obj.at("id"));
-  out.company = json::value_to<std::string>(obj.at("company"));
-  out.firstName = json::value_to<std::string>(obj.at("first_name"));
-  out.lastName = json::value_to<std::string>(obj.at("last_name"));
-  out.dni = json::value_to<std::string>(obj.at("dni"));
-  out.username = json::value_to<std::string>(obj.at("username"));
-  if (obj.if_contains("role") && obj.at("role").is_string()) {
-    out.role = json::value_to<std::string>(obj.at("role"));
-  } else {
-    out.role = resolveRoleForUsername(out.username);
-  }
-  out.passwordHash = json::value_to<std::string>(obj.at("password_hash"));
-  out.createdAt = json::value_to<std::string>(obj.at("created_at"));
-
-  out.faceTemplate.clear();
-  for (const auto &v : obj.at("face_template").as_array()) {
-    if (v.is_double()) {
-      out.faceTemplate.push_back(v.as_double());
-    } else if (v.is_int64()) {
-      out.faceTemplate.push_back(static_cast<double>(v.as_int64()));
-    } else {
-      return false;
-    }
-  }
-  return !out.faceTemplate.empty();
-}
-
-std::vector<AuthUser> loadAuthUsers(const std::string &dataRoot) {
-  fs::create_directories(authDirPath(dataRoot));
-  const auto path = authUsersFile(dataRoot);
-  if (!fs::exists(path)) {
-    return {};
-  }
-
-  std::ifstream ifs(path);
-  if (!ifs.is_open()) {
-    return {};
-  }
-
-  std::stringstream buffer;
-  buffer << ifs.rdbuf();
-  const auto raw = buffer.str();
-  if (raw.empty()) {
-    return {};
-  }
-
-  try {
-    auto parsed = json::parse(raw);
-    if (!parsed.is_array()) {
-      return {};
-    }
-
-    std::vector<AuthUser> users;
-    for (const auto &item : parsed.as_array()) {
-      if (!item.is_object()) {
-        continue;
-      }
-      AuthUser user;
-      if (jsonToAuthUser(item.as_object(), user)) {
-        users.push_back(std::move(user));
-      }
-    }
-    return users;
-  } catch (...) {
-    return {};
-  }
-}
-
-void saveAuthUsers(const std::string &dataRoot,
-                   const std::vector<AuthUser> &users) {
-  fs::create_directories(authDirPath(dataRoot));
-  json::array arr;
-  for (const auto &u : users) {
-    arr.push_back(authUserToJson(u));
-  }
-
-  std::ofstream ofs(authUsersFile(dataRoot), std::ios::trunc);
-  ofs << json::serialize(arr);
-}
-
-double cosineSimilarity(const std::vector<double> &a,
-                        const std::vector<double> &b) {
-  if (a.empty() || a.size() != b.size()) {
-    return -1.0;
-  }
-
-  double dot = 0.0;
-  double normA = 0.0;
-  double normB = 0.0;
-
-  for (size_t i = 0; i < a.size(); ++i) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  if (normA == 0.0 || normB == 0.0) {
-    return -1.0;
-  }
-
-  return dot / (std::sqrt(normA) * std::sqrt(normB));
-}
-
-void appendAuthAuditLog(const std::string &dataRoot, const std::string &action,
-                        const std::string &company,
-                        const std::string &username, bool ok,
-                        const std::string &detail) {
-  fs::create_directories(authDirPath(dataRoot));
-  std::ofstream ofs(authAuditFile(dataRoot), std::ios::app);
-  ofs << nowIso8601() << "|action=" << action << "|company=" << company
-      << "|username=" << username << "|ok=" << (ok ? "true" : "false")
-      << "|detail=" << detail << "\n";
-}
-
-json::object parseAuditLine(const std::string &line) {
-  json::object out;
-  std::stringstream ss(line);
-  std::string token;
-  bool first = true;
-  while (std::getline(ss, token, '|')) {
-    if (first) {
-      out["event_time"] = token;
-      first = false;
-      continue;
-    }
-    const auto eq = token.find('=');
-    if (eq == std::string::npos) {
-      continue;
-    }
-    const std::string key = token.substr(0, eq);
-    const std::string value = token.substr(eq + 1);
-    if (key == "action") out["event_action"] = value;
-    else if (key == "company") out["company_name"] = value;
-    else if (key == "username") out["username"] = value;
-    else if (key == "ok") out["success"] = (value == "true");
-    else if (key == "detail") out["detail"] = value;
-  }
-  return out;
-}
-
-bool matchAuditFilter(const json::object &entry, const AuditFilter &filter) {
-  if (filter.company.has_value()) {
-    auto p = entry.if_contains("company_name");
-    if (!p || !p->is_string() || json::value_to<std::string>(*p) != *filter.company) {
-      return false;
-    }
-  }
-  if (filter.username.has_value()) {
-    auto p = entry.if_contains("username");
-    if (!p || !p->is_string() || json::value_to<std::string>(*p) != *filter.username) {
-      return false;
-    }
-  }
-  if (filter.action.has_value()) {
-    auto p = entry.if_contains("event_action");
-    if (!p || !p->is_string() || json::value_to<std::string>(*p) != *filter.action) {
-      return false;
-    }
-  }
-  if (filter.success.has_value()) {
-    auto p = entry.if_contains("success");
-    if (!p || !p->is_bool() || p->as_bool() != *filter.success) {
-      return false;
-    }
-  }
-  return true;
-}
-
-AuditPageResult readAuthAuditTail(const std::string &dataRoot,
-                                  const AuditFilter &filter) {
-  AuditPageResult page;
-  page.limit = filter.limit;
-  page.offset = filter.offset;
-
-  const auto path = authAuditFile(dataRoot);
-  if (!fs::exists(path)) {
-    return page;
-  }
-
-  std::ifstream ifs(path);
-  std::vector<json::object> entries;
-  std::string line;
-  while (std::getline(ifs, line)) {
-    if (!line.empty()) {
-      auto parsed = parseAuditLine(line);
-      if (matchAuditFilter(parsed, filter)) {
-        entries.push_back(std::move(parsed));
-      }
-    }
-  }
-
-  page.total = entries.size();
-  if (entries.empty()) {
-    return page;
-  }
-
-  std::reverse(entries.begin(), entries.end());
-
-  const size_t start = std::min(filter.offset, entries.size());
-  const size_t end = std::min(start + filter.limit, entries.size());
-  for (size_t i = start; i < end; ++i) {
-    page.logs.push_back(entries[i]);
-  }
-  return page;
-}
-
-std::string csvEscape(const std::string &v) {
-  bool mustQuote = v.find(',') != std::string::npos ||
-                   v.find('"') != std::string::npos ||
-                   v.find('\n') != std::string::npos;
-  if (!mustQuote) {
-    return v;
-  }
-  std::string out = "\"";
-  for (char c : v) {
-    if (c == '"') out += "\"\"";
-    else out.push_back(c);
-  }
-  out += "\"";
-  return out;
-}
-
-std::string auditRowsToCsv(const json::array &logs) {
-  std::ostringstream oss;
-  oss << "event_time,event_action,company_name,username,success,detail\n";
-  for (const auto &item : logs) {
-    if (!item.is_object()) continue;
-    const auto &obj = item.as_object();
-    const auto getStr = [&](const char *k) {
-      if (auto p = obj.if_contains(k); p && p->is_string()) {
-        return json::value_to<std::string>(*p);
-      }
-      return std::string();
-    };
-    std::string success = "false";
-    if (auto p = obj.if_contains("success"); p && p->is_bool()) {
-      success = p->as_bool() ? "true" : "false";
-    }
-
-    oss << csvEscape(getStr("event_time")) << ','
-        << csvEscape(getStr("event_action")) << ','
-        << csvEscape(getStr("company_name")) << ','
-        << csvEscape(getStr("username")) << ','
-        << csvEscape(success) << ','
-        << csvEscape(getStr("detail")) << '\n';
-  }
-  return oss.str();
-}
-
+#include "config/app_config.hpp"
+#include "http/http_utils.hpp"
+#include "http/router.hpp"
+#include "auth/auth_types.hpp"
+#include "auth/auth_session.hpp"
+#include "auth/auth_storage_file.hpp"
+#include "auth/auth_storage_pg.hpp"
+#include "auth/auth_routes.hpp"
+#include "auth/jwt.hpp"
+#include "biometric/biometric_types.hpp"
+#include "biometric/face_analysis.hpp"
+#include "biometric/ai_engine_client.hpp"
+#include "biometric/biometric_routes.hpp"
+#include "mining/mining_routes.hpp"
+#include "mining/mining_gateway.hpp"
+#include "mining/telemetry_ingest.hpp"
+#include "mining/protocol_adapters.hpp"
+#include "mining/thingsboard_sync.hpp"
+#include "mining/device_alarm_routes.hpp"
+#include "mining/notification_routes.hpp"
+#include "mining/map_aggregator.hpp"
+#include "ws_broadcast.hpp"
+#include "reports/report_routes.hpp"
+#include "formula/formula_service.hpp"
+#include "formula/formula_routes.hpp"
+#include "platform/platform_routes.hpp"
+#include "tenant/tenant_assets_routes.hpp"
+#include "map/map_routes.hpp"
+#include "gdal/gdal_routes.hpp"
+#include "gdal/conversion_service.hpp"
+#include "text/text_routes.hpp"
+#include "support/support_routes.hpp"
+#include "support/mining_chatbot_service.hpp"
+#include "text_spell_service.hpp"
+#include "onnx_cartoon.hpp"
+#include "vision_pipeline.hpp"
+#include "websocket_session.hpp"
+#include "storage/pg_pool.hpp"
+#include "storage/pg_result.hpp"
+
+#include <sstream>
+
+// ── namespace aliases ──────────────────────────────────────────────────────
+namespace asio      = boost::asio;
+namespace beast     = boost::beast;
+namespace http      = beast::http;
+namespace json      = boost::json;
+namespace websocket = beast::websocket;
+namespace fs        = std::filesystem;
+
+// ── using declarations ─────────────────────────────────────────────────────
+using config::AppConfig;
+using config::AuthStorageMode;
+using config::BiometricProvider;
+using config::getenvOr;
+
+using http_utils::makeJsonResponse;
+using http_utils::makeCsvResponse;
+using http_utils::makeJpegResponse;
+using http_utils::makeId;
+using http_utils::hashPassword;
+using http_utils::nowIso8601;
+using http_utils::isValidDni;
+using http_utils::cosineSimilarity;
+using http_utils::routePathOnly;
+using http_utils::parseQueryString;
+
+using auth::AuthUser;
+using auth::AuthSession;
+using auth::LegacyFacialUserRecord;
+using auth::AuditFilter;
+using auth::AuditPageResult;
+using auth::resolveAuthSession;
+using auth::extractAuthTokenFromRequest;
+using auth::issueAuthSession;
+using auth::revokeAuthSession;
+using auth::resolveRoleForUsername;
+using auth::gAuthMutex;
+using auth::loadAuthUsers;
+using auth::saveAuthUsers;
+using auth::loadLegacyFacialUsers;
+using auth::saveLegacyFacialUsers;
+using auth::appendAuthAuditLog;
+using auth::authIdentityKeyMatchesFsUser;
+using auth::authUserSessionJson;
+using auth::readAuthAuditTail;
+using auth::auditRowsToCsv;
 #if HAS_LIBPQ
-std::string pqEscapeLiteral(PGconn *conn, const std::string &value) {
-  char *escaped = PQescapeLiteral(conn, value.c_str(), value.size());
-  if (!escaped) {
-    throw std::runtime_error("failed to escape sql literal");
-  }
-  std::string out(escaped);
-  PQfreemem(escaped);
-  return out;
-}
-
-bool pgExecOk(PGconn *conn, const std::string &sql) {
-  PGresult *res = PQexec(conn, sql.c_str());
-  if (!res) {
-    return false;
-  }
-  const auto status = PQresultStatus(res);
-  const bool ok = (status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK);
-  PQclear(res);
-  return ok;
-}
-
-bool ensureAuthSchemaPg(PGconn *conn) {
-  const char *sql = R"SQL(
-CREATE TABLE IF NOT EXISTS auth_users (
-    id TEXT PRIMARY KEY,
-    company_name VARCHAR(180) NOT NULL,
-    first_name VARCHAR(120) NOT NULL,
-    last_name VARCHAR(120) NOT NULL,
-    dni VARCHAR(12) NOT NULL UNIQUE,
-    username VARCHAR(80) NOT NULL,
-  role VARCHAR(32) NOT NULL DEFAULT 'operator',
-    password_hash TEXT NOT NULL,
-    face_template JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(company_name, username)
-);
-CREATE TABLE IF NOT EXISTS auth_audit_logs (
-    id BIGSERIAL PRIMARY KEY,
-    event_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    event_action VARCHAR(60) NOT NULL,
-    company_name VARCHAR(180),
-    username VARCHAR(80),
-    success BOOLEAN NOT NULL,
-    detail TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_event_time ON auth_audit_logs(event_time DESC);
-ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'operator';
-)SQL";
-  return pgExecOk(conn, sql);
-}
-
-void appendAuthAuditLogPg(PGconn *conn, const std::string &action,
-                          const std::string &company,
-                          const std::string &username, bool ok,
-                          const std::string &detail) {
-  const std::string sql =
-      "INSERT INTO auth_audit_logs(event_action, company_name, username, success, detail) VALUES(" +
-      pqEscapeLiteral(conn, action) + "," + pqEscapeLiteral(conn, company) + "," +
-      pqEscapeLiteral(conn, username) + "," + (ok ? "true" : "false") + "," +
-      pqEscapeLiteral(conn, detail) + ")";
-  (void)pgExecOk(conn, sql);
-}
-
-bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
-                    std::string &error) {
-  PGconn *conn = PQconnectdb(databaseUrl.c_str());
-  if (PQstatus(conn) != CONNECTION_OK) {
-    error = PQerrorMessage(conn);
-    PQfinish(conn);
-    return false;
-  }
-
-  if (!ensureAuthSchemaPg(conn)) {
-    error = "failed to ensure auth schema";
-    PQfinish(conn);
-    return false;
-  }
-
-  std::ostringstream tpl;
-  tpl << '[';
-  for (size_t i = 0; i < user.faceTemplate.size(); ++i) {
-    if (i > 0) tpl << ',';
-    tpl << user.faceTemplate[i];
-  }
-  tpl << ']';
-
-  const std::string checkSql = "SELECT 1 FROM auth_users WHERE dni=" +
-                               pqEscapeLiteral(conn, user.dni) + " LIMIT 1";
-  PGresult *checkRes = PQexec(conn, checkSql.c_str());
-  if (!checkRes || PQresultStatus(checkRes) != PGRES_TUPLES_OK) {
-    error = "failed to validate dni";
-    if (checkRes) PQclear(checkRes);
-    PQfinish(conn);
-    return false;
-  }
-  if (PQntuples(checkRes) > 0) {
-    PQclear(checkRes);
-    error = "dni already exists";
-    appendAuthAuditLogPg(conn, "register", user.company, user.username, false,
-                         "dni_exists");
-    PQfinish(conn);
-    return false;
-  }
-  PQclear(checkRes);
-
-  const std::string insertSql =
-      "INSERT INTO auth_users(id,company_name,first_name,last_name,dni,username,role,password_hash,face_template) VALUES(" +
-      pqEscapeLiteral(conn, user.id) + "," + pqEscapeLiteral(conn, user.company) +
-      "," + pqEscapeLiteral(conn, user.firstName) + "," +
-      pqEscapeLiteral(conn, user.lastName) + "," + pqEscapeLiteral(conn, user.dni) +
-      "," + pqEscapeLiteral(conn, user.username) + "," +
-      pqEscapeLiteral(conn, user.role) + "," +
-      pqEscapeLiteral(conn, user.passwordHash) + "," +
-      pqEscapeLiteral(conn, tpl.str()) + "::jsonb)";
-
-  if (!pgExecOk(conn, insertSql)) {
-    error = "failed to insert user";
-    appendAuthAuditLogPg(conn, "register", user.company, user.username, false,
-                         "insert_failed");
-    PQfinish(conn);
-    return false;
-  }
-
-  appendAuthAuditLogPg(conn, "register", user.company, user.username, true,
-                       "ok");
-  PQfinish(conn);
-  return true;
-}
-
-std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
-                                        const std::string &company,
-                                        const std::string &username,
-                                        const std::string &passwordHash,
-                                        std::string &error) {
-  PGconn *conn = PQconnectdb(databaseUrl.c_str());
-  if (PQstatus(conn) != CONNECTION_OK) {
-    error = PQerrorMessage(conn);
-    PQfinish(conn);
-    return std::nullopt;
-  }
-  (void)ensureAuthSchemaPg(conn);
-
-  const std::string sql =
-      "SELECT id, company_name, first_name, last_name, dni, username, role, password_hash, face_template::text, created_at::text "
-      "FROM auth_users WHERE company_name=" +
-      pqEscapeLiteral(conn, company) + " AND username=" +
-      pqEscapeLiteral(conn, username) + " LIMIT 1";
-
-  PGresult *res = PQexec(conn, sql.c_str());
-  if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
-    error = "query failed";
-    if (res) PQclear(res);
-    PQfinish(conn);
-    return std::nullopt;
-  }
-
-  if (PQntuples(res) == 0) {
-    PQclear(res);
-    appendAuthAuditLogPg(conn, "login_password", company, username, false,
-                         "user_not_found");
-    PQfinish(conn);
-    error = "invalid credentials";
-    return std::nullopt;
-  }
-
-  AuthUser u;
-  u.id = PQgetvalue(res, 0, 0);
-  u.company = PQgetvalue(res, 0, 1);
-  u.firstName = PQgetvalue(res, 0, 2);
-  u.lastName = PQgetvalue(res, 0, 3);
-  u.dni = PQgetvalue(res, 0, 4);
-  u.username = PQgetvalue(res, 0, 5);
-  u.role = PQgetvalue(res, 0, 6);
-  u.passwordHash = PQgetvalue(res, 0, 7);
-  u.createdAt = PQgetvalue(res, 0, 9);
-
-  if (u.passwordHash != passwordHash) {
-    appendAuthAuditLogPg(conn, "login_password", company, username, false,
-                         "invalid_password");
-    PQclear(res);
-    PQfinish(conn);
-    error = "invalid credentials";
-    return std::nullopt;
-  }
-
-  appendAuthAuditLogPg(conn, "login_password", company, username, true, "ok");
-  PQclear(res);
-  PQfinish(conn);
-  return u;
-}
-
-std::optional<std::pair<AuthUser, double>>
-loginFacePg(const std::string &databaseUrl, const std::string &company,
-            const std::vector<double> &probeTemplate, double threshold,
-            std::string &error) {
-  PGconn *conn = PQconnectdb(databaseUrl.c_str());
-  if (PQstatus(conn) != CONNECTION_OK) {
-    error = PQerrorMessage(conn);
-    PQfinish(conn);
-    return std::nullopt;
-  }
-  (void)ensureAuthSchemaPg(conn);
-
-  const std::string sql =
-      "SELECT id, company_name, first_name, last_name, dni, username, role, password_hash, face_template::text, created_at::text "
-      "FROM auth_users WHERE company_name=" + pqEscapeLiteral(conn, company);
-  PGresult *res = PQexec(conn, sql.c_str());
-  if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
-    error = "query failed";
-    if (res) PQclear(res);
-    PQfinish(conn);
-    return std::nullopt;
-  }
-
-  AuthUser best;
-  bool found = false;
-  double bestScore = -1.0;
-
-  const int rows = PQntuples(res);
-  for (int i = 0; i < rows; ++i) {
-    std::string tplText = PQgetvalue(res, i, 8);
-    try {
-      auto parsed = json::parse(tplText);
-      if (!parsed.is_array()) {
-        continue;
-      }
-      std::vector<double> tpl;
-      for (const auto &v : parsed.as_array()) {
-        if (v.is_double()) tpl.push_back(v.as_double());
-        else if (v.is_int64()) tpl.push_back(static_cast<double>(v.as_int64()));
-      }
-      const double score = cosineSimilarity(probeTemplate, tpl);
-      if (score > bestScore) {
-        bestScore = score;
-        best.id = PQgetvalue(res, i, 0);
-        best.company = PQgetvalue(res, i, 1);
-        best.firstName = PQgetvalue(res, i, 2);
-        best.lastName = PQgetvalue(res, i, 3);
-        best.dni = PQgetvalue(res, i, 4);
-        best.username = PQgetvalue(res, i, 5);
-        best.role = PQgetvalue(res, i, 6);
-        best.passwordHash = PQgetvalue(res, i, 7);
-        best.createdAt = PQgetvalue(res, i, 9);
-        found = true;
-      }
-    } catch (...) {
-      continue;
-    }
-  }
-
-  if (!found || bestScore < threshold) {
-    appendAuthAuditLogPg(conn, "login_face", company, "unknown", false,
-                         "no_match");
-    PQclear(res);
-    PQfinish(conn);
-    error = "face not recognized";
-    return std::nullopt;
-  }
-
-  appendAuthAuditLogPg(conn, "login_face", company, best.username, true,
-                       "ok score=" + std::to_string(bestScore));
-  PQclear(res);
-  PQfinish(conn);
-  return std::make_pair(best, bestScore);
-}
-
-AuditPageResult readAuthAuditPg(const std::string &databaseUrl,
-                                const AuditFilter &filter) {
-  AuditPageResult out;
-  out.limit = filter.limit;
-  out.offset = filter.offset;
-  PGconn *conn = PQconnectdb(databaseUrl.c_str());
-  if (PQstatus(conn) != CONNECTION_OK) {
-    PQfinish(conn);
-    return out;
-  }
-  (void)ensureAuthSchemaPg(conn);
-
-  std::ostringstream where;
-  where << " WHERE 1=1";
-  if (filter.company.has_value()) {
-    where << " AND company_name=" << pqEscapeLiteral(conn, *filter.company);
-  }
-  if (filter.username.has_value()) {
-    where << " AND username=" << pqEscapeLiteral(conn, *filter.username);
-  }
-  if (filter.action.has_value()) {
-    where << " AND event_action=" << pqEscapeLiteral(conn, *filter.action);
-  }
-  if (filter.success.has_value()) {
-    where << " AND success=" << (*filter.success ? "true" : "false");
-  }
-
-  const std::string countSql = "SELECT COUNT(*) FROM auth_audit_logs" + where.str();
-  PGresult *countRes = PQexec(conn, countSql.c_str());
-  if (!countRes || PQresultStatus(countRes) != PGRES_TUPLES_OK ||
-      PQntuples(countRes) == 0) {
-    if (countRes) PQclear(countRes);
-    PQfinish(conn);
-    return out;
-  }
-  out.total = static_cast<size_t>(std::stoull(PQgetvalue(countRes, 0, 0)));
-  PQclear(countRes);
-
-  std::ostringstream sql;
-  sql << "SELECT event_time::text,event_action,company_name,username,success,detail "
-      << "FROM auth_audit_logs" << where.str()
-      << " ORDER BY event_time DESC LIMIT " << filter.limit
-      << " OFFSET " << filter.offset;
-
-  PGresult *res = PQexec(conn, sql.str().c_str());
-  if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
-    if (res) PQclear(res);
-    PQfinish(conn);
-    return out;
-  }
-
-  const int rows = PQntuples(res);
-  for (int i = 0; i < rows; ++i) {
-    out.logs.push_back(json::object{{"event_time", PQgetvalue(res, i, 0)},
-                                    {"event_action", PQgetvalue(res, i, 1)},
-                                    {"company_name", PQgetvalue(res, i, 2)},
-                                    {"username", PQgetvalue(res, i, 3)},
-                                    {"success", std::string(PQgetvalue(res, i, 4)) == "t"},
-                                    {"detail", PQgetvalue(res, i, 5)}});
-  }
-
-  PQclear(res);
-  PQfinish(conn);
-  return out;
-}
+using auth::migrateLegacyPasswordHashesPg;
+using auth::readAuthAuditPg;
+using auth::registerUserPg;
+using auth::findOrCreateTenantForCompanyPg;
+using auth::loginPasswordPg;
+using auth::loginFaceTargetedPg;
+using auth::updateUserAvatarCartoonPg;
 #endif
+using auth::updateUserAvatarCartoonFile;
+using auth::AuthTokenPair;
 
-std::string getenvOr(const char *key, const std::string &fallback) {
-  const char *value = std::getenv(key);
-  if (!value)
-    return fallback;
-  return value;
+using biometric::BiometricCaptureRuntimeState;
+using biometric::gBiometricCaptureMutex;
+using biometric::gBiometricCaptureState;
+using biometric::gBiometricCapturedImages;
+using biometric::decodeBase64;
+using biometric::stripDataUrlBase64;
+using biometric::analyzeFaceImage;
+using biometric::buildFaceLoginProbe;
+using biometric::fetchFaceEmbeddingFromAiEngine;
+using biometric::fetchCartoonAvatarBestEffort;
+using biometric::getAccessoryDnnContext;
+
+// ── compile-time constants ─────────────────────────────────────────────────
+static constexpr const char *kAuthUserNotFoundMsg    = AppConfig::kAuthUserNotFoundMsg;
+static constexpr const char *kAuthWrongPasswordMsg   = AppConfig::kAuthWrongPasswordMsg;
+static constexpr const char *kAuthAmbiguousIdentityMsg = AppConfig::kAuthAmbiguousIdentityMsg;
+
+// ── global router ──────────────────────────────────────────────────────────
+static router::Router gRouter;
+
+/** @brief Adjunta a `res` las cookies de refresh/CSRF de `pair` (ADR-029, "Actualización 2026-07-19") -- usar en TODA respuesta de login/registro/refresh/tenant-switch que emita un AuthTokenPair. El refresh token ya no viaja en el body JSON. */
+static http::response<http::string_body>
+withAuthCookies(http::response<http::string_body> res, const AuthTokenPair &pair) {
+    auto &cfg = AppConfig::instance();
+    const int maxAgeSeconds = cfg.gJwtRefreshTtlDays * 24 * 3600;
+    http_utils::setAuthCookies(res, pair.refreshToken, pair.csrfToken, maxAgeSeconds);
+    // ADR-082: el access token va en su propia cookie HttpOnly, con el TTL del
+    // access token (no el del refresh) — así caduca a la vez que el JWT que
+    // contiene y no queda una cookie muerta rondando siete días.
+    http_utils::setAccessTokenCookie(res, pair.token, pair.expiresInSeconds);
+    return res;
 }
 
-bool parseConvertRequest(const json::object &obj, ConvertRequest &out,
-                         std::string &error) {
-  if (!obj.contains("input_path") || !obj.at("input_path").is_string()) {
-    error = "input_path is required (string)";
-    return false;
-  }
+// =========================================================================
+//  Route handlers NOT yet extracted into modules
+// =========================================================================
 
-  out.inputPath = json::value_to<std::string>(obj.at("input_path"));
-
-  if (obj.if_contains("output_path") && obj.at("output_path").is_string()) {
-    out.outputPath = json::value_to<std::string>(obj.at("output_path"));
-  }
-
-  out.outputName =
-      obj.if_contains("output_name") && obj.at("output_name").is_string()
-          ? json::value_to<std::string>(obj.at("output_name"))
-          : (fs::path(out.inputPath).stem().string() + ".mbtiles");
-  if (!out.outputName.ends_with(".mbtiles")) {
-    out.outputName += ".mbtiles";
-  }
-  if (!out.outputPath.empty() && !out.outputPath.ends_with(".mbtiles")) {
-    out.outputPath += ".mbtiles";
-  }
-
-  if (obj.if_contains("min_zoom") && obj.at("min_zoom").is_int64()) {
-    out.minZoom = static_cast<int>(obj.at("min_zoom").as_int64());
-  }
-  if (obj.if_contains("max_zoom") && obj.at("max_zoom").is_int64()) {
-    out.maxZoom = static_cast<int>(obj.at("max_zoom").as_int64());
-  }
-  if (obj.if_contains("compression") && obj.at("compression").is_string()) {
-    out.compression = json::value_to<std::string>(obj.at("compression"));
-  }
-  if (obj.if_contains("quality") && obj.at("quality").is_int64()) {
-    out.quality = static_cast<int>(obj.at("quality").as_int64());
-  }
-  if (obj.if_contains("resampling") && obj.at("resampling").is_string()) {
-    out.resampling = json::value_to<std::string>(obj.at("resampling"));
-  }
-
-  if (out.minZoom < 0 || out.maxZoom < out.minZoom || out.maxZoom > 24) {
-    error = "invalid zoom range";
-    return false;
-  }
-  if (out.quality < 1 || out.quality > 100) {
-    error = "quality must be between 1 and 100";
-    return false;
-  }
-
-  return true;
+// ── GET /api/reset_capture ──────────────────────────────────────────────
+static http::response<http::string_body>
+handleResetCapture(const http::request<http::string_body> & /*req*/,
+                   const std::unordered_map<std::string, std::string> & /*query*/) {
+    std::scoped_lock lk(gBiometricCaptureMutex);
+    gBiometricCaptureState = BiometricCaptureRuntimeState{};
+    gBiometricCapturedImages.clear();
+    return makeJsonResponse(http::status::ok, json::object{{"status", "reset"}});
 }
 
-std::string quotePath(const std::string &path) { return "\"" + path + "\""; }
-
-int runCommand(const std::string &cmd) { return std::system(cmd.c_str()); }
-
-std::string runCommandCapture(const std::string &cmd) {
-#ifdef _WIN32
-  FILE *pipe = _popen(cmd.c_str(), "r");
-#else
-  FILE *pipe = popen(cmd.c_str(), "r");
-#endif
-  if (!pipe)
-    return {};
-  std::string output;
-  char buffer[512];
-  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-    output += buffer;
-  }
-#ifdef _WIN32
-  _pclose(pipe);
-#else
-  pclose(pipe);
-#endif
-  return output;
-}
-
-bool gdalSupportsEcw() {
-  std::string formats = runCommandCapture("gdalinfo --formats 2>&1");
-  if (formats.empty())
-    return false;
-  std::regex ecwPattern(R"((^|\n)\s*ECW\s*-)", std::regex::icase);
-  return std::regex_search(formats, ecwPattern);
-}
-
-void appendLog(const std::string &id, const std::string &line) {
-  std::scoped_lock lk(gJobsMutex);
-  auto it = gJobs.find(id);
-  if (it == gJobs.end())
-    return;
-  it->second.logs.push_back(line);
-  it->second.updatedAt = nowIso8601();
-}
-
-void setStatus(const std::string &id, const std::string &status) {
-  std::scoped_lock lk(gJobsMutex);
-  auto it = gJobs.find(id);
-  if (it == gJobs.end())
-    return;
-  it->second.status = status;
-  it->second.updatedAt = nowIso8601();
-}
-
-std::optional<Job> getJob(const std::string &id) {
-  std::scoped_lock lk(gJobsMutex);
-  auto it = gJobs.find(id);
-  if (it == gJobs.end())
-    return std::nullopt;
-  return it->second;
-}
-
-std::vector<int> buildOverviewFactors(int minZoom, int maxZoom) {
-  std::vector<int> factors;
-  int zoomSteps = std::max(0, maxZoom - minZoom);
-  int factor = 2;
-  for (int i = 0; i < zoomSteps; ++i) {
-    factors.push_back(factor);
-    factor *= 2;
-  }
-  return factors;
-}
-
-json::object jobToJson(const Job &job) {
-  json::array logs;
-  for (const auto &l : job.logs) {
-    logs.emplace_back(l);
-  }
-  return {{"job_id", job.id},
-          {"status", job.status},
-          {"created_at", job.createdAt},
-          {"updated_at", job.updatedAt},
-          {"output_path", job.outputPath},
-          {"logs", logs}};
-}
-
-void runConversionJob(const std::string &id, ConvertRequest req,
-                      std::string dataRoot) {
-  try {
-    setStatus(id, "running");
-
-    fs::path input(req.inputPath);
-    fs::path output = req.outputPath.empty()
-                          ? (fs::path(dataRoot) / "tiles" / req.outputName)
-                          : fs::path(req.outputPath);
-    fs::create_directories(output.parent_path());
-
-    appendLog(id, "Starting conversion");
-    appendLog(id, std::string("Input: ") + input.string());
-    appendLog(id, std::string("Output: ") + output.string());
-
-    bool isEcwInput =
-        input.extension() == ".ecw" || input.extension() == ".ECW";
-    if (isEcwInput && !gdalSupportsEcw()) {
-      appendLog(id, "ECW driver is not available in this container.");
-      appendLog(id, "Mount ECW plugin and set GDAL_DRIVER_PATH (see README), "
-                    "or pre-convert ECW to GeoTIFF.");
-      setStatus(id, "failed");
-      return;
-    }
-
-    cv::Mat sample = cv::imread(input.string(), cv::IMREAD_UNCHANGED);
-    if (!sample.empty()) {
-      appendLog(id, "OpenCV sample read: " + std::to_string(sample.cols) + "x" +
-                        std::to_string(sample.rows) +
-                        " channels=" + std::to_string(sample.channels()));
-    } else {
-      appendLog(id, "OpenCV could not read source directly (normal for some "
-                    "ECW setups). Continuing with GDAL.");
-    }
-
-    std::ostringstream translate;
-    translate << "gdal_translate"
-              << " -of MBTILES"
-              << " -co TILE_FORMAT=" << req.compression
-              << " -co QUALITY=" << req.quality
-              << " -co ZOOM_LEVEL_STRATEGY=AUTO"
-              << " -co BLOCKSIZE=256"
-              << " -r " << req.resampling << " -oo NUM_THREADS=ALL_CPUS"
-              << " -co MINZOOM=" << req.minZoom
-              << " -co MAXZOOM=" << req.maxZoom << " "
-              << quotePath(input.string()) << " " << quotePath(output.string());
-
-    appendLog(id, "Running gdal_translate...");
-    int rc1 = runCommand(translate.str());
-    appendLog(id, "gdal_translate exit code: " + std::to_string(rc1));
-    if (rc1 != 0) {
-      setStatus(id, "failed");
-      appendLog(id, "Conversion failed in gdal_translate");
-      return;
-    }
-
-    const auto overviewFactors = buildOverviewFactors(req.minZoom, req.maxZoom);
-    if (!overviewFactors.empty()) {
-      std::ostringstream overviews;
-      overviews << "gdaladdo -r average " << quotePath(output.string());
-      for (int factor : overviewFactors) {
-        overviews << ' ' << factor;
-      }
-
-      appendLog(id, "Building overviews...");
-      int rc2 = runCommand(overviews.str());
-      appendLog(id, "gdaladdo exit code: " + std::to_string(rc2));
-      if (rc2 != 0) {
-        setStatus(id, "failed");
-        appendLog(id, "Overview generation failed");
-        return;
-      }
-    } else {
-      appendLog(id, "Skipping overviews because min_zoom == max_zoom.");
-    }
-
+// ── GET /api/captured_images ────────────────────────────────────────────
+static http::response<http::string_body>
+handleCapturedImages(const http::request<http::string_body> & /*req*/,
+                     const std::unordered_map<std::string, std::string> & /*query*/) {
+    json::array arr;
     {
-      std::scoped_lock lk(gJobsMutex);
-      auto &job = gJobs[id];
-      job.outputPath = output.string();
-    }
-    setStatus(id, "completed");
-    appendLog(id, "Job completed successfully");
-  } catch (const std::exception &ex) {
-    setStatus(id, "failed");
-    appendLog(id, std::string("Unhandled exception: ") + ex.what());
-  }
-}
-
-http::response<http::string_body> makeJsonResponse(http::status status,
-                                                   const json::value &value) {
-  http::response<http::string_body> res{status, 11};
-  res.set(http::field::content_type, "application/json");
-  res.set(http::field::access_control_allow_origin, "*");
-    res.set(http::field::access_control_allow_headers,
-      "content-type,authorization");
-  res.set(http::field::access_control_allow_methods, "GET,POST,OPTIONS");
-  res.body() = json::serialize(value);
-  res.prepare_payload();
-  return res;
-}
-
-http::response<http::string_body> makeCsvResponse(const std::string &filename,
-                                                  const std::string &csv) {
-  http::response<http::string_body> res{http::status::ok, 11};
-  res.set(http::field::content_type, "text/csv; charset=utf-8");
-  res.set(http::field::access_control_allow_origin, "*");
-    res.set(http::field::access_control_allow_headers,
-      "content-type,authorization");
-  res.set(http::field::access_control_allow_methods, "GET,OPTIONS");
-  res.set(http::field::content_disposition,
-          "attachment; filename=\"" + filename + "\"");
-  res.body() = csv;
-  res.prepare_payload();
-  return res;
-}
-
-http::response<http::string_body>
-routeRequest(const http::request<http::string_body> &req,
-             const std::string &dataRoot) {
-  const std::string target = std::string(req.target());
-  const std::string pathOnly = routePathOnly(target);
-  const auto query = parseQueryString(target);
-
-  if (req.method() == http::verb::options) {
-    return makeJsonResponse(http::status::ok, json::object{{"ok", true}});
-  }
-
-  if (req.method() == http::verb::get && pathOnly == "/health") {
-    return makeJsonResponse(http::status::ok, json::object{{"status", "ok"}});
-  }
-
-  if (req.method() == http::verb::get && pathOnly == "/api/capabilities") {
-    return makeJsonResponse(http::status::ok,
-                            json::object{{"ecw_supported", gdalSupportsEcw()}});
-  }
-
-  if (req.method() == http::verb::get && pathOnly == "/api/auth/companies") {
-    json::array companies;
-    for (const auto &company : kMiningCompanies) {
-      companies.push_back(json::value(company));
-    }
-    return makeJsonResponse(http::status::ok,
-                            json::object{{"companies", companies}});
-  }
-
-  if (req.method() == http::verb::get &&
-      pathOnly == "/api/auth/biometric/status") {
-    const auto session = resolveAuthSession(req, query);
-    if (!session || session->role != "admin") {
-      return makeJsonResponse(http::status::forbidden,
-                              json::object{{"error", "admin access required"}});
-    }
-
-    return makeJsonResponse(
-        http::status::ok,
-        json::object{{"provider", gBiometricProvider == BiometricProvider::DermalogCli
-                                     ? "dermalog_cli"
-                                     : "legacy"},
-                     {"dermalog_required", gDermalogRequired},
-                     {"dnn", biometricDnnRuntimeStatusJson()}});
-  }
-
-  if (req.method() == http::verb::post && pathOnly == "/api/auth/register") {
-    try {
-      auto val = json::parse(req.body());
-      if (!val.is_object()) {
-        return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", "invalid JSON body"}});
-      }
-
-      const auto &obj = val.as_object();
-        const std::vector<std::string> required = {
-          "company", "first_name", "last_name", "dni", "username",
-          "password"};
-
-      for (const auto &key : required) {
-        if (!obj.if_contains(key.c_str())) {
-          return makeJsonResponse(http::status::bad_request,
-                                  json::object{{"error", key + " is required"}});
+        std::scoped_lock lk(gBiometricCaptureMutex);
+        for (const auto &img : gBiometricCapturedImages) {
+            arr.push_back(json::value(img));
         }
-      }
+    }
+    return makeJsonResponse(http::status::ok, arr);
+}
+
+// ── GET /api/users ──────────────────────────────────────────────────────
+static http::response<http::string_body>
+handleLegacyUsers(const http::request<http::string_body> & /*req*/,
+                  const std::unordered_map<std::string, std::string> & /*query*/) {
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+    const auto users = loadLegacyFacialUsers(dataRoot);
+    json::array arr;
+    for (const auto &u : users) {
+        arr.push_back(json::object{{"id", u.id},
+                                   {"name", u.name},
+                                   {"timestamp", u.timestamp},
+                                   {"confidence", u.confidence}});
+    }
+    return makeJsonResponse(http::status::ok, arr);
+}
+
+// ── POST /api/enroll ────────────────────────────────────────────────────
+static http::response<http::string_body>
+handleEnroll(const http::request<http::string_body> &req,
+             const std::unordered_map<std::string, std::string> & /*query*/) {
+    try {
+        auto val = json::parse(req.body());
+        if (!val.is_object()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid JSON body"}});
+        }
+        const auto &obj = val.as_object();
+        const std::string empresa =
+            obj.if_contains("empresa") && obj.at("empresa").is_string()
+                ? json::value_to<std::string>(obj.at("empresa"))
+                : "EMPRESA";
+        const std::string paterno =
+            obj.if_contains("paterno") && obj.at("paterno").is_string()
+                ? json::value_to<std::string>(obj.at("paterno"))
+                : "";
+        const std::string materno =
+            obj.if_contains("materno") && obj.at("materno").is_string()
+                ? json::value_to<std::string>(obj.at("materno"))
+                : "";
+        const std::string nombre =
+            obj.if_contains("nombre") && obj.at("nombre").is_string()
+                ? json::value_to<std::string>(obj.at("nombre"))
+                : "";
+
+        if (paterno.empty() || nombre.empty()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "paterno and nombre are required"}});
+        }
+
+        double confidence = 0.0;
+        {
+            std::scoped_lock lk(gBiometricCaptureMutex);
+            if (gBiometricCaptureState.captureCount < 3 ||
+                gBiometricCaptureState.state != 7) {
+                return makeJsonResponse(http::status::bad_request,
+                                        json::object{{"error", "Capture process not complete"}});
+            }
+            confidence = gBiometricCaptureState.livenessScore;
+            gBiometricCaptureState = BiometricCaptureRuntimeState{};
+            gBiometricCapturedImages.clear();
+        }
+
+        const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+        const std::string userId =
+            empresa + "_" + paterno + "_" + materno + "_" + nombre;
+        const std::string fullName =
+            nombre + (paterno.empty() ? "" : " " + paterno) +
+            (materno.empty() ? "" : " " + materno);
+        auto users = loadLegacyFacialUsers(dataRoot);
+        users.push_back(LegacyFacialUserRecord{
+            userId,
+            fullName,
+            static_cast<std::int64_t>(std::chrono::system_clock::to_time_t(
+                std::chrono::system_clock::now())),
+            confidence});
+        saveLegacyFacialUsers(dataRoot, users);
+
+        return makeJsonResponse(http::status::ok,
+                                json::object{{"status", "success"},
+                                             {"userId", userId}});
+    } catch (const std::exception &ex) {
+        return makeJsonResponse(http::status::bad_request,
+                                json::object{{"error", ex.what()}});
+    }
+}
+
+// ── POST /api/auth/register ─────────────────────────────────────────────
+static http::response<http::string_body>
+handleRegister(const http::request<http::string_body> &req,
+               const std::unordered_map<std::string, std::string> & /*query*/) {
+    auto &cfg = AppConfig::instance();
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+    try {
+        auto val = json::parse(req.body());
+        if (!val.is_object()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid JSON body"}});
+        }
+
+        const auto &obj = val.as_object();
+        const std::vector<std::string> required = {
+            "company", "first_name", "last_name", "dni", "username", "password"};
+
+        for (const auto &key : required) {
+            if (!obj.if_contains(key.c_str())) {
+                return makeJsonResponse(http::status::bad_request,
+                                        json::object{{"error", key + " is required"}});
+            }
+        }
 
         if (!obj.at("company").is_string() || !obj.at("first_name").is_string() ||
-          !obj.at("last_name").is_string() || !obj.at("dni").is_string() ||
-          !obj.at("username").is_string() || !obj.at("password").is_string()) {
-        return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", "invalid auth payload"}});
-      }
+            !obj.at("last_name").is_string() || !obj.at("dni").is_string() ||
+            !obj.at("username").is_string() || !obj.at("password").is_string()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid auth payload"}});
+        }
 
         const bool hasTemplate =
-          obj.if_contains("face_template") && obj.at("face_template").is_array();
+            obj.if_contains("face_template") && obj.at("face_template").is_array();
         const bool hasImage = obj.if_contains("face_image_base64") &&
-                  obj.at("face_image_base64").is_string();
+                              obj.at("face_image_base64").is_string();
         if (!hasTemplate && !hasImage) {
-        return makeJsonResponse(
-          http::status::bad_request,
-          json::object{{"error", "face_template or face_image_base64 is required"}});
-        }
-
-      const std::string company = json::value_to<std::string>(obj.at("company"));
-      const std::string firstName =
-          json::value_to<std::string>(obj.at("first_name"));
-      const std::string lastName = json::value_to<std::string>(obj.at("last_name"));
-      const std::string dni = json::value_to<std::string>(obj.at("dni"));
-      const std::string username = json::value_to<std::string>(obj.at("username"));
-      const std::string password = json::value_to<std::string>(obj.at("password"));
-
-      std::vector<double> faceTemplate;
-      std::string biometricProvider = "legacy";
-      double qualityScore = 0.0;
-      if (hasTemplate) {
-        for (const auto &v : obj.at("face_template").as_array()) {
-          if (v.is_double()) {
-            faceTemplate.push_back(v.as_double());
-          } else if (v.is_int64()) {
-            faceTemplate.push_back(static_cast<double>(v.as_int64()));
-          } else {
             return makeJsonResponse(
                 http::status::bad_request,
-                json::object{{"error", "face_template must be a numeric array"}});
-          }
+                json::object{{"error", "face_template or face_image_base64 is required"}});
         }
-      } else {
-        const std::string base64Image =
-            json::value_to<std::string>(obj.at("face_image_base64"));
-        auto face = analyzeFaceImage(base64Image, "register");
-        if (!face.ok) {
-          json::array issues;
-          for (const auto &issue : face.issues) {
-            issues.push_back(json::value(issue));
-          }
-          return makeJsonResponse(
-              http::status::bad_request,
-              json::object{{"error", "face quality validation failed"},
-                           {"provider", face.provider},
-                           {"issues", issues}});
+
+        const std::string company   = json::value_to<std::string>(obj.at("company"));
+        const std::string firstName = json::value_to<std::string>(obj.at("first_name"));
+        const std::string lastName  = json::value_to<std::string>(obj.at("last_name"));
+        const std::string dni       = json::value_to<std::string>(obj.at("dni"));
+        const std::string username  = json::value_to<std::string>(obj.at("username"));
+        const std::string password  = json::value_to<std::string>(obj.at("password"));
+
+        std::string role   = obj.if_contains("role")   && obj.at("role").is_string()   ? json::value_to<std::string>(obj.at("role"))   : resolveRoleForUsername(username);
+        std::string ruc    = obj.if_contains("ruc")    && obj.at("ruc").is_string()    ? json::value_to<std::string>(obj.at("ruc"))    : "";
+        std::string phone  = obj.if_contains("phone")  && obj.at("phone").is_string()  ? json::value_to<std::string>(obj.at("phone"))  : "";
+        std::string mobile = obj.if_contains("mobile") && obj.at("mobile").is_string() ? json::value_to<std::string>(obj.at("mobile")) : "";
+        std::string email  = obj.if_contains("email")  && obj.at("email").is_string()  ? json::value_to<std::string>(obj.at("email"))  : "";
+
+        const auto regT0 = std::chrono::steady_clock::now();
+        auto regLog = [&](const char *tag) {
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - regT0)
+                                .count();
+            std::cerr << "[AUTH_REGISTER] dni=" << dni << " user=" << username
+                      << " +" << ms << "ms " << tag << std::endl;
+        };
+        regLog("parsed_payload");
+
+        std::vector<unsigned char> rawRegImage;
+        std::string regFaceBase64;
+        if (!hasTemplate && hasImage) {
+            regFaceBase64 = json::value_to<std::string>(obj.at("face_image_base64"));
+            (void)decodeBase64(regFaceBase64, rawRegImage);
         }
-        faceTemplate = std::move(face.faceTemplate);
-        biometricProvider = face.provider;
-        qualityScore = face.qualityScore;
-      }
 
-      if (faceTemplate.size() < 100) {
-        return makeJsonResponse(
-            http::status::bad_request,
-            json::object{{"error", "face_template is too short"}});
-      }
+        std::string portraitPayloadEarly;
+        if (obj.if_contains("face_portrait_oval_base64") &&
+            obj.at("face_portrait_oval_base64").is_string()) {
+            portraitPayloadEarly = stripDataUrlBase64(
+                json::value_to<std::string>(obj.at("face_portrait_oval_base64")));
+        }
+        std::vector<unsigned char> portraitBytes;
+        if (!portraitPayloadEarly.empty()) {
+            (void)decodeBase64(portraitPayloadEarly, portraitBytes);
+        }
+        std::string bustPayloadEarly;
+        if (obj.if_contains("face_bust_rect_base64") &&
+            obj.at("face_bust_rect_base64").is_string()) {
+            bustPayloadEarly = stripDataUrlBase64(
+                json::value_to<std::string>(obj.at("face_bust_rect_base64")));
+        }
+        std::vector<unsigned char> bustBytes;
+        if (!bustPayloadEarly.empty()) {
+            (void)decodeBase64(bustPayloadEarly, bustBytes);
+        }
 
-      if (!isValidDni(dni)) {
-        return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", "dni must be numeric"}});
-      }
+        std::optional<std::future<biometric::AiEngineCartoonResult>> cartoonFut;
+        if (!bustBytes.empty()) {
+            std::vector<unsigned char> bustCopy = bustBytes;
+            cartoonFut.emplace(std::async(std::launch::async, [bustCopy]() {
+                return fetchCartoonAvatarBestEffort(bustCopy);
+            }));
+            regLog("cartoon_async_started_parallel_with_embedding");
+        }
 
-      if (username.size() < 4 || password.size() < 6) {
-        return makeJsonResponse(
-            http::status::bad_request,
-            json::object{{"error", "username or password length is invalid"}});
-      }
-
-      AuthUser created;
-      created.id = makeId();
-      created.company = company;
-      created.firstName = firstName;
-      created.lastName = lastName;
-      created.dni = dni;
-      created.username = username;
-      created.role = resolveRoleForUsername(username);
-      created.passwordHash = hashPassword(password);
-      created.faceTemplate = std::move(faceTemplate);
-      created.createdAt = nowIso8601();
-
-      {
-        std::scoped_lock lk(gAuthMutex);
-        if (gAuthStorageMode == AuthStorageMode::Postgres) {
-#if HAS_LIBPQ
-          std::string dbError;
-          if (!registerUserPg(gDatabaseUrl, created, dbError)) {
-            return makeJsonResponse(http::status::conflict,
-                                    json::object{{"error", dbError}});
-          }
-#else
-          return makeJsonResponse(
-              http::status::internal_server_error,
-              json::object{{"error", "postgres support is not compiled"}});
-#endif
+        std::vector<double> faceTemplate;
+        std::string biometricProvider = "legacy";
+        double qualityScore = 0.0;
+        if (hasTemplate) {
+            for (const auto &v : obj.at("face_template").as_array()) {
+                if (v.is_double()) {
+                    faceTemplate.push_back(v.as_double());
+                } else if (v.is_int64()) {
+                    faceTemplate.push_back(static_cast<double>(v.as_int64()));
+                } else {
+                    return makeJsonResponse(
+                        http::status::bad_request,
+                        json::object{{"error", "face_template must be a numeric array"}});
+                }
+            }
+            regLog("face_template_from_client_skip_ai_embedding");
         } else {
-          auto users = loadAuthUsers(dataRoot);
-
-          const auto sameDni =
-              std::find_if(users.begin(), users.end(), [&](const auto &u) {
-                return u.dni == dni;
-              });
-          if (sameDni != users.end()) {
-            appendAuthAuditLog(dataRoot, "register", company, username, false,
-                               "dni_exists");
-            return makeJsonResponse(
-                http::status::conflict,
-                json::object{{"error", "dni already exists"}});
-          }
-
-          const auto sameUsername =
-              std::find_if(users.begin(), users.end(), [&](const auto &u) {
-                return u.username == username && u.company == company;
-              });
-          if (sameUsername != users.end()) {
-            appendAuthAuditLog(dataRoot, "register", company, username, false,
-                               "username_exists");
-            return makeJsonResponse(http::status::conflict,
-                                    json::object{{"error", "username already exists in this company"}});
-          }
-
-          users.push_back(created);
-          saveAuthUsers(dataRoot, users);
-          appendAuthAuditLog(dataRoot, "register", company, username, true,
-                             "ok");
+            if (!rawRegImage.empty() && !cfg.gAiEngineUrl.empty()) {
+                regLog("embedding_ai_engine_begin");
+                auto em = fetchFaceEmbeddingFromAiEngine(rawRegImage);
+                regLog("embedding_ai_engine_end");
+                if (em.ok()) {
+                    faceTemplate = std::move(em.embedding);
+                    biometricProvider = "insightface_onnx";
+                    qualityScore = 0.92;
+                }
+            }
+            if (faceTemplate.empty()) {
+                regLog("analyze_face_legacy_begin");
+                auto face = analyzeFaceImage(regFaceBase64, "register");
+                regLog("analyze_face_legacy_end");
+                if (face.faceTemplate.empty()) {
+                    json::array issues;
+                    for (const auto &issue : face.issues) {
+                        issues.push_back(json::value(issue));
+                    }
+                    return makeJsonResponse(
+                        http::status::bad_request,
+                        json::object{{"error", "face not detected"},
+                                     {"provider", face.provider},
+                                     {"issues", issues}});
+                }
+                faceTemplate = std::move(face.faceTemplate);
+                biometricProvider = face.provider;
+                qualityScore = face.qualityScore;
+            }
         }
-      }
+
+        if (faceTemplate.size() < 100) {
+            return makeJsonResponse(
+                http::status::bad_request,
+                json::object{{"error", "face_template is too short"}});
+        }
+
+        if (!isValidDni(dni)) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "dni must be numeric"}});
+        }
+
+        if (username.size() < 4 || password.size() < 6) {
+            return makeJsonResponse(
+                http::status::bad_request,
+                json::object{{"error", "username or password length is invalid"}});
+        }
+
+        regLog("post_validate");
+
+        AuthUser created;
+        created.id           = makeId();
+        created.company      = company;
+        created.firstName    = firstName;
+        created.lastName     = lastName;
+        created.dni          = dni;
+        created.username     = username;
+        created.role         = role;
+        created.passwordHash = hashPassword(password);
+        created.faceTemplate = std::move(faceTemplate);
+        created.createdAt    = nowIso8601();
+        created.ruc          = ruc;
+        created.phone        = phone;
+        created.mobile       = mobile;
+        created.email        = email;
+        created.avatarCartoonBase64.clear();
+
+        regLog("pre_db_insert");
+
+        {
+            std::scoped_lock lk(gAuthMutex);
+            if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+                std::string dbError;
+                if (!registerUserPg(cfg.gDatabaseUrl, created, dbError)) {
+                    return makeJsonResponse(http::status::conflict,
+                                            json::object{{"error", dbError}});
+                }
+                // Sin esto, el usuario autoregistrado nunca obtiene una fila
+                // real en auth_user_tenant: su JWT queda atado para siempre
+                // al tenant de fallback (kMiningTelemetryDemoTenantId), que
+                // ADR-039 ya vetó explícitamente para crear/editar informes
+                // -- quedaría bloqueado sin ninguna salida. Se crea (o
+                // reutiliza, si ya existe) un tenant real dedicado para su
+                // `company` y se vincula de una vez. No se aborta el
+                // registro si esto falla (el usuario ya quedó creado) --
+                // solo se deja constancia en el log del servidor.
+                std::string tenantError;
+                const std::string provisionedTenantId = findOrCreateTenantForCompanyPg(
+                    cfg.gDatabaseUrl, company, created.id, role, tenantError);
+                if (provisionedTenantId.empty()) {
+                    std::cerr << "[AUTH_REGISTER] tenant provisioning failed for company='"
+                              << company << "': " << tenantError << std::endl;
+                } else {
+                    // Bug real (QA 2026-07-27): provisionedTenantId se calculaba
+                    // pero nunca se asignaba a `created.tenantId` -- el token
+                    // emitido en ESTA misma respuesta de registro (issueAuthSession
+                    // más abajo) quedaba con tenant_id vacío en el JWT, aunque la
+                    // fila en auth_user_tenant ya existiera correctamente. Efecto
+                    // observable: POST /api/reports con el token de la respuesta
+                    // de registro fallaba con "tenant_required"; recién funcionaba
+                    // tras un login nuevo (que sí resuelve el tenant real desde
+                    // BD). Exactamente la regresión que este mismo bloque de
+                    // código dice prevenir en su comentario de arriba.
+                    created.tenantId = provisionedTenantId;
+                }
+#else
+                return makeJsonResponse(
+                    http::status::internal_server_error,
+                    json::object{{"error", "postgres support is not compiled"}});
+#endif
+            } else {
+                auto users = loadAuthUsers(dataRoot);
+
+                const auto sameDni =
+                    std::find_if(users.begin(), users.end(), [&](const auto &u) {
+                        return u.dni == dni;
+                    });
+                if (sameDni != users.end()) {
+                    appendAuthAuditLog(dataRoot, "register", company, username,
+                                       false, "dni_exists");
+                    return makeJsonResponse(
+                        http::status::conflict,
+                        json::object{{"error", "dni already exists"}});
+                }
+
+                const auto sameUsername =
+                    std::find_if(users.begin(), users.end(), [&](const auto &u) {
+                        return u.username == username && u.company == company;
+                    });
+                if (sameUsername != users.end()) {
+                    appendAuthAuditLog(dataRoot, "register", company, username,
+                                       false, "username_exists");
+                    return makeJsonResponse(
+                        http::status::conflict,
+                        json::object{{"error", "username already exists in this company"}});
+                }
+
+                users.push_back(created);
+                saveAuthUsers(dataRoot, users);
+                appendAuthAuditLog(dataRoot, "register", company, username, true,
+                                   "ok");
+            }
+        }
+
+        regLog("db_insert_ok");
+
+        const bool deferCartoonWork = cartoonFut.has_value() ||
+                                      !rawRegImage.empty() ||
+                                      !portraitBytes.empty();
+        if (deferCartoonWork) {
+            auto bgCartoonOpt = std::move(cartoonFut);
+            std::vector<unsigned char> bgRawReg  = std::move(rawRegImage);
+            std::vector<unsigned char> bgPortrait = std::move(portraitBytes);
+            const auto storageModeCapture = cfg.gAuthStorageMode;
+            const auto dbUrlCapture       = cfg.gDatabaseUrl;
+            std::thread(
+                [bgCartoonOpt = std::move(bgCartoonOpt),
+                 bgRawReg = std::move(bgRawReg), bgPortrait = std::move(bgPortrait),
+                 userId = created.id, regDni = dni, regUser = username,
+                 regCompany = company, dataRoot,
+                 storageModeCapture, dbUrlCapture]() mutable {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    auto bgLog = [&](const char *tag) {
+                        const auto ms =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - t0)
+                                .count();
+                        std::cerr << "[AUTH_REGISTER_CARTOON_BG] dni=" << regDni
+                                  << " user=" << regUser << " id=" << userId
+                                  << " +" << ms << "ms " << tag << std::endl;
+                    };
+                    bgLog("thread_start");
+                    std::string b64;
+                    std::string hdB64;
+                    if (bgCartoonOpt.has_value()) {
+                        try {
+                            auto cartoonB = bgCartoonOpt->get();
+                            bgLog("bust_future_done");
+                            if (cartoonB.ok()) {
+                                b64 = std::move(cartoonB.imageBase64);
+                                hdB64 = std::move(cartoonB.imageHdBase64);
+                            }
+                        } catch (const std::exception &ex) {
+                            std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: "
+                                      << ex.what() << std::endl;
+                        } catch (...) {
+                            std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: unknown\n";
+                        }
+                    }
+                    if (b64.empty() && !bgRawReg.empty()) {
+                        bgLog("cartoon_sync_raw_bg");
+                        auto cartoon = fetchCartoonAvatarBestEffort(bgRawReg);
+                        if (cartoon.ok()) {
+                            b64 = std::move(cartoon.imageBase64);
+                            hdB64 = std::move(cartoon.imageHdBase64);
+                        }
+                    }
+                    if (b64.empty() && !bgPortrait.empty()) {
+                        bgLog("cartoon_sync_portrait_bg");
+                        auto cartoon2 = fetchCartoonAvatarBestEffort(bgPortrait);
+                        if (cartoon2.ok()) {
+                            b64 = std::move(cartoon2.imageBase64);
+                            hdB64 = std::move(cartoon2.imageHdBase64);
+                        }
+                    }
+                    if (b64.empty()) {
+                        bgLog("cartoon_all_failed_bg");
+                        return;
+                    }
+                    bgLog("cartoon_ok_updating_store");
+                    if (!hdB64.empty()) {
+                        std::vector<unsigned char> hdBytes;
+                        if (decodeBase64(hdB64, hdBytes) && !hdBytes.empty()) {
+                            try {
+                                const fs::path avatarDir =
+                                    fs::path(dataRoot) / "auth" / "avatars_hd";
+                                fs::create_directories(avatarDir);
+                                const fs::path finalPath =
+                                    avatarDir / (userId + ".png");
+                                const fs::path tmpPath =
+                                    avatarDir / (userId + ".png.tmp");
+                                {
+                                    std::ofstream out(tmpPath, std::ios::binary |
+                                                                   std::ios::trunc);
+                                    out.write(
+                                        reinterpret_cast<const char *>(hdBytes.data()),
+                                        static_cast<std::streamsize>(hdBytes.size()));
+                                    if (!out.good()) {
+                                        throw std::runtime_error(
+                                            "avatar_hd_write_failed");
+                                    }
+                                }
+                                if (fs::exists(finalPath)) {
+                                    fs::remove(finalPath);
+                                }
+                                fs::rename(tmpPath, finalPath);
+                                fs::permissions(
+                                    finalPath,
+                                    fs::perms::owner_read |
+                                        fs::perms::owner_write,
+                                    fs::perm_options::replace);
+                                bgLog("avatar_hd_cached");
+                            } catch (const std::exception &ex) {
+                                std::cerr << "[AUTH_REGISTER_CARTOON_BG] hd: "
+                                          << ex.what() << std::endl;
+                            }
+                        }
+                    }
+                    std::scoped_lock lk(gAuthMutex);
+                    if (storageModeCapture == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+                        std::string err;
+                        if (!updateUserAvatarCartoonPg(dbUrlCapture, userId, b64,
+                                                       regUser, regCompany, "",
+                                                       err)) {
+                            std::cerr << "[AUTH_REGISTER_CARTOON_BG] pg: " << err
+                                      << std::endl;
+                        } else {
+                            bgLog("pg_avatar_updated");
+                        }
+#else
+                        (void)b64;
+#endif
+                    } else {
+                        if (!updateUserAvatarCartoonFile(dataRoot, userId, b64)) {
+                            std::cerr << "[AUTH_REGISTER_CARTOON_BG] file: user id "
+                                         "not found\n";
+                        } else {
+                            bgLog("file_avatar_updated");
+                        }
+                    }
+                })
+                .detach();
+            regLog("cartoon_bg_detached");
+        }
 
         const auto sessionToken = issueAuthSession(created);
+        regLog("response_ready");
 
-        return makeJsonResponse(
-          http::status::created,
-          json::object{{"status", "registered"},
-                 {"biometric_provider", biometricProvider},
-                 {"quality_score", qualityScore},
-                       {"user", json::object{{"id", created.id},
-                                              {"company", created.company},
-                                              {"username", created.username},
-                                              {"role", created.role},
-                            {"token", sessionToken.token},
-                                              {"full_name", created.firstName +
-                                                                " " +
-                                                                created.lastName}}}});
+        return withAuthCookies(
+            makeJsonResponse(
+                http::status::created,
+                json::object{{"status", "registered"},
+                             {"biometric_provider", biometricProvider},
+                             {"quality_score", qualityScore},
+                             {"user", authUserSessionJson(created,
+                                                          sessionToken)}}),
+            sessionToken);
     } catch (const std::exception &ex) {
-      appendAuthAuditLog(dataRoot, "register", "unknown", "unknown", false,
-                         ex.what());
-      return makeJsonResponse(http::status::bad_request,
-                              json::object{{"error", ex.what()}});
+        const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+        appendAuthAuditLog(dataRoot, "register", "unknown", "unknown", false,
+                           ex.what());
+        return makeJsonResponse(http::status::bad_request,
+                                json::object{{"error", ex.what()}});
     }
-  }
+}
 
-  if (req.method() == http::verb::post && pathOnly == "/api/auth/login/password") {
-    try {
-      auto val = json::parse(req.body());
-      if (!val.is_object()) {
-        return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", "invalid JSON body"}});
-      }
-      const auto &obj = val.as_object();
-      if (!obj.if_contains("company") || !obj.if_contains("username") ||
-          !obj.if_contains("password") || !obj.at("company").is_string() ||
-          !obj.at("username").is_string() || !obj.at("password").is_string()) {
-        return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", "invalid auth payload"}});
-      }
+// ── T22 — Rate limiter de login (spec 006) ────────────────────────────────
+// Desliza ventana de 5 min; bloquea tras 5 fallos por clave company|username.
+namespace {
+struct LoginRateEntry { int fails = 0; std::chrono::steady_clock::time_point win{}; };
+std::mutex gLoginRateMtx;
+std::unordered_map<std::string, LoginRateEntry> gLoginRateMap;
+constexpr int kRateMaxFails  = 5;
+constexpr int kRateWindowSec = 300;  // ventana deslizante 5 min
+// Techo duro de entradas vivas (auditoría de seguridad 2026-08-02). La clave
+// del mapa es `company|username` — texto ARBITRARIO del atacante — y hasta
+// ahora solo se borraba en el login CORRECTO: una ráfaga de intentos con
+// usuarios inventados hacía crecer el mapa sin límite hasta agotar la memoria
+// del proceso (DoS de la plataforma entera, no solo del login). nginx limita
+// a 5 r/m por IP, pero eso no cubre una botnet ni el acceso directo al :8081
+// desde dentro de la red Docker. Con la purga por ventana + este techo, el
+// tamaño queda acotado por el propio TTL de 5 min.
+constexpr std::size_t kRateMaxEntries = 20000;
 
-      const std::string company = json::value_to<std::string>(obj.at("company"));
-      const std::string username = json::value_to<std::string>(obj.at("username"));
-      const std::string password = json::value_to<std::string>(obj.at("password"));
+/** @brief Elimina entradas cuya ventana ya expiró. Llamar con gLoginRateMtx tomado. */
+void loginRatePruneLocked(std::chrono::steady_clock::time_point now) {
+    for (auto it = gLoginRateMap.begin(); it != gLoginRateMap.end();) {
+        const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                             now - it->second.win).count();
+        if (age > kRateWindowSec) it = gLoginRateMap.erase(it);
+        else ++it;
+    }
+}
+} // anonymous namespace
 
-      AuthUser found;
-      bool ok = false;
-      {
-        std::scoped_lock lk(gAuthMutex);
-        if (gAuthStorageMode == AuthStorageMode::Postgres) {
-#if HAS_LIBPQ
-          std::string dbError;
-          auto user = loginPasswordPg(gDatabaseUrl, company, username,
-                                      hashPassword(password), dbError);
-          if (!user) {
-            return makeJsonResponse(http::status::unauthorized,
-                                    json::object{{"error", dbError}});
-          }
-          found = *user;
-          ok = true;
-#else
-          return makeJsonResponse(
-              http::status::internal_server_error,
-              json::object{{"error", "postgres support is not compiled"}});
-#endif
-        } else {
-          const auto users = loadAuthUsers(dataRoot);
-          const auto it =
-              std::find_if(users.begin(), users.end(), [&](const auto &u) {
-                return u.company == company && u.username == username;
-              });
-
-          if (it == users.end() || it->passwordHash != hashPassword(password)) {
-            appendAuthAuditLog(dataRoot, "login_password", company, username,
-                               false, "invalid_credentials");
-            return makeJsonResponse(
-                http::status::unauthorized,
-                json::object{{"error", "invalid credentials"}});
-          }
-          appendAuthAuditLog(dataRoot, "login_password", company, username,
-                             true, "ok");
-          found = *it;
-          ok = true;
+static bool loginRateCheck(const std::string &key) {
+    std::lock_guard<std::mutex> lk(gLoginRateMtx);
+    const auto now = std::chrono::steady_clock::now();
+    if (gLoginRateMap.size() >= kRateMaxEntries) {
+        loginRatePruneLocked(now);
+        // Si tras purgar sigue lleno, el sistema está bajo un ataque activo de
+        // relleno: se rechaza en vez de seguir creciendo (fail-closed).
+        if (gLoginRateMap.size() >= kRateMaxEntries &&
+            gLoginRateMap.find(key) == gLoginRateMap.end()) {
+            return false;
         }
-      }
-
-      if (!ok) {
-        return makeJsonResponse(http::status::unauthorized,
-                                json::object{{"error", "invalid credentials"}});
-      }
-
-        const auto sessionToken = issueAuthSession(found);
-
-        return makeJsonResponse(
-          http::status::ok,
-          json::object{{"status", "authenticated"},
-                       {"method", "password"},
-                       {"user", json::object{{"id", found.id},
-                                              {"company", found.company},
-                                              {"username", found.username},
-                                              {"role", found.role},
-                            {"token", sessionToken.token},
-                                              {"full_name", found.firstName +
-                                                                " " +
-                                                                found.lastName}}}});
-    } catch (const std::exception &ex) {
-      return makeJsonResponse(http::status::bad_request,
-                              json::object{{"error", ex.what()}});
     }
-  }
+    auto &e = gLoginRateMap[key];
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - e.win).count()
+            > kRateWindowSec) {
+        e.fails = 0;
+        e.win   = now;
+    }
+    return e.fails < kRateMaxFails;
+}
 
-  if (req.method() == http::verb::post && pathOnly == "/api/auth/login/face") {
+static void loginRateIncrement(const std::string &key) {
+    std::lock_guard<std::mutex> lk(gLoginRateMtx);
+    gLoginRateMap[key].fails++;
+}
+
+static void loginRateClear(const std::string &key) {
+    std::lock_guard<std::mutex> lk(gLoginRateMtx);
+    gLoginRateMap.erase(key);
+}
+
+namespace {
+/**
+ * @brief Cuenta el intento como FALLIDO salvo que se marque `success()`.
+ *
+ * El login facial tiene ~7 puntos de salida por error repartidos entre la rama
+ * Postgres y la de archivo. Incrementar el contador a mano en cada uno es
+ * frágil: basta con que un `return` nuevo se olvide para que ese camino quede
+ * sin límite de intentos y reabra el bucle de fuerza bruta. Con este guard el
+ * fallo es el comportamiento por DEFECTO — solo el camino de éxito lo
+ * desactiva — así que cualquier salida futura queda cubierta sin tocar nada.
+ */
+class LoginAttemptGuard {
+public:
+    explicit LoginAttemptGuard(std::string key) : key_(std::move(key)) {}
+    LoginAttemptGuard(const LoginAttemptGuard &) = delete;
+    LoginAttemptGuard &operator=(const LoginAttemptGuard &) = delete;
+    /** @brief Marca el intento como correcto: limpia el contador y no penaliza. */
+    void success() {
+        succeeded_ = true;
+        loginRateClear(key_);
+    }
+    ~LoginAttemptGuard() {
+        if (!succeeded_) loginRateIncrement(key_);
+    }
+private:
+    std::string key_;
+    bool succeeded_ = false;
+};
+} // anonymous namespace
+
+// ADR-029, "Actualización 2026-07-19": el refresh token viaja SOLO por la
+// cookie HttpOnly `refresh_token` (nunca más en el body JSON, ver
+// http_utils::setAuthCookies) -- se lee del header `Cookie` de la request,
+// no del body. Endpoints protegidos por esta cookie (refresh/logout) exigen
+// además que el header `X-CSRF-Token` coincida con la cookie legible
+// `csrf_token` (patrón double-submit): un sitio de terceros puede lograr que
+// el navegador de la víctima MANDE la cookie de refresh_token sola, pero no
+// puede LEERLA (same-origin policy) para repetirla en el header.
+static bool csrfHeaderMatchesCookie(const http::request<http::string_body> &req) {
+    // Nombre "v2": el cookie `csrf_token` (Path=/api/auth, bug corregido hoy
+    // — ver setAuthCookies) puede seguir vivo en el navegador de sesiones ya
+    // logueadas (Max-Age 7 días). Si se reutilizara el mismo nombre, el
+    // navegador mandaría AMBAS cookies del mismo nombre en `Cookie` (la más
+    // específica por path primero, RFC 6265), y `extractCookie` siempre
+    // devuelve la primera coincidencia -- quedaría leyendo la vieja
+    // (Path=/api/auth) mientras el JS del cliente lee la nueva (Path=/),
+    // reproduciendo el mismo `csrf_token_mismatch` indefinidamente para
+    // cualquier sesión activa desde antes del fix. Cambiar el nombre evita
+    // la colisión por completo: la cookie vieja queda inerte y expira sola.
+    const std::string cookieCsrf = http_utils::extractCookie(req, "csrf_token_v2");
+    if (cookieCsrf.empty()) {
+        return false;
+    }
+    const auto it = req.find("X-CSRF-Token");
+    if (it == req.end()) {
+        return false;
+    }
+    return std::string(it->value()) == cookieCsrf;
+}
+
+// ── T21 — POST /api/auth/logout ───────────────────────────────────────────
+// ADR-029 (revisado): revoca el jti del access token de inmediato (denylist)
+// y, si el cliente envía el refresh_token (ahora vía cookie, no body), lo
+// marca revocado en el servidor — antes el logout solo actuaba client-side y
+// la sesión seguía viva hasta expirar naturalmente (hasta 8 h).
+static http::response<http::string_body>
+handleLogout(const http::request<http::string_body> &req,
+             const std::unordered_map<std::string, std::string> &query) {
+    const auto session = resolveAuthSession(req, query);
+    if (!session)
+        return makeJsonResponse(http::status::unauthorized,
+                                json::object{{"error", "unauthorized"}});
+    const std::string refreshToken = http_utils::extractCookie(req, "refresh_token");
+    // CSRF solo se exige cuando hay una cookie de refresh que revocar -- si el
+    // cliente no la tenía (ya venció, o nunca hizo login con cookie), el
+    // logout igual debe poder revocar el access token vigente.
+    if (!refreshToken.empty() && !csrfHeaderMatchesCookie(req)) {
+        return makeJsonResponse(http::status::forbidden,
+                                json::object{{"error", "csrf_token_mismatch"}});
+    }
+    auth::revokeAuthSession(session->token, refreshToken);
+    auto res = makeJsonResponse(http::status::ok, json::object{{"status", "logged_out"}});
+    http_utils::clearAuthCookies(res);
+    return res;
+}
+
+// ── POST /api/auth/refresh ─────────────────────────────────────────────────
+// ADR-029 (revisado): endpoint stateless respecto al access token — recibe el
+// refresh_token vía cookie HttpOnly (nunca un access token, que puede ya
+// haber expirado; ese es justamente el propósito del refresh) y, si es
+// válido, emite un par nuevo rotando el refresh token usado (uso único:
+// reintentarlo tras esta llamada falla siempre, mitigando replay si fue
+// robado).
+static http::response<http::string_body>
+handleTokenRefresh(const http::request<http::string_body> &req,
+                   const std::unordered_map<std::string, std::string> & /*query*/) {
+    const std::string refreshToken = http_utils::extractCookie(req, "refresh_token");
+    if (refreshToken.empty()) {
+        return makeJsonResponse(http::status::bad_request,
+            json::object{{"error", "missing_refresh_token"}});
+    }
+    if (!csrfHeaderMatchesCookie(req)) {
+        return makeJsonResponse(http::status::forbidden,
+            json::object{{"error", "csrf_token_mismatch"}});
+    }
+
+    const auto pair = auth::refreshWithToken(refreshToken);
+    if (!pair) {
+        // Refresh token inválido/vencido/reusado: limpiar la cookie vieja
+        // también, no solo responder 401 -- si no, el cliente seguiría
+        // reenviándola en cada intento sin llegar nunca a un login limpio.
+        auto res = makeJsonResponse(http::status::unauthorized,
+            json::object{{"error", "invalid_or_expired_refresh_token"}});
+        http_utils::clearAuthCookies(res);
+        return res;
+    }
+
+    auto &cfg = AppConfig::instance();
+    const auto claims = auth::jwt::verify(pair->token, cfg.gJwtSecret);
+    json::object userObj;
+    if (claims) {
+        userObj = json::object{{"id", claims->sub},
+                               {"username", claims->username},
+                               {"company", claims->company},
+                               {"role", claims->role},
+                               {"tenant_id", claims->tenantId}};
+    }
+
+    return withAuthCookies(
+        makeJsonResponse(http::status::ok,
+            json::object{{"status",       "refreshed"},
+                         {"access_token",  pair->token},
+                         {"expires_in",    pair->expiresInSeconds},
+                         {"token_type",    "Bearer"},
+                         {"user",          userObj}}),
+        *pair);
+}
+
+// ── POST /api/auth/login/password ───────────────────────────────────────
+static http::response<http::string_body>
+handleLoginPassword(const http::request<http::string_body> &req,
+                    const std::unordered_map<std::string, std::string> & /*query*/) {
+    auto &cfg = AppConfig::instance();
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
     try {
-      auto val = json::parse(req.body());
-      if (!val.is_object()) {
+        auto val = json::parse(req.body());
+        if (!val.is_object()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid JSON body"}});
+        }
+        const auto &obj = val.as_object();
+        if (!obj.if_contains("company") || !obj.if_contains("username") ||
+            !obj.if_contains("password") || !obj.at("company").is_string() ||
+            !obj.at("username").is_string() || !obj.at("password").is_string()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid auth payload"}});
+        }
+
+        const std::string company  = json::value_to<std::string>(obj.at("company"));
+        const std::string username = json::value_to<std::string>(obj.at("username"));
+        const std::string password = json::value_to<std::string>(obj.at("password"));
+
+        // T22 — Rate limiting: 5 fallos / 5 min por clave company|username
+        const std::string rateKey = company + "|" + username;
+        if (!loginRateCheck(rateKey)) {
+            return makeJsonResponse(http::status::too_many_requests,
+                json::object{{"error",  "too_many_failed_attempts"},
+                             {"detail", "Cuenta bloqueada 5 min. Intente más tarde."}});
+        }
+
+        AuthUser found;
+        bool ok = false;
+        {
+            std::scoped_lock lk(gAuthMutex);
+            if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+                std::string dbError;
+                std::string errCode;
+                auto user = loginPasswordPg(cfg.gDatabaseUrl, company, username,
+                                            password, dbError,
+                                            &errCode);
+                if (!user) {
+                    loginRateIncrement(rateKey);
+                    json::object jo{{"error", dbError}};
+                    if (!errCode.empty()) {
+                        jo["code"] = errCode;
+                    }
+                    return makeJsonResponse(http::status::unauthorized, jo);
+                }
+                found = *user;
+                ok = true;
+#else
+                return makeJsonResponse(
+                    http::status::internal_server_error,
+                    json::object{{"error", "postgres support is not compiled"}});
+#endif
+            } else {
+                AuthUser *match = nullptr;
+                size_t matchCount = 0;
+                auto users = loadAuthUsers(dataRoot);
+                for (auto &u : users) {
+                    if (u.company != company) continue;
+                    if (authIdentityKeyMatchesFsUser(username, u)) {
+                        match = &u;
+                        matchCount++;
+                    }
+                }
+                if (matchCount == 0) {
+                    loginRateIncrement(rateKey);
+                    appendAuthAuditLog(dataRoot, "login_password", company,
+                                       username, false, "user_not_found");
+                    return makeJsonResponse(
+                        http::status::unauthorized,
+                        json::object{{"error", std::string(kAuthUserNotFoundMsg)},
+                                     {"code", "user_not_found"}});
+                }
+                if (matchCount > 1) {
+                    loginRateIncrement(rateKey);
+                    appendAuthAuditLog(dataRoot, "login_password", company,
+                                       username, false, "ambiguous_identity");
+                    return makeJsonResponse(
+                        http::status::unauthorized,
+                        json::object{{"error", std::string(kAuthAmbiguousIdentityMsg)},
+                                     {"code", "ambiguous_identity"}});
+                }
+                if (!http_utils::verifyPassword(password, match->passwordHash)) {
+                    loginRateIncrement(rateKey);
+                    appendAuthAuditLog(dataRoot, "login_password", company,
+                                       match->username, false, "invalid_password");
+                    return makeJsonResponse(
+                        http::status::unauthorized,
+                        json::object{{"error", std::string(kAuthWrongPasswordMsg)},
+                                     {"code", "wrong_password"}});
+                }
+                if (http_utils::passwordNeedsRehash(match->passwordHash)) {
+                    match->passwordHash = hashPassword(password);
+                    saveAuthUsers(dataRoot, users);
+                }
+                appendAuthAuditLog(dataRoot, "login_password", company,
+                                   match->username, true, "ok");
+                found = *match;
+                ok = true;
+            }
+        }
+
+        if (!ok) {
+            loginRateIncrement(rateKey);
+            return makeJsonResponse(http::status::unauthorized,
+                                    json::object{{"error", "invalid credentials"}});
+        }
+
+        loginRateClear(rateKey);  // login exitoso: reinicia contador
+        const auto sessionToken = issueAuthSession(found);
+        return withAuthCookies(
+            makeJsonResponse(
+                http::status::ok,
+                json::object{{"status", "authenticated"},
+                             {"method", "password"},
+                             {"user", authUserSessionJson(found, sessionToken)}}),
+            sessionToken);
+    } catch (const std::exception &ex) {
         return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", "invalid JSON body"}});
-      }
+                                json::object{{"error", ex.what()}});
+    }
+}
 
-      const auto &obj = val.as_object();
-      if (!obj.if_contains("company") || !obj.at("company").is_string()) {
-        return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", "invalid auth payload"}});
-      }
+// ── POST /api/auth/login/face ───────────────────────────────────────────
+static http::response<http::string_body>
+handleLoginFace(const http::request<http::string_body> &req,
+                const std::unordered_map<std::string, std::string> & /*query*/) {
+    auto &cfg = AppConfig::instance();
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+    try {
+        auto val = json::parse(req.body());
+        if (!val.is_object()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid JSON body"}});
+        }
 
-      const bool hasTemplate =
-          obj.if_contains("face_template") && obj.at("face_template").is_array();
-      const bool hasImage = obj.if_contains("face_image_base64") &&
-                            obj.at("face_image_base64").is_string();
-      if (!hasTemplate && !hasImage) {
-        return makeJsonResponse(
-            http::status::bad_request,
-            json::object{{"error", "face_template or face_image_base64 is required"}});
-      }
+        const auto &obj = val.as_object();
+        if (!obj.if_contains("company") || !obj.at("company").is_string()) {
+            std::cout << "[AUTH_FACE] reject: missing/invalid company field"
+                      << std::endl;
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid auth payload"}});
+        }
 
-      const std::string company = json::value_to<std::string>(obj.at("company"));
-      const auto threshold = obj.if_contains("threshold") &&
-                                     obj.at("threshold").is_double()
-                                 ? obj.at("threshold").as_double()
-                                 : 0.89;
-
-      std::vector<double> faceTemplate;
-      std::string biometricProvider = "legacy";
-      if (hasTemplate) {
-        for (const auto &v : obj.at("face_template").as_array()) {
-          if (v.is_double()) {
-            faceTemplate.push_back(v.as_double());
-          } else if (v.is_int64()) {
-            faceTemplate.push_back(static_cast<double>(v.as_int64()));
-          } else {
+        const bool hasTemplate =
+            obj.if_contains("face_template") && obj.at("face_template").is_array();
+        const bool hasImage = obj.if_contains("face_image_base64") &&
+                              obj.at("face_image_base64").is_string();
+        if (!hasTemplate && !hasImage) {
+            std::cout << "[AUTH_FACE] reject: missing face_template/face_image_base64"
+                      << std::endl;
             return makeJsonResponse(
                 http::status::bad_request,
-                json::object{{"error", "face_template must be a numeric array"}});
-          }
+                json::object{{"error", "face_template or face_image_base64 is required"}});
         }
-      } else {
-        const std::string base64Image =
-            json::value_to<std::string>(obj.at("face_image_base64"));
-        auto face = analyzeFaceImage(base64Image, "verify");
-        if (!face.ok) {
-          json::array issues;
-          for (const auto &issue : face.issues) {
-            issues.push_back(json::value(issue));
-          }
-          return makeJsonResponse(
-              http::status::bad_request,
-              json::object{{"error", "face quality validation failed"},
-                           {"provider", face.provider},
-                           {"issues", issues}});
-        }
-        faceTemplate = std::move(face.faceTemplate);
-        biometricProvider = face.provider;
-      }
 
-      AuthUser bestUser;
-      double bestScore = -1.0;
-      bool ok = false;
-      {
-        std::scoped_lock lk(gAuthMutex);
-        if (gAuthStorageMode == AuthStorageMode::Postgres) {
-#if HAS_LIBPQ
-          std::string dbError;
-          auto result =
-              loginFacePg(gDatabaseUrl, company, faceTemplate, threshold, dbError);
-          if (!result) {
-            return makeJsonResponse(http::status::unauthorized,
-                                    json::object{{"error", dbError}});
-          }
-          bestUser = result->first;
-          bestScore = result->second;
-          ok = true;
-#else
-          return makeJsonResponse(
-              http::status::internal_server_error,
-              json::object{{"error", "postgres support is not compiled"}});
-#endif
+        std::string identityLogin;
+        if (obj.if_contains("identity_login") && obj.at("identity_login").is_string()) {
+            identityLogin = json::value_to<std::string>(obj.at("identity_login"));
+        } else if (obj.if_contains("username") && obj.at("username").is_string()) {
+            identityLogin = json::value_to<std::string>(obj.at("username"));
+        }
+        {
+            const char *ws = " \t\n\r";
+            const auto start = identityLogin.find_first_not_of(ws);
+            if (start == std::string::npos) {
+                identityLogin.clear();
+            } else {
+                const auto end = identityLogin.find_last_not_of(ws);
+                identityLogin = identityLogin.substr(start, end - start + 1);
+            }
+        }
+        if (identityLogin.empty()) {
+            std::cout << "[AUTH_FACE] reject: empty identity_login; company="
+                      << json::value_to<std::string>(obj.at("company"))
+                      << " has_template=" << (hasTemplate ? "1" : "0")
+                      << " has_image=" << (hasImage ? "1" : "0") << std::endl;
+            return makeJsonResponse(
+                http::status::bad_request,
+                json::object{{"error",
+                              "Indique usuario, DNI o RUC (campo identity_login) "
+                              "junto con la empresa para el login facial."}});
+        }
+
+        const std::string company = json::value_to<std::string>(obj.at("company"));
+        std::cout << "[AUTH_FACE] request: company=" << company
+                  << " identity=" << identityLogin
+                  << " has_template=" << (hasTemplate ? "1" : "0")
+                  << " has_image=" << (hasImage ? "1" : "0") << std::endl;
+
+        // Rate limiting a nivel de cuenta, igual que el login por contraseña
+        // (auditoría de seguridad 2026-08-02). Este endpoint acepta un
+        // `face_template` numérico ARBITRARIO enviado por el cliente y lo
+        // compara por similitud coseno contra el embedding almacenado: sin
+        // límite, un atacante puede iterar vectores hasta cruzar el umbral y
+        // autenticarse como cualquier usuario del que conozca el DNI, sin
+        // necesitar jamás su rostro. Es el camino de menor resistencia de todo
+        // el sistema de auth y era el único login sin contador de fallos.
+        // El prefijo separa el cupo del de contraseña: quemar los 5 intentos
+        // faciales no debe bloquear el login normal del mismo usuario.
+        const std::string faceRateKey = "face|" + company + "|" + identityLogin;
+        if (!loginRateCheck(faceRateKey)) {
+            return makeJsonResponse(http::status::too_many_requests,
+                json::object{{"error",  "too_many_failed_attempts"},
+                             {"detail", "Cuenta bloqueada 5 min. Intente más tarde."}});
+        }
+        LoginAttemptGuard faceAttempt(faceRateKey);
+
+        const double legacyThreshold = cfg.gFaceLegacyCosineThreshold;
+
+        std::vector<double> clientProbeTemplate;
+        std::optional<std::vector<unsigned char>> rawImageBytes;
+        std::optional<std::string> base64ForLegacy;
+        if (hasTemplate) {
+            for (const auto &v : obj.at("face_template").as_array()) {
+                if (v.is_double()) {
+                    clientProbeTemplate.push_back(v.as_double());
+                } else if (v.is_int64()) {
+                    clientProbeTemplate.push_back(static_cast<double>(v.as_int64()));
+                } else {
+                    return makeJsonResponse(
+                        http::status::bad_request,
+                        json::object{{"error", "face_template must be a numeric array"}});
+                }
+            }
         } else {
-          const auto users = loadAuthUsers(dataRoot);
-
-          const AuthUser *best = nullptr;
-          for (const auto &u : users) {
-            if (u.company != company) {
-              continue;
+            const std::string base64Image =
+                json::value_to<std::string>(obj.at("face_image_base64"));
+            std::vector<unsigned char> raw;
+            if (!decodeBase64(base64Image, raw) || raw.empty()) {
+                return makeJsonResponse(http::status::bad_request,
+                                        json::object{{"error", "invalid base64 image"}});
             }
-            const auto score = cosineSimilarity(faceTemplate, u.faceTemplate);
-            if (score > bestScore) {
-              bestScore = score;
-              best = &u;
-            }
-          }
+            rawImageBytes = std::move(raw);
+            base64ForLegacy = base64Image;
+        }
 
-          if (!best || bestScore < threshold) {
-            appendAuthAuditLog(dataRoot, "login_face", company, "unknown",
-                               false, "no_match");
+        AuthUser bestUser;
+        double bestScore = -1.0;
+        bool ok = false;
+        std::string biometricProvider = "legacy";
+        {
+            std::scoped_lock lk(gAuthMutex);
+            if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+                std::string dbError;
+                std::string probeProv;
+                auto result = loginFaceTargetedPg(
+                    cfg.gDatabaseUrl, company, identityLogin,
+                    clientProbeTemplate, rawImageBytes, base64ForLegacy,
+                    legacyThreshold, cfg.gFaceEmbeddingCosineThreshold,
+                    dbError, &probeProv);
+                if (!result) {
+                    std::cout << "[AUTH_FACE] postgres login failed: company="
+                              << company << " identity=" << identityLogin
+                              << " reason=" << dbError << std::endl;
+                    return makeJsonResponse(http::status::unauthorized,
+                                            json::object{{"error", dbError}});
+                }
+                bestUser = result->first;
+                bestScore = result->second;
+                biometricProvider = probeProv.empty() ? "legacy" : probeProv;
+                ok = true;
+#else
+                return makeJsonResponse(
+                    http::status::internal_server_error,
+                    json::object{{"error", "postgres support is not compiled"}});
+#endif
+            } else {
+                const auto users = loadAuthUsers(dataRoot);
+
+                const AuthUser *match = nullptr;
+                size_t matchCount = 0;
+                for (const auto &u : users) {
+                    if (u.company != company) continue;
+                    if (authIdentityKeyMatchesFsUser(identityLogin, u)) {
+                        match = &u;
+                        matchCount++;
+                    }
+                }
+
+                if (matchCount == 0) {
+                    std::cout << "[AUTH_FACE] no user for identity in company: "
+                              << company << " / " << identityLogin << std::endl;
+                    appendAuthAuditLog(dataRoot, "login_face", company, "unknown",
+                                       false, "no_user_for_identity");
+                    return makeJsonResponse(
+                        http::status::unauthorized,
+                        json::object{{"error", std::string(kAuthUserNotFoundMsg)}});
+                }
+                if (matchCount > 1) {
+                    std::cout << "[AUTH_FACE] ambiguous identity in company: "
+                              << company << " / " << identityLogin << std::endl;
+                    appendAuthAuditLog(dataRoot, "login_face", company, "unknown",
+                                       false, "ambiguous_identity");
+                    return makeJsonResponse(
+                        http::status::unauthorized,
+                        json::object{
+                            {"error",
+                             "El identificador coincide con más de un registro en "
+                             "esa empresa. Use un dato único e intente de nuevo."}});
+                }
+
+                if (match->faceTemplate.size() < 100) {
+                    appendAuthAuditLog(dataRoot, "login_face", company,
+                                       match->username, false,
+                                       "template_too_short");
+                    return makeJsonResponse(
+                        http::status::unauthorized,
+                        json::object{
+                            {"error",
+                             "El usuario indicado no tiene biometría facial "
+                             "registrada de forma completa. Registre el rostro e "
+                             "intente de nuevo."}});
+                }
+                std::vector<double> probe;
+                std::string probeProv;
+                double useThr = legacyThreshold;
+                std::string probeErr;
+                if (!buildFaceLoginProbe(clientProbeTemplate, rawImageBytes,
+                                         base64ForLegacy, match->faceTemplate,
+                                         probe, probeProv, useThr,
+                                         legacyThreshold,
+                                         cfg.gFaceEmbeddingCosineThreshold,
+                                         probeErr)) {
+                    std::cout << "[AUTH_FACE] probe build failed for user="
+                              << match->username << " reason=" << probeErr
+                              << std::endl;
+                    appendAuthAuditLog(dataRoot, "login_face", company,
+                                       match->username, false,
+                                       "probe_build_failed");
+                    return makeJsonResponse(http::status::unauthorized,
+                                            json::object{{"error", probeErr}});
+                }
+                bestScore = cosineSimilarity(probe, match->faceTemplate);
+                if (bestScore < useThr) {
+                    std::cout << "[AUTH_FACE] score below threshold user="
+                              << match->username << " score=" << bestScore
+                              << " threshold=" << useThr
+                              << " provider=" << probeProv << std::endl;
+                    appendAuthAuditLog(dataRoot, "login_face", company,
+                                       match->username, false, "no_match");
+                    return makeJsonResponse(
+                        http::status::unauthorized,
+                        json::object{
+                            {"error",
+                             "La biometría facial no coincide con el usuario "
+                             "indicado. Verifique su identidad y vuelva a "
+                             "intentar."}});
+                }
+                appendAuthAuditLog(
+                    dataRoot, "login_face", company, match->username, true,
+                    "ok score=" + std::to_string(bestScore) +
+                        " probe=" + probeProv);
+                bestUser = *match;
+                biometricProvider = probeProv.empty() ? "legacy" : probeProv;
+                ok = true;
+            }
+        }
+
+        if (!ok) {
+            std::cout << "[AUTH_FACE] failed: unknown reason company=" << company
+                      << " identity=" << identityLogin << std::endl;
             return makeJsonResponse(
                 http::status::unauthorized,
-                json::object{{"error", "face not recognized"}});
-          }
-          appendAuthAuditLog(dataRoot, "login_face", company, best->username,
-                             true, "ok score=" + std::to_string(bestScore));
-          bestUser = *best;
-          ok = true;
+                json::object{
+                    {"error",
+                     "No se pudo completar el inicio de sesión facial. Intente "
+                     "de nuevo."}});
         }
-      }
 
-      if (!ok) {
-        return makeJsonResponse(http::status::unauthorized,
-                                json::object{{"error", "face not recognized"}});
-      }
-
+        faceAttempt.success();
         const auto sessionToken = issueAuthSession(bestUser);
+        std::cout << "[AUTH_FACE] success user=" << bestUser.username
+                  << " company=" << bestUser.company
+                  << " provider=" << biometricProvider
+                  << " score=" << bestScore << std::endl;
 
-        return makeJsonResponse(
-          http::status::ok,
-          json::object{{"status", "authenticated"},
-                       {"method", "face"},
-                       {"biometric_provider", biometricProvider},
-                       {"score", bestScore},
-                       {"user", json::object{{"id", bestUser.id},
-                                              {"company", bestUser.company},
-                                              {"username", bestUser.username},
-                                              {"role", bestUser.role},
-                            {"token", sessionToken.token},
-                                              {"full_name", bestUser.firstName +
-                                                                " " +
-                                                                bestUser.lastName}}}});
+        return withAuthCookies(
+            makeJsonResponse(
+                http::status::ok,
+                json::object{{"status", "authenticated"},
+                             {"method", "face"},
+                             {"biometric_provider", biometricProvider},
+                             {"score", bestScore},
+                             {"user", authUserSessionJson(bestUser,
+                                                          sessionToken)}}),
+            sessionToken);
     } catch (const std::exception &ex) {
-      return makeJsonResponse(http::status::bad_request,
-                              json::object{{"error", ex.what()}});
+        return makeJsonResponse(http::status::bad_request,
+                                json::object{{"error", ex.what()}});
     }
-  }
+}
 
-  if (req.method() == http::verb::get && pathOnly == "/api/auth/audit") {
+// ── GET /api/auth/audit ─────────────────────────────────────────────────
+static http::response<http::string_body>
+handleAudit(const http::request<http::string_body> &req,
+            const std::unordered_map<std::string, std::string> &query) {
+    auto &cfg = AppConfig::instance();
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+
     const auto session = resolveAuthSession(req, query);
     if (!session || session->role != "admin") {
-      return makeJsonResponse(http::status::forbidden,
-                              json::object{{"error", "admin access required"}});
+        return makeJsonResponse(http::status::forbidden,
+                                json::object{{"error", "admin access required"}});
     }
 
     AuditFilter filter;
@@ -2384,64 +1308,48 @@ routeRequest(const http::request<http::string_body> &req,
     size_t pageSize = 50;
 
     if (auto it = query.find("page"); it != query.end()) {
-      try {
-        page = std::max<size_t>(1, static_cast<size_t>(std::stoul(it->second)));
-      } catch (...) {
-        page = 1;
-      }
+        try { page = std::max<size_t>(1, static_cast<size_t>(std::stoul(it->second))); }
+        catch (...) { page = 1; }
     }
     if (auto it = query.find("page_size"); it != query.end()) {
-      try {
-        pageSize = std::clamp<size_t>(static_cast<size_t>(std::stoul(it->second)),
-                                      1, 500);
-      } catch (...) {
-        pageSize = 50;
-      }
+        try { pageSize = std::clamp<size_t>(static_cast<size_t>(std::stoul(it->second)), 1, 500); }
+        catch (...) { pageSize = 50; }
     }
     if (auto it = query.find("limit"); it != query.end()) {
-      try {
-        pageSize = std::clamp<size_t>(static_cast<size_t>(std::stoul(it->second)),
-                                      1, 500);
-      } catch (...) {
-        pageSize = 50;
-      }
+        try { pageSize = std::clamp<size_t>(static_cast<size_t>(std::stoul(it->second)), 1, 500); }
+        catch (...) { pageSize = 50; }
     }
-    filter.limit = pageSize;
+    filter.limit  = pageSize;
     filter.offset = (page - 1) * pageSize;
 
-    if (auto it = query.find("company"); it != query.end() && !it->second.empty()) {
-      filter.company = it->second;
-    }
-    if (auto it = query.find("username"); it != query.end() && !it->second.empty()) {
-      filter.username = it->second;
-    }
-    if (auto it = query.find("action"); it != query.end() && !it->second.empty()) {
-      filter.action = it->second;
-    }
+    if (auto it = query.find("company"); it != query.end() && !it->second.empty())
+        filter.company = it->second;
+    if (auto it = query.find("username"); it != query.end() && !it->second.empty())
+        filter.username = it->second;
+    if (auto it = query.find("action"); it != query.end() && !it->second.empty())
+        filter.action = it->second;
     if (auto it = query.find("success"); it != query.end() && !it->second.empty()) {
-      if (it->second == "true" || it->second == "1") {
-        filter.success = true;
-      } else if (it->second == "false" || it->second == "0") {
-        filter.success = false;
-      }
+        if (it->second == "true" || it->second == "1")
+            filter.success = true;
+        else if (it->second == "false" || it->second == "0")
+            filter.success = false;
     }
 
     AuditPageResult pageResult;
-    if (gAuthStorageMode == AuthStorageMode::Postgres) {
+    if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
-      pageResult = readAuthAuditPg(gDatabaseUrl, filter);
+        pageResult = readAuthAuditPg(cfg.gDatabaseUrl, filter);
 #else
-      pageResult = readAuthAuditTail(dataRoot, filter);
+        pageResult = readAuthAuditTail(dataRoot, filter);
 #endif
     } else {
-      pageResult = readAuthAuditTail(dataRoot, filter);
+        pageResult = readAuthAuditTail(dataRoot, filter);
     }
 
     const size_t pages = pageResult.limit == 0
                              ? 1
-                             : static_cast<size_t>(
-                                   std::max<size_t>(1, (pageResult.total + pageResult.limit - 1) /
-                                                           pageResult.limit));
+                             : std::max<size_t>(1, (pageResult.total + pageResult.limit - 1) /
+                                                       pageResult.limit);
 
     return makeJsonResponse(
         http::status::ok,
@@ -2451,275 +1359,868 @@ routeRequest(const http::request<http::string_body> &req,
                      {"page", page},
                      {"page_size", pageResult.limit},
                      {"pages", pages}});
-  }
+}
 
-  if (req.method() == http::verb::get && pathOnly == "/api/auth/audit/export.csv") {
+// ── GET /api/auth/audit/export.csv ──────────────────────────────────────
+static http::response<http::string_body>
+handleAuditExportCsv(const http::request<http::string_body> &req,
+                     const std::unordered_map<std::string, std::string> &query) {
+    auto &cfg = AppConfig::instance();
+    const std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+
     const auto session = resolveAuthSession(req, query);
     if (!session || session->role != "admin") {
-      return makeJsonResponse(http::status::forbidden,
-                              json::object{{"error", "admin access required"}});
+        return makeJsonResponse(http::status::forbidden,
+                                json::object{{"error", "admin access required"}});
     }
 
     AuditFilter filter;
-    filter.limit = 100000;
+    filter.limit  = 100000;
     filter.offset = 0;
-    if (auto it = query.find("company"); it != query.end() && !it->second.empty()) {
-      filter.company = it->second;
-    }
-    if (auto it = query.find("username"); it != query.end() && !it->second.empty()) {
-      filter.username = it->second;
-    }
-    if (auto it = query.find("action"); it != query.end() && !it->second.empty()) {
-      filter.action = it->second;
-    }
+    if (auto it = query.find("company"); it != query.end() && !it->second.empty())
+        filter.company = it->second;
+    if (auto it = query.find("username"); it != query.end() && !it->second.empty())
+        filter.username = it->second;
+    if (auto it = query.find("action"); it != query.end() && !it->second.empty())
+        filter.action = it->second;
     if (auto it = query.find("success"); it != query.end() && !it->second.empty()) {
-      if (it->second == "true" || it->second == "1") {
-        filter.success = true;
-      } else if (it->second == "false" || it->second == "0") {
-        filter.success = false;
-      }
+        if (it->second == "true" || it->second == "1")
+            filter.success = true;
+        else if (it->second == "false" || it->second == "0")
+            filter.success = false;
     }
 
     AuditPageResult pageResult;
-    if (gAuthStorageMode == AuthStorageMode::Postgres) {
+    if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
-      pageResult = readAuthAuditPg(gDatabaseUrl, filter);
+        pageResult = readAuthAuditPg(cfg.gDatabaseUrl, filter);
 #else
-      pageResult = readAuthAuditTail(dataRoot, filter);
+        pageResult = readAuthAuditTail(dataRoot, filter);
 #endif
     } else {
-      pageResult = readAuthAuditTail(dataRoot, filter);
+        pageResult = readAuthAuditTail(dataRoot, filter);
     }
 
     const std::string csv = auditRowsToCsv(pageResult.logs);
     return makeCsvResponse("auth_audit.csv", csv);
-  }
+}
 
-  if (req.method() == http::verb::get && pathOnly == "/api/demo-data") {
-    json::array assets;
-    assets.push_back({{"id", "demo-1"},
-                      {"type", "image"},
-                      {"title", "Testigo T-45"},
-                      {"url", "/data/incoming/test.jpg"}});
-    assets.push_back({{"id", "demo-2"},
-                      {"type", "video"},
-                      {"title", "Análisis Fracturas"},
-                      {"url", "/data/demo/fracture_analysis.mp4"}});
-    assets.push_back({{"id", "demo-3"},
-                      {"type", "3d_model"},
-                      {"title", "Modelo Geomecánico"},
-                      {"url", "/data/demo/drillhole_demo.glb"}});
+// =========================================================================
+//  Route registration for remaining (non-module) routes
+// =========================================================================
+// /api/metrics — exposición Prometheus de pool PG, uptime y configuración.
+static http::response<http::string_body> handleMetrics(
+    const http::request<http::string_body>& req,
+    const std::unordered_map<std::string, std::string>& /*query*/) {
 
-    return makeJsonResponse(
-        http::status::ok,
-        json::object{{"status", "success"}, {"assets", assets}});
-  }
+    static const auto start_time = std::chrono::steady_clock::now();
+    const auto uptime_s = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - start_time).count();
 
-    if (req.method() == http::verb::get &&
-      pathOnly.starts_with("/api/demo-image")) {
-    std::string path = dataRoot + "/incoming/test.jpg";
-    if (!fs::exists(path)) {
-      return makeJsonResponse(http::status::not_found,
-                              json::object{{"error", "image not found"}});
+#if HAS_LIBPQ
+    auto s = storage::PgPool::instance().stats();
+#else
+    struct { std::size_t idle=0, active=0, max_size=0;
+             std::uint64_t acquires=0, bad_connections=0, waits=0; } s;
+#endif
+
+    const unsigned hw = std::thread::hardware_concurrency();
+    const int cv_threads = cv::getNumThreads();
+
+    std::ostringstream m;
+    m << "# HELP mapas_backend_uptime_seconds Seconds since backend start\n"
+      << "# TYPE mapas_backend_uptime_seconds counter\n"
+      << "mapas_backend_uptime_seconds " << uptime_s << "\n"
+      << "# HELP mapas_backend_pg_pool Connections in PG connection pool\n"
+      << "# TYPE mapas_backend_pg_pool gauge\n"
+      << "mapas_backend_pg_pool{state=\"idle\"} "   << s.idle   << "\n"
+      << "mapas_backend_pg_pool{state=\"active\"} " << s.active << "\n"
+      << "mapas_backend_pg_pool_max " << s.max_size << "\n"
+      << "# HELP mapas_backend_pg_pool_acquires_total Lifetime acquires\n"
+      << "# TYPE mapas_backend_pg_pool_acquires_total counter\n"
+      << "mapas_backend_pg_pool_acquires_total "         << s.acquires        << "\n"
+      << "mapas_backend_pg_pool_bad_connections_total "  << s.bad_connections << "\n"
+      << "mapas_backend_pg_pool_waits_total "            << s.waits           << "\n"
+      << "# HELP mapas_backend_hw_concurrency Host CPUs visible to process\n"
+      << "# TYPE mapas_backend_hw_concurrency gauge\n"
+      << "mapas_backend_hw_concurrency " << hw << "\n"
+      << "# HELP mapas_backend_opencv_threads OpenCV thread cap\n"
+      << "# TYPE mapas_backend_opencv_threads gauge\n"
+      << "mapas_backend_opencv_threads " << cv_threads << "\n";
+
+#if HAS_LIBPQ
+    {
+        auto ti = mining::TelemetryIngestor::instance().stats();
+        m << "# HELP mapas_backend_telemetry Telemetry ingestion counters\n"
+          << "# TYPE mapas_backend_telemetry counter\n"
+          << "mapas_backend_telemetry_received_total "        << ti.received        << "\n"
+          << "mapas_backend_telemetry_inserted_total "        << ti.inserted        << "\n"
+          << "mapas_backend_telemetry_dropped_full_total "    << ti.dropped_full    << "\n"
+          << "mapas_backend_telemetry_dropped_unknown_total " << ti.dropped_unknown << "\n"
+          << "mapas_backend_telemetry_flushes_total "         << ti.flushes         << "\n"
+          << "mapas_backend_telemetry_flush_errors_total "    << ti.flush_errors    << "\n"
+          << "# HELP mapas_backend_telemetry_queued Rows pending flush\n"
+          << "# TYPE mapas_backend_telemetry_queued gauge\n"
+          << "mapas_backend_telemetry_queued "        << ti.queued         << "\n"
+          << "mapas_backend_telemetry_batch_max "     << ti.batch_max      << "\n"
+          << "mapas_backend_telemetry_sensors_cached " << ti.sensors_cached << "\n"
+          << "# HELP mapas_backend_telemetry_kafka Kafka/Redpanda ingest counters\n"
+          << "# TYPE mapas_backend_telemetry_kafka counter\n"
+          << "mapas_backend_telemetry_produced_total "       << ti.produced       << "\n"
+          << "mapas_backend_telemetry_produce_errors_total " << ti.produce_errors << "\n"
+          << "mapas_backend_telemetry_consumed_total "       << ti.consumed       << "\n"
+          << "mapas_backend_telemetry_commits_total "        << ti.commits        << "\n"
+          << "mapas_backend_telemetry_mode{mode=\"" << ti.mode << "\"} 1\n";
+
+        auto tb = mining::tbsync::thingsBoardSyncStats();
+        m << "# HELP mapas_backend_tbsync ThingsBoard (AWS legacy) sync counters\n"
+          << "# TYPE mapas_backend_tbsync counter\n"
+          << "mapas_backend_tbsync_enabled "                        << (tb.enabled ? 1 : 0)          << "\n"
+          << "mapas_backend_tbsync_peers_configured "                << tb.peers_configured           << "\n"
+          << "mapas_backend_tbsync_peers_authenticated_total "       << tb.peers_authenticated        << "\n"
+          << "mapas_backend_tbsync_login_failures_total "            << tb.login_failures             << "\n"
+          << "mapas_backend_tbsync_backfill_runs_total "             << tb.backfill_runs              << "\n"
+          << "mapas_backend_tbsync_backfill_points_ingested_total "  << tb.backfill_points_ingested   << "\n"
+          << "mapas_backend_tbsync_backfill_errors_total "           << tb.backfill_errors            << "\n"
+          << "mapas_backend_tbsync_realtime_ws_connects_total "      << tb.realtime_ws_connects       << "\n"
+          << "mapas_backend_tbsync_realtime_ws_reconnects_total "    << tb.realtime_ws_reconnects     << "\n"
+          << "mapas_backend_tbsync_realtime_points_ingested_total "  << tb.realtime_points_ingested   << "\n"
+          << "mapas_backend_tbsync_realtime_points_dropped_total "   << tb.realtime_points_dropped_unmapped << "\n"
+          << "mapas_backend_tbsync_realtime_errors_total "           << tb.realtime_errors            << "\n";
     }
+#endif
 
-    std::ifstream ifs(path, std::ios::binary);
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                        (std::istreambuf_iterator<char>()));
-
-    http::response<http::string_body> res{http::status::ok, 11};
-    res.set(http::field::content_type, "image/jpeg");
-    res.set(http::field::access_control_allow_origin, "*");
-    res.body() = std::move(content);
+    http::response<http::string_body> res{http::status::ok, req.version()};
+    res.set(http::field::content_type, "text/plain; version=0.0.4; charset=utf-8");
+    res.body() = m.str();
     res.prepare_payload();
     return res;
-  }
-
-  if (req.method() == http::verb::post && pathOnly == "/api/convert") {
-    try {
-      auto val = json::parse(req.body());
-      if (!val.is_object()) {
-        return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", "invalid JSON body"}});
-      }
-
-      ConvertRequest cReq;
-      std::string error;
-      if (!parseConvertRequest(val.as_object(), cReq, error)) {
-        return makeJsonResponse(http::status::bad_request,
-                                json::object{{"error", error}});
-      }
-
-      std::string id = makeId();
-      Job job;
-      job.id = id;
-      job.status = "queued";
-      job.createdAt = nowIso8601();
-      job.updatedAt = job.createdAt;
-      job.logs.push_back("Job accepted");
-
-      {
-        std::scoped_lock lk(gJobsMutex);
-        gJobs[id] = job;
-      }
-
-      std::thread(runConversionJob, id, cReq, dataRoot).detach();
-
-      return makeJsonResponse(
-          http::status::accepted,
-          json::object{{"job_id", id}, {"status", "queued"}});
-    } catch (const std::exception &ex) {
-      return makeJsonResponse(http::status::bad_request,
-                              json::object{{"error", ex.what()}});
-    }
-  }
-
-  if (req.method() == http::verb::get && pathOnly.starts_with("/api/jobs/")) {
-    std::string id = pathOnly.substr(std::string("/api/jobs/").size());
-    if (id.empty()) {
-      return makeJsonResponse(http::status::bad_request,
-                              json::object{{"error", "missing job id"}});
-    }
-    auto job = getJob(id);
-    if (!job) {
-      return makeJsonResponse(http::status::not_found,
-                              json::object{{"error", "job not found"}});
-    }
-    return makeJsonResponse(http::status::ok, jobToJson(*job));
-  }
-
-  if (req.method() == http::verb::post && pathOnly == "/api/analyze-core") {
-    try {
-      auto val = json::parse(req.body());
-      if (!val.is_object() || !val.as_object().contains("image_path")) {
-        return makeJsonResponse(
-            http::status::bad_request,
-            json::object{{"error", "image_path is required"}});
-      }
-
-      std::string imgPath = json::value_to<std::string>(val.at("image_path"));
-      auto result = mining::VisionPipeline::processDrillholeImage(imgPath);
-
-      if (!result.success) {
-        return makeJsonResponse(http::status::internal_server_error,
-                                json::object{{"error", result.message}});
-      }
-
-      return makeJsonResponse(
-          http::status::ok,
-          json::object{{"status", "success"},
-                       {"fractures_detected", result.fractures_detected},
-                       {"rqd", result.rqd_percentage},
-                       {"message", result.message}});
-
-    } catch (const std::exception &ex) {
-      return makeJsonResponse(http::status::bad_request,
-                              json::object{{"error", ex.what()}});
-    }
-  }
-
-  return makeJsonResponse(http::status::not_found,
-                          json::object{{"error", "route not found"}});
 }
 
-void session(beast::tcp_stream stream, const std::string &dataRoot) {
-  beast::flat_buffer buffer;
-  beast::error_code ec;
-
-  http::request<http::string_body> req;
-  http::read(stream, buffer, req, ec);
-  if (ec)
-    return;
-
-  // Check if it's a websocket upgrade
-  if (websocket::is_upgrade(req)) {
-    std::make_shared<WebSocketSession>(stream.release_socket())->run();
-    return;
-  }
-
-  auto res = routeRequest(req, dataRoot);
-  http::write(stream, res, ec);
-  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+static void registerRemainingRoutes(router::Router &r) {
+    r.post("/api/auth/register",          handleRegister);
+    r.post("/api/auth/login/password",    handleLoginPassword);
+    r.post("/api/auth/login/face",        handleLoginFace);
+    r.post("/api/auth/logout",            handleLogout);          // T21
+    r.post("/api/auth/refresh",           handleTokenRefresh);    // T21
+    r.get("/api/auth/audit",              handleAudit);
+    r.get("/api/auth/audit/export.csv",   handleAuditExportCsv);
+    r.get("/api/reset_capture",           handleResetCapture);
+    r.get("/api/captured_images",         handleCapturedImages);
+    r.get("/api/users",                   handleLegacyUsers);
+    r.post("/api/enroll",                 handleEnroll);
+    r.get("/api/metrics",                 handleMetrics);
 }
 
-int main() {
-  try {
-    const std::string address = getenvOr("MAPAS_BIND_ADDRESS", "0.0.0.0");
-    const int port = std::stoi(getenvOr("MAPAS_PORT", "8081"));
-    const std::string dataRoot = getenvOr("MAPAS_DATA_ROOT", "/data");
-    gDatabaseUrl = getenvOr("DATABASE_URL", "");
-    gSessionTtlMinutes =
-      std::max(15, std::stoi(getenvOr("AUTH_SESSION_TTL_MINUTES", "480")));
+// =========================================================================
+//  SSE: push de KPIs en tiempo real desde la RÉPLICA (sin polling del cliente)
+//  GET /api/live/kpi  → text/event-stream, evento cada N s.
+//  Requiere sesión autenticada; tenant_id viene del token (no del query string).
+//  Consulta mining_runtime_kpis (pre-calculados) sobre la réplica de lectura.
+// =========================================================================
+static void handleLiveKpiSse(beast::tcp_stream& stream,
+                             const http::request<http::string_body>& req) {
+    beast::error_code ec;
 
-    const auto provider = toLowerCopy(getenvOr("BIOMETRIC_PROVIDER", "legacy"));
-    gBiometricProvider =
-      provider == "dermalog_cli" ? BiometricProvider::DermalogCli
-                    : BiometricProvider::Legacy;
-    gDermalogCliPath = getenvOr("DERMALOG_CLI_PATH", "");
-    gDermalogRequired =
-      toLowerCopy(getenvOr("DERMALOG_REQUIRED", "false")) == "true";
-    gBiometricDnnModelPath = getenvOr("BIOMETRIC_DNN_MODEL", "");
-    gBiometricDnnLabelsCsv = getenvOr(
-        "BIOMETRIC_DNN_LABELS",
-        "glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal");
-    gBiometricDnnEnabled =
-        toLowerCopy(getenvOr("BIOMETRIC_DNN_ENABLE", "false")) == "true";
-    try {
-      gBiometricDnnThreshold = std::clamp(
-          std::stof(getenvOr("BIOMETRIC_DNN_THRESHOLD", "0.72")), 0.3f,
-          0.95f);
-    } catch (...) {
-      gBiometricDnnThreshold = 0.72f;
+    // 1. Parsear query string para resolución de sesión (auth_token, etc.)
+    std::string target(req.target());
+    std::unordered_map<std::string, std::string> query;
+    {
+        auto qpos = target.find('?');
+        if (qpos != std::string::npos)
+            query = parseQueryString(target.substr(qpos + 1));
     }
 
-    if (!gDatabaseUrl.empty()) {
+    // 2. Requerir sesión válida — tenant desde el token, no del query string
+    const auto session = resolveAuthSession(req, query);
+    if (!session || session->tenantId.empty()) {
+        static const std::string k401 =
+            "HTTP/1.1 401 Unauthorized\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 38\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"error\":\"auth_required_or_no_tenant\"}";
+        asio::write(stream, asio::buffer(k401), ec);
+        return;
+    }
+    const std::string tenant = session->tenantId;
+
+    // 3. Cabeceras SSE (escritura manual; conexión persistente)
+    // Sin Access-Control-Allow-Origin: este endpoint se sirve same-origin vía
+    // el proxy nginx /api/ (frontend/nginx.conf) — un wildcard aquí solo
+    // permitía a cualquier origen leer el stream de KPIs si obtenía un token
+    // válido por otra vía, sin ningún beneficio funcional.
+    static const std::string kHead =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: keep-alive\r\n\r\n";
+    asio::write(stream, asio::buffer(kHead), ec);
+    if (ec) return;
+
 #if HAS_LIBPQ
-      gAuthStorageMode = AuthStorageMode::Postgres;
-#else
-      gAuthStorageMode = AuthStorageMode::File;
+    const std::string replicaUrl = getenvOr(
+        "BEEMETRY_REPLICA_DATABASE_URL",
+        "host=db_replica port=5432 dbname=sensors_db user=dashboard_ro "
+        "password=dash_pass");
+    int intervalMs = 2000;
+    try { intervalMs = std::stoi(getenvOr("BEEMETRY_LIVE_PUSH_INTERVAL_MS", "2000")); }
+    catch (...) {}
+
+    // Degradación graceful: si réplica no disponible, usar primario (Art.3 relajado).
+    PGconn* conn = PQconnectdb(replicaUrl.c_str());
+    bool usingFallback = false;
+    if (PQstatus(conn) != CONNECTION_OK) {
+        PQfinish(conn);
+        auto &cfg = AppConfig::instance();
+        if (cfg.gDatabaseUrl.empty()) return;
+        conn = PQconnectdb(cfg.gDatabaseUrl.c_str());
+        if (PQstatus(conn) != CONNECTION_OK) { PQfinish(conn); return; }
+        usingFallback = true;
+        std::cerr << "[SSE] replica unavailable, falling back to primary\n";
+    }
+
+    // 4. Query sobre mining_runtime_kpis (valores pre-calculados, sin full-scan
+    //    de telemetry_raw) scoped por tenant_id del token → elimina IDOR.
+    const std::string sql =
+        "SELECT name, value, unit, category "
+        "FROM mining_runtime_kpis "
+        "WHERE tenant_id = $1::uuid "
+        "ORDER BY category, name";
+    const char* params[1] = { tenant.c_str() };
+
+    while (true) {
+        storage::PgResult r{PQexecParams(conn, sql.c_str(), 1, nullptr, params,
+                                         nullptr, nullptr, 0)};
+        json::array kpis;
+        if (r.okTuples()) {
+            for (int i = 0; i < PQntuples(r.get()); ++i) {
+                kpis.push_back(json::object{
+                    {"name",     PQgetvalue(r.get(), i, 0)},
+                    {"value",    std::atof(PQgetvalue(r.get(), i, 1))},
+                    {"unit",     PQgetvalue(r.get(), i, 2)},
+                    {"category", PQgetvalue(r.get(), i, 3)}});
+            }
+        }
+        json::object envelope{{"tenant", tenant},
+                              {"ts", http_utils::nowIso8601()},
+                              {"kpis", kpis}};
+        if (usingFallback) envelope["degraded"] = true;
+        std::string payload = "data: " + json::serialize(envelope) + "\n\n";
+        asio::write(stream, asio::buffer(payload), ec);
+        if (ec) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+    }
+    PQfinish(conn);
 #endif
-    } else {
-      gAuthStorageMode = AuthStorageMode::File;
+}
+
+// =========================================================================
+//  SSE: chatbot minero -- streaming token a token de Ollama al navegador.
+//  POST /api/support/chat/stream → text/event-stream.
+//  Requiere sesión autenticada. Mismo body que /api/support/chat/message
+//  ({qualifying, messages}), pero en vez de esperar la respuesta completa de
+//  Ollama (stream:false, ver support::handleChatMessage), abre una conexión
+//  propia con stream:true y reenvía cada fragmento apenas llega -- el
+//  usuario ve el texto aparecer progresivamente en vez de esperar ~5-10s en
+//  silencio (pedido explícito 2026-07-29 tras optimizar la latencia total).
+// =========================================================================
+static void handleChatStreamSse(beast::tcp_stream& stream,
+                                const http::request<http::string_body>& req) {
+    beast::error_code ec;
+
+    const auto session = resolveAuthSession(req, {});
+    if (!session) {
+        static const std::string k401 =
+            "HTTP/1.1 401 Unauthorized\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 21\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"error\":\"unauthorized\"}";
+        asio::write(stream, asio::buffer(k401), ec);
+        return;
     }
 
-    asio::io_context ioc{1};
-    asio::ip::tcp::acceptor acceptor{
-        ioc,
-        {asio::ip::make_address(address), static_cast<unsigned short>(port)}};
+    json::object qualifying;
+    json::array messages;
+    support::ChatIntent intent = support::ChatIntent::Chat;
+    try {
+        auto val = json::parse(req.body());
+        if (!val.is_object()) throw std::runtime_error("invalid_json");
+        const auto &obj = val.as_object();
+        if (obj.contains("qualifying") && obj.at("qualifying").is_object()) {
+            qualifying = obj.at("qualifying").as_object();
+        }
+        if (obj.contains("intent") && obj.at("intent").is_string()) {
+            intent = support::parseChatIntent(json::value_to<std::string>(obj.at("intent")));
+        }
+        if (!obj.contains("messages") || !obj.at("messages").is_array()) {
+            throw std::runtime_error("missing_messages");
+        }
+        messages = obj.at("messages").as_array();
+        // Mismo tope de abuso que support::handleChatMessage (el recorte por
+        // longitud real lo hace buildChatPromptForStreaming, no este guard).
+        if (messages.empty() || messages.size() > 200) {
+            throw std::runtime_error("invalid_messages");
+        }
+    } catch (const std::exception &ex) {
+        const std::string errBody = json::serialize(json::object{{"error", ex.what()}});
+        std::ostringstream resp;
+        resp << "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n"
+             << "Content-Length: " << errBody.size() << "\r\nConnection: close\r\n\r\n" << errBody;
+        const std::string full = resp.str();
+        asio::write(stream, asio::buffer(full), ec);
+        return;
+    }
 
-    std::cout << "mapas_backend listening on " << address << ":" << port
-              << std::endl;
-    std::cout << "auth storage mode: "
-          << (gAuthStorageMode == AuthStorageMode::Postgres ? "postgres"
-                                  : "file")
-          << std::endl;
+    const std::string ollamaBase = getenvOr("BEEMETRY_OLLAMA_URL", "");
+    if (ollamaBase.empty()) {
+        static const std::string kUnavail =
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+            "Content-Length: 30\r\nConnection: close\r\n\r\n"
+            "{\"error\":\"ollama_not_configured\"}";
+        asio::write(stream, asio::buffer(kUnavail), ec);
+        return;
+    }
+
+    // Cabeceras SSE (misma convención que handleLiveKpiSse arriba).
+    static const std::string kHead =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: keep-alive\r\n\r\n";
+    asio::write(stream, asio::buffer(kHead), ec);
+    if (ec) return;
+
+    auto sendSseEvent = [&](const json::value &payload) {
+        const std::string data = "data: " + json::serialize(payload) + "\n\n";
+        asio::write(stream, asio::buffer(data), ec);
+    };
+
+    // Parseo mínimo de BEEMETRY_OLLAMA_URL (http://host:port) -- copia local,
+    // mismo criterio que el resto del backend ("cada módulo mantiene su
+    // propia copia mínima del cliente HTTP").
+    std::string ollamaHost, ollamaPort = "80", ollamaTarget = "/";
+    {
+        static const std::regex kHttpRegex(
+            R"(^http://([A-Za-z0-9\.\-_]+)(?::([0-9]{1,5}))?(\/.*)?$)", std::regex::icase);
+        std::smatch m;
+        std::string base = ollamaBase;
+        while (!base.empty() && base.back() == '/') base.pop_back();
+        if (std::regex_match(base, m, kHttpRegex)) {
+            ollamaHost = m[1].str();
+            if (m.size() > 2 && m[2].matched) ollamaPort = m[2].str();
+        }
+    }
+    if (ollamaHost.empty()) {
+        sendSseEvent(json::object{{"error", "ollama_invalid_url"}});
+        return;
+    }
+
+    try {
+        asio::io_context ollamaIoc;
+        asio::ip::tcp::resolver resolver{ollamaIoc};
+        beast::tcp_stream ollamaStream{ollamaIoc};
+        int timeoutMs = 180000;
+        try { timeoutMs = std::clamp(std::stoi(getenvOr("BEEMETRY_OLLAMA_CHATBOT_TIMEOUT_MS", "60000")), 5000, 180000); }
+        catch (...) { timeoutMs = 60000; }
+        ollamaStream.expires_after(std::chrono::milliseconds(timeoutMs));
+
+        const auto results = resolver.resolve(ollamaHost, ollamaPort, ec);
+        if (ec) { sendSseEvent(json::object{{"error", "ollama_resolve_failed"}}); return; }
+        ollamaStream.connect(results, ec);
+        if (ec) { sendSseEvent(json::object{{"error", "ollama_connect_failed"}}); return; }
+
+        const auto promptResult =
+            support::buildChatPromptForStreaming(qualifying, messages, session->tenantId, intent);
+        json::object reqBody;
+        reqBody["model"] = config::AppConfig::instance().gOllamaChatbotModel;
+        reqBody["stream"] = true;
+        reqBody["prompt"] = promptResult.prompt;
+        reqBody["keep_alive"] = "10m";
+        // num_ctx / num_predict / stop compartidos con la ruta no-streaming
+        // (support::buildOllamaOptions) -- que divergieran era como se colaba
+        // la pérdida de contexto solo por el camino de streaming, que es el
+        // que usa el widget en producción.
+        reqBody["options"] = support::buildOllamaOptions(promptResult);
+        const std::string payload = json::serialize(json::value(reqBody));
+
+        http::request<http::string_body> ollamaReq{http::verb::post, "/api/generate", 11};
+        ollamaReq.set(http::field::host, ollamaHost);
+        ollamaReq.set(http::field::content_type, "application/json");
+        ollamaReq.body() = payload;
+        ollamaReq.prepare_payload();
+        http::write(ollamaStream, ollamaReq, ec);
+        if (ec) { sendSseEvent(json::object{{"error", "ollama_write_failed"}}); return; }
+
+        // Lectura incremental: Ollama envía un objeto JSON por línea
+        // (newline-delimited) mientras genera. http::response_parser con
+        // string_body va acumulando el body en cada read_some() -- se
+        // consume el delta nuevo cada vuelta y se separa por '\n'
+        // (buffer local por si una línea llega partida entre dos reads).
+        http::response_parser<http::string_body> parser;
+        parser.body_limit(16 * 1024 * 1024);
+        beast::flat_buffer readBuf;
+        std::size_t consumed = 0;
+        std::string lineBuf;
+        bool anyForwarded = false;
+        while (!parser.is_done()) {
+            http::read_some(ollamaStream, readBuf, parser, ec);
+            if (ec && ec != http::error::end_of_stream) {
+                break;
+            }
+            const std::string &body = parser.get().body();
+            if (body.size() > consumed) {
+                lineBuf.append(body, consumed, body.size() - consumed);
+                consumed = body.size();
+                std::size_t nl;
+                while ((nl = lineBuf.find('\n')) != std::string::npos) {
+                    std::string line = lineBuf.substr(0, nl);
+                    lineBuf.erase(0, nl + 1);
+                    if (line.empty()) continue;
+                    try {
+                        auto chunkVal = json::parse(line);
+                        if (!chunkVal.is_object()) continue;
+                        const auto &co = chunkVal.as_object();
+                        if (co.contains("response") && co.at("response").is_string()) {
+                            const std::string frag = json::value_to<std::string>(co.at("response"));
+                            // Filtro CJK por fragmento (ver mining_chatbot_service.hpp) --
+                            // se omite silenciosamente el fragmento, sin cortar el stream.
+                            if (!frag.empty() && !support::fragmentHasCjk(frag)) {
+                                sendSseEvent(json::object{{"chunk", frag}});
+                                anyForwarded = true;
+                            }
+                        }
+                        if (co.contains("done") && co.at("done").is_bool() && co.at("done").as_bool()) {
+                            sendSseEvent(json::object{{"done", true}});
+                            return;
+                        }
+                    } catch (...) {
+                        // Línea parcial/corrupta -- se descarta, el stream continúa.
+                    }
+                }
+            }
+            if (ec == http::error::end_of_stream) break;
+        }
+        if (!anyForwarded) {
+            sendSseEvent(json::object{{"error", "ollama_empty_response"}});
+        } else {
+            sendSseEvent(json::object{{"done", true}});
+        }
+    } catch (const std::exception &ex) {
+        std::cerr << "[chat_stream] excepcion: " << ex.what() << std::endl;
+        sendSseEvent(json::object{{"error", "ollama_stream_exception"}});
+    }
+}
+
+// =========================================================================
+//  TCP session handler
+// =========================================================================
+// Segundos que una conexión keep-alive espera ociosa por la siguiente request
+// antes de que el servidor la cierre y libere el hilo. Configurable con
+// BEEMETRY_HTTP_KEEPALIVE_TIMEOUT (0 = desactiva keep-alive, comportamiento
+// legacy de una request por conexión).
+static int httpKeepAliveTimeoutSeconds() {
+    static const int v = [] {
+        if (const char *e = std::getenv("BEEMETRY_HTTP_KEEPALIVE_TIMEOUT")) {
+            try { return std::max(0, std::stoi(e)); } catch (...) {}
+        }
+        return 15;
+    }();
+    return v;
+}
+
+// Tope de requests por conexión: evita que un cliente monopolice un hilo de
+// forma indefinida y fuerza una reconexión periódica (que es también lo que
+// permite rebalancear si algún día hay más de una réplica del backend).
+static constexpr int kMaxRequestsPerConnection = 100;
+
+// Aplica SO_RCVTIMEO al socket. `expires_after()` de beast::tcp_stream SOLO
+// tiene efecto sobre operaciones ASÍNCRONAS — este servidor usa http::read()
+// síncrono/bloqueante, así que sin un timeout a nivel socket una conexión
+// keep-alive ociosa dejaría su hilo bloqueado en read() para siempre
+// (con el modelo hilo-por-conexión de este servidor, eso es una fuga de
+// hilos). SO_RCVTIMEO sí corta un read() bloqueante.
+static void setSocketReceiveTimeout(beast::tcp_stream &stream, int seconds) {
+#ifdef _WIN32
+    // Windows espera un DWORD en milisegundos, no un `struct timeval`.
+    DWORD ms = static_cast<DWORD>(seconds) * 1000u;
+    ::setsockopt(stream.socket().native_handle(), SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char *>(&ms), sizeof(ms));
+#else
+    struct timeval tv{};
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    ::setsockopt(stream.socket().native_handle(), SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char *>(&tv), sizeof(tv));
+#endif
+}
+
+static void session(beast::tcp_stream stream) {
+    beast::flat_buffer buffer;
+    beast::error_code ec;
+    const int keepAliveTimeout = httpKeepAliveTimeoutSeconds();
+
+    // Bucle keep-alive (2026-08-02). Antes este handler leía UNA request,
+    // respondía y cerraba el socket: cada llamada a la API costaba un
+    // handshake TCP completo + el spawn de un hilo del SO nuevo (ver el accept
+    // loop en main(), que hace std::thread(session, ...).detach()). Una carga
+    // típica del dashboard dispara decenas de requests, así que el coste era
+    // decenas de handshakes + decenas de hilos por pantalla. Reutilizando la
+    // conexión, esa misma pantalla usa 1 handshake y 1 hilo.
+    for (int served = 0; served < kMaxRequestsPerConnection; ++served) {
+        http::request<http::string_body> req;
+        http::read(stream, buffer, req, ec);
+        if (ec) return;
+
+        // Las ramas WS y SSE de abajo se apropian del socket para toda la vida
+        // de la conexión (o la liberan a otro io_context), así que siempre
+        // hacen `return` — nunca vuelven al bucle keep-alive.
+        if (websocket::is_upgrade(req)) {
+            // Resuelve tenant desde la sesión (token en query string ?auth_token=
+            // o header Authorization, ver auth::extractAuthTokenFromRequest --
+            // el handshake WS del navegador no permite headers custom, así que
+            // el cliente debe pasar el token como query param). Sin sesión
+            // válida, la conexión igual se acepta (compat con el eco original y
+            // con clientes que no necesitan push, p.ej. tests), pero
+            // simplemente no se registra en WsRegistry => no recibe push de
+            // ningún tenant (fail-closed: nunca queda suscrito "por defecto" a
+            // datos de otro tenant).
+            const auto query = http_utils::parseQueryString(std::string(req.target()));
+            const auto authSession = auth::resolveAuthSession(req, query);
+            const std::string tenantId = authSession ? authSession->tenantId : std::string();
+
+            // IMPORTANTE: el socket liberado de `stream` pertenece al io_context
+            // *global* del accept loop (ver `asio::io_context ioc{1}` en main()),
+            // que jamás se pumpea con `.run()` -- el accept loop usa
+            // `acceptor.accept()` SÍNCRONO en un bucle infinito, así que ningún
+            // `async_*` colgado de ese io_context terminaría de ejecutarse jamás
+            // (confirmado en pruebas: `ws_.async_accept()` nunca completaba, el
+            // handshake WS se colgaba indefinidamente sin error ni log -- el eco
+            // "original" de este archivo nunca funcionó realmente sobre la red).
+            // Cada conexión WS ya corre en su propio hilo dedicado (detached, ver
+            // el bucle de accept), así que la forma más simple y correcta de
+            // arreglarlo sin rediseñar el modelo de concurrencia del resto del
+            // servidor es: crear un io_context propio para ESTE hilo y
+            // bloquearlo en `ioc.run()` hasta que la sesión WS termine. El socket
+            // ya conectado se puede re-adjuntar (asio::ip::tcp::socket admite
+            // moverse de un io_context a otro vía su release_socket()/protocolo
+            // nativo) usando `native_handle()` + `assign()`.
+            auto wsIoc = std::make_shared<net::io_context>(1);
+            auto releasedSocket = stream.release_socket();
+            const auto proto = releasedSocket.local_endpoint().protocol();
+            const auto nativeHandle = releasedSocket.release();
+            tcp::socket wsSocket(*wsIoc, proto, nativeHandle);
+            // Se pasa `req` (ya leído arriba vía http::read) al accept: evita
+            // que Beast intente releer el handshake HTTP del socket (ver
+            // comentario en websocket_session.hpp::run(req) -- causaba
+            // "gracefully closed" en pruebas reales contra el stack).
+            std::make_shared<WebSocketSession>(std::move(wsSocket), tenantId)->run(req);
+            wsIoc->run();
+            return;
+        }
+
+        // SSE de KPIs en vivo (push, sin polling)
+        if (req.target().starts_with("/api/live/kpi")) {
+            handleLiveKpiSse(stream, req);
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+            return;
+        }
+
+        // SSE del chatbot minero (streaming token a token de Ollama)
+        if (req.method() == http::verb::post && req.target().starts_with("/api/support/chat/stream")) {
+            handleChatStreamSse(stream, req);
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+            return;
+        }
+
+        std::string dataRoot = getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+        auto res = gRouter.dispatch(req, dataRoot);
+
+        // Red de seguridad de framing: con una conexión de una sola request,
+        // una respuesta sin Content-Length se delimitaba sola al cerrar el
+        // socket. Reutilizando la conexión eso ya no vale — sin Content-Length
+        // el cliente no sabe dónde termina el cuerpo y la conexión queda
+        // desincronizada (la siguiente respuesta se lee como basura). Hoy
+        // todos los constructores de http_utils ya llaman prepare_payload();
+        // repetirlo aquí es idempotente (recalcula el mismo Content-Length) y
+        // evita que un handler futuro que lo olvide corrompa la conexión.
+        res.prepare_payload();
+
+        // El cliente decide: si mandó `Connection: close` (o HTTP/1.0 sin
+        // keep-alive) se respeta y se cierra. Beast emite la cabecera
+        // `Connection` correcta a partir de este flag.
+        const bool reuse = req.keep_alive() && keepAliveTimeout > 0 &&
+                           served + 1 < kMaxRequestsPerConnection;
+        res.keep_alive(reuse);
+
+        http::write(stream, res, ec);
+        if (ec || !reuse) break;
+
+        // Ventana de espera por la siguiente request en esta conexión. Se
+        // aplica DESPUÉS de responder la primera: así el camino de una sola
+        // request (y las ramas WS/SSE de arriba, que ya retornaron) se comporta
+        // exactamente igual que antes, y el timeout solo gobierna el tiempo
+        // ocioso entre requests. Si expira, http::read() falla y el hilo se
+        // libera.
+        setSocketReceiveTimeout(stream, keepAliveTimeout);
+    }
+
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+}
+
+// =========================================================================
+//  main()
+// =========================================================================
+int main() {
+    try {
+        // OpenCV: cap de hilos para no robar CPU al I/O del backend bajo carga
+        // (10K sensores → priorizar Asio). OPENCV_THREADS sobreescribe (default 4).
+        {
+            int cv_threads = 4;
+            if (const char* e = std::getenv("BEEMETRY_OPENCV_THREADS")) {
+                try { cv_threads = std::max(1, std::stoi(e)); } catch (...) {}
+            }
+            cv::setNumThreads(cv_threads);
+            cv::setUseOptimized(true);
+            std::cout << "[OPENCV] threads=" << cv::getNumThreads()
+                      << " optimized=" << (cv::useOptimized() ? "yes" : "no")
+                      << " build=" << CV_VERSION << std::endl;
+        }
+
+        auto &cfg = AppConfig::instance();
+        cfg.loadFromEnv();
+
+        // ── Migración de credenciales a Argon2id (auditoría 2026-08-02) ──
+        // Idempotente: en arranques posteriores no encuentra nada que hacer y
+        // sale en una consulta. Se ejecuta ANTES de aceptar tráfico para que no
+        // quede ni una ventana sirviendo peticiones con hashes legados crudos
+        // en la base. Un fallo aquí no impide arrancar: se registra y el
+        // esquema legado sigue verificando, como antes.
+#if HAS_LIBPQ
+        if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+            const auto mig = migrateLegacyPasswordHashesPg(cfg.gDatabaseUrl);
+            if (!mig.error.empty()) {
+                std::cerr << "[AUTH_PASSWORD] migracion Argon2id no ejecutada: "
+                          << mig.error << std::endl;
+            } else if (mig.scanned > 0) {
+                std::cout << "[AUTH_PASSWORD] migracion Argon2id: "
+                          << mig.migrated << "/" << mig.scanned
+                          << " hashes legados envueltos, " << mig.failed
+                          << " fallidos." << std::endl;
+            }
+            if (mig.remainingRaw > 0) {
+                std::cerr << "[AUTH_PASSWORD] ATENCION: quedan "
+                          << mig.remainingRaw
+                          << " hashes legados CRUDOS en auth_users." << std::endl;
+            }
+            if (mig.remainingWrapped > 0) {
+                std::cout << "[AUTH_PASSWORD] " << mig.remainingWrapped
+                          << " credenciales envueltas pendientes de rehash real "
+                             "(se completa en el proximo login de cada usuario)."
+                          << std::endl;
+            }
+        }
+#endif
+        if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+            const int migratedFile = auth::migrateLegacyPasswordHashesFile(
+                getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data"));
+            if (migratedFile > 0) {
+                std::cout << "[AUTH_PASSWORD] migracion Argon2id (modo File): "
+                          << migratedFile << " credenciales envueltas."
+                          << std::endl;
+            }
+        }
+
+        const std::string address = getenvOr("BEEMETRY_MAPAS_BIND_ADDRESS", "0.0.0.0");
+        const int port = std::stoi(getenvOr("BEEMETRY_MAPAS_PORT", "8081"));
+
+        text_spell::configureFromEnv();
+
+        // Register all module routes
+        auth::registerRoutes(gRouter);
+        biometric::registerRoutes(gRouter);
+        mining::registerRoutes(gRouter);
+        mining_iot::registerRoutes(gRouter);
+        mining_iot::registerNotificationRoutes(gRouter);
+        reports::registerRoutes(gRouter);
+        formula::registerRoutes(gRouter);
+        platform::registerRoutes(gRouter);
+        tenant_assets::registerRoutes(gRouter);
+        map_mod::registerRoutes(gRouter);
+        gdal_mod::registerRoutes(gRouter);
+        text_mod::registerRoutes(gRouter);
+        support_mod::registerRoutes(gRouter);
+        registerRemainingRoutes(gRouter);
+
+        // ADR-034: motor de alarmas (evaluador de reglas en segundo plano,
+        // near-real-time por polling — ver razonamiento en device_alarm_routes.cpp).
+        mining_iot::startAlarmEvaluator();
+
+        // Diagnostic output
+        std::cout << "beemetry_backend listening on " << address << ":" << port
+                  << std::endl;
+        std::cout << "auth storage mode: "
+                  << (cfg.gAuthStorageMode == AuthStorageMode::Postgres
+                          ? "postgres"
+                          : "file")
+                  << std::endl;
         std::cout << "biometric provider: "
-            << (gBiometricProvider == BiometricProvider::DermalogCli
-              ? "dermalog_cli"
-              : "legacy")
-            << ", dermalog required: "
-            << (gDermalogRequired ? "true" : "false") << std::endl;
-    auto &dnnCtx = getAccessoryDnnContext();
-    std::cout << "biometric dnn: "
-              << (gBiometricDnnEnabled ? "enabled" : "disabled")
-              << ", model path: "
-              << (gBiometricDnnModelPath.empty() ? "(none)"
-                                                 : gBiometricDnnModelPath)
-              << ", threshold: " << gBiometricDnnThreshold
-              << ", loaded: " << (dnnCtx.loaded ? "true" : "false");
-    if (!dnnCtx.initError.empty()) {
-      std::cout << ", init_error: " << dnnCtx.initError;
-    }
-    std::cout << std::endl;
+                  << (cfg.gBiometricProvider == BiometricProvider::DermalogCli
+                          ? "dermalog_cli"
+                          : "legacy")
+                  << ", dermalog required: "
+                  << (cfg.gDermalogRequired ? "true" : "false") << std::endl;
+        auto &dnnCtx = getAccessoryDnnContext();
+        std::cout << "biometric dnn: "
+                  << (cfg.gBiometricDnnEnabled ? "enabled" : "disabled")
+                  << ", model path: "
+                  << (cfg.gBiometricDnnModelPath.empty()
+                          ? "(none)"
+                          : cfg.gBiometricDnnModelPath)
+                  << ", threshold: " << cfg.gBiometricDnnThreshold
+                  << ", loaded: " << (dnnCtx.loaded ? "true" : "false");
+        if (!dnnCtx.initError.empty())
+            std::cout << ", init_error: " << dnnCtx.initError;
+        std::cout << std::endl;
+        std::cout << "cartoon_onnx: linked="
+                  << (informeCartoonOnnxRuntimeLinked() ? "true" : "false")
+                  << ", model="
+                  << (cfg.gCartoonOnnxModelPath.empty()
+                          ? "(none)"
+                          : cfg.gCartoonOnnxModelPath)
+                  << ", exists="
+                  << ((!cfg.gCartoonOnnxModelPath.empty() &&
+                       fs::exists(cfg.gCartoonOnnxModelPath))
+                          ? "true"
+                          : "false")
+                  << std::endl;
+        std::cout << "ai_engine_url: "
+                  << (cfg.gAiEngineUrl.empty() ? "(disabled)" : cfg.gAiEngineUrl)
+                  << ", timeout_ms: " << cfg.gAiEngineTimeoutMs
+                  << ", cartoon_timeout_ms: " << cfg.gAiEngineCartoonTimeoutMs
+                  << ", max_image_bytes: " << cfg.gAiEngineMaxImageBytes
+                  << ", face_embed_cos_thr: "
+                  << cfg.gFaceEmbeddingCosineThreshold
+                  << ", face_legacy_cos_thr: "
+                  << cfg.gFaceLegacyCosineThreshold
+                  << ", image_optimizer: "
+                  << (cfg.gImageOptimizerEnabled ? "enabled" : "disabled")
+                  << ", max_pixels: " << cfg.gBiometricMaxPixels << std::endl;
 
-    for (;;) {
-      asio::ip::tcp::socket socket{ioc};
-      acceptor.accept(socket);
-      std::thread(session, beast::tcp_stream(std::move(socket)), dataRoot)
-          .detach();
+        // Ingestor de telemetría de alta tasa (10K+ sensores). Se arranca aquí
+        // para que la caché de sensores y el hilo flusher estén listos antes de
+        // aceptar conexiones en el gateway. Activable con TELEMETRY_INGEST_ENABLE.
+        const bool telemetryIngestEnabled =
+            getenvOr("BEEMETRY_TELEMETRY_INGEST_ENABLE", "true") != "false" &&
+            cfg.gAuthStorageMode == AuthStorageMode::Postgres &&
+            !cfg.gDatabaseUrl.empty();
+#if HAS_LIBPQ
+        if (telemetryIngestEnabled) {
+            std::size_t batch = 1000;
+            int flushMs = 200;
+            try { batch = std::stoul(getenvOr("BEEMETRY_TELEMETRY_BATCH_SIZE", "1000")); }
+            catch (...) {}
+            try { flushMs = std::stoi(getenvOr("BEEMETRY_TELEMETRY_FLUSH_MS", "200")); }
+            catch (...) {}
+            // El ingestor usa UNA conexión persistente para COPY → va DIRECTO a
+            // la BD (no por pgbouncer, que es para las conexiones cortas del
+            // backend). TELEMETRY_DATABASE_URL permite sobreescribir.
+            const std::string ingestUrl =
+                getenvOr("BEEMETRY_TELEMETRY_DATABASE_URL", cfg.gDatabaseUrl);
+            // Modo Kafka (ingesta durable vía Redpanda) si TELEMETRY_INGEST_MODE=kafka
+            if (getenvOr("BEEMETRY_TELEMETRY_INGEST_MODE", "direct") == "kafka") {
+                mining::TelemetryIngestor::instance().configureKafka(
+                    getenvOr("BEEMETRY_KAFKA_BROKERS", "redpanda:9092"),
+                    getenvOr("BEEMETRY_KAFKA_TOPIC", "telemetry"),
+                    getenvOr("BEEMETRY_KAFKA_CONSUMER_GROUP", "telemetry-writers"));
+            }
+            mining::TelemetryIngestor::instance().start(ingestUrl, batch,
+                                                        flushMs);
+
+            // Agregador de mapa: push diferencial por WS (ver
+            // ws_broadcast.hpp / map_aggregator.hpp). Reusa la misma
+            // BEEMETRY_TELEMETRY_DATABASE_URL/gDatabaseUrl que el resto del
+            // backend (no el canal directo de COPY del ingestor).
+            int mapPollMs = 3000;
+            try { mapPollMs = std::stoi(getenvOr("BEEMETRY_MAP_AGGREGATOR_POLL_MS", "3000")); }
+            catch (...) {}
+            mining::MapAggregator::instance().start(cfg.gDatabaseUrl, mapPollMs);
+
+            // ADR-034: adaptadores de protocolo (MQTT/Modbus TCP/OPC UA).
+            // Después del ingestor: normalizan todo al evento canónico y lo
+            // entregan a TelemetryIngestor::ingestLine(), así que dependen de
+            // que la caché de sensores y el pipeline ya estén arriba.
+            mining::protocols::startAdapters(cfg.gDatabaseUrl);
+
+            // Sync ThingsBoard (AWS legacy) → plataforma propia, ver
+            // thingsboard_sync.hpp. Gated por BEEMETRY_THINGSBOARD_SYNC_ENABLED
+            // (default false); no-op si está deshabilitado o sin peer configurado.
+            mining::tbsync::startThingsBoardSync(cfg.gDatabaseUrl);
+        }
+#endif
+
+        // Mining Gateway secondary listener: ingesta telemétrica TLS de sensores.
+        // Pool de N hilos sobre el mismo io_context → paraleliza I/O para ~10K
+        // conexiones concurrentes. Configurable con MINING_GATEWAY_THREADS
+        // (default = min(hardware_concurrency, 8)).
+        std::thread([telemetryIngestEnabled]() {
+            try {
+                std::cout << "[MINING-GATEWAY] Thread starting..." << std::endl;
+                asio::io_context mining_ioc;
+                mining::MiningConfig mcfg;
+                mcfg.port = static_cast<unsigned short>(
+                    std::stoi(getenvOr("BEEMETRY_MINING_GATEWAY_PORT", "8443")));
+                mcfg.cert_path = getenvOr("BEEMETRY_TLS_CERT_PATH",
+                    "/etc/mining-gateway/certs/server.crt");
+                mcfg.key_path = getenvOr("BEEMETRY_TLS_KEY_PATH",
+                    "/etc/mining-gateway/certs/server.key");
+                mcfg.ingest_enabled = telemetryIngestEnabled;
+                std::cout << "[MINING-GATEWAY] Initializing on "
+                          << mcfg.bind_address << ":" << mcfg.port
+                          << " ingest=" << (mcfg.ingest_enabled ? "on" : "off")
+                          << std::endl;
+                mining::MiningServer server(mining_ioc, mcfg);
+                server.run();
+
+                unsigned hw = std::thread::hardware_concurrency();
+                if (hw == 0) hw = 4;
+                unsigned n_workers = std::min(hw, 8u);
+                if (const char* e = std::getenv("BEEMETRY_MINING_GATEWAY_THREADS")) {
+                    try { n_workers = std::max(1u,
+                        static_cast<unsigned>(std::stoi(e))); }
+                    catch (...) {}
+                }
+                if (n_workers < 2) n_workers = 2;
+                std::cout << "[MINING-GATEWAY] Running on " << n_workers
+                          << " I/O worker threads" << std::endl;
+
+                std::vector<std::thread> workers;
+                workers.reserve(n_workers - 1);
+                for (unsigned i = 0; i + 1 < n_workers; ++i) {
+                    workers.emplace_back([&mining_ioc] { mining_ioc.run(); });
+                }
+                mining_ioc.run();  // este hilo también participa
+                for (auto& t : workers) if (t.joinable()) t.join();
+            } catch (const std::exception &e) {
+                std::cerr << "[MINING-GATEWAY] Fatal: " << e.what() << std::endl;
+            }
+        }).detach();
+
+        // Main accept loop
+        asio::io_context ioc{1};
+        asio::ip::tcp::acceptor acceptor{
+            ioc,
+            {asio::ip::make_address(address),
+             static_cast<unsigned short>(port)}};
+
+        for (;;) {
+            asio::ip::tcp::socket socket{ioc};
+            acceptor.accept(socket);
+            std::thread(session, beast::tcp_stream(std::move(socket))).detach();
+        }
+    } catch (const std::exception &ex) {
+        std::cerr << "Fatal error: " << ex.what() << std::endl;
+        return 1;
     }
-  } catch (const std::exception &ex) {
-    std::cerr << "Fatal error: " << ex.what() << std::endl;
-    return 1;
-  }
 }

@@ -1,0 +1,201 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Consolas;}}
+\paperw11906\paperh16838\margl1134\margr1134\margt1134\margb1134
+\fs24
+\b DIAGRAMA DETALLADO DE LOGIN DE USUARIO EN LA PLATAFORMA\b0\par
+\par
+\b Objetivo\b0\par
+Definir de forma detallada el proceso de inicio de sesión de usuario en la plataforma, incluyendo autenticación por contraseña y por biometría facial, control por empresa, manejo de errores y trazabilidad en auditoría.\par
+\par
+\b Alcance\b0\par
+Este documento describe el flujo completo de login para un usuario perteneciente a una empresa registrada.\par
+\par
+\b Métodos de autenticación contemplados\b0\par
+- Login por usuario y contraseña\par
+- Login por reconocimiento facial\par
+\par
+\b Entradas de negocio\b0\par
+- Empresa seleccionada\par
+- Usuario (cuando aplica login por contraseña)\par
+- Contraseña (cuando aplica login por contraseña)\par
+- Captura facial (cuando aplica login facial)\par
+- Umbral de similitud facial (configurado por sistema)\par
+\par
+\b Salidas esperadas\b0\par
+- Sesión válida con token\par
+- Perfil del usuario (rol)\par
+- Datos básicos de identidad\par
+- Resultado de auditoría (éxito o falla)\par
+\par
+\b Diagrama funcional (usuarios no técnicos)\b0\par
+\par
+{\f1\fs20
++-----------------------------------+\line
+| 1. Abrir pantalla de login        |\line
++----------------+------------------+\line
+                 |\line
+                 v\line
++-----------------------------------+\line
+| 2. Seleccionar empresa            |\line
++----------------+------------------+\line
+                 |\line
+                 v\line
++-----------------------------------+\line
+| 3. Elegir método de ingreso       |\line
+| - Usuario/Password                |\line
+| - Reconocimiento facial           |\line
++----------------+------------------+\line
+                 |\line
+       +---------+---------+\line
+       |                   |\line
+       v                   v\line
++--------------------+   +-------------------------+\line
+| 4A. Ingreso por    |   | 4B. Ingreso facial      |\line
+|     credenciales   |   | Capturar rostro         |\line
+| Usuario + Password |   | y validar calidad       |\line
++----------+---------+   +-----------+-------------+\line
+           |                         |\line
+           v                         v\line
++-----------------------------------------------+\line
+| 5. Enviar solicitud de autenticación al backend|\line
++----------------------+------------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------------+\line
+| 6. Validación en backend por empresa + método |\line
++----------------------+------------------------+\line
+                       |\line
+             +---------+---------+\line
+             |                   |\line
+             v                   v\line
++-------------------------+  +--------------------------+\line
+| 7A. Login inválido      |  | 7B. Login válido         |\line
+| Mostrar motivo de error |  | Generar token de sesión  |\line
++-----------+-------------+  +------------+-------------+\line
+            |                             |\line
+            v                             v\line
++-----------------------------------------------+\line
+| 8. Registrar auditoría (éxito o falla)        |\line
++----------------------+------------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------------+\line
+| 9. Si éxito: ingresar al dashboard y habilitar|\line
+|    módulos según perfil (admin/operator)      |\line
++-----------------------------------------------+\line
+}\par
+\par
+\b Diagrama lógico TI por bloques\b0\par
+\par
+{\f1\fs20
++------------------------------------+\line
+| Frontend AuthGateway               |\line
+| Empresa + método + captura         |\line
++-------------------+----------------+\line
+                    |\line
+                    +-----> POST /api/auth/login/password\line
+                    |\line
+                    +-----> POST /api/auth/login/face\line
+                                \line
++------------------------------------+\line
+| Backend Router                      |\line
+| routeRequest()                      |\line
++-------------------+----------------+\line
+                    |\line
+                    +-----> Validación payload\line
+                    |\line
+                    +-----> Servicio autenticación\line
+                    |       - password: hash + comparación\line
+                    |       - facial: template/similitud\line
+                    |\line
+                    +-----> Session Manager\line
+                    |       - issueAuthSession()\line
+                    |       - token + expiración\line
+                    |\line
+                    +-----> Auditoría\line
+                            - login_password / login_face\line
+                            - success/failure + detalle\line
+                                \line
++------------------------------------+\line
+| Persistencia                        |\line
+| - auth_users                        |\line
+| - auth_audit_logs                   |\line
+| - gAuthSessions (memoria de sesión) |\line
++------------------------------------+\line
+}\par
+\par
+\b Flujo detallado por método\b0\par
+\b A. Login por Usuario y Contraseña\b0\par
+1. Usuario selecciona empresa.\par
+2. Ingresa username y password.\par
+3. Frontend envía petición a endpoint de login por contraseña.\par
+4. Backend valida estructura de payload.\par
+5. Backend busca usuario por empresa + username.\par
+6. Backend compara hash de contraseña.\par
+7. Si coincide: genera sesión y token, responde datos del usuario y rol.\par
+8. Si no coincide: responde error de credenciales inválidas.\par
+9. Registra auditoría en ambos casos.\par
+\par
+\b B. Login por Reconocimiento Facial\b0\par
+1. Usuario selecciona empresa.\par
+2. Frontend captura imagen facial o template.\par
+3. Frontend envía petición a endpoint de login facial.\par
+4. Backend valida payload y disponibilidad de template/imagen.\par
+5. Si llega imagen, backend analiza calidad facial y construye template.\par
+6. Backend compara template contra usuarios de la empresa.\par
+7. Si score supera umbral: login exitoso, genera token y devuelve perfil.\par
+8. Si no supera umbral: login rechazado.\par
+9. Registra auditoría en ambos casos.\par
+\par
+\b Reglas de negocio críticas\b0\par
+- El login siempre se evalúa en contexto de empresa seleccionada.\par
+- El token de sesión debe tener tiempo de vida controlado (TTL).\par
+- El rol devuelto condiciona los módulos habilitados en frontend.\par
+- Los endpoints administrativos deben verificar rol admin.\par
+- Todos los intentos deben quedar registrados en auditoría.\par
+\par
+\b Catálogo de errores funcionales (usuario final)\b0\par
+- Empresa no seleccionada\par
+- Campos obligatorios incompletos\par
+- Usuario o contraseña inválidos\par
+- Rostro no reconocido\par
+- Calidad facial insuficiente\par
+- Sesión expirada o token inválido\par
+- Acceso denegado por perfil\par
+\par
+\b Eventos de auditoría recomendados\b0\par
+- login_password success/failure\par
+- login_face success/failure\par
+- company\par
+- username (si disponible)\par
+- timestamp\par
+- detalle de causa\par
+- score facial (cuando aplique)\par
+\par
+\b Estructura de pantalla recomendada para UX\b0\par
+- Bloque superior: empresa seleccionada\par
+- Bloque izquierdo: login por usuario/password\par
+- Bloque derecho: login facial\par
+- Bloque de mensajes: estado, error o éxito\par
+- Bloque de ayuda: requisitos de captura facial\par
+\par
+\b Checklist de validación para pruebas\b0\par
+- Login password válido en empresa correcta\par
+- Login password inválido\par
+- Login facial válido\par
+- Login facial no reconocido\par
+- Login con empresa equivocada\par
+- Token emitido y consumido correctamente\par
+- Restricción por rol admin/operator\par
+- Registro de auditoría en éxito y falla\par
+\par
+\b Resumen ejecutivo para presentación\b0\par
+El login de usuario en la plataforma combina control empresarial, autenticación fuerte y trazabilidad. Cada intento de ingreso se valida contra la empresa seleccionada y puede realizarse por credenciales o biometría facial. Si la validación es exitosa, se genera un token de sesión y se habilitan funciones según perfil. Si falla, se informa al usuario y se registra la causa en auditoría para control y seguridad operacional.\par
+\par
+\b Referencia técnica de endpoints (actual)\b0\par
+- POST /api/auth/login/password\par
+- POST /api/auth/login/face\par
+- POST /api/auth/biometric/verify-frame\par
+- GET /api/auth/audit (admin)\par
+\par
+}

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FORMULA — Vista 3D</title>
+  <style>
+    html,body { height:100%; margin:0; font-family:Arial,Helvetica,sans-serif; }
+    #ui { position: absolute; left:12px; top:12px; z-index:10; background:rgba(255,255,255,0.95); padding:8px; border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.2); }
+    #canvas-wrap { width:100%; height:100%; }
+    button { margin:4px 2px; }
+    #status { font-size:13px; margin-top:6px; }
+    #threeContainer { width:100%; height:100%; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <button id="btnRefresh">Refrescar estado</button>
+    <button id="btnConnectWS">Conectar WS</button>
+    <button id="btnToggleGrid">Alternar grid</button>
+    <span id="status">WS: desconectado</span>
+  </div>
+  <div id="canvas-wrap">
+    <div id="threeContainer"></div>
+  </div>
+
+  <script src="formula-config.js"></script>
+  <script src="vendor/three-0.147.0.min.js"></script>
+  <script src="vendor/OrbitControls-0.147.0.js"></script>
+  <script src="three_view.js"></script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+FROM python:3.10-bookworm
+
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libgles2-mesa \
+    libegl1-mesa \
+    libglib2.0-0 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Invalida caché de capas cuando cambia el pipeline de avatar (rebuild --no-cache recomendado).
+LABEL informe.ai_engine.cartoon_pipeline="v6-local-clahe-no-kmeans"
+
+# Modelo entrenado incluido en la imagen (entrenar antes del build si faltan archivos).
+# Desactivar comprobación: docker build --build-arg VERIFY_GLASSES_ONNX=0 ...
+ARG VERIFY_GLASSES_ONNX=1
+RUN if [ "$VERIFY_GLASSES_ONNX" = "1" ]; then \
+      test -f /app/models/glasses_classifier.onnx \
+      && test -f /app/models/glasses_classifier_meta.json \
+      || (echo "ERROR: Falta ONNX en ai_engine/models/. Ejecute: python ai_engine/scripts/train_glasses_onnx.py" >&2 && exit 1); \
+    fi
+
+ENV GLASSES_ONNX_PATH=/app/models/glasses_classifier.onnx
+# Modelos InsightFace (buffalo_l, etc.); en runtime suele montarse un volumen aquí.
+ENV INSIGHTFACE_ROOT=/app/.insightface
+RUN mkdir -p /app/.insightface
+
+EXPOSE 5000
+
+# Normalizar CRLF→LF por si el repo en Windows copió el .sh con finales Windows
+# (sin esto el shebang falla y el contenedor reinicia en bucle).
+RUN sed -i 's/\r$//' /app/docker_entrypoint.sh 2>/dev/null || true \
+    && chmod +x /app/docker_entrypoint.sh
+
+# Descarga modelos si faltan, luego Flask (inline evita depender solo del shebang).
+CMD ["/bin/sh", "-c", "python -u /app/mediapipe_models_fetch.py && exec python -u /app/eye_analyzer.py"]

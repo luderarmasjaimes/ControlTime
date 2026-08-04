@@ -5,7 +5,7 @@ param(
     [string]$CommitMessage,
     [switch]$RunE2E,
     [switch]$RunAuthSmoke,
-    [string]$BackendUrl = "http://localhost:8081",
+    [string]$BackendUrl = "http://localhost:8082",
     [switch]$AutoPush,
     [switch]$DryRun
 )

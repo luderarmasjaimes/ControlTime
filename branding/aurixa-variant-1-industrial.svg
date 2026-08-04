@@ -1,0 +1,32 @@
+<svg width="1400" height="900" viewBox="0 0 1400 900" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1018"/>
+      <stop offset="100%" stop-color="#1b2431"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8794a8"/>
+      <stop offset="100%" stop-color="#4a5568"/>
+    </linearGradient>
+    <linearGradient id="copper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </linearGradient>
+  </defs>
+  <rect width="1400" height="900" fill="url(#bg)"/>
+  <g opacity="0.12" stroke="#94a3b8">
+    <path d="M0 760 L1400 300" />
+    <path d="M0 820 L1400 360" />
+    <path d="M0 700 L1400 240" />
+  </g>
+  <g transform="translate(170,180)">
+    <polygon points="220,40 390,340 50,340" fill="url(#metal)"/>
+    <polygon points="220,100 340,315 100,315" fill="url(#copper)"/>
+    <polygon points="220,170 280,280 160,280" fill="#e2e8f0"/>
+    <line x1="120" y1="280" x2="320" y2="280" stroke="#0ea5e9" stroke-width="6" opacity="0.75"/>
+    <line x1="140" y1="245" x2="300" y2="245" stroke="#0ea5e9" stroke-width="6" opacity="0.55"/>
+  </g>
+  <text x="560" y="410" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="120" font-weight="800" letter-spacing="12">AURIXA</text>
+  <text x="565" y="480" fill="#94a3b8" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700" letter-spacing="5">INDUSTRIAL MINING COMMAND</text>
+  <text x="565" y="540" fill="#67e8f9" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="600" letter-spacing="3">LATAM | USA | CANADA</text>
+</svg>

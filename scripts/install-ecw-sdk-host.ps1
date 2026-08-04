@@ -1,9 +1,15 @@
 param(
   [string]$InstallRoot = "$env:LOCALAPPDATA\Programs\GDAL",
-  [string]$DownloadDir = "c:\mapas\tmp"
+  [string]$DownloadDir = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $PSCommandPath
+$WorkspaceRoot = Split-Path -Parent $ScriptDir
+if ([string]::IsNullOrWhiteSpace($DownloadDir)) {
+  $DownloadDir = Join-Path $WorkspaceRoot "tmp"
+}
 
 $coreUrl = "https://download.gisinternals.com/sdk/downloads/release-1944-x64-gdal-3-12-1-mapserver-8-6-0/gdal-3.12.1-1944-x64-core.msi"
 $ecwUrl = "https://download.gisinternals.com/sdk/downloads/release-1944-x64-gdal-3-12-1-mapserver-8-6-0/gdal-3.12.1-1944-x64-ecw-55.msi"

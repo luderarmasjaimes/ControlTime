@@ -1,0 +1,1360 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ADRs Beemetry 2.0 — por ámbito</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-2: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --border: #334155;
+      --radius: 12px;
+      --shadow: 0 4px 24px rgba(0,0,0,.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: linear-gradient(160deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    header.page {
+      margin-bottom: 2rem;
+    }
+    header.page h1 {
+      margin: 0 0 .35rem;
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      letter-spacing: -.02em;
+    }
+    header.page p { margin: 0; color: var(--muted); }
+    .meta-line { margin-top: .75rem; font-size: .85rem; color: var(--muted); }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem;
+      align-items: center;
+      margin-bottom: 1.5rem;
+      padding: 1rem;
+      background: rgba(30,41,59,.75);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      backdrop-filter: blur(8px);
+    }
+    .search {
+      flex: 1 1 220px;
+      min-width: 180px;
+      padding: .6rem .85rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: .95rem;
+    }
+    .search:focus { outline: 2px solid #6366f1; border-color: transparent; }
+    .filters { display: flex; flex-wrap: wrap; gap: .45rem; }
+    .filter-btn {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      padding: .35rem .7rem;
+      border-radius: 999px;
+      font-size: .82rem;
+      cursor: pointer;
+      transition: .15s ease;
+    }
+    .filter-btn .count {
+      opacity: .7;
+      margin-left: .15rem;
+    }
+    .filter-btn:hover { border-color: var(--tag-color, #6366f1); }
+    .filter-btn.active {
+      background: color-mix(in srgb, var(--tag-color, #6366f1) 22%, var(--surface));
+      border-color: var(--tag-color, #6366f1);
+    }
+    .view-toggle {
+      display: flex;
+      gap: .35rem;
+    }
+    .view-toggle button {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      padding: .35rem .65rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: .82rem;
+    }
+    .view-toggle button.active {
+      color: var(--text);
+      border-color: #6366f1;
+      background: rgba(99,102,241,.15);
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem 1rem;
+      margin-bottom: 2rem;
+      font-size: .82rem;
+      color: var(--muted);
+    }
+    .legend-item { display: flex; align-items: center; gap: .35rem; }
+    .legend-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+    }
+    .ambito-section { margin-bottom: 2.5rem; }
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      padding: .85rem 1rem;
+      border-left: 4px solid var(--accent);
+      background: color-mix(in srgb, var(--accent-bg) 12%, transparent);
+      border-radius: 0 var(--radius) var(--radius) 0;
+    }
+    .section-tag {
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 18%, transparent);
+      padding: .25rem .55rem;
+      border-radius: 6px;
+    }
+    .section-header h2 { margin: 0; font-size: 1.15rem; }
+    .section-header p { margin: .15rem 0 0; font-size: .85rem; color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: rgba(30,41,59,.85);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 1.1rem;
+      display: flex;
+      flex-direction: column;
+      gap: .55rem;
+      transition: .15s ease;
+    }
+    .card:hover {
+      border-color: color-mix(in srgb, var(--tag-color, #6366f1) 50%, var(--border));
+      transform: translateY(-1px);
+      box-shadow: var(--shadow);
+    }
+    .card.hidden { display: none; }
+    .card-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .4rem;
+    }
+    .adr-id {
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: .78rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .tag {
+      font-size: .68rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      padding: .18rem .45rem;
+      border-radius: 999px;
+      color: var(--tag-color);
+      background: color-mix(in srgb, var(--tag-bg) 35%, transparent);
+      border: 1px solid color-mix(in srgb, var(--tag-color) 35%, transparent);
+    }
+    .card h2 {
+      margin: 0;
+      font-size: 1rem;
+      line-height: 1.35;
+    }
+    .card h2 a {
+      color: var(--text);
+      text-decoration: none;
+    }
+    .card h2 a:hover { color: #a5b4fc; text-decoration: underline; }
+    .summary {
+      margin: 0;
+      font-size: .86rem;
+      color: var(--muted);
+      flex: 1;
+    }
+    .card-foot {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem 1rem;
+      font-size: .75rem;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+      padding-top: .55rem;
+      margin-top: .2rem;
+    }
+    .card-foot code {
+      font-size: .72rem;
+      background: rgba(15,23,42,.6);
+      padding: .1rem .35rem;
+      border-radius: 4px;
+    }
+    body.view-flat .ambito-section { display: none; }
+    body.view-flat .flat-grid { display: grid; }
+    .flat-grid {
+      display: none;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1rem;
+    }
+    .empty-msg {
+      display: none;
+      text-align: center;
+      color: var(--muted);
+      padding: 3rem 1rem;
+    }
+    .empty-msg.visible { display: block; }
+    @media (max-width: 640px) {
+      .wrap { padding: 1.25rem .85rem 3rem; }
+      .grid, .flat-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body class="view-grouped">
+  <div class="wrap">
+    <header class="page">
+      <h1>Architecture Decision Records</h1>
+      <p>Beemetry 2.0 — 35 decisiones agrupadas por ámbito</p>
+      <p class="meta-line">Generado: 2026-06-25 23:29 UTC · <a href="README.md" style="color:#a5b4fc">README</a></p>
+    </header>
+
+    <div class="toolbar">
+      <input type="search" class="search" id="search" placeholder="Buscar por título, número o contexto…" autocomplete="off">
+      <div class="filters" id="filters">
+        <button type="button" class="filter-btn active" data-filter="all">Todos <span class="count">35</span></button><button type="button" class="filter-btn" data-filter="plataforma" style="--tag-color:#2563eb">Plataforma <span class="count">9</span></button><button type="button" class="filter-btn" data-filter="core-iot" style="--tag-color:#ea580c">Core IoT <span class="count">5</span></button><button type="button" class="filter-btn" data-filter="datos" style="--tag-color:#7c3aed">Datos <span class="count">4</span></button><button type="button" class="filter-btn" data-filter="reports" style="--tag-color:#059669">Reports <span class="count">13</span></button><button type="button" class="filter-btn" data-filter="ia" style="--tag-color:#db2777">IA <span class="count">2</span></button><button type="button" class="filter-btn" data-filter="geo" style="--tag-color:#0d9488">Geo <span class="count">2</span></button>
+      </div>
+      <div class="view-toggle">
+        <button type="button" id="view-grouped" class="active">Por ámbito</button>
+        <button type="button" id="view-flat">Lista</button>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#2563eb"></span>Plataforma</span><span class="legend-item"><span class="legend-dot" style="background:#ea580c"></span>Core IoT</span><span class="legend-item"><span class="legend-dot" style="background:#7c3aed"></span>Datos</span><span class="legend-item"><span class="legend-dot" style="background:#059669"></span>Reports</span><span class="legend-item"><span class="legend-dot" style="background:#db2777"></span>IA</span><span class="legend-item"><span class="legend-dot" style="background:#0d9488"></span>Geo</span>
+    </div>
+
+    <div id="grouped-view">
+
+        <section class="ambito-section" data-ambito="plataforma">
+          <div class="section-header" style="--accent:#2563eb;--accent-bg:#eff6ff">
+            <span class="section-tag">Plataforma</span>
+            <div>
+              <h2>Plataforma</h2>
+              <p>Fundaciones transversales · 9 ADRs</p>
+            </div>
+          </div>
+          <div class="grid">
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-000 rebrand aurixa → beemetry (nombre canónico del producto) rebrand-aurixa-a-beemetry el código y la documentación de `referencias/` arrastran cuatro nombres simultáneos: la carpeta raíz `beemetry2.0`, el dominio `@beemetry.net`, el producto **aurixa** (en `frontend/src/brand/platformbrand.config.js`,…">
+          <header class="card-head">
+            <span class="adr-id">ADR-000</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="000-rebrand-aurixa-a-beemetry.md">Rebrand AURIXA → Beemetry (nombre canónico del producto)</a></h2>
+          <p class="summary">El código y la documentación de `Referencias/` arrastran cuatro nombres simultáneos: la carpeta raíz `Beemetry2.0`, el dominio `@beemetry.net`, el producto **AURIXA** (en `frontend/src/brand/platformBrand.config.js`,…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>rebrand-aurixa-a-beemetry</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-001 despliegue soberano on-prem (vps linux, lima) despliegue-soberano-on-prem el cliente es una operación minera que exige que su información crítica resida en territorio nacional, con baja latencia y mínima dependencia de la nube internacional. el sow lo eleva a principio: &quot;soberanía de la inf…">
+          <header class="card-head">
+            <span class="adr-id">ADR-001</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="001-despliegue-soberano-on-prem.md">Despliegue soberano on-prem (VPS Linux, Lima)</a></h2>
+          <p class="summary">El cliente es una operación minera que exige que su información crítica resida en territorio nacional, con baja latencia y mínima dependencia de la nube internacional. El SOW lo eleva a principio: &quot;soberanía de la inf…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>despliegue-soberano-on-prem</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-002 backend c++ como gateway central backend-cpp-gateway-central el sistema tiene servicios heterogéneos: telemetría en tiempo real (10k sensores), edición documental, ia (llm, corrección, cv), cartografía y conversión raster. hay dos formas de articularlos: que el frontend hable d…">
+          <header class="card-head">
+            <span class="adr-id">ADR-002</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="002-backend-cpp-gateway-central.md">Backend C++ como gateway central</a></h2>
+          <p class="summary">El sistema tiene servicios heterogéneos: telemetría en tiempo real (10k sensores), edición documental, IA (LLM, corrección, CV), cartografía y conversión raster. Hay dos formas de articularlos: que el frontend hable d…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>backend-cpp-gateway-central</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-004 arquitectura políglota: c++ core + sidecars (python/ollama/languagetool) por http arquitectura-poliglota-cpp-sidecars el sistema combina dos mundos con necesidades opuestas: un núcleo de tiempo real sensible a la latencia (telemetría, ws, auth) donde c++ es óptimo, y cargas de ia/ml/cv (modelos de inferencia, llm, corrección gramatic…">
+          <header class="card-head">
+            <span class="adr-id">ADR-004</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="004-arquitectura-poliglota-cpp-sidecars.md">Arquitectura políglota: C++ core + sidecars (Python/Ollama/LanguageTool) por HTTP</a></h2>
+          <p class="summary">El sistema combina dos mundos con necesidades opuestas: un núcleo de tiempo real sensible a la latencia (telemetría, WS, auth) donde C++ es óptimo, y cargas de IA/ML/CV (modelos de inferencia, LLM, corrección gramatic…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>arquitectura-poliglota-cpp-sidecars</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-023 presupuestos de rendimiento y slas operativos presupuestos-rendimiento-slas el sow fija kpis/sla medibles que son, en la práctica, **presupuestos de rendimiento** que condicionan decisiones de diseño y se convierten en criterios de hito verificables. sin escribirlos como restricción explícita…">
+          <header class="card-head">
+            <span class="adr-id">ADR-023</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="023-presupuestos-rendimiento-slas.md">Presupuestos de rendimiento y SLAs operativos</a></h2>
+          <p class="summary">El SOW fija KPIs/SLA medibles que son, en la práctica, **presupuestos de rendimiento** que condicionan decisiones de diseño y se convierten en criterios de hito verificables. Sin escribirlos como restricción explícita…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>presupuestos-rendimiento-slas</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-029 identidad de plataforma: rbac multitenant + jwt (login usuario/contraseña en v0.1) rbac-identidad-plataforma-jwt el acceso, los perfiles y los permisos son **servicios de plataforma**, no de la app de reportes: la misma identidad debe servir a reportstudio y a los futuros componentes (visualización en tiempo real y otros — ver a…">
+          <header class="card-head">
+            <span class="adr-id">ADR-029</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="029-rbac-identidad-plataforma-jwt.md">Identidad de plataforma: RBAC multitenant + JWT (login usuario/contraseña en v0.1)</a></h2>
+          <p class="summary">El acceso, los perfiles y los permisos son **servicios de plataforma**, no de la app de reportes: la misma identidad debe servir a ReportStudio y a los futuros componentes (visualización en tiempo real y otros — ver A…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>rbac-identidad-plataforma-jwt</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-030 auditoría 100% de acciones, autoritativa en el servidor auditoria-100-acciones-server el kpi o7 exige que el 100% de las acciones queden auditadas, y la soberanía/compliance lo refuerza. la auditoría es un **servicio de plataforma** transversal a todos los componentes (adr-031). el código tiene auditor…">
+          <header class="card-head">
+            <span class="adr-id">ADR-030</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="030-auditoria-100-acciones-server.md">Auditoría 100% de acciones, autoritativa en el servidor</a></h2>
+          <p class="summary">El KPI O7 exige que el 100% de las acciones queden auditadas, y la soberanía/compliance lo refuerza. La auditoría es un **servicio de plataforma** transversal a todos los componentes (ADR-031). El código tiene auditor…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>auditoria-100-acciones-server</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-031 backend como núcleo de plataforma compartida (multi-componente) backend-plataforma-compartida-multicomponente una lectura inicial podría tratar el backend como &quot;el backend de la app de reportes&quot;, porque el componente que se está construyendo primero es reportstudio. pero la intención del producto es otra: **el backend es un n…">
+          <header class="card-head">
+            <span class="adr-id">ADR-031</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="031-backend-plataforma-compartida-multicomponente.md">Backend como núcleo de plataforma compartida (multi-componente)</a></h2>
+          <p class="summary">Una lectura inicial podría tratar el backend como &quot;el backend de la app de reportes&quot;, porque el componente que se está construyendo primero es ReportStudio. Pero la intención del producto es otra: **el backend es un n…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>backend-plataforma-compartida-multicomponente</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-033 convención de nombres y prefijos (componentes, contenedores, servicios, apis, db) convencion-nombres-prefijos el código de `referencias/` mezcla nombres y estilos: target cmake `mapas_backend`, `package.json` `mining-report-system-frontend`, servicios `aurixa-*`, claves de storage `aurixa_*`, branding hardcodeado. sin un está…">
+          <header class="card-head">
+            <span class="adr-id">ADR-033</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="033-convencion-nombres-prefijos.md">Convención de nombres y prefijos (componentes, contenedores, servicios, APIs, DB)</a></h2>
+          <p class="summary">El código de `Referencias/` mezcla nombres y estilos: target CMake `mapas_backend`, `package.json` `mining-report-system-frontend`, servicios `aurixa-*`, claves de storage `aurixa_*`, branding hardcodeado. Sin un está…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>convencion-nombres-prefijos</code>
+          </footer>
+        </article></div>
+        </section>
+        <section class="ambito-section" data-ambito="core-iot">
+          <div class="section-header" style="--accent:#ea580c;--accent-bg:#fff7ed">
+            <span class="section-tag">Core IoT</span>
+            <div>
+              <h2>Core IoT</h2>
+              <p>Plataforma IoT del core C++ · 5 ADRs</p>
+            </div>
+          </div>
+          <div class="grid">
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-003 servidor http/ws con boost.beast + asio (c++20) servidor-http-ws-boost-beast el gateway (adr-002) debe sostener telemetría en tiempo real de hasta 10.000 sensores simultáneos vía websocket, con tls, y un presupuesto de latencia agresivo (&lt;20 ms local). necesita i/o asíncrono de alto rendimient…">
+          <header class="card-head">
+            <span class="adr-id">ADR-003</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="003-servidor-http-ws-boost-beast.md">Servidor HTTP/WS con Boost.Beast + Asio (C++20)</a></h2>
+          <p class="summary">El gateway (ADR-002) debe sostener telemetría en tiempo real de hasta 10.000 sensores simultáneos vía WebSocket, con TLS, y un presupuesto de latencia agresivo (&lt;20 ms local). Necesita I/O asíncrono de alto rendimient…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>servidor-http-ws-boost-beast</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-007 ingesta de telemetría en etapa 1: gateway tls c++ + libpq directo ingesta-telemetria-etapa1-libpq la telemetría de sensores entra por un gateway websocket tls en c++ (`mining/mining_gateway.cpp`, `telemetry_ingest.cpp`) y se persiste en `sensors_db`. la meta de 10k sensores/seg es de etapa 2; en etapa 1 el foco es…">
+          <header class="card-head">
+            <span class="adr-id">ADR-007</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="007-ingesta-telemetria-etapa1-libpq.md">Ingesta de telemetría en Etapa 1: gateway TLS C++ + libpq directo</a></h2>
+          <p class="summary">La telemetría de sensores entra por un gateway WebSocket TLS en C++ (`mining/mining_gateway.cpp`, `telemetry_ingest.cpp`) y se persiste en `sensors_db`. La meta de 10k sensores/seg es de Etapa 2; en Etapa 1 el foco es…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>ingesta-telemetria-etapa1-libpq</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-008 bus de eventos en etapa 2: redpanda + librdkafka + copy binario bus-eventos-redpanda-etapa2 la meta de 10.000 sensores/seg con sla de latencia y resiliencia no la sostiene la ingesta directa libpq de etapa 1 (adr-007). el doc de optimización y la arquitectura objetivo proponen un bus de eventos que desacople…">
+          <header class="card-head">
+            <span class="adr-id">ADR-008</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="008-bus-eventos-redpanda-etapa2.md">Bus de eventos en Etapa 2: Redpanda + librdkafka + COPY binario</a></h2>
+          <p class="summary">La meta de 10.000 sensores/seg con SLA de latencia y resiliencia no la sostiene la ingesta directa libpq de Etapa 1 (ADR-007). El doc de optimización y la arquitectura objetivo proponen un bus de eventos que desacople…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>bus-eventos-redpanda-etapa2</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-027 opencv / procesamiento de imágenes en v0.1 (visión epp diferida) opencv-procesamiento-imagenes el backend usa opencv (`vision/opencv_raii.cpp`, `vision_pipeline.hpp`) y hay un `image_optimizer.py`. parte del uso de opencv estaba ligado a visión epp/biometría, que se difiere (adr-025). hay que definir qué cubre…">
+          <header class="card-head">
+            <span class="adr-id">ADR-027</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="027-opencv-procesamiento-imagenes.md">OpenCV / procesamiento de imágenes en v0.1 (visión EPP diferida)</a></h2>
+          <p class="summary">El backend usa OpenCV (`vision/opencv_raii.cpp`, `vision_pipeline.hpp`) y hay un `image_optimizer.py`. Parte del uso de OpenCV estaba ligado a visión EPP/biometría, que se difiere (ADR-025). Hay que definir qué cubre…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>opencv-procesamiento-imagenes</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-034 core c++ como plataforma iot propia (reemplazo de thingsboard) core-plataforma-iot-reemplazo-thingsboard hoy parte de las capacidades iot de la operación —ingesta desde múltiples protocolos, colas, motor de reglas, gestión de dispositivos y alarmas— las provee una **instancia de thingsboard** externa. la intención del pr…">
+          <header class="card-head">
+            <span class="adr-id">ADR-034</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="034-core-plataforma-iot-reemplazo-thingsboard.md">Core C++ como plataforma IoT propia (reemplazo de ThingsBoard)</a></h2>
+          <p class="summary">Hoy parte de las capacidades IoT de la operación —ingesta desde múltiples protocolos, colas, motor de reglas, gestión de dispositivos y alarmas— las provee una **instancia de ThingsBoard** externa. La intención del pr…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>core-plataforma-iot-reemplazo-thingsboard</code>
+          </footer>
+        </article></div>
+        </section>
+        <section class="ambito-section" data-ambito="datos">
+          <div class="section-header" style="--accent:#7c3aed;--accent-bg:#f5f3ff">
+            <span class="section-tag">Datos</span>
+            <div>
+              <h2>Datos</h2>
+              <p>Bases de datos y almacenamiento · 4 ADRs</p>
+            </div>
+          </div>
+          <div class="grid">
+        <article class="card" data-ambito="datos" data-status="proposed" data-search="adr-005 dos bases de datos: `sensors_db` (timescaledb) + `formula_db` (postgresql) dos-bases-de-datos-sensors-formula el sistema tiene dos perfiles de datos muy distintos: telemetría masiva append-only de sensores (series temporales, alta cardinalidad, 10k/seg objetivo) y datos operativos/relacionales (usuarios, informes, fórmulas, w…">
+          <header class="card-head">
+            <span class="adr-id">ADR-005</span>
+            <span class="tag ambito-tag" style="--tag-color:#7c3aed;--tag-bg:#f5f3ff">Datos</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="005-dos-bases-de-datos-sensors-formula.md">Dos bases de datos: `sensors_db` (TimescaleDB) + `formula_db` (PostgreSQL)</a></h2>
+          <p class="summary">El sistema tiene dos perfiles de datos muy distintos: telemetría masiva append-only de sensores (series temporales, alta cardinalidad, 10k/seg objetivo) y datos operativos/relacionales (usuarios, informes, fórmulas, w…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>dos-bases-de-datos-sensors-formula</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="datos" data-status="proposed" data-search="adr-006 timescaledb: hypertables + políticas de retención/compresión + continuous aggregates timescaledb-hypertables-retencion `sensors_db` debe sostener 10k sensores/seg y conservar histórico 2-7 años sin degradar consultas. el análisis del modelo de datos v36 detectó un gap concreto: hoy existen hypertables, pero `mineria_lecturas` y `minin…">
+          <header class="card-head">
+            <span class="adr-id">ADR-006</span>
+            <span class="tag ambito-tag" style="--tag-color:#7c3aed;--tag-bg:#f5f3ff">Datos</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="006-timescaledb-hypertables-retencion.md">TimescaleDB: hypertables + políticas de retención/compresión + continuous aggregates</a></h2>
+          <p class="summary">`sensors_db` debe sostener 10k sensores/seg y conservar histórico 2-7 años sin degradar consultas. El análisis del modelo de datos v36 detectó un gap concreto: hoy existen hypertables, pero `mineria_lecturas` y `minin…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>timescaledb-hypertables-retencion</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="datos" data-status="proposed" data-search="adr-009 almacenamiento de objetos soberano: minio + archivado parquet almacenamiento-objetos-minio-parquet el sistema genera y consume objetos binarios: imágenes embebidas en informes, informes exportados (pdf/docx), capturas de mapa, y el histórico frío de telemetría que sale del plano hot de timescaledb (adr-006). la sob…">
+          <header class="card-head">
+            <span class="adr-id">ADR-009</span>
+            <span class="tag ambito-tag" style="--tag-color:#7c3aed;--tag-bg:#f5f3ff">Datos</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="009-almacenamiento-objetos-minio-parquet.md">Almacenamiento de objetos soberano: MinIO + archivado Parquet</a></h2>
+          <p class="summary">El sistema genera y consume objetos binarios: imágenes embebidas en informes, informes exportados (PDF/DOCX), capturas de mapa, y el histórico frío de telemetría que sale del plano HOT de TimescaleDB (ADR-006). La sob…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>almacenamiento-objetos-minio-parquet</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="datos" data-status="proposed" data-search="adr-032 timescaledb: separación de instancias ingesta (primaria) vs lectura/reportes (réplica) timescaledb-instancias-ingesta-lectura `sensors_db` (adr-005) atiende dos cargas opuestas sobre la misma data: **escritura de alta tasa** (ingesta de telemetría, adr-007/008) y **lectura analítica pesada** (dashboards en vivo, kpis sobre continuous aggrega…">
+          <header class="card-head">
+            <span class="adr-id">ADR-032</span>
+            <span class="tag ambito-tag" style="--tag-color:#7c3aed;--tag-bg:#f5f3ff">Datos</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="032-timescaledb-instancias-ingesta-lectura.md">TimescaleDB: separación de instancias ingesta (primaria) vs lectura/reportes (réplica)</a></h2>
+          <p class="summary">`sensors_db` (ADR-005) atiende dos cargas opuestas sobre la misma data: **escritura de alta tasa** (ingesta de telemetría, ADR-007/008) y **lectura analítica pesada** (dashboards en vivo, KPIs sobre continuous aggrega…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>timescaledb-instancias-ingesta-lectura</code>
+          </footer>
+        </article></div>
+        </section>
+        <section class="ambito-section" data-ambito="reports">
+          <div class="section-header" style="--accent:#059669;--accent-bg:#ecfdf5">
+            <span class="section-tag">Reports</span>
+            <div>
+              <h2>Reports</h2>
+              <p>Componente ReportStudio · 13 ADRs</p>
+            </div>
+          </div>
+          <div class="grid">
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-010 modelo del documento de informe: json tipado de bloques modelo-documento-json-bloques el informe técnico es el núcleo de valor del producto y debe sostener tres promesas: trazabilidad (cada dato citado linkea a su fuente), wysiwyg determinista y export reproducible. la representación interna del docume…">
+          <header class="card-head">
+            <span class="adr-id">ADR-010</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="010-modelo-documento-json-bloques.md">Modelo del documento de informe: JSON tipado de bloques</a></h2>
+          <p class="summary">El informe técnico es el núcleo de valor del producto y debe sostener tres promesas: trazabilidad (cada dato citado linkea a su fuente), WYSIWYG determinista y export reproducible. La representación interna del docume…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>modelo-documento-json-bloques</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-011 estructura formal del informe: árbol de `sections[]` + `cover`/`toc` serializables + `headingstyle` estructura-formal-secciones-cover-toc la validación del formato real (`.miningreport`) contra los manuales operativos reveló que el modelo de bloques (adr-010) cubre el cuerpo multipágina pero **no la estructura formal** de un informe técnico minero. hall…">
+          <header class="card-head">
+            <span class="adr-id">ADR-011</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="011-estructura-formal-secciones-cover-toc.md">Estructura formal del informe: árbol de `sections[]` + `cover`/`toc` serializables + `headingStyle`</a></h2>
+          <p class="summary">La validación del formato real (`.miningreport`) contra los manuales operativos reveló que el modelo de bloques (ADR-010) cubre el cuerpo multipágina pero **no la estructura formal** de un informe técnico minero. Hall…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>estructura-formal-secciones-cover-toc</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-012 trazabilidad dato→widget: referencia versionada + snapshot binding-dato-widget-referencia-versionada la promesa dura #2 es &quot;trazabilidad en vivo del dato al informe&quot;: lo que un informe cita (un sensor, un kpi, una serie) debe estar vinculado a la fuente real y ser auditable. pero un informe firmado/aprobado también d…">
+          <header class="card-head">
+            <span class="adr-id">ADR-012</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="012-binding-dato-widget-referencia-versionada.md">Trazabilidad dato→widget: referencia versionada + snapshot</a></h2>
+          <p class="summary">La promesa dura #2 es &quot;trazabilidad en vivo del dato al informe&quot;: lo que un informe cita (un sensor, un KPI, una serie) debe estar vinculado a la fuente real y ser auditable. Pero un informe firmado/aprobado también d…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>binding-dato-widget-referencia-versionada</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-013 editor: tiptap/prosemirror para texto + konva para layout de página editor-tiptap-konva reportstudio necesita dos capacidades distintas: edición de texto rico (estilos, listas, encabezados, corrección) y layout de página tipo &quot;documento/presentación&quot; con posicionamiento de bloques (texto, tablas, widgets…">
+          <header class="card-head">
+            <span class="adr-id">ADR-013</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="013-editor-tiptap-konva.md">Editor: Tiptap/ProseMirror para texto + Konva para layout de página</a></h2>
+          <p class="summary">ReportStudio necesita dos capacidades distintas: edición de texto rico (estilos, listas, encabezados, corrección) y layout de página tipo &quot;documento/presentación&quot; con posicionamiento de bloques (texto, tablas, widgets…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>editor-tiptap-konva</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-014 estado del editor: zustand store único (`useeditorstore`) estado-editor-zustand reportstudio maneja un estado de ui complejo: documento (páginas, bloques), selección, herramientas activas, modales, paneles (inspector, biblioteca), workflow. el código ya centraliza esto en un store zustand (`store…">
+          <header class="card-head">
+            <span class="adr-id">ADR-014</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="014-estado-editor-zustand.md">Estado del editor: Zustand store único (`useEditorStore`)</a></h2>
+          <p class="summary">ReportStudio maneja un estado de UI complejo: documento (páginas, bloques), selección, herramientas activas, modales, paneles (inspector, biblioteca), workflow. El código ya centraliza esto en un store Zustand (`store…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>estado-editor-zustand</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-015 versionado y auditoría del informe: servidor autoritativo versionado-informe-server-autoritativo el informe es un documento técnico con consecuencias de seguridad operativa: exige versionado e historial confiables y auditoría 100% (kpi o7). el frontend ya tiene `versionhistory.jsx` y `versioncomparator.jsx`, y el…">
+          <header class="card-head">
+            <span class="adr-id">ADR-015</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="015-versionado-informe-server-autoritativo.md">Versionado y auditoría del informe: servidor autoritativo</a></h2>
+          <p class="summary">El informe es un documento técnico con consecuencias de seguridad operativa: exige versionado e historial confiables y auditoría 100% (KPI O7). El frontend ya tiene `VersionHistory.jsx` y `VersionComparator.jsx`, y el…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>versionado-informe-server-autoritativo</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-016 export de informes: server-side asíncrono con worker export-server-side-asincrono el kpi o3 exige exportar informes a pdf/word en &lt;5 s. el export es cpu-intensivo y no debe bloquear la ruta caliente del gateway c++ (telemetría, ws). el código tiene `exportengine.js` con un endpoint `/api/export` má…">
+          <header class="card-head">
+            <span class="adr-id">ADR-016</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="016-export-server-side-asincrono.md">Export de informes: server-side asíncrono con worker</a></h2>
+          <p class="summary">El KPI O3 exige exportar informes a PDF/Word en &lt;5 s. El export es CPU-intensivo y no debe bloquear la ruta caliente del gateway C++ (telemetría, WS). El código tiene `exportEngine.js` con un endpoint `/api/export` má…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>export-server-side-asincrono</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-017 workflow canónico del informe (front ↔ bd unificados) workflow-canonico-informe el informe pasa por un ciclo de vida con aprobación. la validación detectó una **desalineación crítica**: el frontend (`workflowpanel.jsx`) usa los estados `draft → review → approved → signed (+ rejected)`, mientras q…">
+          <header class="card-head">
+            <span class="adr-id">ADR-017</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="017-workflow-canonico-informe.md">Workflow canónico del informe (front ↔ BD unificados)</a></h2>
+          <p class="summary">El informe pasa por un ciclo de vida con aprobación. La validación detectó una **desalineación crítica**: el frontend (`WorkflowPanel.jsx`) usa los estados `draft → review → approved → signed (+ rejected)`, mientras q…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>workflow-canonico-informe</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-018 firma documental (aprobación humana) ≠ integridad de archivo (sha-256) firma-documental-vs-integridad-archivo el `.miningreport` ya incluye una `signature` que es un **sha-256 del envelope** (integridad: detecta si el archivo fue alterado). pero un informe técnico minero también requiere una **firma de aprobación humana**: qu…">
+          <header class="card-head">
+            <span class="adr-id">ADR-018</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="018-firma-documental-vs-integridad-archivo.md">Firma documental (aprobación humana) ≠ integridad de archivo (SHA-256)</a></h2>
+          <p class="summary">El `.miningreport` ya incluye una `signature` que es un **SHA-256 del envelope** (integridad: detecta si el archivo fue alterado). Pero un informe técnico minero también requiere una **firma de aprobación humana**: qu…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>firma-documental-vs-integridad-archivo</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-019 resolución diferida: numeración jerárquica, toc, refs cruzadas, &quot;página x de y&quot; resolucion-diferida-numeracion-toc-refs un informe formal tiene elementos que no se pueden fijar al editar porque dependen del documento completo: numeración jerárquica de secciones (1, 1.1, 1.1.1), tabla de contenidos, referencias cruzadas (&quot;ver figura 3&quot;,…">
+          <header class="card-head">
+            <span class="adr-id">ADR-019</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="019-resolucion-diferida-numeracion-toc-refs.md">Resolución diferida: numeración jerárquica, TOC, refs cruzadas, &quot;Página X de Y&quot;</a></h2>
+          <p class="summary">Un informe formal tiene elementos que no se pueden fijar al editar porque dependen del documento completo: numeración jerárquica de secciones (1, 1.1, 1.1.1), tabla de contenidos, referencias cruzadas (&quot;ver Figura 3&quot;,…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>resolucion-diferida-numeracion-toc-refs</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-020 mapa como bloque tipado con referencia geoespacial mapa-bloque-tipado-georeferencia el informe minero incluye mapas operativos (ubicación de sensores, zonas, taludes). hoy el mapa se inserta capturándolo a imagen (`mapcapturemodal` → bloque `image`), lo que **pierde la referencia geoespacial**: el bl…">
+          <header class="card-head">
+            <span class="adr-id">ADR-020</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed — v0.1: snapshot simple a imagen; bloque `map` tipado **diferido** a versión futura">proposed</span>
+          </header>
+          <h2><a href="020-mapa-bloque-tipado-georeferencia.md">Mapa como bloque tipado con referencia geoespacial</a></h2>
+          <p class="summary">El informe minero incluye mapas operativos (ubicación de sensores, zonas, taludes). Hoy el mapa se inserta capturándolo a imagen (`MapCaptureModal` → bloque `image`), lo que **pierde la referencia geoespacial**: el bl…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>mapa-bloque-tipado-georeferencia</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-021 ownership de metadatos de ciclo de vida (`document.meta` vs bd) ownership-metadatos-ciclo-vida los metadatos del informe (autor, versión, fecha, `project_id`, `created_by`, `reviewed_by`, estado) hoy están repartidos: algunos en `document.meta` (dentro del `.miningreport`, portátil), otros solo en la bd/api (`c…">
+          <header class="card-head">
+            <span class="adr-id">ADR-021</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="021-ownership-metadatos-ciclo-vida.md">Ownership de metadatos de ciclo de vida (`document.meta` vs BD)</a></h2>
+          <p class="summary">Los metadatos del informe (autor, versión, fecha, `project_id`, `created_by`, `reviewed_by`, estado) hoy están repartidos: algunos en `document.meta` (dentro del `.miningreport`, portátil), otros solo en la BD/API (`c…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>ownership-metadatos-ciclo-vida</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-022 modo offline: cola de operaciones versionada + indexeddb + conflicto explícito offline-cola-versionada-indexeddb la promesa dura #1 incluye 0% de pérdida de datos operando aun sin conectividad (campo, socavón). el sow descarta app nativa: el offline es en web responsive (tablet). el código actual usa una **cola en localstorage**…">
+          <header class="card-head">
+            <span class="adr-id">ADR-022</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed — modo offline **diferido a versión futura**, condicionado a superar una PoC de almacenamiento local &amp;gt;5MB">proposed</span>
+          </header>
+          <h2><a href="022-offline-cola-versionada-indexeddb.md">Modo offline: cola de operaciones versionada + IndexedDB + conflicto explícito</a></h2>
+          <p class="summary">La promesa dura #1 incluye 0% de pérdida de datos operando aun sin conectividad (campo, socavón). El SOW descarta app nativa: el offline es en web responsive (tablet). El código actual usa una **cola en localStorage**…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>offline-cola-versionada-indexeddb</code>
+          </footer>
+        </article></div>
+        </section>
+        <section class="ambito-section" data-ambito="ia">
+          <div class="section-header" style="--accent:#db2777;--accent-bg:#fdf2f8">
+            <span class="section-tag">IA</span>
+            <div>
+              <h2>IA</h2>
+              <p>Inteligencia artificial local · 2 ADRs</p>
+            </div>
+          </div>
+          <div class="grid">
+        <article class="card" data-ambito="ia" data-status="proposed" data-search="adr-024 ia local de redacción: ollama (reescritura) + languagetool (ortografía es-pe) ia-local-ollama-languagetool el producto promete asistencia de ia local (&lt;1 s por párrafo, kpi o6) sin depender de la nube (soberanía, adr-001). el usuario geotécnico redacta informes y necesita corrección ortográfica/gramatical en español de per…">
+          <header class="card-head">
+            <span class="adr-id">ADR-024</span>
+            <span class="tag ambito-tag" style="--tag-color:#db2777;--tag-bg:#fdf2f8">IA</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="024-ia-local-ollama-languagetool.md">IA local de redacción: Ollama (reescritura) + LanguageTool (ortografía es-PE)</a></h2>
+          <p class="summary">El producto promete asistencia de IA local (&lt;1 s por párrafo, KPI O6) sin depender de la nube (soberanía, ADR-001). El usuario geotécnico redacta informes y necesita corrección ortográfica/gramatical en español de Per…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>ia-local-ollama-languagetool</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="ia" data-status="proposed" data-search="adr-025 biometría y visión epp diferidas (restricción legal + hardening) biometria-vision-epp-diferidas el código incluye un módulo biométrico (`biometric/`, sidecar python `ai_engine` con análisis facial: epp, ear, liveness) y un pipeline de visión (`vision/`). el sow lo ubica en etapa 2. pero hay una restricción más f…">
+          <header class="card-head">
+            <span class="adr-id">ADR-025</span>
+            <span class="tag ambito-tag" style="--tag-color:#db2777;--tag-bg:#fdf2f8">IA</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="025-biometria-vision-epp-diferidas.md">Biometría y visión EPP diferidas (restricción legal + hardening)</a></h2>
+          <p class="summary">El código incluye un módulo biométrico (`biometric/`, sidecar Python `ai_engine` con análisis facial: EPP, EAR, liveness) y un pipeline de visión (`vision/`). El SOW lo ubica en Etapa 2. Pero hay una restricción más f…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>biometria-vision-epp-diferidas</code>
+          </footer>
+        </article></div>
+        </section>
+        <section class="ambito-section" data-ambito="geo">
+          <div class="section-header" style="--accent:#0d9488;--accent-bg:#f0fdfa">
+            <span class="section-tag">Geo</span>
+            <div>
+              <h2>Geo</h2>
+              <p>Cartografía y geoespacial · 2 ADRs</p>
+            </div>
+          </div>
+          <div class="grid">
+        <article class="card" data-ambito="geo" data-status="proposed" data-search="adr-026 cartografía offline: mbtiles + mbtileserver + maplibre gl cartografia-offline-mbtiles-maplibre el producto necesita mapas operativos que funcionen sin internet (soberanía + offline, adr-001/022) y rendir capas wms corporativas y sensores. el código usa **maplibre gl** como motor 2d principal (con leaflet como s…">
+          <header class="card-head">
+            <span class="adr-id">ADR-026</span>
+            <span class="tag ambito-tag" style="--tag-color:#0d9488;--tag-bg:#f0fdfa">Geo</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="026-cartografia-offline-mbtiles-maplibre.md">Cartografía offline: MBTiles + mbtileserver + MapLibre GL</a></h2>
+          <p class="summary">El producto necesita mapas operativos que funcionen sin internet (soberanía + offline, ADR-001/022) y rendir capas WMS corporativas y sensores. El código usa **MapLibre GL** como motor 2D principal (con Leaflet como s…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>cartografia-offline-mbtiles-maplibre</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="geo" data-status="deferred" data-search="adr-028 conversión raster gdal: diferida a versión futura gdal-conversion-raster-diferida el backend tiene un módulo `gdal/` que convierte rásteres (ecw/geotiff) invocando `gdal_translate`/`gdaladdo` **como subprocess cli**, y la arquitectura objetivo propone un worker aislado (`gis-raster`). el inventario…">
+          <header class="card-head">
+            <span class="adr-id">ADR-028</span>
+            <span class="tag ambito-tag" style="--tag-color:#0d9488;--tag-bg:#f0fdfa">Geo</span>
+            <span class="tag status-tag" style="--tag-color:#b45309;--tag-bg:#fef3c7" title="proposed (deferred)">deferred</span>
+          </header>
+          <h2><a href="028-gdal-conversion-raster-diferida.md">Conversión raster GDAL: diferida a versión futura</a></h2>
+          <p class="summary">El backend tiene un módulo `gdal/` que convierte rásteres (ECW/GeoTIFF) invocando `gdal_translate`/`gdaladdo` **como subprocess CLI**, y la arquitectura objetivo propone un worker aislado (`gis-raster`). El inventario…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>gdal-conversion-raster-diferida</code>
+          </footer>
+        </article></div>
+        </section>
+    </div>
+
+    <div class="flat-grid" id="flat-view">
+
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-000 rebrand aurixa → beemetry (nombre canónico del producto) rebrand-aurixa-a-beemetry el código y la documentación de `referencias/` arrastran cuatro nombres simultáneos: la carpeta raíz `beemetry2.0`, el dominio `@beemetry.net`, el producto **aurixa** (en `frontend/src/brand/platformbrand.config.js`,…">
+          <header class="card-head">
+            <span class="adr-id">ADR-000</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="000-rebrand-aurixa-a-beemetry.md">Rebrand AURIXA → Beemetry (nombre canónico del producto)</a></h2>
+          <p class="summary">El código y la documentación de `Referencias/` arrastran cuatro nombres simultáneos: la carpeta raíz `Beemetry2.0`, el dominio `@beemetry.net`, el producto **AURIXA** (en `frontend/src/brand/platformBrand.config.js`,…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>rebrand-aurixa-a-beemetry</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-001 despliegue soberano on-prem (vps linux, lima) despliegue-soberano-on-prem el cliente es una operación minera que exige que su información crítica resida en territorio nacional, con baja latencia y mínima dependencia de la nube internacional. el sow lo eleva a principio: &quot;soberanía de la inf…">
+          <header class="card-head">
+            <span class="adr-id">ADR-001</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="001-despliegue-soberano-on-prem.md">Despliegue soberano on-prem (VPS Linux, Lima)</a></h2>
+          <p class="summary">El cliente es una operación minera que exige que su información crítica resida en territorio nacional, con baja latencia y mínima dependencia de la nube internacional. El SOW lo eleva a principio: &quot;soberanía de la inf…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>despliegue-soberano-on-prem</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-002 backend c++ como gateway central backend-cpp-gateway-central el sistema tiene servicios heterogéneos: telemetría en tiempo real (10k sensores), edición documental, ia (llm, corrección, cv), cartografía y conversión raster. hay dos formas de articularlos: que el frontend hable d…">
+          <header class="card-head">
+            <span class="adr-id">ADR-002</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="002-backend-cpp-gateway-central.md">Backend C++ como gateway central</a></h2>
+          <p class="summary">El sistema tiene servicios heterogéneos: telemetría en tiempo real (10k sensores), edición documental, IA (LLM, corrección, CV), cartografía y conversión raster. Hay dos formas de articularlos: que el frontend hable d…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>backend-cpp-gateway-central</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-003 servidor http/ws con boost.beast + asio (c++20) servidor-http-ws-boost-beast el gateway (adr-002) debe sostener telemetría en tiempo real de hasta 10.000 sensores simultáneos vía websocket, con tls, y un presupuesto de latencia agresivo (&lt;20 ms local). necesita i/o asíncrono de alto rendimient…">
+          <header class="card-head">
+            <span class="adr-id">ADR-003</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="003-servidor-http-ws-boost-beast.md">Servidor HTTP/WS con Boost.Beast + Asio (C++20)</a></h2>
+          <p class="summary">El gateway (ADR-002) debe sostener telemetría en tiempo real de hasta 10.000 sensores simultáneos vía WebSocket, con TLS, y un presupuesto de latencia agresivo (&lt;20 ms local). Necesita I/O asíncrono de alto rendimient…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>servidor-http-ws-boost-beast</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-004 arquitectura políglota: c++ core + sidecars (python/ollama/languagetool) por http arquitectura-poliglota-cpp-sidecars el sistema combina dos mundos con necesidades opuestas: un núcleo de tiempo real sensible a la latencia (telemetría, ws, auth) donde c++ es óptimo, y cargas de ia/ml/cv (modelos de inferencia, llm, corrección gramatic…">
+          <header class="card-head">
+            <span class="adr-id">ADR-004</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="004-arquitectura-poliglota-cpp-sidecars.md">Arquitectura políglota: C++ core + sidecars (Python/Ollama/LanguageTool) por HTTP</a></h2>
+          <p class="summary">El sistema combina dos mundos con necesidades opuestas: un núcleo de tiempo real sensible a la latencia (telemetría, WS, auth) donde C++ es óptimo, y cargas de IA/ML/CV (modelos de inferencia, LLM, corrección gramatic…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>arquitectura-poliglota-cpp-sidecars</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="datos" data-status="proposed" data-search="adr-005 dos bases de datos: `sensors_db` (timescaledb) + `formula_db` (postgresql) dos-bases-de-datos-sensors-formula el sistema tiene dos perfiles de datos muy distintos: telemetría masiva append-only de sensores (series temporales, alta cardinalidad, 10k/seg objetivo) y datos operativos/relacionales (usuarios, informes, fórmulas, w…">
+          <header class="card-head">
+            <span class="adr-id">ADR-005</span>
+            <span class="tag ambito-tag" style="--tag-color:#7c3aed;--tag-bg:#f5f3ff">Datos</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="005-dos-bases-de-datos-sensors-formula.md">Dos bases de datos: `sensors_db` (TimescaleDB) + `formula_db` (PostgreSQL)</a></h2>
+          <p class="summary">El sistema tiene dos perfiles de datos muy distintos: telemetría masiva append-only de sensores (series temporales, alta cardinalidad, 10k/seg objetivo) y datos operativos/relacionales (usuarios, informes, fórmulas, w…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>dos-bases-de-datos-sensors-formula</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="datos" data-status="proposed" data-search="adr-006 timescaledb: hypertables + políticas de retención/compresión + continuous aggregates timescaledb-hypertables-retencion `sensors_db` debe sostener 10k sensores/seg y conservar histórico 2-7 años sin degradar consultas. el análisis del modelo de datos v36 detectó un gap concreto: hoy existen hypertables, pero `mineria_lecturas` y `minin…">
+          <header class="card-head">
+            <span class="adr-id">ADR-006</span>
+            <span class="tag ambito-tag" style="--tag-color:#7c3aed;--tag-bg:#f5f3ff">Datos</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="006-timescaledb-hypertables-retencion.md">TimescaleDB: hypertables + políticas de retención/compresión + continuous aggregates</a></h2>
+          <p class="summary">`sensors_db` debe sostener 10k sensores/seg y conservar histórico 2-7 años sin degradar consultas. El análisis del modelo de datos v36 detectó un gap concreto: hoy existen hypertables, pero `mineria_lecturas` y `minin…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>timescaledb-hypertables-retencion</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-007 ingesta de telemetría en etapa 1: gateway tls c++ + libpq directo ingesta-telemetria-etapa1-libpq la telemetría de sensores entra por un gateway websocket tls en c++ (`mining/mining_gateway.cpp`, `telemetry_ingest.cpp`) y se persiste en `sensors_db`. la meta de 10k sensores/seg es de etapa 2; en etapa 1 el foco es…">
+          <header class="card-head">
+            <span class="adr-id">ADR-007</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="007-ingesta-telemetria-etapa1-libpq.md">Ingesta de telemetría en Etapa 1: gateway TLS C++ + libpq directo</a></h2>
+          <p class="summary">La telemetría de sensores entra por un gateway WebSocket TLS en C++ (`mining/mining_gateway.cpp`, `telemetry_ingest.cpp`) y se persiste en `sensors_db`. La meta de 10k sensores/seg es de Etapa 2; en Etapa 1 el foco es…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>ingesta-telemetria-etapa1-libpq</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-008 bus de eventos en etapa 2: redpanda + librdkafka + copy binario bus-eventos-redpanda-etapa2 la meta de 10.000 sensores/seg con sla de latencia y resiliencia no la sostiene la ingesta directa libpq de etapa 1 (adr-007). el doc de optimización y la arquitectura objetivo proponen un bus de eventos que desacople…">
+          <header class="card-head">
+            <span class="adr-id">ADR-008</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="008-bus-eventos-redpanda-etapa2.md">Bus de eventos en Etapa 2: Redpanda + librdkafka + COPY binario</a></h2>
+          <p class="summary">La meta de 10.000 sensores/seg con SLA de latencia y resiliencia no la sostiene la ingesta directa libpq de Etapa 1 (ADR-007). El doc de optimización y la arquitectura objetivo proponen un bus de eventos que desacople…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>bus-eventos-redpanda-etapa2</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="datos" data-status="proposed" data-search="adr-009 almacenamiento de objetos soberano: minio + archivado parquet almacenamiento-objetos-minio-parquet el sistema genera y consume objetos binarios: imágenes embebidas en informes, informes exportados (pdf/docx), capturas de mapa, y el histórico frío de telemetría que sale del plano hot de timescaledb (adr-006). la sob…">
+          <header class="card-head">
+            <span class="adr-id">ADR-009</span>
+            <span class="tag ambito-tag" style="--tag-color:#7c3aed;--tag-bg:#f5f3ff">Datos</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="009-almacenamiento-objetos-minio-parquet.md">Almacenamiento de objetos soberano: MinIO + archivado Parquet</a></h2>
+          <p class="summary">El sistema genera y consume objetos binarios: imágenes embebidas en informes, informes exportados (PDF/DOCX), capturas de mapa, y el histórico frío de telemetría que sale del plano HOT de TimescaleDB (ADR-006). La sob…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>almacenamiento-objetos-minio-parquet</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-010 modelo del documento de informe: json tipado de bloques modelo-documento-json-bloques el informe técnico es el núcleo de valor del producto y debe sostener tres promesas: trazabilidad (cada dato citado linkea a su fuente), wysiwyg determinista y export reproducible. la representación interna del docume…">
+          <header class="card-head">
+            <span class="adr-id">ADR-010</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="010-modelo-documento-json-bloques.md">Modelo del documento de informe: JSON tipado de bloques</a></h2>
+          <p class="summary">El informe técnico es el núcleo de valor del producto y debe sostener tres promesas: trazabilidad (cada dato citado linkea a su fuente), WYSIWYG determinista y export reproducible. La representación interna del docume…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>modelo-documento-json-bloques</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-011 estructura formal del informe: árbol de `sections[]` + `cover`/`toc` serializables + `headingstyle` estructura-formal-secciones-cover-toc la validación del formato real (`.miningreport`) contra los manuales operativos reveló que el modelo de bloques (adr-010) cubre el cuerpo multipágina pero **no la estructura formal** de un informe técnico minero. hall…">
+          <header class="card-head">
+            <span class="adr-id">ADR-011</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="011-estructura-formal-secciones-cover-toc.md">Estructura formal del informe: árbol de `sections[]` + `cover`/`toc` serializables + `headingStyle`</a></h2>
+          <p class="summary">La validación del formato real (`.miningreport`) contra los manuales operativos reveló que el modelo de bloques (ADR-010) cubre el cuerpo multipágina pero **no la estructura formal** de un informe técnico minero. Hall…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>estructura-formal-secciones-cover-toc</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-012 trazabilidad dato→widget: referencia versionada + snapshot binding-dato-widget-referencia-versionada la promesa dura #2 es &quot;trazabilidad en vivo del dato al informe&quot;: lo que un informe cita (un sensor, un kpi, una serie) debe estar vinculado a la fuente real y ser auditable. pero un informe firmado/aprobado también d…">
+          <header class="card-head">
+            <span class="adr-id">ADR-012</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="012-binding-dato-widget-referencia-versionada.md">Trazabilidad dato→widget: referencia versionada + snapshot</a></h2>
+          <p class="summary">La promesa dura #2 es &quot;trazabilidad en vivo del dato al informe&quot;: lo que un informe cita (un sensor, un KPI, una serie) debe estar vinculado a la fuente real y ser auditable. Pero un informe firmado/aprobado también d…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>binding-dato-widget-referencia-versionada</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-013 editor: tiptap/prosemirror para texto + konva para layout de página editor-tiptap-konva reportstudio necesita dos capacidades distintas: edición de texto rico (estilos, listas, encabezados, corrección) y layout de página tipo &quot;documento/presentación&quot; con posicionamiento de bloques (texto, tablas, widgets…">
+          <header class="card-head">
+            <span class="adr-id">ADR-013</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="013-editor-tiptap-konva.md">Editor: Tiptap/ProseMirror para texto + Konva para layout de página</a></h2>
+          <p class="summary">ReportStudio necesita dos capacidades distintas: edición de texto rico (estilos, listas, encabezados, corrección) y layout de página tipo &quot;documento/presentación&quot; con posicionamiento de bloques (texto, tablas, widgets…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>editor-tiptap-konva</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-014 estado del editor: zustand store único (`useeditorstore`) estado-editor-zustand reportstudio maneja un estado de ui complejo: documento (páginas, bloques), selección, herramientas activas, modales, paneles (inspector, biblioteca), workflow. el código ya centraliza esto en un store zustand (`store…">
+          <header class="card-head">
+            <span class="adr-id">ADR-014</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="014-estado-editor-zustand.md">Estado del editor: Zustand store único (`useEditorStore`)</a></h2>
+          <p class="summary">ReportStudio maneja un estado de UI complejo: documento (páginas, bloques), selección, herramientas activas, modales, paneles (inspector, biblioteca), workflow. El código ya centraliza esto en un store Zustand (`store…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>estado-editor-zustand</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-015 versionado y auditoría del informe: servidor autoritativo versionado-informe-server-autoritativo el informe es un documento técnico con consecuencias de seguridad operativa: exige versionado e historial confiables y auditoría 100% (kpi o7). el frontend ya tiene `versionhistory.jsx` y `versioncomparator.jsx`, y el…">
+          <header class="card-head">
+            <span class="adr-id">ADR-015</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="015-versionado-informe-server-autoritativo.md">Versionado y auditoría del informe: servidor autoritativo</a></h2>
+          <p class="summary">El informe es un documento técnico con consecuencias de seguridad operativa: exige versionado e historial confiables y auditoría 100% (KPI O7). El frontend ya tiene `VersionHistory.jsx` y `VersionComparator.jsx`, y el…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>versionado-informe-server-autoritativo</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-016 export de informes: server-side asíncrono con worker export-server-side-asincrono el kpi o3 exige exportar informes a pdf/word en &lt;5 s. el export es cpu-intensivo y no debe bloquear la ruta caliente del gateway c++ (telemetría, ws). el código tiene `exportengine.js` con un endpoint `/api/export` má…">
+          <header class="card-head">
+            <span class="adr-id">ADR-016</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="016-export-server-side-asincrono.md">Export de informes: server-side asíncrono con worker</a></h2>
+          <p class="summary">El KPI O3 exige exportar informes a PDF/Word en &lt;5 s. El export es CPU-intensivo y no debe bloquear la ruta caliente del gateway C++ (telemetría, WS). El código tiene `exportEngine.js` con un endpoint `/api/export` má…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>export-server-side-asincrono</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-017 workflow canónico del informe (front ↔ bd unificados) workflow-canonico-informe el informe pasa por un ciclo de vida con aprobación. la validación detectó una **desalineación crítica**: el frontend (`workflowpanel.jsx`) usa los estados `draft → review → approved → signed (+ rejected)`, mientras q…">
+          <header class="card-head">
+            <span class="adr-id">ADR-017</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="017-workflow-canonico-informe.md">Workflow canónico del informe (front ↔ BD unificados)</a></h2>
+          <p class="summary">El informe pasa por un ciclo de vida con aprobación. La validación detectó una **desalineación crítica**: el frontend (`WorkflowPanel.jsx`) usa los estados `draft → review → approved → signed (+ rejected)`, mientras q…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>workflow-canonico-informe</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-018 firma documental (aprobación humana) ≠ integridad de archivo (sha-256) firma-documental-vs-integridad-archivo el `.miningreport` ya incluye una `signature` que es un **sha-256 del envelope** (integridad: detecta si el archivo fue alterado). pero un informe técnico minero también requiere una **firma de aprobación humana**: qu…">
+          <header class="card-head">
+            <span class="adr-id">ADR-018</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="018-firma-documental-vs-integridad-archivo.md">Firma documental (aprobación humana) ≠ integridad de archivo (SHA-256)</a></h2>
+          <p class="summary">El `.miningreport` ya incluye una `signature` que es un **SHA-256 del envelope** (integridad: detecta si el archivo fue alterado). Pero un informe técnico minero también requiere una **firma de aprobación humana**: qu…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>firma-documental-vs-integridad-archivo</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-019 resolución diferida: numeración jerárquica, toc, refs cruzadas, &quot;página x de y&quot; resolucion-diferida-numeracion-toc-refs un informe formal tiene elementos que no se pueden fijar al editar porque dependen del documento completo: numeración jerárquica de secciones (1, 1.1, 1.1.1), tabla de contenidos, referencias cruzadas (&quot;ver figura 3&quot;,…">
+          <header class="card-head">
+            <span class="adr-id">ADR-019</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="019-resolucion-diferida-numeracion-toc-refs.md">Resolución diferida: numeración jerárquica, TOC, refs cruzadas, &quot;Página X de Y&quot;</a></h2>
+          <p class="summary">Un informe formal tiene elementos que no se pueden fijar al editar porque dependen del documento completo: numeración jerárquica de secciones (1, 1.1, 1.1.1), tabla de contenidos, referencias cruzadas (&quot;ver Figura 3&quot;,…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>resolucion-diferida-numeracion-toc-refs</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-020 mapa como bloque tipado con referencia geoespacial mapa-bloque-tipado-georeferencia el informe minero incluye mapas operativos (ubicación de sensores, zonas, taludes). hoy el mapa se inserta capturándolo a imagen (`mapcapturemodal` → bloque `image`), lo que **pierde la referencia geoespacial**: el bl…">
+          <header class="card-head">
+            <span class="adr-id">ADR-020</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed — v0.1: snapshot simple a imagen; bloque `map` tipado **diferido** a versión futura">proposed</span>
+          </header>
+          <h2><a href="020-mapa-bloque-tipado-georeferencia.md">Mapa como bloque tipado con referencia geoespacial</a></h2>
+          <p class="summary">El informe minero incluye mapas operativos (ubicación de sensores, zonas, taludes). Hoy el mapa se inserta capturándolo a imagen (`MapCaptureModal` → bloque `image`), lo que **pierde la referencia geoespacial**: el bl…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>mapa-bloque-tipado-georeferencia</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-021 ownership de metadatos de ciclo de vida (`document.meta` vs bd) ownership-metadatos-ciclo-vida los metadatos del informe (autor, versión, fecha, `project_id`, `created_by`, `reviewed_by`, estado) hoy están repartidos: algunos en `document.meta` (dentro del `.miningreport`, portátil), otros solo en la bd/api (`c…">
+          <header class="card-head">
+            <span class="adr-id">ADR-021</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="021-ownership-metadatos-ciclo-vida.md">Ownership de metadatos de ciclo de vida (`document.meta` vs BD)</a></h2>
+          <p class="summary">Los metadatos del informe (autor, versión, fecha, `project_id`, `created_by`, `reviewed_by`, estado) hoy están repartidos: algunos en `document.meta` (dentro del `.miningreport`, portátil), otros solo en la BD/API (`c…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>ownership-metadatos-ciclo-vida</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="reports" data-status="proposed" data-search="adr-022 modo offline: cola de operaciones versionada + indexeddb + conflicto explícito offline-cola-versionada-indexeddb la promesa dura #1 incluye 0% de pérdida de datos operando aun sin conectividad (campo, socavón). el sow descarta app nativa: el offline es en web responsive (tablet). el código actual usa una **cola en localstorage**…">
+          <header class="card-head">
+            <span class="adr-id">ADR-022</span>
+            <span class="tag ambito-tag" style="--tag-color:#059669;--tag-bg:#ecfdf5">Reports</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed — modo offline **diferido a versión futura**, condicionado a superar una PoC de almacenamiento local &amp;gt;5MB">proposed</span>
+          </header>
+          <h2><a href="022-offline-cola-versionada-indexeddb.md">Modo offline: cola de operaciones versionada + IndexedDB + conflicto explícito</a></h2>
+          <p class="summary">La promesa dura #1 incluye 0% de pérdida de datos operando aun sin conectividad (campo, socavón). El SOW descarta app nativa: el offline es en web responsive (tablet). El código actual usa una **cola en localStorage**…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>offline-cola-versionada-indexeddb</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-023 presupuestos de rendimiento y slas operativos presupuestos-rendimiento-slas el sow fija kpis/sla medibles que son, en la práctica, **presupuestos de rendimiento** que condicionan decisiones de diseño y se convierten en criterios de hito verificables. sin escribirlos como restricción explícita…">
+          <header class="card-head">
+            <span class="adr-id">ADR-023</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="023-presupuestos-rendimiento-slas.md">Presupuestos de rendimiento y SLAs operativos</a></h2>
+          <p class="summary">El SOW fija KPIs/SLA medibles que son, en la práctica, **presupuestos de rendimiento** que condicionan decisiones de diseño y se convierten en criterios de hito verificables. Sin escribirlos como restricción explícita…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>presupuestos-rendimiento-slas</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="ia" data-status="proposed" data-search="adr-024 ia local de redacción: ollama (reescritura) + languagetool (ortografía es-pe) ia-local-ollama-languagetool el producto promete asistencia de ia local (&lt;1 s por párrafo, kpi o6) sin depender de la nube (soberanía, adr-001). el usuario geotécnico redacta informes y necesita corrección ortográfica/gramatical en español de per…">
+          <header class="card-head">
+            <span class="adr-id">ADR-024</span>
+            <span class="tag ambito-tag" style="--tag-color:#db2777;--tag-bg:#fdf2f8">IA</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="024-ia-local-ollama-languagetool.md">IA local de redacción: Ollama (reescritura) + LanguageTool (ortografía es-PE)</a></h2>
+          <p class="summary">El producto promete asistencia de IA local (&lt;1 s por párrafo, KPI O6) sin depender de la nube (soberanía, ADR-001). El usuario geotécnico redacta informes y necesita corrección ortográfica/gramatical en español de Per…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>ia-local-ollama-languagetool</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="ia" data-status="proposed" data-search="adr-025 biometría y visión epp diferidas (restricción legal + hardening) biometria-vision-epp-diferidas el código incluye un módulo biométrico (`biometric/`, sidecar python `ai_engine` con análisis facial: epp, ear, liveness) y un pipeline de visión (`vision/`). el sow lo ubica en etapa 2. pero hay una restricción más f…">
+          <header class="card-head">
+            <span class="adr-id">ADR-025</span>
+            <span class="tag ambito-tag" style="--tag-color:#db2777;--tag-bg:#fdf2f8">IA</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="025-biometria-vision-epp-diferidas.md">Biometría y visión EPP diferidas (restricción legal + hardening)</a></h2>
+          <p class="summary">El código incluye un módulo biométrico (`biometric/`, sidecar Python `ai_engine` con análisis facial: EPP, EAR, liveness) y un pipeline de visión (`vision/`). El SOW lo ubica en Etapa 2. Pero hay una restricción más f…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>biometria-vision-epp-diferidas</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="geo" data-status="proposed" data-search="adr-026 cartografía offline: mbtiles + mbtileserver + maplibre gl cartografia-offline-mbtiles-maplibre el producto necesita mapas operativos que funcionen sin internet (soberanía + offline, adr-001/022) y rendir capas wms corporativas y sensores. el código usa **maplibre gl** como motor 2d principal (con leaflet como s…">
+          <header class="card-head">
+            <span class="adr-id">ADR-026</span>
+            <span class="tag ambito-tag" style="--tag-color:#0d9488;--tag-bg:#f0fdfa">Geo</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="026-cartografia-offline-mbtiles-maplibre.md">Cartografía offline: MBTiles + mbtileserver + MapLibre GL</a></h2>
+          <p class="summary">El producto necesita mapas operativos que funcionen sin internet (soberanía + offline, ADR-001/022) y rendir capas WMS corporativas y sensores. El código usa **MapLibre GL** como motor 2D principal (con Leaflet como s…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>cartografia-offline-mbtiles-maplibre</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-027 opencv / procesamiento de imágenes en v0.1 (visión epp diferida) opencv-procesamiento-imagenes el backend usa opencv (`vision/opencv_raii.cpp`, `vision_pipeline.hpp`) y hay un `image_optimizer.py`. parte del uso de opencv estaba ligado a visión epp/biometría, que se difiere (adr-025). hay que definir qué cubre…">
+          <header class="card-head">
+            <span class="adr-id">ADR-027</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="027-opencv-procesamiento-imagenes.md">OpenCV / procesamiento de imágenes en v0.1 (visión EPP diferida)</a></h2>
+          <p class="summary">El backend usa OpenCV (`vision/opencv_raii.cpp`, `vision_pipeline.hpp`) y hay un `image_optimizer.py`. Parte del uso de OpenCV estaba ligado a visión EPP/biometría, que se difiere (ADR-025). Hay que definir qué cubre…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>opencv-procesamiento-imagenes</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="geo" data-status="deferred" data-search="adr-028 conversión raster gdal: diferida a versión futura gdal-conversion-raster-diferida el backend tiene un módulo `gdal/` que convierte rásteres (ecw/geotiff) invocando `gdal_translate`/`gdaladdo` **como subprocess cli**, y la arquitectura objetivo propone un worker aislado (`gis-raster`). el inventario…">
+          <header class="card-head">
+            <span class="adr-id">ADR-028</span>
+            <span class="tag ambito-tag" style="--tag-color:#0d9488;--tag-bg:#f0fdfa">Geo</span>
+            <span class="tag status-tag" style="--tag-color:#b45309;--tag-bg:#fef3c7" title="proposed (deferred)">deferred</span>
+          </header>
+          <h2><a href="028-gdal-conversion-raster-diferida.md">Conversión raster GDAL: diferida a versión futura</a></h2>
+          <p class="summary">El backend tiene un módulo `gdal/` que convierte rásteres (ECW/GeoTIFF) invocando `gdal_translate`/`gdaladdo` **como subprocess CLI**, y la arquitectura objetivo propone un worker aislado (`gis-raster`). El inventario…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>gdal-conversion-raster-diferida</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-029 identidad de plataforma: rbac multitenant + jwt (login usuario/contraseña en v0.1) rbac-identidad-plataforma-jwt el acceso, los perfiles y los permisos son **servicios de plataforma**, no de la app de reportes: la misma identidad debe servir a reportstudio y a los futuros componentes (visualización en tiempo real y otros — ver a…">
+          <header class="card-head">
+            <span class="adr-id">ADR-029</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="029-rbac-identidad-plataforma-jwt.md">Identidad de plataforma: RBAC multitenant + JWT (login usuario/contraseña en v0.1)</a></h2>
+          <p class="summary">El acceso, los perfiles y los permisos son **servicios de plataforma**, no de la app de reportes: la misma identidad debe servir a ReportStudio y a los futuros componentes (visualización en tiempo real y otros — ver A…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>rbac-identidad-plataforma-jwt</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-030 auditoría 100% de acciones, autoritativa en el servidor auditoria-100-acciones-server el kpi o7 exige que el 100% de las acciones queden auditadas, y la soberanía/compliance lo refuerza. la auditoría es un **servicio de plataforma** transversal a todos los componentes (adr-031). el código tiene auditor…">
+          <header class="card-head">
+            <span class="adr-id">ADR-030</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="030-auditoria-100-acciones-server.md">Auditoría 100% de acciones, autoritativa en el servidor</a></h2>
+          <p class="summary">El KPI O7 exige que el 100% de las acciones queden auditadas, y la soberanía/compliance lo refuerza. La auditoría es un **servicio de plataforma** transversal a todos los componentes (ADR-031). El código tiene auditor…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>auditoria-100-acciones-server</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-031 backend como núcleo de plataforma compartida (multi-componente) backend-plataforma-compartida-multicomponente una lectura inicial podría tratar el backend como &quot;el backend de la app de reportes&quot;, porque el componente que se está construyendo primero es reportstudio. pero la intención del producto es otra: **el backend es un n…">
+          <header class="card-head">
+            <span class="adr-id">ADR-031</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="031-backend-plataforma-compartida-multicomponente.md">Backend como núcleo de plataforma compartida (multi-componente)</a></h2>
+          <p class="summary">Una lectura inicial podría tratar el backend como &quot;el backend de la app de reportes&quot;, porque el componente que se está construyendo primero es ReportStudio. Pero la intención del producto es otra: **el backend es un n…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>backend-plataforma-compartida-multicomponente</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="datos" data-status="proposed" data-search="adr-032 timescaledb: separación de instancias ingesta (primaria) vs lectura/reportes (réplica) timescaledb-instancias-ingesta-lectura `sensors_db` (adr-005) atiende dos cargas opuestas sobre la misma data: **escritura de alta tasa** (ingesta de telemetría, adr-007/008) y **lectura analítica pesada** (dashboards en vivo, kpis sobre continuous aggrega…">
+          <header class="card-head">
+            <span class="adr-id">ADR-032</span>
+            <span class="tag ambito-tag" style="--tag-color:#7c3aed;--tag-bg:#f5f3ff">Datos</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="032-timescaledb-instancias-ingesta-lectura.md">TimescaleDB: separación de instancias ingesta (primaria) vs lectura/reportes (réplica)</a></h2>
+          <p class="summary">`sensors_db` (ADR-005) atiende dos cargas opuestas sobre la misma data: **escritura de alta tasa** (ingesta de telemetría, ADR-007/008) y **lectura analítica pesada** (dashboards en vivo, KPIs sobre continuous aggrega…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>timescaledb-instancias-ingesta-lectura</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="plataforma" data-status="proposed" data-search="adr-033 convención de nombres y prefijos (componentes, contenedores, servicios, apis, db) convencion-nombres-prefijos el código de `referencias/` mezcla nombres y estilos: target cmake `mapas_backend`, `package.json` `mining-report-system-frontend`, servicios `aurixa-*`, claves de storage `aurixa_*`, branding hardcodeado. sin un está…">
+          <header class="card-head">
+            <span class="adr-id">ADR-033</span>
+            <span class="tag ambito-tag" style="--tag-color:#2563eb;--tag-bg:#eff6ff">Plataforma</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="033-convencion-nombres-prefijos.md">Convención de nombres y prefijos (componentes, contenedores, servicios, APIs, DB)</a></h2>
+          <p class="summary">El código de `Referencias/` mezcla nombres y estilos: target CMake `mapas_backend`, `package.json` `mining-report-system-frontend`, servicios `aurixa-*`, claves de storage `aurixa_*`, branding hardcodeado. Sin un está…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>convencion-nombres-prefijos</code>
+          </footer>
+        </article>
+        <article class="card" data-ambito="core-iot" data-status="proposed" data-search="adr-034 core c++ como plataforma iot propia (reemplazo de thingsboard) core-plataforma-iot-reemplazo-thingsboard hoy parte de las capacidades iot de la operación —ingesta desde múltiples protocolos, colas, motor de reglas, gestión de dispositivos y alarmas— las provee una **instancia de thingsboard** externa. la intención del pr…">
+          <header class="card-head">
+            <span class="adr-id">ADR-034</span>
+            <span class="tag ambito-tag" style="--tag-color:#ea580c;--tag-bg:#fff7ed">Core IoT</span>
+            <span class="tag status-tag" style="--tag-color:#64748b;--tag-bg:#f1f5f9" title="proposed">proposed</span>
+          </header>
+          <h2><a href="034-core-plataforma-iot-reemplazo-thingsboard.md">Core C++ como plataforma IoT propia (reemplazo de ThingsBoard)</a></h2>
+          <p class="summary">Hoy parte de las capacidades IoT de la operación —ingesta desde múltiples protocolos, colas, motor de reglas, gestión de dispositivos y alarmas— las provee una **instancia de ThingsBoard** externa. La intención del pr…</p>
+          <footer class="card-foot">
+            <span>2026-06-24</span>
+            <span>EC</span>
+            <code>core-plataforma-iot-reemplazo-thingsboard</code>
+          </footer>
+        </article>
+    </div>
+
+    <p class="empty-msg" id="empty">Ningún ADR coincide con el filtro actual.</p>
+  </div>
+
+  <script>
+    const search = document.getElementById('search');
+    const filterBtns = document.querySelectorAll('.filter-btn');
+    const allCards = document.querySelectorAll('.card');
+    const sections = document.querySelectorAll('.ambito-section');
+    const emptyMsg = document.getElementById('empty');
+    let activeFilter = 'all';
+
+    function cardMatches(card) {
+      const q = search.value.trim().toLowerCase();
+      const textOk = !q || card.dataset.search.includes(q);
+      const ambito = card.dataset.ambito;
+      const filterOk = activeFilter === 'all'
+        || (activeFilter === '_unknown' && !['plataforma', 'core-iot', 'datos', 'reports', 'ia', 'geo'].includes(ambito))
+        || activeFilter === ambito;
+      return textOk && filterOk;
+    }
+
+    function applyFilters() {
+      let visible = 0;
+      allCards.forEach(card => {
+        const show = cardMatches(card);
+        card.classList.toggle('hidden', !show);
+        if (show) visible++;
+      });
+      sections.forEach(sec => {
+        const any = [...sec.querySelectorAll('.card')].some(c => !c.classList.contains('hidden'));
+        sec.style.display = any ? '' : 'none';
+      });
+      emptyMsg.classList.toggle('visible', visible === 0);
+    }
+
+    search.addEventListener('input', applyFilters);
+    filterBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        filterBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeFilter = btn.dataset.filter;
+        applyFilters();
+      });
+    });
+
+    document.getElementById('view-grouped').addEventListener('click', () => {
+      document.body.classList.add('view-grouped');
+      document.body.classList.remove('view-flat');
+      document.getElementById('view-grouped').classList.add('active');
+      document.getElementById('view-flat').classList.remove('active');
+    });
+    document.getElementById('view-flat').addEventListener('click', () => {
+      document.body.classList.remove('view-grouped');
+      document.body.classList.add('view-flat');
+      document.getElementById('view-flat').classList.add('active');
+      document.getElementById('view-grouped').classList.remove('active');
+    });
+  </script>
+</body>
+</html>

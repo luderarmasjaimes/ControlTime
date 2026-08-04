@@ -1,0 +1,83 @@
+1
+00:00:00,000 --> 00:00:10,000
+Plataforma Biometrica + Sistema de Informes Tecnicos Mineros con IA
+
+2
+00:00:10,000 --> 00:00:20,000
+Demostracion funcional sin audio - duracion total 7 minutos
+
+3
+00:00:20,000 --> 00:00:35,000
+Inicio de sesion seguro para proteger informacion operacional y tecnica
+
+4
+00:00:35,000 --> 00:01:00,000
+Cada acceso queda trazado para auditoria y control institucional
+
+5
+00:01:00,000 --> 00:01:20,000
+Dashboard centralizado con modulos de gestion, monitoreo y documentacion
+
+6
+00:01:20,000 --> 00:01:40,000
+Desde aqui se inicia la construccion del Informe Tecnico Minero
+
+7
+00:01:40,000 --> 00:02:00,000
+Editor del informe en formato estructurado, profesional y editable
+
+8
+00:02:00,000 --> 00:02:20,000
+Biblioteca de bloques para insertar evidencia y analisis tecnico
+
+9
+00:02:20,000 --> 00:02:40,000
+Bloque Texto: base principal para hallazgos, contexto y conclusiones
+
+10
+00:02:40,000 --> 00:03:00,000
+Formato avanzado: fuente, tamano, color, alineacion e interlineado
+
+11
+00:03:00,000 --> 00:03:20,000
+Listas y estructura tecnica para riesgos, evidencias y recomendaciones
+
+12
+00:03:20,000 --> 00:03:40,000
+Asistencias inteligentes: voz a texto y correccion ortografica
+
+13
+00:03:40,000 --> 00:04:10,000
+Mejora de redaccion con IA para mayor precision y coherencia tecnica
+
+14
+00:04:10,000 --> 00:04:35,000
+Insercion de MAPA: captura geoespacial para sustento del informe
+
+15
+00:04:35,000 --> 00:05:00,000
+Flujo de mapa: ajustar vista, capturar, previsualizar y confirmar insercion
+
+16
+00:05:00,000 --> 00:05:20,000
+La evidencia cartografica queda integrada en la pagina del documento
+
+17
+00:05:20,000 --> 00:05:45,000
+Integracion de bloques: texto tecnico, mapa y estructura visual consistente
+
+18
+00:05:45,000 --> 00:06:10,000
+El informe final facilita revision por supervision, seguridad y gerencia
+
+19
+00:06:10,000 --> 00:06:25,000
+Validacion final: contenido persistido y listo para continuidad operativa
+
+20
+00:06:25,000 --> 00:06:40,000
+Documento preparado para seguimiento, aprobacion y cierre tecnico
+
+21
+00:06:40,000 --> 00:07:00,000
+Demostracion completada: flujo integral de plataforma biometrica e informe minero

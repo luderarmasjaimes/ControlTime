@@ -1,0 +1,116 @@
+# Registro de agentes — fuente de verdad para el Router IA
+
+version: "1.0"
+project: Beemetry
+orchestrator: ai_platform.orchestrator.Orchestrator
+
+agents:
+  architect:
+    name: Arquitecto IA
+    role: Define arquitectura y propone nuevos ADR
+    model: claude-opus
+    fallback: gpt-5
+    paths: ["docs/decisions/", "specs/adr/", "docs/02_Arquitectura/"]
+    prompt: prompts/agents/architect.md
+    outputs: ["docs/decisions/NNN-*.md"]
+
+  functional_analyst:
+    name: Analista Funcional
+    role: Convierte requerimientos del cliente en SPEC
+    model: gemini
+    fallback: gpt-5-mini
+    paths: ["specs/", "docs/00_SOW/"]
+    prompt: prompts/agents/functional_analyst.md
+    outputs: ["specs/NNN-*/spec.md"]
+
+  planner:
+    name: Planificador
+    role: Descompone SPEC en plan y tasks
+    model: gpt-5
+    fallback: claude-sonnet
+    paths: ["specs/*/plan.md", "specs/*/tasks.md"]
+    prompt: prompts/agents/planner.md
+
+  backend_dev:
+    name: Desarrollador Backend
+    role: C++ Boost.Asio, OpenCV, sockets, integraciones
+    model: claude
+    fallback: claude-sonnet
+    paths: ["backend/"]
+    extensions: [".cpp", ".hpp", ".h"]
+    adrs: [ADR-001, ADR-004, ADR-006]
+    prompt: prompts/agents/backend_dev.md
+
+  frontend_dev:
+    name: Desarrollador Frontend
+    role: React, ReportStudio, UX industrial LATAM
+    model: gpt-5
+    fallback: cursor
+    paths: ["frontend/"]
+    extensions: [".tsx", ".ts", ".jsx", ".js", ".css"]
+    adrs: [ADR-007, ADR-009]
+    prompt: prompts/agents/frontend_dev.md
+
+  dba:
+    name: Especialista Base de Datos
+    role: PostgreSQL, TimescaleDB, ETL, AWS sync, DR
+    model: deepseek
+    fallback: gpt-5
+    paths: ["db_scripts/", "formula_engine/"]
+    extensions: [".sql"]
+    adrs: [ADR-002, ADR-003, ADR-006]
+    prompt: prompts/agents/dba.md
+
+  ai_specialist:
+    name: Especialista IA
+    role: Modelos ONNX, RAG, embeddings, evaluación
+    model: claude
+    paths: ["ai_engine/", "ai_platform/"]
+    adrs: [ADR-004, ADR-005, ADR-011]
+    prompt: prompts/agents/ai_specialist.md
+
+  code_reviewer:
+    name: Revisor de Código
+    role: Verifica ADR, SPEC, Constitución, seguridad
+    model: gpt-5
+    must_differ_from: [backend_dev, frontend_dev, dba]
+    prompt: prompts/agents/code_reviewer.md
+
+  devops:
+    name: DevOps
+    role: CI/CD, Docker, despliegues VPS Lima
+    model: gpt-5
+    paths: [".github/", "docker-compose.yml", "scripts/ci/"]
+    prompt: prompts/agents/devops.md
+
+  qa:
+    name: QA
+    role: Pruebas funcionales, regresión, UAT minero
+    model: gpt-5-mini
+    paths: ["frontend/tests/", "scripts/smoke", "scripts/ci/"]
+    prompt: prompts/agents/qa.md
+
+  documenter:
+    name: Documentador
+    role: Mantiene ADR, SPEC y docs actualizados
+    model: gemini
+    paths: ["docs/", "specs/"]
+    prompt: prompts/agents/documenter.md
+
+routing_rules:
+  - match: { path_prefix: "backend/" }
+    agent: backend_dev
+  - match: { path_prefix: "frontend/" }
+    agent: frontend_dev
+  - match: { path_prefix: "db_scripts/" }
+    agent: dba
+  - match: { path_prefix: "ai_engine/" }
+    agent: ai_specialist
+  - match: { path_prefix: "docs/" }
+    agent: documenter
+  - match: { path_prefix: "specs/" }
+    agent: functional_analyst
+  - match: { task_type: "review" }
+    agent: code_reviewer
+  - match: { task_type: "architecture" }
+    agent: architect

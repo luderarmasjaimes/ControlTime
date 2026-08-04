@@ -1,0 +1,126 @@
+Starting build and up...
+ Image informecliente-web Building 
+ Image informecliente-frontend Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 959B done
+#1 DONE 0.0s
+
+#2 [web internal] load build definition from Dockerfile
+#2 transferring dockerfile: 1.47kB 0.0s done
+#2 DONE 0.0s
+
+#3 [frontend internal] load build definition from Dockerfile
+#3 transferring dockerfile: 514B 0.1s done
+#3 WARN: FromAsCasing: 'as' and 'FROM' keywords' casing do not match (line 2)
+#3 WARN: FromAsCasing: 'as' and 'FROM' keywords' casing do not match (line 10)
+#3 DONE 0.1s
+
+#4 [frontend internal] load metadata for docker.io/library/node:20-alpine
+#4 ...
+
+#5 [auth] library/debian:pull token for registry-1.docker.io
+#5 DONE 0.0s
+
+#6 [auth] library/node:pull token for registry-1.docker.io
+#6 DONE 0.0s
+
+#7 [auth] library/ubuntu:pull token for registry-1.docker.io
+#7 DONE 0.0s
+
+#8 [auth] library/nginx:pull token for registry-1.docker.io
+#8 DONE 0.0s
+
+#9 [frontend internal] load metadata for docker.io/library/nginx:stable-alpine
+#9 DONE 0.9s
+
+#10 [web internal] load metadata for docker.io/library/ubuntu:24.04
+#10 DONE 0.9s
+
+#4 [frontend internal] load metadata for docker.io/library/node:20-alpine
+#4 DONE 0.9s
+
+#11 [frontend internal] load .dockerignore
+#11 transferring context: 2B 0.1s done
+#11 DONE 0.1s
+
+#12 [web internal] load metadata for docker.io/library/debian:bookworm-slim
+#12 DONE 1.1s
+
+#13 [frontend build-stage 1/6] FROM docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c
+#13 resolve docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c 0.0s done
+#13 DONE 0.0s
+
+#14 [frontend production-stage 1/3] FROM docker.io/library/nginx:stable-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+#14 resolve docker.io/library/nginx:stable-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236 0.0s done
+#14 DONE 0.0s
+
+#15 [web internal] load .dockerignore
+#15 transferring context: 2B 0.0s done
+#15 DONE 0.0s
+
+#16 [frontend internal] load build context
+#16 ...
+
+#17 [web runtime 1/8] FROM docker.io/library/debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
+#17 resolve docker.io/library/debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a 0.0s done
+#17 DONE 0.0s
+
+#18 [web builder 1/5] FROM docker.io/library/ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
+#18 resolve docker.io/library/ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c 0.0s done
+#18 DONE 0.0s
+
+#19 [web internal] load build context
+#19 transferring context: 361B 0.0s done
+#19 DONE 0.0s
+
+#20 [web runtime 6/8] RUN chmod +x /app/entrypoint.sh
+#20 CACHED
+
+#21 [web builder 5/5] RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release     && cmake --build build --config Release -j$(nproc)     && find build -type f -executable -exec strip --strip-all {} + || true
+#21 CACHED
+
+#22 [web runtime 5/8] COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
+#22 CACHED
+
+#23 [web runtime 7/8] RUN mkdir -p /data
+#23 CACHED
+
+#24 [web builder 2/5] RUN apt-get update && apt-get install -y --no-install-recommends     build-essential     cmake     pkg-config     libboost-all-dev     libopencv-dev     libpq-dev     gdal-bin     ca-certificates     bash     python3     python3-opencv     python3-numpy     binutils     && rm -rf /var/lib/apt/lists/*
+#24 CACHED
+
+#25 [web runtime 4/8] COPY --from=builder /app/build /app/build
+#25 CACHED
+
+#26 [web builder 3/5] WORKDIR /app
+#26 CACHED
+
+#27 [web runtime 3/8] WORKDIR /app
+#27 CACHED
+
+#28 [web runtime 2/8] RUN apt-get update && apt-get install -y --no-install-recommends     ca-certificates     wget     libstdc++6     libgcc-s1     libgomp1     libgstreamer1.0-0     libgstreamer-plugins-base1.0-0     libpq5     && rm -rf /var/lib/apt/lists/*
+#28 CACHED
+
+#29 [web builder 4/5] COPY . /app
+#29 CACHED
+
+#30 [web runtime 8/8] RUN mkdir -p /opt/dermalog || true
+#30 CACHED
+
+#16 [frontend internal] load build context
+#16 ...
+
+#31 [web] exporting to image
+#31 exporting layers done
+#31 exporting manifest sha256:3e0adb19600f271c81c70cc4bebc4cc30341054672a5defa724c701b2997c14e done
+#31 exporting config sha256:7f7de6e77328a07b5c982037cc0458081591c315fc8330895c3dd156534294a0 done
+#31 exporting attestation manifest sha256:69f1fc41b51b47703dcf0e0e5c09a037fca555315eed82e0c51d502ea9eb5259 0.0s done
+#31 exporting manifest list sha256:3e1c00a5df12d3016226ef437c37f1494b85d1219a5cbed4358d62047549d374 done
+#31 naming to docker.io/library/informecliente-web:latest done
+#31 unpacking to docker.io/library/informecliente-web:latest done
+#31 DONE 0.1s
+
+#32 [web] resolving provenance for metadata file
+#32 DONE 0.0s
+
+#16 [frontend internal] load build context
+

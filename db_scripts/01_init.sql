@@ -1,7 +1,15 @@
 -- Initial Database Schema for Mining Reports System
 -- Requires PostGIS extension
 
-CREATE EXTENSION IF NOT EXISTS postgis;
+DO $$
+BEGIN
+    BEGIN
+        EXECUTE 'CREATE EXTENSION IF NOT EXISTS postgis';
+    EXCEPTION WHEN others THEN
+        RAISE NOTICE 'postgis not available or failed to install: %', SQLERRM;
+    END;
+END$$;
+
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Table for storing mining projects
@@ -26,16 +34,25 @@ CREATE TABLE reports (
 
 -- Table for storing geometric/3D data associated with reports (e.g. Drillholes/Trajectories)
 -- PostGIS used for geospatial location (Point, LineString) if needed
-CREATE TABLE geometric_data (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    report_id UUID REFERENCES reports(id) ON DELETE CASCADE,
-    name VARCHAR(255),
-    data_type VARCHAR(50) NOT NULL, -- 'drillhole', 'gallery', 'pointcloud'
-    location GEOMETRY(POINT, 4326),  -- Optional geographic coordinates
-    binary_data_url TEXT, -- Path to .glTF or binary array buffer on disk/S3
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'postgis') THEN
+        EXECUTE '
+            CREATE TABLE IF NOT EXISTS geometric_data (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                report_id UUID REFERENCES reports(id) ON DELETE CASCADE,
+                name VARCHAR(255),
+                data_type VARCHAR(50) NOT NULL, -- ''drillhole'', ''gallery'', ''pointcloud''
+                location GEOMETRY(POINT, 4326),  -- Optional geographic coordinates
+                binary_data_url TEXT, -- Path to .glTF or binary array buffer on disk/S3
+                metadata JSONB DEFAULT ''{}'',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        ';
+    ELSE
+        RAISE NOTICE 'Skipping geometric_data table creation because postgis is not available.';
+    END IF;
+END$$;
 
 -- trigger for updated_at
 CREATE OR REPLACE FUNCTION update_modified_column()

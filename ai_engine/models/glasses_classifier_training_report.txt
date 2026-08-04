@@ -1,0 +1,51 @@
+INFORME DE ENTRENAMIENTO — clasificador gafas (ONNX)
+============================================================
+Inicio (UTC): 2026-04-08T06:22:38.115613+00:00
+Fin (UTC):    2026-04-08T06:46:54.806631+00:00
+Tiempo total: 1456.7 s (24.3 min)
+Dispositivo:  cpu
+
+Dataset
+  with_glasses:    792
+  without_glasses: 800
+  train / val:     1354 / 238
+
+Hiperparámetros
+  epochs=25 batch=16 lr=0.0001 input=224
+  mejor val_acc:    1.0000
+
+Avance por época (% tiempo y métricas)
+------------------------------------------------------------
+  época 1/25 | progreso   4.0% | t=   49.8s | loss=0.6018 | val_acc=0.9370
+  época 2/25 | progreso   8.0% | t=   92.9s | loss=0.4004 | val_acc=1.0000
+  época 3/25 | progreso  12.0% | t=  131.9s | loss=0.2806 | val_acc=1.0000
+  época 4/25 | progreso  16.0% | t=  171.8s | loss=0.2240 | val_acc=1.0000
+  época 5/25 | progreso  20.0% | t=  213.3s | loss=0.1911 | val_acc=1.0000
+  época 6/25 | progreso  24.0% | t=  252.6s | loss=0.1668 | val_acc=1.0000
+  época 7/25 | progreso  28.0% | t=  295.7s | loss=0.1344 | val_acc=1.0000
+  época 8/25 | progreso  32.0% | t=  344.4s | loss=0.1195 | val_acc=1.0000
+  época 9/25 | progreso  36.0% | t=  393.1s | loss=0.1066 | val_acc=1.0000
+  época 10/25 | progreso  40.0% | t=  442.0s | loss=0.0947 | val_acc=1.0000
+  época 11/25 | progreso  44.0% | t=  490.6s | loss=0.0935 | val_acc=1.0000
+  época 12/25 | progreso  48.0% | t=  540.6s | loss=0.0825 | val_acc=1.0000
+  época 13/25 | progreso  52.0% | t=  580.6s | loss=0.0804 | val_acc=1.0000
+  época 14/25 | progreso  56.0% | t=  619.6s | loss=0.0735 | val_acc=1.0000
+  época 15/25 | progreso  60.0% | t=  664.6s | loss=0.0676 | val_acc=1.0000
+  época 16/25 | progreso  64.0% | t=  710.7s | loss=0.0639 | val_acc=1.0000
+  época 17/25 | progreso  68.0% | t=  759.0s | loss=0.0680 | val_acc=1.0000
+  época 18/25 | progreso  72.0% | t=  805.2s | loss=0.0566 | val_acc=1.0000
+  época 19/25 | progreso  76.0% | t=  886.2s | loss=0.0577 | val_acc=1.0000
+  época 20/25 | progreso  80.0% | t=  982.8s | loss=0.0582 | val_acc=1.0000
+  época 21/25 | progreso  84.0% | t= 1079.9s | loss=0.0554 | val_acc=1.0000
+  época 22/25 | progreso  88.0% | t= 1176.1s | loss=0.0433 | val_acc=1.0000
+  época 23/25 | progreso  92.0% | t= 1276.6s | loss=0.0454 | val_acc=1.0000
+  época 24/25 | progreso  96.0% | t= 1374.6s | loss=0.0456 | val_acc=1.0000
+  época 25/25 | progreso 100.0% | t= 1455.2s | loss=0.0478 | val_acc=1.0000
+------------------------------------------------------------
+Salidas
+  ONNX:  C:\InformeCliente\ai_engine\models\glasses_classifier.onnx
+  meta:  C:\InformeCliente\ai_engine\models\glasses_classifier_meta.json
+  JSON:  C:\InformeCliente\ai_engine\models\glasses_classifier_training_report.json
+
+Docker / ai_engine:
+  GLASSES_ONNX_PATH=C:/InformeCliente/ai_engine/models/glasses_classifier.onnx

@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise Backend Architecture: Módulo Informes Técnicos - ControlTime IT</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #020617;        /* Slate 950 */
+            --primary-light: #1E293B;  /* Slate 800 */
+            --accent: #14B8A6;         /* Teal 500 */
+            --accent-alt: #0D9488;     /* Teal 600 */
+            --text-main: #334155;      /* Slate 700 */
+            --text-muted: #64748B;     /* Slate 500 */
+            --bg-body: #F8FAFC;        /* Slate 50 */
+            --bg-card: #FFFFFF;        /* White */
+            --border-color: #E2E8F0;   /* Slate 200 */
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary) 0%, #0F172A 100%);
+            color: white;
+            padding: 80px 40px;
+            border-bottom: 4px solid var(--accent);
+            border-radius: 0 0 24px 24px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+        }
+
+        .header .badge {
+            display: inline-block;
+            background: rgba(20, 184, 166, 0.2);
+            color: #5EEAD4;
+            padding: 6px 14px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            border: 1px solid rgba(20, 184, 166, 0.5);
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 3.2rem;
+            font-weight: 900;
+            margin: 0 0 15px 0;
+            letter-spacing: -1px;
+            line-height: 1.1;
+        }
+
+        .header p {
+            font-size: 1.15rem;
+            color: #CBD5E1;
+            max-width: 900px;
+            margin: 0;
+        }
+
+        /* Typography */
+        h2 {
+            font-size: 2.2rem;
+            color: var(--primary);
+            margin: 60px 0 30px 0;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 12px;
+            display: flex;
+            align-items: center;
+        }
+        
+        h2::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 32px;
+            background-color: var(--accent);
+            margin-right: 15px;
+            border-radius: 4px;
+        }
+
+        h3 {
+            font-size: 1.6rem;
+            color: var(--primary-light);
+            margin: 40px 0 20px 0;
+            font-weight: 800;
+        }
+
+        /* PlantUML Box */
+        .puml-container {
+            background: #020617;
+            border: 1px solid #1E293B;
+            border-radius: 12px;
+            padding: 30px;
+            margin: 40px 0;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            position: relative;
+            overflow-x: auto;
+        }
+
+        .puml-container::before {
+            content: 'PlantUML Source (Motor Backend C++)';
+            position: absolute;
+            top: 0; right: 0;
+            background: var(--accent);
+            color: #FFF;
+            padding: 6px 16px;
+            font-size: 11px;
+            font-weight: 800;
+            border-radius: 0 12px 0 12px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .puml-container pre {
+            margin: 0;
+            color: #99F6E4; /* Teal 200 */
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 13.5px;
+            line-height: 1.5;
+            white-space: pre;
+        }
+
+        /* Text Highlighting in PUML */
+        .puml-keyword { color: #5EEAD4; } /* Teal 300 */
+        .puml-string { color: #FDE047; } /* Yellow 300 */
+
+        /* Grid */
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 24px;
+            margin: 40px 0;
+        }
+
+        .info-card {
+            background: var(--bg-card);
+            padding: 28px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+            transition: all 0.2s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .info-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 6px; height: 100%;
+            background-color: var(--accent);
+        }
+
+        .info-card:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            transform: translateY(-3px);
+        }
+
+        .info-card h4 {
+            color: var(--primary);
+            margin: 0 0 12px 0;
+            font-size: 1.25rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        ul.tech-list {
+            padding-left: 20px;
+            color: var(--text-main);
+        }
+        
+        ul.tech-list li {
+            margin-bottom: 12px;
+        }
+
+        /* Footer */
+        footer {
+            margin-top: 80px;
+            padding: 40px;
+            text-align: center;
+            color: var(--text-muted);
+            border-top: 1px solid var(--border-color);
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+
+    <header class="header">
+        <div class="container" style="padding: 0; box-shadow: none; border-bottom: none; border-radius: 0;">
+            <div class="badge">Master Backend Architecture (C++20) - Módulo Informes</div>
+            <h1>Arquitectura C++ Asíncrona: <br>Clúster de Reportes, AI Semántica (LLM) y Enrutamiento ETL</h1>
+            <p>Especificación de ingeniería pura centrada en cómo el motor de lenguaje principal (C++) recibe, manipula y transforma la carga transaccional del editor "TipTap" y de los módulos cartográficos. Se ilustran las pasarelas WSS de cámaras nativas (Surveillance), el pipeline concurrente ortográfico conectado al LLM (Ollama) local, y el bridging intensivo de métricas KPI a PostgreSQL 15 a velocidad RAM.</p>
+        </div>
+    </header>
+
+    <div class="container">
+
+        <section id="clases-nucleo">
+            <h2>1. Mapeo de Clases y Puertos de Rutas API (Crow)</h2>
+            <p>El backend elimina el overhead de lenguajes interpretados usando macros directos CROW_ROUTE y la librería <code>Crow</code> incrustada bajo el contexto asíncrono de <code>Boost.Asio</code>. Aísla las funcionalidades del informe técnico en rutas de rápida asimilación de cadenas JSON dinámicas (`crow::json::rvalue`).</p>
+            
+            <div class="puml-container">
+<pre>
+<span class="puml-keyword">@startuml</span>
+skinparam DefaultFontName "Inter"
+skinparam class {
+    BackgroundColor White
+    BorderColor #1E293B
+    HeaderBackgroundColor #F1F5F9
+    ArrowColor #0D9488
+}
+
+title <b>Modelo Estructural Backend: Parsers y Micro-Pipelines C++ (Reportes)</b>
+
+package "C++ Network Context (Boost.Asio / Thread Pool)" {
+    class "MainGatewayRouter\n(main.cpp)" as ROUTER {
+        - boost::asio::io_context
+        + CROW_ROUTE("/api/reports")
+        + CROW_ROUTE("/api/reports/<string>")
+        + CROW_ROUTE("/api/mining/kpis/points")
+    }
+
+    class "DatabaseDriver\n(LibPQ Abstraction)" as DB {
+        - PGconn* conn
+        + authLookupIdentityForCompanyPg()
+        + pgExecAuditContextFromLogin()
+        + execParams("INSERT INTO reports...")
+    }
+
+    class "text_spell_service::TextSpellService" as SPELL {
+        - std::string OLLAMA_URL
+        - std::string LANGUAGETOOL_URL
+        + configureFromEnv()
+        + correctTextQuick(ref_text)
+        + rewriteTextOllama(ref_text, prompt)
+    }
+
+    class "SurveillanceSnapshot\n(surveillance_camera.py bridge)" as CCTV {
+        + CROW_ROUTE("/api/surveillance/camera-snapshot")
+        + sys.execute(ffmpeg -stream)
+    }
+}
+
+package "External Machine Learning Subsystem" {
+    class "Ollama (LLaMa3 Local)" as OLL
+    class "LanguageTool (Grammar)" as LT
+}
+
+ROUTER "1" o-- "1" DB : "Push masivo de JSONB R-Value"
+ROUTER "1" --> "1" SPELL : "/api/text/* Requests"
+ROUTER "1" --> "1" CCTV : "Streaming Pts. Video"
+
+SPELL ---> OLL : Call HTTP (Localhost Bridge)
+SPELL ---> LT : Call HTTP (Localhost Bridge)
+
+note right of ROUTER
+  <b>Recepción de Bloques TipTap</b>
+  Todo <body> de un reporte es empacado en Base64/Json.
+  C++ no serializa structs, evalúa formato sano,
+  envuelve en "DO $$" anidado de LibPQ y comitea 
+  directo al tipo JSONB de TimescaleDB con latencia sub-milisegundo.
+end note
+
+<span class="puml-keyword">@enduml</span>
+</pre>
+            </div>
+            
+            <div class="info-grid">
+                <div class="info-card">
+                    <h4>Manejo de Transacciones LibPQ (Inyección Directa)</h4>
+                    <p>En el C++ ignoramos capas ORM (Object-Relational Mapping). Emplear punteros Pq_execParams evita que el backend despilfarre ciclos de CPU intentando descifrar el masivo e interminable DOM JSON del editor TipTap. Simplemente lo aseguramos (String Sanity), abrimos una transacción asíncrona ACID, se impacta la DB y cerramos (Connection Release).</p>
+                </div>
+                <div class="info-card">
+                    <h4>Bypass de Bloqueos en Múltiples Operadores</h4>
+                    <p>La vista dinámica usa UUID V4s de forma exigente. La concurrencia asíncrona se rige usando punteros seguros y los <em>middlewares</em> custom de comprobación (extracción JWT / tenant_id por Header) antes de permitir accesos CRUD sobre los informes bloqueados.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="nlp-pipeline">
+            <h2>2. Pipeline Funcional de Procesamiento Semántico L.L.M.</h2>
+            <p>El C++ asume la labor de orquestador transicional. Cuando un autor en ControlTime decide auditar sintaxis geomecánica, el backend enruta el payload al componente especializado (<code>text_spell_service.cpp</code>) a través de peticiones HTTP locales encapsuladas sobre hilos que no detengan el WebSocket ni el Gateway Minero.</p>
+
+            <div class="puml-container">
+<pre>
+<span class="puml-keyword">@startuml</span>
+skinparam DefaultFontName "Inter"
+skinparam sequenceMessageAlign center
+skinparam sequence {
+    LifeLineBorderColor #334155
+    BoxBackgroundColor #F8FAFC
+}
+
+title <b>Secuencia Asíncrona C++: Puenteado L.L.M (Ollama & LanguageTool)</b>
+
+actor "Autor (Cliente Web)" as WEB
+box "Daemon API Crow (C++)" #E2E8F0
+participant "Ruteador\n(Crow Handler)" as CROW
+participant "text_spell\n(Servicio estático)" as SPELL
+end box
+participant "SubNet: LanguageTool\n(Port: 8010)" as LT
+participant "SubNet: Ollama\n(Port: 11434)" as LLM
+
+WEB -> CROW : POST /api/text/rewrite\n{"text":"La rocas fracturaran demañana...", "style":"técnico"}
+activate CROW
+
+CROW -> CROW : Autorizar Token JWT\nExtraer Texto Raw
+CROW -> SPELL : text_spell::rewriteTextOllama(req)
+activate SPELL
+
+SPELL -> LLM : Async libcurl POST /api/generate\n{"model":"llama3", "prompt":"Corrige formalmente y... {text}"}
+activate LLM
+note right of LLM: Procesamiento Intensivo GPU/CPU.\nOllama calcula el vector estocástico.
+LLM -->> SPELL : 200 OK Response (JSON Delta Stream)
+deactivate LLM
+
+SPELL -> SPELL : Parsea JSON Respuesta (Punto final)
+SPELL -> LT : Async libcurl POST /v2/check\nVerifica dialecto local o "PE" final.
+LT -->> SPELL : JSON Gramática
+SPELL -->> CROW : string::Devolución ensamblada
+deactivate SPELL
+
+CROW -->> WEB : HTTP 200 OK\n{"data": { "rewritten": "Masa rocosa sujeta a... "}}
+deactivate CROW
+
+<span class="puml-keyword">@enduml</span>
+</pre>
+            </div>
+            
+            <div class="info-card" style="margin-top: 30px;">
+                <h4>Mecánica de Tiempo de Expiración (Timeout Resiliency):</h4>
+                <p>Las redes neuronales (LLMs) son propensas a latencias extremas. El backend C++ implementa colapsos (Timeouts) restrictivos usando <code>Boost.Asio</code> timers. Si Ollama no reporta el primer vector en el <code>gAiEngineTimeoutMs</code> (configurable en variables de entorno), el sistema emite un Fast-Fail HTTP 504 Gateway Timeout directo a React; <b>impidiendo un Thread Lock (Bloqueo de Hilos) que tumbaría los sockets de telemetría de toda la mina.</b></p>
+            </div>
+        </section>
+
+        <section id="etl-agregation">
+            <h2>3. Proxy de Agregación ETL In-Memoria (CCTV & KPIs Dinámicos)</h2>
+            <p>Se diseñó al motor C++ como un "Proxy Paralelo". El informe llama al Endpoint de reportes estáticos, pero la página incrusta KPIs vivos (Ej. Dashboards de Aceleración); el C++ captura estas llamadas, cruza hipertablas e incrusta flujos HTTP de <code>FFMPEG</code> al vuelo para el CCTV.</p>
+
+            <div class="puml-container">
+<pre>
+<span class="puml-keyword">@startuml</span>
+skinparam DefaultFontName "Inter"
+skinparam componentStyle rectangle
+
+title <b>Componentes de Extracción C++: Rendering Híbrido (Snapshots & TimescaleDB KPIs)</b>
+
+node "Visualizador Reporte TipTap" as TIP {
+    [Bloque Interactivo: CCTV Widget]
+    [Bloque Interactivo: Gráfica KPI W.]
+}
+
+package "C++ Motor de Ruteo" as ENGINE {
+    component "Handler CCTV\n(/api/surveillance/camera-snapshot)" as CCTV
+    component "Handler KPI Data\n(/api/mining/kpis/points)" as PKPI
+    
+    component "Python Script Executor\n(surveillance_camera.py)" as PY
+}
+
+database "Main DB (Port 5432)" as DB {
+    [telemetry_raw (Hypertables)]
+}
+
+cloud "Cámaras RTSP" as RTSP
+
+[Bloque Interactivo: CCTV Widget] ---> CCTV : Petición Frame encriptada (JWT)
+[Bloque Interactivo: Gráfica KPI W.] ---> PKPI : GET Puntos por SensorID
+
+CCTV --> PY : C++ lanza sys.call("python ./scripts ...")
+PY --> RTSP : Llama Subproceso OpenCV Capture o FFMPEG (Stream)
+RTSP -->> PY : Regresa Bytes RAW
+PY -->> CCTV : Encodeado Base64 directo a Stdout
+CCTV -->> [Bloque Interactivo: CCTV Widget] : HTTP Resp (application/json_b64)
+
+PKPI --> DB : PG_EXEC("SELECT avg(value) FROM telemetry_raw WHERE...")
+DB -->> PKPI : Tuplas Resultantes (C++)
+PKPI -->> [Bloque Interactivo: Gráfica KPI W.] : HTTP(200) Arrays [] agrupados (Bucketizados)
+
+<span class="puml-keyword">@enduml</span>
+</pre>
+            </div>
+            
+            <div class="info-grid">
+                <div class="info-card">
+                    <h4>Agrupamiento Nativo de Series Temporales (Time-Buckets)</h4>
+                    <p>Las consultas <code>/api/mining/kpis/points</code> solicitadas por el editor del informe (para pintar áreas de sensores Inclinómetros) envían fechas límite. El C++ utiliza la directriz <strong>time_bucket()</strong> nativa de TimescaleDB al concatenar su string LibPQ SQL. En memoria de C++ convergen agrupamientos minificados (MinMax) reduciendo 1,000,000 de registros telemétricos a los 300 puntos exactos que necesita la librería gráfica en React, abaratando severamente los costos de ancho de banda (Egress) corporativos.</p>
+                </div>
+            </div>
+
+        </section>
+
+        <footer>
+            ControlTime Systems - Chief Architect Office, LATAM
+            <br>&copy; 2026. Documentación Enterprise de Ingeniería Base-A-Memoria C++20 (Módulo Informes D).
+        </footer>
+    </div>
+</body>
+</html>

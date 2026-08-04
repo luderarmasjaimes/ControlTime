@@ -1,13 +1,25 @@
 param(
-  [string]$InputFile = "c:\mapas\data\incoming\input.ecw",
-  [string]$OutputFile = "c:\mapas\data\incoming\raura_mbtiles3.mbtiles",
-  [string]$ComposeFile = "c:\mapas\docker-compose.yml",
+  [string]$InputFile = "",
+  [string]$OutputFile = "",
+  [string]$ComposeFile = "",
   [int]$MinZoom = 18,
   [int]$MaxZoom = 22,
   [int]$Quality = 85
 )
 
 $ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $PSCommandPath
+$WorkspaceRoot = Split-Path -Parent $ScriptDir
+if ([string]::IsNullOrWhiteSpace($InputFile)) {
+  $InputFile = Join-Path $WorkspaceRoot "data\incoming\input.ecw"
+}
+if ([string]::IsNullOrWhiteSpace($OutputFile)) {
+  $OutputFile = Join-Path $WorkspaceRoot "data\incoming\raura_mbtiles3.mbtiles"
+}
+if ([string]::IsNullOrWhiteSpace($ComposeFile)) {
+  $ComposeFile = Join-Path $WorkspaceRoot "docker-compose.yml"
+}
 
 function Get-OverviewFactors {
   param(
@@ -52,7 +64,7 @@ if ($formatsText -notmatch "ECW\s+-raster") {
 
 Write-Host "[2/4] Convirtiendo ECW a MBTiles..."
 try {
-  docker compose -f $ComposeFile stop tileserver | Out-Host
+  docker-compose -f $ComposeFile stop tileserver | Out-Host
 
   if (Test-Path $OutputFile) {
     $removed = $false
@@ -104,7 +116,7 @@ try {
   }
 } finally {
   Write-Host "[3/4] Reiniciando tileserver..."
-  docker compose -f $ComposeFile up -d tileserver | Out-Host
+  docker-compose -f $ComposeFile up -d tileserver | Out-Host
   Start-Sleep -Seconds 2
 }
 

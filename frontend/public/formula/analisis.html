@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>FORMULA – Análisis SP Temperatura Minera</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <script src="vendor/chart-4.4.3.umd.min.js"></script>
+  <script src="vendor/chartjs-adapter-date-fns-3.0.0.bundle.min.js"></script>
+  <script src="formula-config.js"></script>
+  <script src="analisis-boot.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Poppins',sans-serif;background:#eef1f5;color:#2c3e50;font-size:14px}
+
+    /* ─── HEADER ─── */
+    header{
+      background:linear-gradient(135deg,#1e3a5f 0%,#2a4a70 100%);
+      color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px;
+      box-shadow:0 2px 10px rgba(0,0,0,.18);position:sticky;top:0;z-index:100
+    }
+    header h1{font-size:17px;font-weight:600;letter-spacing:.3px;white-space:nowrap}
+    .back-btn{padding:7px 14px;background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3);
+      border-radius:5px;cursor:pointer;font-size:13px;text-decoration:none;transition:background .2s;white-space:nowrap}
+    .back-btn:hover{background:rgba(255,255,255,.28)}
+    .badge{padding:3px 10px;background:rgba(232,146,30,.9);border-radius:12px;font-size:11px;font-weight:600;margin-left:auto;white-space:nowrap}
+    .hdr-save-btn{
+      margin-left:10px;padding:7px 16px;background:rgba(46,204,113,.85);color:#fff;
+      border:1px solid rgba(46,204,113,.5);border-radius:6px;cursor:pointer;
+      font-family:'Poppins',sans-serif;font-size:12px;font-weight:600;
+      white-space:nowrap;transition:background .2s;flex-shrink:0
+    }
+    .hdr-save-btn:hover{background:rgba(39,174,96,.95)}
+
+    /* ─── MAIN LAYOUT ─── */
+    .layout{display:grid;grid-template-columns:300px 1fr;gap:0;height:calc(100vh - 52px);overflow:hidden}
+
+    /* ─── LEFT SIDEBAR ─── */
+    .sidebar{background:#fff;border-right:1px solid #dde3ef;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+    .sidebar h2{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:#1e3a5f;
+      border-bottom:2px solid #e8921e;padding-bottom:6px;margin-bottom:4px}
+
+    label{display:block;font-size:11px;font-weight:600;color:#576;margin:8px 0 3px;text-transform:uppercase;letter-spacing:.3px}
+    select,input[type=datetime-local]{
+      width:100%;padding:7px 9px;border:1px solid #cdd3de;border-radius:5px;
+      font-family:'Poppins',sans-serif;font-size:12px;color:#2c3e50;background:#fafbfc
+    }
+    select:focus,input:focus{outline:none;border-color:#2a4a70;box-shadow:0 0 0 2px rgba(42,74,112,.13)}
+
+    .info-box{background:#f0f5ff;border-left:3px solid #2a4a70;border-radius:4px;padding:8px 10px;
+      font-size:11px;color:#3a4a5c;line-height:1.7}
+    .info-box b{color:#1e3a5f}
+
+    /* ─── BUTTONS ─── */
+    .btn{display:block;width:100%;padding:10px;border:none;border-radius:6px;cursor:pointer;
+      font-family:'Poppins',sans-serif;font-size:13px;font-weight:600;transition:all .2s;text-align:center}
+    .btn-exec{background:#e8921e;color:#fff}
+    .btn-exec:hover{background:#c97a12;transform:translateY(-1px)}
+    .btn-exec:disabled{background:#b0b8c4;cursor:not-allowed;transform:none}
+    .btn-sp{background:#1e3a5f;color:#fff;margin-top:6px}
+    .btn-sp:hover{background:#152e4d}
+    .btn-flow{background:#16543a;color:#fff;margin-top:6px}
+    .btn-flow:hover{background:#0f3d2a}
+
+    /* ─── STATS ─── */
+    .stats{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+    .stat{background:#f9fafc;border:1px solid #e0e4ee;border-radius:6px;padding:8px;text-align:center}
+    .stat .val{font-size:19px;font-weight:700;color:#1e3a5f;line-height:1.1}
+    .stat .lbl{font-size:9px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+    .stat.si .val{color:#c0392b} .stat.no .val{color:#27ae60}
+    .stat.total .val{color:#2a4a70} .stat.pct .val{color:#e8921e}
+
+    /* ─── ERROR ─── */
+    .err{display:none;background:#fdecea;border-left:3px solid #e74c3c;border-radius:4px;
+      padding:9px 11px;font-size:12px;color:#7a1a1a}
+    .err.on{display:block}
+
+    /* ─── MAIN CONTENT ─── */
+    .content{overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:16px;min-width:0}
+
+    /* ─── SECTION CARDS ─── */
+    .card{background:#fff;border-radius:10px;box-shadow:0 1px 8px rgba(0,0,0,.07);overflow:hidden}
+    .card-header{display:flex;align-items:center;justify-content:space-between;
+      padding:12px 16px;background:#f8f9fc;border-bottom:1px solid #e8ecf3}
+    .card-header h3{font-size:13px;font-weight:700;color:#1e3a5f;letter-spacing:.3px}
+    .card-header .tag{font-size:10px;padding:3px 9px;border-radius:10px;font-weight:600}
+    .tag-orig{background:#dbeafe;color:#1e40af}
+    .tag-proc{background:#fef3c7;color:#92400e}
+    .tag-sp{background:#d1fae5;color:#064e3b}
+    .card-body{padding:16px}
+
+    /* ─── CHARTS ─── */
+    .chart-scroll{overflow-x:auto;overflow-y:auto;max-height:600px}
+    .chart-wrap{position:relative;height:560px;min-width:1200px;cursor:crosshair}
+    .chart-empty{display:flex;align-items:center;justify-content:center;height:280px;
+      color:#aaa;font-size:13px;border:2px dashed #dde;border-radius:8px}
+
+    /* ── Chart card: allow inner scroll to show scrollbars (override .card overflow:hidden) ── */
+    #chart2Card{overflow:visible}
+    #chart2Card .card-body{padding:12px;overflow:hidden;border-radius:0 0 10px 10px}
+    #chart2Card .chart-scroll{
+      overflow-x:auto;overflow-y:auto;
+      max-height:580px;
+      border:1px solid #e4e9f2;
+      border-radius:6px;
+      background:#fafbfe;
+      scrollbar-width:thin;
+      scrollbar-color:#b0bcd8 #f0f3fa
+    }
+    #chart2Card .chart-scroll::-webkit-scrollbar{height:8px;width:8px}
+    #chart2Card .chart-scroll::-webkit-scrollbar-track{background:#f0f3fa;border-radius:4px}
+    #chart2Card .chart-scroll::-webkit-scrollbar-thumb{background:#b0bcd8;border-radius:4px}
+    #chart2Card .chart-scroll::-webkit-scrollbar-thumb:hover{background:#7a91c4}
+
+    /* ─── CHART ZOOM TOOLBAR ─── */
+    .chart-zoom-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .chart-zbtn{padding:4px 10px;border:1px solid #c8d3f0;border-radius:4px;background:#f0f4ff;
+      color:#1e3a5f;cursor:pointer;font-size:11px;font-weight:600;font-family:'Poppins',sans-serif;
+      transition:background .15s}
+    .chart-zbtn:hover{background:#dde8ff}
+    .chart-zbtn.active{background:#1e3a5f;color:#fff;border-color:#1e3a5f}
+
+    /* ─── SAVE MODAL ─── */
+    .modal-overlay{display:none;position:fixed;inset:0;background:rgba(14,30,55,.6);
+      z-index:500;align-items:center;justify-content:center}
+    .modal-overlay.on{display:flex}
+    .modal-box{background:#fff;border-radius:12px;width:min(520px,95vw);max-height:90vh;
+      overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.25)}
+    .modal-hdr{display:flex;align-items:center;justify-content:space-between;
+      padding:14px 18px;background:#1e3a5f;color:#fff;border-radius:12px 12px 0 0}
+    .modal-hdr h2{font-size:15px;font-weight:700}
+    .modal-hdr .close-btn{background:rgba(255,255,255,.2);border:none;color:#fff;
+      width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:16px;
+      display:flex;align-items:center;justify-content:center;padding:0}
+    .modal-hdr .close-btn:hover{background:rgba(255,255,255,.38)}
+    .modal-body{padding:18px}
+    .modal-section{background:#f8f9fc;border:1px solid #e0e6f0;border-radius:8px;
+      padding:10px 12px;margin-bottom:14px;font-size:11px;color:#3a4a5c;line-height:1.9}
+    .modal-section b{color:#1e3a5f}
+    .modal-field{margin-bottom:12px}
+    .modal-field label{display:block;font-size:11px;font-weight:600;color:#576;
+      text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}
+    .modal-field input,.modal-field select{
+      width:100%;padding:8px 10px;border:1px solid #cdd3de;border-radius:5px;
+      font-family:'Poppins',sans-serif;font-size:12px;color:#2c3e50;background:#fafbfc}
+    .gps-status{font-size:11px;padding:8px 11px;border-radius:5px;
+      background:#f0f8f0;border:1px solid #b7e1c4;color:#1a6a3a;margin-bottom:12px}
+    .gps-status.waiting{background:#fff9e6;border-color:#f5d484;color:#7a5a00}
+    .gps-status.error{background:#fff0ee;border-color:#f5b4ae;color:#7a1a1a}
+    .modal-footer{display:flex;gap:10px;justify-content:flex-end;padding-top:4px}
+    .btn-save-confirm{padding:9px 22px;background:#e8921e;color:#fff;border:none;
+      border-radius:6px;cursor:pointer;font-family:'Poppins',sans-serif;
+      font-size:13px;font-weight:600;transition:background .2s}
+    .btn-save-confirm:hover{background:#c97a12}
+    .btn-save-confirm:disabled{background:#b0b8c4;cursor:not-allowed}
+    .btn-cancel{padding:9px 18px;background:#f0f0f0;color:#555;border:1px solid #ccc;
+      border-radius:6px;cursor:pointer;font-family:'Poppins',sans-serif;font-size:13px}
+
+    /* ─── SPINNER OVERLAY ─── */
+    .spinner-overlay{display:none;position:fixed;inset:0;background:rgba(14,30,55,.45);
+      z-index:999;align-items:center;justify-content:center;flex-direction:column;gap:14px}
+    .spinner-overlay.on{display:flex}
+    .spinner-circle{width:48px;height:48px;border:5px solid rgba(255,255,255,.2);
+      border-top-color:#e8921e;border-radius:50%;animation:spin .8s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .spinner-text{color:#fff;font-size:14px;font-weight:500}
+
+    /* ─── FLOW DIAGRAM ─── */
+    #flowPanel{display:none}
+    .flow-legend{display:flex;flex-wrap:wrap;gap:6px 14px}
+    .leg-item{display:flex;align-items:center;gap:6px;font-size:11px;color:#444;line-height:1.4}
+    .leg-dot{width:12px;height:12px;flex-shrink:0;display:inline-block}
+    .flow-toolbar{
+      display:flex;align-items:center;gap:8px;padding:8px 16px;
+      background:#f0f4ff;border-bottom:1px solid #e0e8ff
+    }
+    .flow-zbtn{
+      padding:5px 13px;background:#1e3a5f;color:#fff;border:none;
+      border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;line-height:1
+    }
+    .flow-zbtn:hover{background:#142d4a}
+    .flow-info{font-size:11px;color:#666;margin-left:4px}
+    .flow-viewport{
+      overflow:auto;height:560px;background:#f8faff;
+      cursor:grab;position:relative;border-top:1px solid #e0e8ff
+    }
+    .flow-viewport.dragging{cursor:grabbing}
+    .flow-inner{
+      display:inline-block
+    }
+
+    /* ─── SP VIEWER ─── */
+    #spPanel{display:none;min-width:0}
+    .sp-toolbar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#141721;border-bottom:1px solid #2a2d3e;flex-wrap:wrap;gap:6px}
+    .sp-toolbar span{color:#a78bfa;font-size:12px;font-weight:600;letter-spacing:.4px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+    .sp-actions{display:flex;gap:8px;flex-shrink:0}
+    .sp-btn{padding:5px 12px;background:rgba(255,255,255,.1);color:#cdd;border:1px solid rgba(255,255,255,.15);
+      border-radius:4px;cursor:pointer;font-size:11px;font-family:'Poppins',sans-serif;transition:background .2s;white-space:nowrap}
+    .sp-btn:hover{background:rgba(255,255,255,.22)}
+    #spCode{width:100%;max-width:100%;height:400px;background:#1a1d27;color:#86efac;border:none;resize:none;
+      font-family:'Roboto Mono',monospace;font-size:12px;line-height:1.75;padding:16px;outline:none;tab-size:2;
+      box-sizing:border-box;display:block}
+
+    /* ─── HEADER CTX BAR (parámetros bloqueados, sólo lectura) ─── */
+    .hdr-ctx-locked{
+      display:flex;align-items:center;gap:6px;
+      padding:0 12px;
+      border-left:1px solid rgba(255,255,255,.2);
+      flex-shrink:0;
+    }
+    .hdr-ctx-locked-lbl{
+      font-size:10px;font-weight:700;color:#e8921e;
+      text-transform:uppercase;letter-spacing:1px;white-space:nowrap;
+    }
+    .hdr-ctx-sel{
+      padding:5px 20px 5px 8px;
+      border:1px solid rgba(255,255,255,.2);
+      border-radius:5px;
+      background:rgba(255,255,255,.1)
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23fff' opacity='.5'/%3E%3C/svg%3E")
+        no-repeat right 7px center;
+      color:#fff;
+      font-family:'Poppins',sans-serif;
+      font-size:11px;font-weight:500;
+      max-width:160px;
+      -webkit-appearance:none;appearance:none;
+      cursor:default;pointer-events:none;
+    }
+    .hdr-ctx-sel:disabled{ opacity:1; -webkit-text-fill-color:#e8e8e8; }
+
+    /* Sidebar selects locked state */
+    select.locked-sel,input.locked-sel{
+      background:#f0f4f8 !important;
+      color:#2c3e50 !important;
+      cursor:default;
+      pointer-events:none;
+      border-color:#c8d3de !important;
+    }
+    .ctx-lock-notice{
+      display:flex;align-items:center;gap:5px;
+      font-size:10px;color:#7a8e9e;
+      background:#f4f8ff;
+      border:1px solid #d0dbed;
+      border-radius:4px;
+      padding:5px 8px;
+      margin-top:4px;
+    }
+
+    /* ─── TOOLTIP COPIED ─── */
+    .toast{position:fixed;bottom:24px;right:24px;background:#1e3a5f;color:#fff;padding:10px 18px;
+      border-radius:6px;font-size:13px;font-weight:500;opacity:0;pointer-events:none;
+      transition:opacity .3s;z-index:9999}
+    .toast.show{opacity:1}
+  </style>
+</head>
+<body>
+
+<!-- ══ SPINNER OVERLAY ══ -->
+<div class="spinner-overlay" id="spinnerOverlay">
+  <div class="spinner-circle"></div>
+  <div class="spinner-text">⚙ Ejecutando Stored Procedure…</div>
+</div>
+<div class="toast" id="toast">✔ Copiado al portapapeles</div>
+
+<!-- ══ HEADER ══ -->
+<header>
+  <a href="index.html" class="back-btn">← Editor</a>
+  <h1>⚗ FORMULA — Análisis SP Temperatura Minera · Perú</h1>
+  <!-- Parámetros del editor (sólo lectura, pegados a la derecha del título) -->
+  <div class="hdr-ctx-locked" id="hdrCtxBar" title="Parámetros fijados desde el Editor — sólo lectura">
+    <span class="hdr-ctx-locked-lbl">🔒&nbsp;Contexto</span>
+    <select id="hdrSelEmpresa" class="hdr-ctx-sel" disabled title="Empresa Minera"><option>— empresa —</option></select>
+    <select id="hdrSelMina"    class="hdr-ctx-sel" disabled title="Mina"><option>— mina —</option></select>
+    <select id="hdrSelVariable" class="hdr-ctx-sel" disabled title="Variable"><option>— variable —</option></select>
+  </div>
+  <span class="badge">Multitenant · 2025–2026 · 210 000+ lecturas</span>
+  <button class="hdr-save-btn" id="btnGuardar" onclick="abrirModalGuardar()" title="Guardar fórmula con parámetros y resultados en la base de datos">💾 Guardar Fórmula</button>
+</header>
+
+<div class="layout">
+
+  <!-- ══════════════════ SIDEBAR ══════════════════ -->
+  <div class="sidebar">
+
+    <div>
+      <h2>🔒 Contexto del Editor</h2>
+      <div class="ctx-lock-notice">🔒 Selección fijada desde el Editor principal</div>
+
+      <label for="selEmpresa">Empresa Minera (Tenant)</label>
+      <select id="selEmpresa"><option value="">— cargando… —</option></select>
+
+      <label for="selMina">Mina</label>
+      <select id="selMina"><option value="">— seleccione empresa —</option></select>
+
+      <label for="selVariable">Variable</label>
+      <select id="selVariable" disabled><option value="">— automático —</option></select>
+
+      <label for="fInicio">Fecha / Hora Inicio</label>
+      <input type="datetime-local" id="fInicio" value="2025-07-10T00:00"/>
+
+      <label for="fFin">Fecha / Hora Fin</label>
+      <input type="datetime-local" id="fFin" value="2025-07-17T23:30"/>
+
+      <div id="minaInfo" class="info-box" style="display:none;margin-top:10px"></div>
+    </div>
+
+    <!-- Botón principal -->
+    <button class="btn btn-exec" id="btnEjecutar" onclick="ejecutarSP()">▶ EJECUTAR SP</button>
+
+    <!-- Botón diagrama de flujo -->
+    <button class="btn btn-flow" id="btnFlow" onclick="toggleFlow()">◇ Ver Diagrama de Flujo</button>
+
+    <!-- Botón SP SQL -->
+    <button class="btn btn-sp" id="btnSP" onclick="toggleSP()">🗄 Ver Stored Procedure SQL</button>
+
+    <div class="err" id="errMsg"></div>
+
+    <!-- Estadísticas -->
+    <div id="statsBox" style="display:none">
+      <h2>📊 Resultados</h2>
+      <div class="stats">
+        <div class="stat total"><div class="val" id="statTotal">—</div><div class="lbl">Total lecturas</div></div>
+        <div class="stat pct"><div class="val" id="statPctSI">—</div><div class="lbl">% Alertas</div></div>
+        <div class="stat si"><div class="val" id="statSI">—</div><div class="lbl">⚠ Condición SI</div></div>
+        <div class="stat no"><div class="val" id="statNO">—</div><div class="lbl">✔ Condición NO</div></div>
+      </div>
+    </div>
+
+  </div><!-- /sidebar -->
+
+  <!-- ══════════════════ CONTENT ══════════════════ -->
+  <div class="content" id="mainContent">
+
+    <!-- ── PLACEHOLDER estado inicial ── -->
+    <div id="placeholderCard" class="card">
+      <div class="card-header">
+        <h3>👋 Instrucciones</h3>
+      </div>
+      <div class="card-body" style="font-size:13px;line-height:1.9;color:#556">
+        <p>1. Seleccione la <b>Empresa Minera</b> y la <b>Mina</b> en el panel izquierdo.</p>
+        <p>2. Ajuste el <b>rango de fechas</b> deseado (máx. ~2 000 puntos graficados).</p>
+        <p>3. Presione <b style="color:#e8921e">▶ EJECUTAR SP</b> para correr el Stored Procedure.</p>
+        <p>4. Use <b style="color:#16543a">◇ Ver Diagrama de Flujo</b> para ver la lógica del diagrama FORMULA.</p>
+        <p>5. Use <b style="color:#1e3a5f">🗄 Ver Stored Procedure SQL</b> para ver / copiar el código PostgreSQL generado.</p>
+        <hr style="margin:12px 0;border:none;border-top:1px solid #e0e4ee"/>
+        <div id="formulaDesc" style="font-size:11px;color:#888;line-height:1.8"><span style="color:#bbb">⏳ Cargando diagrama…</span></div>
+      </div>
+    </div>
+
+    <!-- ── FLOW DIAGRAM (oculto por defecto) ── -->
+    <div class="card" id="flowPanel">
+      <div class="card-header">
+        <h3>◇ Diagrama de Flujo — Lógica del SP</h3>
+        <span class="tag tag-sp">FORMULA BLOCKS</span>
+      </div>
+      <div class="flow-toolbar">
+        <button class="flow-zbtn" onclick="flowZoom(0.15)">＋ Zoom In</button>
+        <button class="flow-zbtn" onclick="flowZoom(-0.15)">－ Zoom Out</button>
+        <button class="flow-zbtn" onclick="flowReset()">⊡ Reset</button>
+        <span class="flow-info">Rueda del mouse: zoom &nbsp;|&nbsp; Arrastrar: mover</span>
+      </div>
+      <div class="flow-viewport" id="flowViewport">
+        <div class="flow-inner" id="flowInner">
+          <div id="flowDynContent" style="padding:20px;min-width:600px"><p style="color:#aaa;text-align:center">⏳ Cargando diagrama de flujo…</p></div>
+        </div><!-- /flow-inner -->
+      </div><!-- /flow-viewport -->
+
+        <!-- Leyenda -->
+        <div class="flow-legend" style="margin-top:0;padding:10px 16px 14px;border-top:1px solid #e8ecf3">
+          <div class="leg-item"><div class="leg-dot" style="background:#e0e7ff;border:1px solid #6366f1;border-radius:10px"></div>Terminal (Inicio/Fin)</div>
+          <div class="leg-item"><div class="leg-dot" style="background:#bfdbfe;border:1px solid #2563eb"></div>Bloque Proceso</div>
+          <div class="leg-item"><div class="leg-dot" style="background:#fef08a;border:1px solid #f59e0b;transform:rotate(45deg)"></div>Condición (Rombo)</div>
+          <div class="leg-item"><div class="leg-dot" style="background:#fee2e2;border:1px solid #dc2626"></div>Bloque ALERTA (SI)</div>
+          <div class="leg-item"><div class="leg-dot" style="background:#dcfce7;border:1px solid #16a34a"></div>Bloque NORMAL (NO)</div>
+          <div class="leg-item"><div class="leg-dot" style="background:#ede9fe;border:1px solid #7c3aed"></div>Bloque Resultado</div>
+        </div>
+    </div><!-- /flowPanel -->
+
+    <!-- ── STORED PROCEDURE SQL (oculto por defecto) ── -->
+    <div class="card" id="spPanel">
+      <div class="sp-toolbar">
+        <span>🗄 STORED PROCEDURE — sp_proceso_temperatura (PostgreSQL)</span>
+        <div class="sp-actions">
+          <button class="sp-btn" onclick="copiarSQL()">📋 Copiar SQL</button>
+          <button class="sp-btn" onclick="descargarSQL()">⬇ Descargar .sql</button>
+        </div>
+      </div>
+      <textarea id="spCode" readonly spellcheck="false"></textarea>
+    </div>
+
+    <!-- ── GRÁFICO 2: Original vs. Procesada por SP ── -->
+    <div class="card" id="chart2Card" style="display:none">
+      <div class="card-header">
+        <h3>📊 Gráfico 2 — Data Original vs. Data Procesada por SP</h3>
+        <div class="chart-zoom-bar">
+          <button class="chart-zbtn" onclick="zoomChartIn()" title="Acercar (zoom in)">🔍 +</button>
+          <button class="chart-zbtn" onclick="zoomChartOut()" title="Alejar (zoom out)">🔎 −</button>
+          <button class="chart-zbtn" onclick="zoomChartReset()" title="Restablecer zoom">↺ Reset</button>
+          <button class="chart-zbtn" onclick="descargarGrafico()" title="Descargar PNG">⬇ PNG</button>
+          <span class="tag tag-proc">RESULTADO SP</span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="chart-scroll" id="chartScrollArea">
+          <div class="chart-wrap" id="chartWrapArea">
+            <canvas id="chartComparativo"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TABLA — todos los datos ── -->
+    <div class="card" id="tableCard" style="display:none">
+      <div class="card-header">
+        <h3 id="tableTitle">📋 Datos del SP</h3>
+        <span class="tag tag-sp">SP RESULT</span>
+      </div>
+      <div class="card-body" style="overflow-x:auto;max-height:480px;overflow-y:auto">
+        <table id="dataTable" style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="background:#f0f4ff;color:#1e3a5f">
+              <th style="padding:7px 10px;text-align:left;border-bottom:2px solid #c8d3f0">Timestamp</th>
+              <th style="padding:7px 10px;text-align:right;border-bottom:2px solid #c8d3f0">Original (°C)</th>
+              <th style="padding:7px 10px;text-align:center;border-bottom:2px solid #c8d3f0">Umbral</th>
+              <th style="padding:7px 10px;text-align:center;border-bottom:2px solid #c8d3f0">Condición</th>
+              <th style="padding:7px 10px;text-align:right;border-bottom:2px solid #c8d3f0">Procesado (°C)</th>
+              <th style="padding:7px 10px;text-align:left;border-bottom:2px solid #c8d3f0">Descripción</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /layout -->
+
+<!-- ══ MODAL: Guardar Fórmula ══ -->
+<div id="modalGuardar" class="modal-overlay" onclick="if(event.target===this)cerrarModalGuardar()">
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <h2>💾 Guardar Fórmula Completa</h2>
+      <button class="close-btn" onclick="cerrarModalGuardar()" title="Cerrar">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- Resumen de parámetros actuales -->
+      <div class="modal-section" id="saveParamsPreview">
+        <b>Parámetros actuales:</b> complete los filtros y ejecute el SP primero.
+      </div>
+
+      <!-- Usuario -->
+      <div class="modal-field">
+        <label>Tu nombre completo *</label>
+        <input type="text" id="saveUsuario" placeholder="Ej: Juan Pérez García" autocomplete="name"/>
+      </div>
+
+      <!-- Acción -->
+      <div class="modal-field">
+        <label>¿Qué acción realizaste?</label>
+        <select id="saveAccion">
+          <option value="VISUALIZO">Visualicé / consulté la fórmula</option>
+          <option value="CREO">Creé / diseñé la fórmula</option>
+          <option value="MODIFICO">Modifiqué / actualicé la fórmula</option>
+        </select>
+      </div>
+
+      <!-- GPS status -->
+      <div id="gpsStatusBox" class="gps-status waiting">📍 Solicitando ubicación GPS…</div>
+
+      <!-- Acciones -->
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="cerrarModalGuardar()">Cancelar</button>
+        <button class="btn-save-confirm" id="btnSaveConfirm" onclick="confirmarGuardar()">💾 Guardar en DB</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="analisis-main.js"></script>
+</body>
+</html>

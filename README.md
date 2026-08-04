@@ -5,7 +5,7 @@ Solución base para baja latencia con:
 - Backend C++ (`Boost.Asio` + `Boost.Beast` + `OpenCV`) para orquestar conversiones.
 - Pipeline de conversión `ECW -> MBTiles` con `GDAL` y parámetros configurables.
 - Servidor de tiles dedicado (`mbtileserver`) consumido por frontend web.
-- Frontend avanzado con `MapLibre GL JS` y monitoreo de jobs en tiempo real (polling).
+- Frontend cartográfico con `Leaflet` y monitoreo de jobs en tiempo real (polling).
 - Despliegue Linux usando `Docker Compose`.
 
 ## Arquitectura
@@ -19,7 +19,7 @@ Solución base para baja latencia con:
 ## Estructura
 
 - `backend/`: API C++ y motor de conversión.
-- `frontend/`: UI MapLibre + panel de control.
+- `frontend/`: UI Leaflet + panel de control.
 - `data/`: entrada/salida compartida para conversiones y tiles.
 - `docker-compose.yml`: orquestación completa Linux.
 
@@ -34,7 +34,7 @@ Solución base para baja latencia con:
 ## Levantar en Docker
 
 ```bash
-docker compose up --build
+docker-compose up --build
 ```
 
 Servicios:
@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 
 Este script:
 
-- Levanta contenedores con `docker compose up -d --no-build`.
+- Levanta contenedores con `docker-compose up -d --no-build`.
 - Genera imagen de prueba y la georreferencia.
 - Ejecuta conversión vía API.
 - Verifica publicación de tiles y disponibilidad del frontend.
@@ -133,7 +133,7 @@ La lectura ECW en GDAL depende del driver/plugin y licenciamiento. Si el contene
 2. Reinicia backend:
 
 ```bash
-docker compose up -d --build backend
+docker-compose up -d --build web
 ```
 
 3. Verifica capacidades:

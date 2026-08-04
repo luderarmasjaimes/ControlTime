@@ -1,19 +1,13 @@
 import { test, expect } from '@playwright/test'
+import { dismissUserMaintenancePrompt, openCategory, realLogin } from './helpers'
+
+const REAL_CREDS = { company: 'Alpayana', username: 'larmas', password: '123456' }
 
 test('Editor carga y muestra el encabezado del informe', async ({ page }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      'mining_auth_session_v1',
-      JSON.stringify({
-        username: 'admin_e2e',
-        fullName: 'E2E Admin',
-        company: 'Minera Raura',
-        role: 'admin',
-        token: 'tok_e2e_admin',
-      })
-    )
-  })
+  await realLogin(page, REAL_CREDS)
   await page.goto('/')
-  await page.getByRole('button', { name: 'Report' }).click()
+  await dismissUserMaintenancePrompt(page)
+  await openCategory(page, 'Informes')
+  await page.getByRole('button', { name: 'Abrir Reporte', exact: true }).click()
   await expect(page.getByText(/Informe Geomecánico/i)).toBeVisible()
 })

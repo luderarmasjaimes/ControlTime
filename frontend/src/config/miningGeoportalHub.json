@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "title": "Geoservidor minero (concepto)",
+  "concept": {
+    "lead": "Un Geoservidor combina visor web GIS, repositorio geoespacial, interoperabilidad (WMS/WFS) y catálogo de metadatos. En minería se aplica a concesiones, geología, permisos, infraestructura y monitoreo ambiental.",
+    "bullets": [
+      "Visor de mapas interactivos y capas temáticas (uso de suelo, riesgos, deforestación, etc.).",
+      "Servicios estándar: WMS para imágenes de mapa, WFS para geometrías y APIs REST.",
+      "Decisiones territoriales: inversión, conflictos de superposición, exploración y cumplimiento normativo."
+    ]
+  },
+  "mvpStack": {
+    "title": "MVP técnico recomendado",
+    "items": [
+      "Frontend: Leaflet u OpenLayers (este visor usa Leaflet).",
+      "Capas institucionales: WMS (p. ej. MINAM, plantillas INGEMMET/MINEM cuando configure URL y capa).",
+      "Backend GIS de producción: PostGIS + GeoServer o ArcGIS Server; WFS para edición/consulta de features.",
+      "Escalar: dashboards (Power BI, Superset), modelos predictivos e integración satelital."
+    ]
+  },
+  "differential": {
+    "title": "Hacia una plataforma inteligente",
+    "bullets": [
+      "GIS + datos operativos + reglas de cruce (p. ej. activos vs polígonos oficiales en GeoJSON).",
+      "Alertas temáticas (deforestación, ilegalidad, desviaciones) y scoring de zonas cuando exista data de entrenamiento.",
+      "Un solo lugar para catastro, ambiente, permisos y operación con trazabilidad."
+    ]
+  },
+  "useCases": [
+    "Evaluar dónde invertir o explorar con contexto normativo y físico.",
+    "Detectar superposiciones: comunidades, arqueología, áreas protegidas, concesiones.",
+    "Planificar campo y cumplir EIA, monitoreos y reportes a autoridad.",
+    "Soporte a decisión empresa o gobierno con evidencia georreferenciada."
+  ],
+  "modules": [
+    {
+      "id": "catastro",
+      "letter": "A",
+      "title": "Catastro minero",
+      "summary": "Concesiones y polígonos de derechos; titularidad y estado legal (vigente, caducado).",
+      "details": [
+        "En Perú: línea de trabajo tipo INGEMMET / Sistema de Información sobre Derechos Mineros.",
+        "Superponer concesiones con la unidad operativa y zonas de exclusión."
+      ],
+      "wmsPreset": "PERMIN:ingemmet-catastro",
+      "links": [
+        { "label": "INGEMMET", "href": "https://www.gob.pe/ingemmet" },
+        { "label": "Portal geocientífico INGEMMET", "href": "https://geocatmin.ingemmet.gob.pe/" }
+      ]
+    },
+    {
+      "id": "geologia",
+      "letter": "B",
+      "title": "Geología y exploración",
+      "summary": "Litología, estructuras, geoquímica/geofísica y prospectos.",
+      "details": [
+        "Conectar WMS de levantamiento geológico regional o estudios propios en GeoServer.",
+        "Útil para targets de perforación y contexto estructural."
+      ],
+      "wmsPreset": "PERMIN:ingemmet-geologia",
+      "links": [
+        { "label": "Referencia: Geoportal SERNAGEOMIN (Chile)", "href": "https://www.sernageomin.cl/" }
+      ]
+    },
+    {
+      "id": "ambiental",
+      "letter": "C",
+      "title": "Información ambiental minera",
+      "summary": "Áreas naturales protegidas, exclusiones, pasivos y monitoreo (agua, aire, suelo).",
+      "details": [
+        "Alineado a capas tipo MINAM Geoservidor, enfocado al contexto minero.",
+        "Cruce con operación en campo y reportes de cumplimiento."
+      ],
+      "wmsPreset": "PER:minam-geoserver",
+      "links": [
+        { "label": "MINAM Geoservidor", "href": "https://geoservidor.minam.gob.pe/" }
+      ]
+    },
+    {
+      "id": "permisos",
+      "letter": "D",
+      "title": "Permisos y restricciones",
+      "summary": "Superposición con comunidades, patrimonio y áreas protegidas; estado de instrumentos (EIA, etc.).",
+      "details": [
+        "Combine capas oficiales WMS con polígonos internos y el cruce activo–polígono del backend.",
+        "Documente fuente y vigencia de cada capa en metadatos."
+      ],
+      "wmsPreset": "PER:minam-riesgo-ejemplo",
+      "links": [
+        { "label": "Geoservidor MINAM (riesgo / territorio)", "href": "https://geoservidor.minam.gob.pe/" }
+      ]
+    },
+    {
+      "id": "operacion",
+      "letter": "E",
+      "title": "Producción y operación",
+      "summary": "Unidades activas, infraestructura (plantas, relaves, vías) y contexto espacial de la faena.",
+      "details": [
+        "En esta plataforma: marcadores operativos, geocercas y rutas en el visor.",
+        "Ampliable con capas WMS de infraestructura nacional cuando estén publicadas."
+      ],
+      "wmsPreset": "PERMIN:minem-estamin",
+      "links": [
+        { "label": "MINEM", "href": "https://www.gob.pe/minem" }
+      ]
+    },
+    {
+      "id": "analitica",
+      "letter": "F",
+      "title": "Analítica y BI",
+      "summary": "Dashboards ejecutivos, riesgo espacial y predicción cuando existan datos históricos.",
+      "details": [
+        "Integre Power BI, Superset u otras herramientas vía API y geometrías en PostGIS.",
+        "El Centro de Control de esta suite complementa KPIs; el mapa aporta el contexto territorial."
+      ],
+      "wmsPreset": null,
+      "links": [
+        { "label": "Referencia: Geological Survey (Canadá)", "href": "https://www.nrcan.gc.ca/earth-sciences/geography/topographic-information/free-data-geogratis/geogratis-web-services/22484" }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "region": "Perú",
+      "items": [
+        { "label": "INGEMMET — información geocientífica y minera", "href": "https://www.gob.pe/ingemmet" },
+        { "label": "MINEM", "href": "https://www.gob.pe/minem" },
+        { "label": "MINAM Geoservidor", "href": "https://geoservidor.minam.gob.pe/" }
+      ]
+    },
+    {
+      "region": "Internacional",
+      "items": [
+        { "label": "SERNAGEOMIN (Chile)", "href": "https://www.sernageomin.cl/" },
+        { "label": "USGS (EE.UU.)", "href": "https://www.usgs.gov/" }
+      ]
+    }
+  ]
+}

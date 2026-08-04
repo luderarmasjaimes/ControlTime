@@ -1,0 +1,260 @@
+Starting build and up...
+ Image informecliente-frontend Building 
+ Image informecliente-web Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 959B done
+#1 DONE 0.0s
+
+#2 [web internal] load build definition from Dockerfile
+#2 transferring dockerfile: 1.47kB 0.0s done
+#2 DONE 0.0s
+
+#3 [frontend internal] load build definition from Dockerfile
+#3 transferring dockerfile: 514B 0.1s done
+#3 WARN: FromAsCasing: 'as' and 'FROM' keywords' casing do not match (line 2)
+#3 WARN: FromAsCasing: 'as' and 'FROM' keywords' casing do not match (line 10)
+#3 DONE 0.1s
+
+#4 [frontend internal] load metadata for docker.io/library/node:20-alpine
+#4 ...
+
+#5 [auth] library/node:pull token for registry-1.docker.io
+#5 DONE 0.0s
+
+#6 [auth] library/nginx:pull token for registry-1.docker.io
+#6 DONE 0.0s
+
+#7 [auth] library/debian:pull token for registry-1.docker.io
+#7 DONE 0.0s
+
+#8 [auth] library/ubuntu:pull token for registry-1.docker.io
+#8 DONE 0.0s
+
+#9 [frontend internal] load metadata for docker.io/library/nginx:stable-alpine
+#9 ...
+
+#4 [frontend internal] load metadata for docker.io/library/node:20-alpine
+#4 DONE 0.9s
+
+#9 [frontend internal] load metadata for docker.io/library/nginx:stable-alpine
+#9 DONE 0.9s
+
+#10 [web internal] load metadata for docker.io/library/ubuntu:24.04
+#10 DONE 1.0s
+
+#11 [frontend internal] load .dockerignore
+#11 transferring context: 2B 0.1s done
+#11 DONE 0.1s
+
+#12 [frontend internal] load build context
+#12 ...
+
+#13 [frontend production-stage 1/3] FROM docker.io/library/nginx:stable-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+#13 resolve docker.io/library/nginx:stable-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236 0.0s done
+#13 DONE 0.0s
+
+#14 [frontend build-stage 1/6] FROM docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c
+#14 resolve docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c 0.0s done
+#14 DONE 0.0s
+
+#15 [web internal] load metadata for docker.io/library/debian:bookworm-slim
+#15 DONE 1.1s
+
+#12 [frontend internal] load build context
+#12 ...
+
+#16 [web internal] load .dockerignore
+#16 transferring context: 2B 0.0s done
+#16 DONE 0.0s
+
+#17 [web runtime 1/8] FROM docker.io/library/debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
+#17 resolve docker.io/library/debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a 0.0s done
+#17 DONE 0.0s
+
+#18 [web builder 1/5] FROM docker.io/library/ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
+#18 resolve docker.io/library/ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c 0.0s done
+#18 DONE 0.0s
+
+#19 [web internal] load build context
+#19 transferring context: 361B 0.0s done
+#19 DONE 0.0s
+
+#20 [web runtime 4/8] COPY --from=builder /app/build /app/build
+#20 CACHED
+
+#21 [web runtime 7/8] RUN mkdir -p /data
+#21 CACHED
+
+#22 [web builder 4/5] COPY . /app
+#22 CACHED
+
+#23 [web builder 2/5] RUN apt-get update && apt-get install -y --no-install-recommends     build-essential     cmake     pkg-config     libboost-all-dev     libopencv-dev     libpq-dev     gdal-bin     ca-certificates     bash     python3     python3-opencv     python3-numpy     binutils     && rm -rf /var/lib/apt/lists/*
+#23 CACHED
+
+#24 [web runtime 2/8] RUN apt-get update && apt-get install -y --no-install-recommends     ca-certificates     wget     libstdc++6     libgcc-s1     libgomp1     libgstreamer1.0-0     libgstreamer-plugins-base1.0-0     libpq5     && rm -rf /var/lib/apt/lists/*
+#24 CACHED
+
+#25 [web runtime 3/8] WORKDIR /app
+#25 CACHED
+
+#26 [web runtime 6/8] RUN chmod +x /app/entrypoint.sh
+#26 CACHED
+
+#27 [web runtime 5/8] COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
+#27 CACHED
+
+#28 [web builder 5/5] RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release     && cmake --build build --config Release -j$(nproc)     && find build -type f -executable -exec strip --strip-all {} + || true
+#28 CACHED
+
+#29 [web builder 3/5] WORKDIR /app
+#29 CACHED
+
+#30 [web runtime 8/8] RUN mkdir -p /opt/dermalog || true
+#30 CACHED
+
+#12 [frontend internal] load build context
+#12 ...
+
+#31 [web] exporting to image
+#31 exporting layers done
+#31 exporting manifest sha256:3e0adb19600f271c81c70cc4bebc4cc30341054672a5defa724c701b2997c14e done
+#31 exporting config sha256:7f7de6e77328a07b5c982037cc0458081591c315fc8330895c3dd156534294a0 done
+#31 exporting attestation manifest sha256:008e343ab9c13461004ae15cdd95116efba71f895bc050c52b067e970b7098f4 0.0s done
+#31 exporting manifest list sha256:a787e61160d764c8cbc86c5a8eba566b4e573f49ca027dd8129d2767e0fa5a29 done
+#31 naming to docker.io/library/informecliente-web:latest done
+#31 unpacking to docker.io/library/informecliente-web:latest done
+#31 DONE 0.1s
+
+#32 [web] resolving provenance for metadata file
+#32 DONE 0.0s
+
+#12 [frontend internal] load build context
+#12 transferring context: 35.95kB 5.2s
+#12 transferring context: 64.39kB 10.3s
+#12 transferring context: 102.16kB 15.4s
+#12 transferring context: 137.13kB 20.4s
+#12 transferring context: 169.44kB 25.5s
+#12 transferring context: 195.34kB 30.6s
+#12 transferring context: 227.33kB 35.6s
+#12 transferring context: 255.98kB 40.7s
+#12 transferring context: 289.71kB 45.8s
+#12 transferring context: 325.04kB 50.9s
+#12 transferring context: 355.96kB 56.0s
+#12 transferring context: 396.91kB 61.1s
+#12 transferring context: 433.54kB 66.2s
+#12 transferring context: 466.16kB 71.3s
+#12 transferring context: 504.85kB 76.3s
+#12 transferring context: 542.38kB 81.4s
+#12 transferring context: 576.84kB 86.5s
+#12 transferring context: 612.83kB 91.5s
+#12 transferring context: 651.14kB 96.6s
+#12 transferring context: 679.50kB 101.7s
+#12 transferring context: 712.76kB 106.7s
+#12 transferring context: 752.05kB 111.7s
+#12 transferring context: 783.49kB 116.8s
+#12 transferring context: 811.87kB 121.8s
+#12 transferring context: 840.51kB 126.8s
+#12 transferring context: 872.93kB 131.8s
+#12 transferring context: 913.27kB 136.9s
+#12 transferring context: 949.00kB 142.0s
+#12 transferring context: 981.35kB 147.0s
+#12 transferring context: 996.53kB 152.1s
+#12 transferring context: 1.02MB 157.2s
+#12 transferring context: 1.04MB 162.3s
+#12 transferring context: 1.05MB 167.3s
+#12 transferring context: 1.07MB 172.3s
+#12 transferring context: 1.10MB 177.4s
+#12 transferring context: 1.12MB 182.5s
+#12 transferring context: 1.14MB 187.5s
+#12 transferring context: 1.15MB 192.6s
+#12 transferring context: 1.17MB 197.7s
+#12 transferring context: 1.20MB 202.7s
+#12 transferring context: 1.22MB 207.8s
+#12 transferring context: 1.25MB 212.9s
+#12 transferring context: 1.27MB 217.9s
+#12 transferring context: 1.29MB 223.0s
+#12 transferring context: 1.32MB 228.0s
+#12 transferring context: 1.34MB 233.1s
+#12 transferring context: 1.36MB 238.1s
+#12 transferring context: 1.39MB 243.2s
+#12 transferring context: 1.41MB 248.2s
+#12 transferring context: 1.43MB 253.2s
+#12 transferring context: 1.46MB 258.2s
+#12 transferring context: 1.49MB 263.3s
+#12 transferring context: 1.51MB 268.3s
+#12 transferring context: 1.53MB 273.3s
+#12 transferring context: 1.56MB 278.4s
+#12 transferring context: 1.57MB 283.9s
+#12 transferring context: 1.59MB 288.9s
+#12 transferring context: 1.61MB 293.9s
+#12 transferring context: 1.62MB 298.9s
+#12 transferring context: 1.65MB 304.1s
+#12 transferring context: 1.69MB 309.1s
+#12 transferring context: 1.72MB 314.5s
+#12 transferring context: 1.75MB 319.5s
+#12 transferring context: 1.79MB 324.6s
+#12 transferring context: 1.82MB 329.6s
+#12 transferring context: 1.85MB 334.7s
+#12 transferring context: 1.87MB 339.7s
+#12 transferring context: 1.91MB 345.1s
+#12 transferring context: 1.93MB 350.2s
+#12 transferring context: 1.96MB 355.3s
+#12 transferring context: 1.99MB 360.3s
+#12 transferring context: 2.02MB 365.5s
+#12 transferring context: 2.06MB 370.5s
+#12 transferring context: 2.09MB 375.8s
+#12 transferring context: 2.12MB 380.9s
+#12 transferring context: 2.14MB 386.0s
+#12 transferring context: 2.17MB 391.0s
+#12 transferring context: 2.20MB 396.1s
+#12 transferring context: 2.22MB 400.4s done
+#12 DONE 400.5s
+
+#33 [frontend build-stage 3/6] COPY package*.json ./
+#33 CACHED
+
+#34 [frontend build-stage 4/6] RUN npm install --legacy-peer-deps
+#34 CACHED
+
+#35 [frontend build-stage 2/6] WORKDIR /app
+#35 CACHED
+
+#36 [frontend build-stage 5/6] COPY . .
+#36 CACHED
+
+#37 [frontend production-stage 2/3] COPY --from=build-stage /app/dist /usr/share/nginx/html
+#37 CACHED
+
+#38 [frontend build-stage 6/6] RUN npm run build
+#38 CACHED
+
+#39 [frontend production-stage 3/3] COPY nginx.conf /etc/nginx/conf.d/default.conf
+#39 CACHED
+
+#40 [frontend] exporting to image
+#40 exporting layers 0.0s done
+#40 exporting manifest sha256:d5932427de3b1932510be1984a447668f70597e37cb039f4978227460e8d6405 done
+#40 exporting config sha256:0bf34b0a8419b6f2aefdaa54b2c8ef904a9575fb6f685079d5b997c76b8e7c9c done
+#40 exporting attestation manifest sha256:e9106beb07fcf022c1b4fc87ecbd1010a2adff3620dea495c2efd6280258d221 0.0s done
+#40 exporting manifest list sha256:dba98a8985e6621d70a0c2ce06513ccb7b9451cd1a3b5a952155d68f5a71bcb1 0.0s done
+#40 naming to docker.io/library/informecliente-frontend:latest done
+#40 unpacking to docker.io/library/informecliente-frontend:latest 0.0s done
+#40 DONE 0.1s
+
+#41 [frontend] resolving provenance for metadata file
+#41 DONE 0.0s
+ Image informecliente-web Built 
+ Image informecliente-frontend Built 
+ Container informecliente-db-1 Running 
+ Container informecliente-tileserver-1 Running 
+ Container informecliente-web-1 Recreate 
+ Container informecliente-web-1 Recreated 
+ Container informecliente-frontend-1 Recreate 
+ Container informecliente-frontend-1 Recreated 
+ Container informecliente-db-1 Waiting 
+ Container informecliente-db-1 Healthy 
+ Container informecliente-web-1 Starting 
+ Container informecliente-web-1 Started 
+ Container informecliente-web-1 Waiting 
+ Container informecliente-web-1 Error dependency web failed to start
+dependency failed to start: container informecliente-web-1 is unhealthy
