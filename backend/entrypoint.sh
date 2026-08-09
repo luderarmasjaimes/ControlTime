@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -n "${API_KEYS:-}" ]]; then
+if [[ -n "${BEEMETRY_API_KEYS:-}" ]]; then
   echo "[entrypoint] API Keys configured"
 fi
 
-if [[ -n "${CARTOON_ONNX_MODEL:-}" ]]; then
-  if [[ -f "${CARTOON_ONNX_MODEL}" ]]; then
-    sz=$(stat -c%s "${CARTOON_ONNX_MODEL}" 2>/dev/null || wc -c < "${CARTOON_ONNX_MODEL}")
-    echo "[entrypoint] Cartoon ONNX: ${CARTOON_ONNX_MODEL} (${sz} bytes)"
+if [[ -n "${BEEMETRY_CARTOON_ONNX_MODEL:-}" ]]; then
+  if [[ -f "${BEEMETRY_CARTOON_ONNX_MODEL}" ]]; then
+    sz=$(stat -c%s "${BEEMETRY_CARTOON_ONNX_MODEL}" 2>/dev/null || wc -c < "${BEEMETRY_CARTOON_ONNX_MODEL}")
+    echo "[entrypoint] Cartoon ONNX: ${BEEMETRY_CARTOON_ONNX_MODEL} (${sz} bytes)"
   else
-    echo "[entrypoint] WARN: CARTOON_ONNX_MODEL no es archivo: ${CARTOON_ONNX_MODEL}"
+    echo "[entrypoint] WARN: BEEMETRY_CARTOON_ONNX_MODEL no es archivo: ${BEEMETRY_CARTOON_ONNX_MODEL}"
   fi
 fi
 if command -v ldconfig >/dev/null 2>&1; then
   ldconfig || true
 fi
 
-SDK_DIR="${DERMALOG_SDK_DIR:-/opt/dermalog-sdk}"
+SDK_DIR="${BEEMETRY_DERMALOG_SDK_DIR:-/opt/dermalog-sdk}"
 
 if [[ -d "${SDK_DIR}" ]]; then
   shopt -s nullglob
@@ -33,5 +33,5 @@ if [[ -d "${SDK_DIR}" ]]; then
   fi
 fi
 
-echo "[entrypoint] Starting mapas_backend"
-exec /app/build/mapas_backend
+echo "[entrypoint] Starting beemetry_backend"
+exec /app/build/beemetry_backend

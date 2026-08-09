@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 
@@ -177,6 +178,29 @@ void saveAuthUsers(const std::string &dataRoot,
 
   std::ofstream ofs(authUsersFile(dataRoot), std::ios::trunc);
   ofs << json::serialize(arr);
+}
+
+int migrateLegacyPasswordHashesFile(const std::string &dataRoot) {
+  auto users = loadAuthUsers(dataRoot);
+  int migrated = 0;
+  for (auto &u : users) {
+    if (u.passwordHash.empty() || !http_utils::isRawLegacyHash(u.passwordHash)) {
+      continue;
+    }
+    try {
+      u.passwordHash = http_utils::wrapLegacyHash(u.passwordHash);
+      ++migrated;
+    } catch (const std::exception &ex) {
+      std::cerr << "[AUTH_PASSWORD] migracion File fallo para user_id=" << u.id
+                << ": " << ex.what() << std::endl;
+    }
+  }
+  // Una sola reescritura al final: `users.json` se serializa entero, así que
+  // guardar por usuario multiplicaría la escritura sin ganar atomicidad.
+  if (migrated > 0) {
+    saveAuthUsers(dataRoot, users);
+  }
+  return migrated;
 }
 
 bool updateUserAvatarCartoonFile(const std::string &dataRoot,

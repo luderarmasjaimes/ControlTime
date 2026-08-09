@@ -5,26 +5,82 @@
 #include <string>
 #include <cstdlib>
 #include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <sstream>
 
 namespace security {
 
+namespace {
+
+/**
+ * @brief Comparación de secretos en tiempo constante.
+ *
+ * El lookup en `unordered_set` corta en el primer byte distinto del hash/
+ * memcmp, lo que filtra información de prefijo por temporización. Para un
+ * secreto de autenticación se compara siempre el largo completo.
+ */
+bool constantTimeEquals(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+    }
+    return diff == 0;
+}
+
+/** @brief true solo si la variable está explícitamente en "true"/"1". */
+bool envFlagEnabled(const char* key) {
+    const char* v = std::getenv(key);
+    if (!v) return false;
+    std::string s(v);
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s == "true" || s == "1" || s == "yes";
+}
+
+}  // namespace
+
 ApiKeyAuth::ApiKeyAuth() : enabled_(true) {
     loadFromEnvironment();
-    
-    // Si no se encontraron API keys, deshabilitar autenticación en modo desarrollo
-    if (valid_keys_.empty()) {
-        std::cout << "[SECURITY] WARN: No API keys found. Authentication disabled (development mode)." << std::endl;
-        enabled_ = false;
-    } else {
-        std::cout << "[SECURITY] API authentication enabled with " << valid_keys_.size() << " key(s)." << std::endl;
+
+    // Fail-CLOSED (auditoría de seguridad 2026-08-02). Antes, la ausencia de
+    // API keys deshabilitaba silenciosamente TODA la autenticación: un typo en
+    // el nombre de la variable, un secreto no montado en el contenedor o un
+    // despliegue sin `.env` dejaban la API completamente abierta sin más
+    // señal que una línea de log. Ese es exactamente el modo de fallo que un
+    // atacante busca provocar. Ahora deshabilitarla exige una decisión
+    // explícita del operador vía BEEMETRY_API_AUTH_OPTIONAL=true; sin esa
+    // opción y sin keys, el objeto queda habilitado y rechaza todo, que es el
+    // fallo ruidoso y seguro.
+    if (!valid_keys_.empty()) {
+        std::cout << "[SECURITY] API authentication enabled with "
+                  << valid_keys_.size() << " key(s)." << std::endl;
+        return;
     }
+
+    if (envFlagEnabled("BEEMETRY_API_AUTH_OPTIONAL")) {
+        std::cout << "[SECURITY] WARN: sin API keys y BEEMETRY_API_AUTH_OPTIONAL=true "
+                     "-> autenticacion por API key DESHABILITADA (solo desarrollo). "
+                     "NUNCA usar este flag en produccion."
+                  << std::endl;
+        enabled_ = false;
+        return;
+    }
+
+    std::cerr << "[SECURITY] ERROR: no se configuraron API keys "
+                 "(BEEMETRY_API_KEYS / BEEMETRY_MINING_API_KEYS). La "
+                 "autenticacion queda ACTIVA y rechazara todas las peticiones. "
+                 "Defina las keys, o BEEMETRY_API_AUTH_OPTIONAL=true si esto es "
+                 "un entorno de desarrollo."
+              << std::endl;
+    enabled_ = true;
 }
 
 void ApiKeyAuth::loadFromEnvironment() {
-    const char* env_keys = std::getenv("API_KEYS");
+    const char* env_keys = std::getenv("BEEMETRY_API_KEYS");
     if (!env_keys) {
-        env_keys = std::getenv("MINING_API_KEYS");
+        env_keys = std::getenv("BEEMETRY_MINING_API_KEYS");
     }
     
     if (!env_keys || std::string(env_keys).empty()) {
@@ -51,7 +107,14 @@ void ApiKeyAuth::addApiKey(const std::string& key) {
 
 bool ApiKeyAuth::validateApiKey(const std::string& key) const {
     std::shared_lock<std::shared_mutex> lock(keys_mutex_);
-    return valid_keys_.find(key) != valid_keys_.end();
+    // Recorrido completo con comparación en tiempo constante: no se corta al
+    // primer acierto ni se usa el hash del set, para no filtrar por
+    // temporización cuántos bytes del prefijo eran correctos.
+    bool matched = false;
+    for (const auto& candidate : valid_keys_) {
+        matched |= constantTimeEquals(candidate, key);
+    }
+    return matched;
 }
 
 std::string ApiKeyAuth::extractApiKey(const boost::beast::http::request<boost::beast::http::string_body>& req) const {
@@ -69,22 +132,14 @@ std::string ApiKeyAuth::extractApiKey(const boost::beast::http::request<boost::b
     if (api_key_it != req.end()) {
         return std::string(api_key_it->value());
     }
-    
-    // Intentar obtener de query parameter ?api_key=<key>
-    std::string target = req.target();
-    size_t pos = target.find("api_key=");
-    if (pos != std::string::npos) {
-        pos += 8; // longitud de "api_key="
-        size_t end = target.find('&', pos);
-        if (end == std::string::npos) {
-            end = target.find('?', pos);
-        }
-        if (end == std::string::npos) {
-            end = target.length();
-        }
-        return target.substr(pos, end - pos);
-    }
-    
+
+    // El parámetro de query ?api_key=<key> fue ELIMINADO (auditoría de
+    // seguridad 2026-08-02): la query string se escribe en el access log de
+    // nginx, en el historial del navegador y en el header `Referer` que se
+    // envía a terceros, así que el secreto quedaba registrado en claro en al
+    // menos tres sitios fuera del control de la aplicación. Ningún cliente del
+    // repo lo usaba (verificado en frontend/ y backend/). Usar el header
+    // Authorization: Bearer <key> o X-API-Key.
     return "";
 }
 

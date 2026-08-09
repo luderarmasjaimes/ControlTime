@@ -22,4 +22,9 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes);
 AiEngineCartoonResult
 fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes);
 
+/** @brief Lectura de DNI por cámara (PDF417/MRZ, ver ai_engine/dni_scan.py).
+ * No consulta RENIEC/SUNAT — solo decodifica lo ya impreso en el documento. */
+AiEngineDniScanResult
+scanDocumentWithAiEngine(const std::vector<unsigned char> &imageBytes);
+
 } // namespace biometric

@@ -102,6 +102,23 @@ CREATE TABLE IF NOT EXISTS auth_companies (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Espejo obligatorio de db_scripts/50_companies_crud_rbac.sql (bloques A/B):
+-- un despliegue limpio solo monta 01-29 via docker-entrypoint-initdb.d, así
+-- que estas columnas/índices deben crearse también aquí o el CRUD de
+-- empresas (ADR-085) arranca contra una auth_companies desactualizada.
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS company_id UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS ruc VARCHAR(20) NOT NULL DEFAULT '';
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS country_code CHAR(2) NOT NULL DEFAULT 'PE';
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS domicilio_fiscal TEXT;
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(tenant_id);
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS updated_by TEXT;
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS deactivated_by TEXT;
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS demo_data BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_company_id ON auth_companies (company_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_name_norm ON auth_companies (lower(btrim(name)));
+CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_ruc ON auth_companies (ruc) WHERE ruc <> '';
 CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_event_time ON auth_audit_logs(event_time DESC);
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'operator';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS ruc VARCHAR(20) DEFAULT '';
@@ -525,7 +542,7 @@ std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
 std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &company,
                                         const std::string &identityKey,
-                                        const std::string &passwordHash,
+                                        const std::string &password,
                                         std::string &error,
                                         std::string *errorCodeOut) {
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
@@ -598,7 +615,7 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
     u.avatarCartoonBase64 = PQgetvalue(res.get(), 0, 10);
   }
 
-  if (u.passwordHash != passwordHash) {
+  if (!http_utils::verifyPassword(password, u.passwordHash)) {
     appendAuthAuditLogPg(conn, "login_password", company, u.username, false,
                          "invalid_password");
     error = kAuthWrongPasswordMsg;
@@ -606,6 +623,31 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
       *errorCodeOut = "wrong_password";
     }
     return std::nullopt;
+  }
+
+  if (http_utils::passwordNeedsRehash(u.passwordHash)) {
+    try {
+      const std::string upgradedHash = http_utils::hashPassword(password);
+      const char *upgradeParams[3] = {
+          upgradedHash.c_str(), u.id.c_str(), u.passwordHash.c_str()};
+      storage::PgResult upgraded{PQexecParams(
+          conn,
+          "UPDATE auth_users SET password_hash=$1 "
+          "WHERE id=$2::uuid AND password_hash=$3",
+          3, nullptr, upgradeParams, nullptr, nullptr, 0)};
+      if (upgraded.okCommand() && PQcmdTuples(upgraded.get()) != nullptr &&
+          std::string(PQcmdTuples(upgraded.get())) == "1") {
+        u.passwordHash = upgradedHash;
+      } else {
+        std::cerr << "[AUTH_PASSWORD] rehash Argon2id no persistido para user_id="
+                  << u.id << std::endl;
+      }
+    } catch (const std::exception &ex) {
+      // No bloquear un login legacy válido por una falla de migración; queda
+      // visible y se reintentará en el próximo acceso.
+      std::cerr << "[AUTH_PASSWORD] rehash Argon2id falló para user_id="
+                << u.id << ": " << ex.what() << std::endl;
+    }
   }
 
   u.tenantId = resolveTelemetryTenantIdPg(static_cast<void *>(conn), u.id, u.company);
@@ -916,10 +958,17 @@ bool executeUserMaintenancePg(const std::string &databaseUrl, const json::object
       std::string email = details.contains("email") ? json::value_to<std::string>(details.at("email")) : "";
       std::string phone = details.contains("phone") ? json::value_to<std::string>(details.at("phone")) : "";
       std::string mobile = details.contains("mobile") ? json::value_to<std::string>(details.at("mobile")) : "";
+      // dni es opcional en el payload (a diferencia de email/phone/mobile):
+      // un cliente que no lo envíe no debe borrar el DNI existente. $8 vacío
+      // -> COALESCE/NULLIF deja el valor actual intacto (mismo criterio que
+      // suspension_until arriba con NULLIF). Habilita el "Escanear DNI" de
+      // esta misma acción sin afectar clientes viejos que no mandan `dni`.
+      std::string dni = details.contains("dni") ? json::value_to<std::string>(details.at("dni")) : "";
       updateSql = "UPDATE auth_users SET first_name = $1, last_name = $2, "
-                  "email = $3, phone = $4, mobile = $5 "
+                  "email = $3, phone = $4, mobile = $5, "
+                  "dni = COALESCE(NULLIF($8, ''), dni) "
                   "WHERE username = $6 AND company_name = $7";
-      updateParams = {fName, lName, email, phone, mobile, targetUsername, company};
+      updateParams = {fName, lName, email, phone, mobile, targetUsername, company, dni};
       detail = "Actualización de datos personales.";
     } else if (action == "reset_password") {
       std::string pass = json::value_to<std::string>(details.at("newPassword"));
@@ -1157,6 +1206,320 @@ bool revokeAllRefreshTokensForUserPg(const std::string &databaseUrl,
       "AND revoked_at IS NULL",
       1, nullptr, params, nullptr, nullptr, 0)};
   return res.okCommand();
+}
+
+// ── Migración de credenciales a Argon2id (auditoría 2026-08-02) ───────────
+
+namespace {
+
+/** @brief Cuenta filas de auth_users que cumplen una condición sobre password_hash. */
+int countPasswordHashes(PGconn *conn, const char *predicate) {
+  const std::string sql =
+      std::string("SELECT COUNT(*)::int FROM auth_users WHERE ") + predicate;
+  storage::PgResult res{PQexec(conn, sql.c_str())};
+  if (!res.okTuples() || PQntuples(res.get()) == 0) return -1;
+  try {
+    return std::stoi(PQgetvalue(res.get(), 0, 0));
+  } catch (...) {
+    return -1;
+  }
+}
+
+}  // namespace
+
+PasswordMigrationResult migrateLegacyPasswordHashesPg(const std::string &databaseUrl) {
+  PasswordMigrationResult out;
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    out.error = "db_unavailable";
+    return out;
+  }
+  if (!ensureAuthSchemaPg(conn)) {
+    out.error = "schema_unavailable";
+    return out;
+  }
+
+  // Solo hashes legados CRUDOS: ni Argon2id auténtico ni ya envuelto.
+  static const char kSelectLegacy[] =
+      "SELECT id::text, password_hash FROM auth_users "
+      "WHERE password_hash NOT LIKE '$argon2id$%' "
+      "  AND password_hash NOT LIKE 'legacy1:%'";
+  storage::PgResult rows{PQexec(conn, kSelectLegacy)};
+  if (!rows.okTuples()) {
+    out.error = PQresultErrorMessage(rows.get());
+    return out;
+  }
+
+  out.scanned = PQntuples(rows.get());
+  if (out.scanned == 0) {
+    out.ran = true;
+    out.remainingRaw = 0;
+    out.remainingWrapped =
+        countPasswordHashes(conn, "password_hash LIKE 'legacy1:%'");
+    return out;
+  }
+
+  for (int i = 0; i < out.scanned; ++i) {
+    const std::string userId = PQgetvalue(rows.get(), i, 0);
+    const std::string legacyHash = PQgetvalue(rows.get(), i, 1);
+    try {
+      const std::string wrapped = http_utils::wrapLegacyHash(legacyHash);
+      // Condicionado al hash antiguo: si entre el SELECT y el UPDATE el usuario
+      // inició sesión y su fila ya se rehashó a Argon2id auténtico, este UPDATE
+      // no afecta ninguna fila y se deja el hash bueno intacto.
+      const char *params[3] = {wrapped.c_str(), userId.c_str(),
+                               legacyHash.c_str()};
+      storage::PgResult upd{PQexecParams(
+          conn,
+          "UPDATE auth_users SET password_hash=$1 "
+          "WHERE id=$2::uuid AND password_hash=$3",
+          3, nullptr, params, nullptr, nullptr, 0)};
+      if (upd.okCommand() && PQcmdTuples(upd.get()) != nullptr &&
+          std::string(PQcmdTuples(upd.get())) == "1") {
+        ++out.migrated;
+      } else {
+        ++out.failed;
+        std::cerr << "[AUTH_PASSWORD] migracion: UPDATE sin efecto para user_id="
+                  << userId << std::endl;
+      }
+    } catch (const std::exception &ex) {
+      ++out.failed;
+      std::cerr << "[AUTH_PASSWORD] migracion fallo para user_id=" << userId
+                << ": " << ex.what() << std::endl;
+    }
+  }
+
+  out.ran = true;
+  out.remainingRaw = countPasswordHashes(
+      conn,
+      "password_hash NOT LIKE '$argon2id$%' AND password_hash NOT LIKE 'legacy1:%'");
+  out.remainingWrapped =
+      countPasswordHashes(conn, "password_hash LIKE 'legacy1:%'");
+  return out;
+}
+
+// ── ADR-085: CRUD administrado de empresas (db_scripts/50) ─────────────────
+
+namespace {
+
+/** Arma un AuthCompanyRecord desde una fila de la SELECT canónica (14 columnas, ver kCompanySelectCols). */
+AuthCompanyRecord companyRecordFromRow(PGresult *res, int row, bool maskRuc) {
+  AuthCompanyRecord c;
+  c.companyId = PQgetvalue(res, row, 0);
+  c.name = PQgetvalue(res, row, 1);
+  c.ruc = maskRuc ? "" : PQgetvalue(res, row, 2);
+  c.countryCode = PQgetvalue(res, row, 3);
+  c.domicilioFiscal = PQgetvalue(res, row, 4);
+  c.tenantId = PQgetvalue(res, row, 5);
+  c.active = std::string(PQgetvalue(res, row, 6)) == "t";
+  c.demoData = std::string(PQgetvalue(res, row, 7)) == "t";
+  c.createdAt = PQgetvalue(res, row, 8);
+  c.updatedAt = PQgetvalue(res, row, 9);
+  c.updatedBy = PQgetvalue(res, row, 10);
+  c.deactivatedAt = PQgetvalue(res, row, 11);
+  c.deactivatedBy = PQgetvalue(res, row, 12);
+  return c;
+}
+
+const char kCompanySelectCols[] =
+    "company_id::text, name, ruc, country_code, COALESCE(domicilio_fiscal,''), "
+    "COALESCE(tenant_id::text,''), active, demo_data, created_at::text, "
+    "COALESCE(updated_at::text,''), COALESCE(updated_by,''), "
+    "COALESCE(deactivated_at::text,''), COALESCE(deactivated_by,'')";
+
+json::object companyRecordToJson(const AuthCompanyRecord &c) {
+  return json::object{
+      {"company_id", c.companyId},   {"name", c.name},
+      {"ruc", c.ruc},                {"country_code", c.countryCode},
+      {"domicilio_fiscal", c.domicilioFiscal},
+      {"tenant_id", c.tenantId},     {"active", c.active},
+      {"demo_data", c.demoData},     {"created_at", c.createdAt},
+      {"updated_at", c.updatedAt},   {"updated_by", c.updatedBy},
+      {"deactivated_at", c.deactivatedAt},
+      {"deactivated_by", c.deactivatedBy}};
+}
+
+} // namespace
+
+json::array listCompaniesAdminPg(const std::string &databaseUrl,
+                                 bool includeInactive, bool maskRuc) {
+  json::array out;
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK || !ensureAuthSchemaPg(conn)) {
+    return out;
+  }
+  const std::string sql = std::string("SELECT ") + kCompanySelectCols +
+                          " FROM auth_companies WHERE ($1::boolean OR active = true) "
+                          "ORDER BY name ASC";
+  const char *p[1] = {includeInactive ? "true" : "false"};
+  storage::PgResult res{
+      PQexecParams(conn, sql.c_str(), 1, nullptr, p, nullptr, nullptr, 0)};
+  if (res.okTuples()) {
+    for (int i = 0; i < PQntuples(res.get()); ++i) {
+      out.push_back(companyRecordToJson(
+          companyRecordFromRow(res.get(), i, maskRuc)));
+    }
+  }
+  return out;
+}
+
+bool getCompanyByIdPg(const std::string &databaseUrl,
+                      const std::string &companyId, AuthCompanyRecord &out) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK || !ensureAuthSchemaPg(conn)) {
+    return false;
+  }
+  const std::string sql = std::string("SELECT ") + kCompanySelectCols +
+                          " FROM auth_companies WHERE company_id = $1::uuid LIMIT 1";
+  const char *p[1] = {companyId.c_str()};
+  storage::PgResult res{
+      PQexecParams(conn, sql.c_str(), 1, nullptr, p, nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) != 1) {
+    return false;
+  }
+  out = companyRecordFromRow(res.get(), 0, /*maskRuc=*/false);
+  return true;
+}
+
+bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
+                     const std::string &ruc, const std::string &countryCode,
+                     const std::string &domicilioFiscal,
+                     const std::string &actorUserId,
+                     const std::string &actorRole, AuthCompanyRecord &out,
+                     std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK || !ensureAuthSchemaPg(conn)) {
+    error = "database_unavailable";
+    return false;
+  }
+
+  // Se apoya en ux_auth_companies_name_norm (db_scripts/50) para resolver la
+  // condición de carrera que tenía el POST original (SELECT + INSERT sin
+  // índice único de respaldo): ON CONFLICT DO NOTHING sin fila devuelta ==
+  // ya existía, sin ninguna ventana entre el chequeo y el insert.
+  const std::string insSql = std::string(
+      "INSERT INTO auth_companies(name, ruc, country_code, domicilio_fiscal, "
+      "active, updated_at, updated_by) VALUES($1,$2,$3,$4,true,NOW(),$5) "
+      "ON CONFLICT (lower(btrim(name))) DO NOTHING "
+      "RETURNING ") + kCompanySelectCols;
+  const char *insParams[5] = {name.c_str(), ruc.c_str(), countryCode.c_str(),
+                              domicilioFiscal.c_str(), actorUserId.c_str()};
+  storage::PgResult ins{PQexecParams(conn, insSql.c_str(), 5, nullptr,
+                                     insParams, nullptr, nullptr, 0)};
+  if (!ins.okTuples()) {
+    const std::string pgError = PQresultErrorMessage(ins.get());
+    // El ON CONFLICT solo cubre el índice de nombre; un RUC duplicado entre
+    // dos empresas distintas viola ux_auth_companies_ruc y llega aquí como
+    // error real (no como "0 filas") — se traduce a un código legible en
+    // vez de burbujear el mensaje crudo de Postgres.
+    if (pgError.find("ux_auth_companies_ruc") != std::string::npos) {
+      error = "ruc_already_exists";
+    } else {
+      error = "company_create_failed: " + pgError;
+    }
+    return false;
+  }
+  if (PQntuples(ins.get()) == 0) {
+    error = "company_already_exists";
+    return false;
+  }
+  out = companyRecordFromRow(ins.get(), 0, /*maskRuc=*/false);
+
+  std::string tenantError;
+  const std::string tenantId = findOrCreateTenantForCompanyPg(
+      databaseUrl, name, actorUserId, actorRole, tenantError);
+  if (tenantId.empty()) {
+    error = "tenant_provision_failed: " + tenantError;
+    return false;
+  }
+  const char *linkParams[2] = {tenantId.c_str(), out.companyId.c_str()};
+  storage::PgResult linked{PQexecParams(
+      conn,
+      "UPDATE auth_companies SET tenant_id=$1::uuid WHERE company_id=$2::uuid",
+      2, nullptr, linkParams, nullptr, nullptr, 0)};
+  if (linked.okCommand()) {
+    out.tenantId = tenantId;
+  }
+  return true;
+}
+
+bool updateCompanyPg(const std::string &databaseUrl,
+                     const std::string &companyId, const std::string &ruc,
+                     const std::string &countryCode,
+                     const std::string &domicilioFiscal,
+                     const std::string &actorUserId, AuthCompanyRecord &out,
+                     std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK || !ensureAuthSchemaPg(conn)) {
+    error = "database_unavailable";
+    return false;
+  }
+  // `name` nunca se toca aquí a propósito — ver comentario en el header.
+  const std::string sql = std::string(
+      "UPDATE auth_companies SET ruc=$2, country_code=$3, "
+      "domicilio_fiscal=$4, updated_at=NOW(), updated_by=$5 "
+      "WHERE company_id=$1::uuid RETURNING ") + kCompanySelectCols;
+  const char *p[5] = {companyId.c_str(), ruc.c_str(), countryCode.c_str(),
+                      domicilioFiscal.c_str(), actorUserId.c_str()};
+  storage::PgResult res{
+      PQexecParams(conn, sql.c_str(), 5, nullptr, p, nullptr, nullptr, 0)};
+  if (!res.okTuples()) {
+    error = "company_update_failed: " +
+            std::string(PQresultErrorMessage(res.get()));
+    return false;
+  }
+  if (PQntuples(res.get()) == 0) {
+    error = "company_not_found";
+    return false;
+  }
+  out = companyRecordFromRow(res.get(), 0, /*maskRuc=*/false);
+  return true;
+}
+
+bool setCompanyActivePg(const std::string &databaseUrl,
+                        const std::string &companyId, bool active,
+                        const std::string &actorUserId,
+                        int &activeUsersAffected, std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK || !ensureAuthSchemaPg(conn)) {
+    error = "database_unavailable";
+    return false;
+  }
+  const char *activeStr = active ? "true" : "false";
+  const char *p[3] = {companyId.c_str(), activeStr, actorUserId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "UPDATE auth_companies SET active=$2::boolean, "
+      "deactivated_at = CASE WHEN $2::boolean THEN NULL ELSE NOW() END, "
+      "deactivated_by = CASE WHEN $2::boolean THEN NULL ELSE $3 END, "
+      "updated_at = NOW(), updated_by = $3 "
+      "WHERE company_id=$1::uuid RETURNING name",
+      3, nullptr, p, nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) == 0) {
+    error = "company_not_found";
+    return false;
+  }
+  const std::string name = PQgetvalue(res.get(), 0, 0);
+  activeUsersAffected = 0;
+  const char *cp[1] = {name.c_str()};
+  storage::PgResult cnt{PQexecParams(
+      conn,
+      "SELECT COUNT(*)::int FROM auth_users WHERE company_name=$1 AND account_status='active'",
+      1, nullptr, cp, nullptr, nullptr, 0)};
+  if (cnt.okTuples() && PQntuples(cnt.get()) > 0) {
+    try {
+      activeUsersAffected = std::stoi(PQgetvalue(cnt.get(), 0, 0));
+    } catch (...) {
+      activeUsersAffected = 0;
+    }
+  }
+  return true;
 }
 
 } // namespace auth

@@ -146,7 +146,7 @@ public:
 private:
     PgPool() {
         max_size_ = 64;
-        if (const char* e = std::getenv("PG_POOL_SIZE")) {
+        if (const char* e = std::getenv("BEEMETRY_PG_POOL_SIZE")) {
             try {
                 max_size_ = std::max<std::size_t>(2, std::stoul(e));
             } catch (...) {

@@ -89,6 +89,43 @@ struct AppConfig {
     std::string gPdfExportUrl;
     int gPdfExportTimeoutMs = 45000;
     std::string gFrontendInternalOrigin;
+    // Export PPTX/MP4 (modo presentación, sobre el mismo sidecar Chromium que
+    // PDF): directorio compartido backend<->sidecar donde caen los archivos
+    // generados (report_export_job.storage_uri apunta dentro de esta raíz).
+    // Vacío = deshabilitado (las rutas /export/pptx devuelven 503).
+    std::string gExportDataRoot;
+    int gPptxExportTimeoutMs = 60000;
+    int gVideoExportTimeoutMs = 180000;
+    // IGP/CENSIS (Instituto Geofisico del Peru) -- fuente oficial de
+    // sismicidad, API HTTPS publica sin autenticacion (ver igp_seismic_client.hpp).
+    std::string gIgpApiBaseUrl = "https://ultimosismo.igp.gob.pe";
+    int gIgpTimeoutMs = 4000;
+    // WhatsApp Business Cloud API (Meta) -- chatbot minero / escalamiento a
+    // soporte humano (ver support/whatsapp_client.hpp). Las credenciales
+    // reales viven SOLO en .env (nunca hardcodeadas aqui ni en el repo).
+    std::string gWhatsappApiBaseUrl = "graph.facebook.com";
+    std::string gWhatsappApiVersion = "v22.0";
+    std::string gWhatsappPhoneNumberId;
+    std::string gWhatsappAccessToken;
+    std::string gWhatsappBusinessAccountId;
+    // Numero (E.164, sin '+') del equipo de soporte humano que recibe la
+    // notificacion de escalamiento.
+    std::string gWhatsappSupportToE164;
+    // hello_world/en_US es la unica plantilla preaprobada por defecto en
+    // cualquier WABA de prueba nueva -- no requiere aprobacion de Meta.
+    std::string gWhatsappTemplateName = "hello_world";
+    std::string gWhatsappTemplateLang = "en_US";
+    int gWhatsappTimeoutMs = 8000;
+    // Chatbot minero: reutiliza el mismo Ollama que ya usa text_spell_service
+    // (BEEMETRY_OLLAMA_URL), con un modelo propio. Corrección 2026-07-29:
+    // estaba en qwen2.5:7b -- el mismo benchmark de esfuerzo continuo de
+    // text_spell_service.cpp (2026-07-22) ya había medido qwen2.5:7b ~2.4x
+    // más lento que gemma2:2b (p50 18s vs 7s) y por eso reserva qwen2.5:7b
+    // solo para APA7 (tarea puntual, no interactiva) y usa gemma2:2b para
+    // reescritura (interactiva). El chat es el caso interactivo por
+    // excelencia -- el usuario reportó demoras reales, causa raíz era
+    // literalmente usar el modelo lento donde ya se sabía que no debía ir.
+    std::string gOllamaChatbotModel = "gemma2:2b";
     std::string gAiEngineUrl;
     int gAiEngineTimeoutMs = 500;
     int gAiEngineCartoonTimeoutMs = 8000;
@@ -115,6 +152,17 @@ struct AppConfig {
     // balanceador, ver ADR-054); solo se desactiva para probar por HTTP
     // plano en local (docker-compose.yml lo hace explícito).
     bool gAuthCookieSecure = true;
+    // ADR-087: consulta opcional a un verificador de RUC de terceros (SUNAT
+    // no publica una API REST oficial gratuita — solo el portal HTML
+    // e-consultaruc.sunat.gob.pe). Excepción explícita y acotada a ADR-001
+    // ("todo on-prem, sin dependencias externas"): apagada por defecto,
+    // nunca bloquea el alta de una empresa (ver tax_registry_client.hpp).
+    bool gTaxRegistryEnabled = false;
+    std::string gTaxRegistryHost;
+    // "{ruc}" se reemplaza por el RUC normalizado (solo dígitos).
+    std::string gTaxRegistryPathTemplate;
+    std::string gTaxRegistryToken;
+    int gTaxRegistryTimeoutMs = 2500;
     std::atomic<bool> gAuthSchemaReady{false};
     std::mutex gAuthSchemaInitMutex;
     std::atomic<bool> gFormulaSchemaReady{false};

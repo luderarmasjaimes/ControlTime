@@ -4,23 +4,40 @@
 #include "auth_storage_pg.hpp"
 #include "auth_storage_file.hpp"
 #include "permissions.hpp"
+#include "tax_id.hpp"
+#include "tax_registry_client.hpp"
+#include "../biometric/face_analysis.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
 
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <mutex>
+#include <optional>
+#include <set>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "storage/pg_pool.hpp"
 #include "storage/pg_result.hpp"
 
 using http_utils::makeJsonResponse;
+using http_utils::makePngResponse;
 using http_utils::routePathOnly;
 using config::AppConfig;
 using config::AuthStorageMode;
 
 namespace auth {
+
+static std::mutex gAvatarHdMutex;
 
 static std::string trimAuthParam(std::string s) {
   const char *ws = " \t\n\r";
@@ -242,6 +259,11 @@ handleSwitchTenant(const http::request<http::string_body> &req,
                    {"role", user->role}});
   http_utils::setAuthCookies(res, tokenPair.refreshToken, tokenPair.csrfToken,
                              cfg.gJwtRefreshTtlDays * 24 * 3600);
+  // ADR-082: el cambio de tenant emite un access token nuevo (con el tenant_id
+  // nuevo en los claims) — la cookie tiene que actualizarse con él, o el
+  // navegador seguiría mandando el token del tenant ANTERIOR.
+  http_utils::setAccessTokenCookie(res, tokenPair.token,
+                                   tokenPair.expiresInSeconds);
   return res;
 #else
   return makeJsonResponse(http::status::internal_server_error,
@@ -551,6 +573,172 @@ handleUserTenantPost(const http::request<http::string_body> &req,
   return handleGrantUserTenant(req, query);
 }
 
+static bool isSafeAvatarUserId(const std::string &userId) {
+  return !userId.empty() && userId.size() <= 128 &&
+         std::all_of(userId.begin(), userId.end(), [](unsigned char c) {
+           return std::isalnum(c) || c == '-' || c == '_';
+         });
+}
+
+static std::optional<AuthUser> findCurrentAvatarUser(
+    const AppConfig &cfg, const std::string &dataRoot,
+    const std::string &userId) {
+  if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+    return findUserByIdPg(cfg.gDatabaseUrl, userId);
+#else
+    return std::nullopt;
+#endif
+  }
+
+  const auto users = loadAuthUsers(dataRoot);
+  const auto it = std::find_if(users.begin(), users.end(),
+                               [&](const AuthUser &u) {
+                                 return u.id == userId;
+                               });
+  return it == users.end() ? std::nullopt
+                           : std::optional<AuthUser>(*it);
+}
+
+/** GET /api/auth/avatar/hd
+ * Devuelve exclusivamente el avatar del usuario de la sesión. Nunca acepta
+ * un user_id del cliente: evita IDOR y mantiene el derivado biométrico privado.
+ * Los registros nuevos ya dejan un máster local 2880x3840; para usuarios
+ * anteriores se crea una única vez una ampliación Lanczos desde su miniatura.
+ */
+static http::response<http::string_body> handleMyAvatarHd(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+  if (!isSafeAvatarUserId(session->userId)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_user_id"}});
+  }
+
+  auto &cfg = AppConfig::instance();
+  const std::string dataRoot =
+      config::getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+  const std::filesystem::path hdDir =
+      std::filesystem::path(dataRoot) / "auth" / "avatars_hd";
+  const std::filesystem::path hdPath = hdDir / (session->userId + ".png");
+
+  try {
+    std::scoped_lock lk(gAvatarHdMutex);
+    // Revalidar que el usuario siga activo antes de servir incluso un archivo
+    // ya cacheado; un JWT aún no expirado no debe recuperar la foto después
+    // de una baja administrativa.
+    const auto user =
+        findCurrentAvatarUser(cfg, dataRoot, session->userId);
+    if (!user) {
+      return makeJsonResponse(
+          http::status::not_found,
+          json::object{{"error", "avatar_not_available"}});
+    }
+    if (std::filesystem::is_regular_file(hdPath)) {
+      const auto fileSize = std::filesystem::file_size(hdPath);
+      if (fileSize > 0 && fileSize <= 32U * 1024U * 1024U) {
+        std::ifstream in(hdPath, std::ios::binary);
+        std::string png((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+        if (!png.empty()) return makePngResponse(std::move(png));
+      }
+    }
+
+    if (user->avatarCartoonBase64.empty()) {
+      return makeJsonResponse(
+          http::status::not_found,
+          json::object{{"error", "avatar_not_available"}});
+    }
+
+    std::vector<unsigned char> encodedThumb;
+    if (!biometric::decodeBase64(user->avatarCartoonBase64, encodedThumb)) {
+      return makeJsonResponse(
+          http::status::unprocessable_entity,
+          json::object{{"error", "avatar_thumbnail_invalid"}});
+    }
+    const cv::Mat thumb =
+        cv::imdecode(encodedThumb, cv::IMREAD_COLOR);
+    if (thumb.empty()) {
+      return makeJsonResponse(
+          http::status::unprocessable_entity,
+          json::object{{"error", "avatar_thumbnail_invalid"}});
+    }
+
+    cv::Mat hd;
+    cv::resize(thumb, hd, cv::Size(2880, 3840), 0.0, 0.0,
+               cv::INTER_LANCZOS4);
+    cv::Mat softened;
+    cv::GaussianBlur(hd, softened, cv::Size(), 1.1);
+    cv::addWeighted(hd, 1.08, softened, -0.08, 0.0, hd);
+
+    std::vector<unsigned char> encodedHd;
+    const std::vector<int> pngParams = {
+        cv::IMWRITE_PNG_COMPRESSION, 5};
+    if (!cv::imencode(".png", hd, encodedHd, pngParams)) {
+      throw std::runtime_error("No se pudo codificar el avatar HD.");
+    }
+
+    std::filesystem::create_directories(hdDir);
+    const auto tempPath = hdPath.string() + ".tmp";
+    {
+      std::ofstream out(tempPath, std::ios::binary | std::ios::trunc);
+      out.write(reinterpret_cast<const char *>(encodedHd.data()),
+                static_cast<std::streamsize>(encodedHd.size()));
+      if (!out) {
+        throw std::runtime_error("No se pudo persistir el avatar HD.");
+      }
+    }
+    if (std::filesystem::exists(hdPath)) {
+      std::filesystem::remove(hdPath);
+    }
+    std::filesystem::rename(tempPath, hdPath);
+    std::filesystem::permissions(
+        hdPath,
+        std::filesystem::perms::owner_read |
+            std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::replace);
+    return makePngResponse(std::string(
+        reinterpret_cast<const char *>(encodedHd.data()), encodedHd.size()));
+  } catch (const std::exception &ex) {
+    return makeJsonResponse(
+        http::status::internal_server_error,
+        json::object{{"error", "avatar_hd_generation_failed"},
+                     {"detail", ex.what()}});
+  }
+}
+
+// /api/auth/companies/{company_id} — mismo patrón que usernameFromTenantsPath:
+// corta el prefijo y descarta query string. No valida forma de UUID aquí; un
+// id inválido simplemente no matchea el ::uuid cast en SQL y la función de
+// storage devuelve "company_not_found" — la ruta de error queda igual de
+// clara sin duplicar la validación.
+std::string companyIdFromPath(const std::string &target) {
+  static const std::string kPrefix = "/api/auth/companies/";
+  if (target.rfind(kPrefix, 0) != 0) return "";
+  std::string rest = target.substr(kPrefix.size());
+  const auto q = rest.find('?');
+  if (q != std::string::npos) rest = rest.substr(0, q);
+  return rest;
+}
+
+json::object companyRecordToJsonValue(const AuthCompanyRecord &c) {
+  return json::object{{"company_id", c.companyId},
+                      {"name", c.name},
+                      {"ruc", c.ruc},
+                      {"country_code", c.countryCode},
+                      {"domicilio_fiscal", c.domicilioFiscal},
+                      {"tenant_id", c.tenantId},
+                      {"active", c.active},
+                      {"demo_data", c.demoData},
+                      {"created_at", c.createdAt},
+                      {"updated_at", c.updatedAt},
+                      {"updated_by", c.updatedBy}};
+}
+
 void registerRoutes(router::Router &r) {
   auto &cfg = AppConfig::instance();
 
@@ -588,6 +776,274 @@ void registerRoutes(router::Router &r) {
           }
           return makeJsonResponse(http::status::ok,
                                   json::object{{"companies", companies}});
+        });
+
+  // POST /api/auth/companies — catálogo administrado y tenant real (ADR-078,
+  // extendido por ADR-085/086: RUC opcional + gate por permiso granular en
+  // vez del `role=="admin"` hardcodeado original).
+  // La deduplicación case-insensitive evita duplicados de razón social por
+  // mayúsculas/espacios — ahora respaldada por un índice único
+  // (ux_auth_companies_name_norm, db_scripts/50) que cierra la condición de
+  // carrera que tenía el SELECT+INSERT original.
+  r.post("/api/auth/companies",
+         [&cfg](const http::request<http::string_body> &req,
+                const std::unordered_map<std::string, std::string> &query) {
+           const auto session = resolveAuthSession(req, query);
+           if (!session) {
+             return makeJsonResponse(http::status::unauthorized,
+                                     json::object{{"error", "unauthorized"}});
+           }
+           if (!hasPermission(session->userId, session->tenantId,
+                              session->role, "empresas.manage")) {
+             return makeJsonResponse(
+                 http::status::forbidden,
+                 json::object{{"error", "forbidden"}, {"need", "empresas.manage"}});
+           }
+           if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+             return makeJsonResponse(
+                 http::status::not_implemented,
+                 json::object{{"error", "postgres_required"}});
+           }
+#if HAS_LIBPQ
+           try {
+             const auto parsed = json::parse(req.body());
+             if (!parsed.is_object()) {
+               return makeJsonResponse(
+                   http::status::bad_request,
+                   json::object{{"error", "invalid_company_payload"}});
+             }
+             const auto &obj = parsed.as_object();
+             const auto *nameValue = obj.if_contains("name");
+             if (!nameValue || !nameValue->is_string()) {
+               return makeJsonResponse(
+                   http::status::bad_request,
+                   json::object{{"error", "company_name_required"}});
+             }
+             const std::string name =
+                 trimAuthParam(json::value_to<std::string>(*nameValue));
+             if (name.size() < 2 || name.size() > 180) {
+               return makeJsonResponse(
+                   http::status::bad_request,
+                   json::object{{"error", "company_name_invalid"}});
+             }
+             std::string country = "PE";
+             if (const auto *v = obj.if_contains("country"))
+               if (v->is_string()) country = json::value_to<std::string>(*v);
+             std::string ruc;
+             if (const auto *v = obj.if_contains("ruc"))
+               if (v->is_string()) ruc = normalizeTaxId(json::value_to<std::string>(*v));
+             if (!ruc.empty() && !validateTaxIdChecksum(ruc, country)) {
+               return makeJsonResponse(http::status::bad_request,
+                                       json::object{{"error", "ruc_invalido"}});
+             }
+             std::string domicilioFiscal;
+             if (const auto *v = obj.if_contains("domicilio_fiscal"))
+               if (v->is_string()) domicilioFiscal = json::value_to<std::string>(*v);
+
+             AuthCompanyRecord created;
+             std::string createError;
+             if (!createCompanyPg(cfg.gDatabaseUrl, name, ruc, country,
+                                  domicilioFiscal, session->userId,
+                                  session->role, created, createError)) {
+               if (createError == "company_already_exists" ||
+                   createError == "ruc_already_exists") {
+                 return makeJsonResponse(
+                     http::status::conflict,
+                     json::object{{"error", createError}});
+               }
+               return makeJsonResponse(
+                   http::status::internal_server_error,
+                   json::object{{"error", "company_create_failed"},
+                                {"detail", createError}});
+             }
+
+             auto lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+             PGconn *conn = lease.get();
+             if (PQstatus(conn) == CONNECTION_OK) {
+               appendAuthAuditLogPg(conn, "company_create", session->company,
+                                    session->username, true, name);
+             }
+             return makeJsonResponse(http::status::created,
+                                     json::object{{"company", created.name},
+                                                  {"tenant_id", created.tenantId},
+                                                  {"active", created.active}});
+           } catch (const std::exception &) {
+             return makeJsonResponse(
+                 http::status::bad_request,
+                 json::object{{"error", "invalid_company_payload"}});
+           }
+#else
+           return makeJsonResponse(http::status::not_implemented,
+                                   json::object{{"error", "postgres_required"}});
+#endif
+         });
+
+  // GET /api/auth/companies/manage — catálogo administrativo (ADR-085/086):
+  // a diferencia del GET público de arriba, incluye inactivas (opcional) y
+  // expone RUC/tenant. Requiere `empresas.view`; el RUC se enmascara si el
+  // solicitante no tiene además `empresas.manage`.
+  r.get("/api/auth/companies/manage",
+        [&cfg](const http::request<http::string_body> &req,
+               const std::unordered_map<std::string, std::string> &query) {
+          const auto session = resolveAuthSession(req, query);
+          if (!session) {
+            return makeJsonResponse(http::status::unauthorized,
+                                    json::object{{"error", "unauthorized"}});
+          }
+          if (!hasPermission(session->userId, session->tenantId,
+                             session->role, "empresas.view")) {
+            return makeJsonResponse(
+                http::status::forbidden,
+                json::object{{"error", "forbidden"}, {"need", "empresas.view"}});
+          }
+          if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+            return makeJsonResponse(http::status::not_implemented,
+                                    json::object{{"error", "postgres_required"}});
+          }
+#if HAS_LIBPQ
+          const bool includeInactive =
+              query.count("include_inactive") && query.at("include_inactive") == "true";
+          const bool canManage = hasPermission(session->userId, session->tenantId,
+                                               session->role, "empresas.manage");
+          const auto companies = listCompaniesAdminPg(
+              cfg.gDatabaseUrl, includeInactive, /*maskRuc=*/!canManage);
+          return makeJsonResponse(
+              http::status::ok,
+              json::object{{"companies", companies}, {"can_manage", canManage}});
+#else
+          return makeJsonResponse(http::status::not_implemented,
+                                  json::object{{"error", "postgres_required"}});
+#endif
+        });
+
+  // PUT/DELETE /api/auth/companies/{company_id} (ADR-085): editar
+  // RUC/país/domicilio (nunca `name` — ver comentario en updateCompanyPg) o
+  // dar de baja (soft delete: `active=false`, nunca borrado físico — hay
+  // informes/telemetría/usuarios enlazados por nombre de empresa).
+  r.put("/api/auth/companies/",
+        [&cfg](const http::request<http::string_body> &req,
+               const std::unordered_map<std::string, std::string> &query) {
+          const auto session = resolveAuthSession(req, query);
+          if (!session) {
+            return makeJsonResponse(http::status::unauthorized,
+                                    json::object{{"error", "unauthorized"}});
+          }
+          if (!hasPermission(session->userId, session->tenantId,
+                             session->role, "empresas.manage")) {
+            return makeJsonResponse(
+                http::status::forbidden,
+                json::object{{"error", "forbidden"}, {"need", "empresas.manage"}});
+          }
+          const std::string companyId = companyIdFromPath(std::string(req.target()));
+          if (companyId.empty()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "company_id_required"}});
+          }
+#if HAS_LIBPQ
+          AuthCompanyRecord current;
+          if (!getCompanyByIdPg(cfg.gDatabaseUrl, companyId, current)) {
+            return makeJsonResponse(http::status::not_found,
+                                    json::object{{"error", "company_not_found"}});
+          }
+          try {
+            const auto parsed = json::parse(req.body());
+            if (!parsed.is_object()) {
+              return makeJsonResponse(http::status::bad_request,
+                                      json::object{{"error", "invalid_company_payload"}});
+            }
+            const auto &obj = parsed.as_object();
+            std::string country = current.countryCode;
+            if (const auto *v = obj.if_contains("country"))
+              if (v->is_string()) country = json::value_to<std::string>(*v);
+            std::string ruc = current.ruc;
+            if (const auto *v = obj.if_contains("ruc")) {
+              if (v->is_string()) ruc = normalizeTaxId(json::value_to<std::string>(*v));
+            }
+            if (!ruc.empty() && !validateTaxIdChecksum(ruc, country)) {
+              return makeJsonResponse(http::status::bad_request,
+                                      json::object{{"error", "ruc_invalido"}});
+            }
+            std::string domicilioFiscal = current.domicilioFiscal;
+            if (const auto *v = obj.if_contains("domicilio_fiscal"))
+              if (v->is_string()) domicilioFiscal = json::value_to<std::string>(*v);
+
+            AuthCompanyRecord updated;
+            std::string updateError;
+            if (!updateCompanyPg(cfg.gDatabaseUrl, companyId, ruc, country,
+                                 domicilioFiscal, session->userId, updated,
+                                 updateError)) {
+              return makeJsonResponse(
+                  updateError == "company_not_found" ? http::status::not_found
+                                                      : http::status::internal_server_error,
+                  json::object{{"error", updateError}});
+            }
+            auto lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+            PGconn *conn = lease.get();
+            if (PQstatus(conn) == CONNECTION_OK) {
+              appendAuthAuditLogPg(conn, "company_update", session->company,
+                                   session->username, true, updated.name);
+            }
+            return makeJsonResponse(http::status::ok, companyRecordToJsonValue(updated));
+          } catch (const std::exception &) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid_company_payload"}});
+          }
+#else
+          return makeJsonResponse(http::status::not_implemented,
+                                  json::object{{"error", "postgres_required"}});
+#endif
+        });
+
+  r.del("/api/auth/companies/",
+        [&cfg](const http::request<http::string_body> &req,
+               const std::unordered_map<std::string, std::string> &query) {
+          const auto session = resolveAuthSession(req, query);
+          if (!session) {
+            return makeJsonResponse(http::status::unauthorized,
+                                    json::object{{"error", "unauthorized"}});
+          }
+          if (!hasPermission(session->userId, session->tenantId,
+                             session->role, "empresas.manage")) {
+            return makeJsonResponse(
+                http::status::forbidden,
+                json::object{{"error", "forbidden"}, {"need", "empresas.manage"}});
+          }
+          const std::string companyId = companyIdFromPath(std::string(req.target()));
+          if (companyId.empty()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "company_id_required"}});
+          }
+#if HAS_LIBPQ
+          // ?reactivate=true reactiva en vez de dar de baja — mismo endpoint,
+          // evita un quinto verbo para el caso inverso.
+          const bool reactivate =
+              query.count("reactivate") && query.at("reactivate") == "true";
+          int activeUsersAffected = 0;
+          std::string toggleError;
+          if (!setCompanyActivePg(cfg.gDatabaseUrl, companyId, reactivate,
+                                  session->userId, activeUsersAffected,
+                                  toggleError)) {
+            return makeJsonResponse(
+                toggleError == "company_not_found" ? http::status::not_found
+                                                    : http::status::internal_server_error,
+                json::object{{"error", toggleError}});
+          }
+          auto lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+          PGconn *conn = lease.get();
+          if (PQstatus(conn) == CONNECTION_OK) {
+            appendAuthAuditLogPg(conn,
+                                 reactivate ? "company_reactivate" : "company_deactivate",
+                                 session->company, session->username, true, companyId);
+          }
+          return makeJsonResponse(
+              http::status::ok,
+              json::object{{"ok", true},
+                           {"active", reactivate},
+                           {"active_users_affected", activeUsersAffected}});
+#else
+          return makeJsonResponse(http::status::not_implemented,
+                                  json::object{{"error", "postgres_required"}});
+#endif
         });
 
   // GET /api/auth/login/check-identity
@@ -640,43 +1096,68 @@ void registerRoutes(router::Router &r) {
          });
 
   // GET /api/auth/validate-company
+  // ADR-087: antes solo validaba el dígito verificador del RUC y nunca
+  // comparaba `company` contra nada (bug documentado en
+  // docs_/01_Planificacion/Auditoria_Registro_RUC_Tenant_2026-07-21.md,
+  // Hallazgo A). El algoritmo de checksum es el mismo de siempre —solo se
+  // extrajo a tax_id.cpp (auth::validateTaxIdChecksum), sin tocar la
+  // matemática— y se agrega `company_known`/`ruc_matches_company` sin romper
+  // al consumidor actual (frontend/src/auth/authApi.ts:587 solo lee
+  // `payload.valid`).
   r.get("/api/auth/validate-company",
-        [](const http::request<http::string_body> &,
-           const std::unordered_map<std::string, std::string> &query) {
+        [&cfg](const http::request<http::string_body> &,
+               const std::unordered_map<std::string, std::string> &query) {
           std::string company =
               query.count("company") ? query.at("company") : "";
           std::string ruc = query.count("ruc") ? query.at("ruc") : "";
+          std::string country =
+              query.count("country") ? query.at("country") : "PE";
 
-          bool valid = false;
-          if (ruc.length() == 11) {
-            bool isNumeric = true;
-            for (char c : ruc) {
-              if (!std::isdigit(static_cast<unsigned char>(c))) {
-                isNumeric = false;
-                break;
-              }
-            }
-            if (isNumeric) {
-              std::string prefix = ruc.substr(0, 2);
-              if (prefix == "10" || prefix == "15" || prefix == "17" ||
-                  prefix == "20") {
-                int factor[] = {5, 4, 3, 2, 7, 6, 5, 4, 3, 2};
-                int sum = 0;
-                for (int i = 0; i < 10; ++i) {
-                  sum += (ruc[i] - '0') * factor[i];
-                }
-                int remainder = sum % 11;
-                int check_digit = 11 - remainder;
-                if (check_digit == 10) check_digit = 0;
-                if (check_digit == 11) check_digit = 1;
-                if (check_digit == (ruc[10] - '0')) {
-                  valid = true;
-                }
-              }
+          const bool valid = validateTaxIdChecksum(ruc, country);
+
+          json::object result{{"valid", valid}};
+
+          // ADR-087: consulta opcional y no bloqueante contra un verificador
+          // de terceros (apagada por defecto — BEEMETRY_TAX_REGISTRY_ENABLED).
+          // Solo se intenta si el checksum local ya dio válido: no tiene
+          // sentido gastar la llamada externa en un RUC con forma incorrecta.
+          if (valid && country == "PE") {
+            const auto lookup = lookupPeruRuc(ruc);
+            if (!lookup.available) {
+              result["registry"] = lookup.error.empty() ? "disabled" : "unavailable";
+            } else if (!lookup.found) {
+              result["registry"] = "not_found";
+            } else {
+              result["registry"] = "confirmed";
+              result["registry_razon_social"] = lookup.razonSocial;
+              if (!lookup.estado.empty()) result["registry_estado"] = lookup.estado;
             }
           }
-          return makeJsonResponse(http::status::ok,
-                                  json::object{{"valid", valid}});
+          const std::string trimmedCompany = trimAuthParam(company);
+          if (!trimmedCompany.empty() &&
+              cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+            auto lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+            PGconn *conn = lease.get();
+            if (PQstatus(conn) == CONNECTION_OK && ensureAuthSchemaPg(conn)) {
+              const char *p[1] = {trimmedCompany.c_str()};
+              storage::PgResult res{PQexecParams(
+                  conn,
+                  "SELECT ruc FROM auth_companies "
+                  "WHERE lower(btrim(name))=lower(btrim($1)) LIMIT 1",
+                  1, nullptr, p, nullptr, nullptr, 0)};
+              if (res.okTuples() && PQntuples(res.get()) > 0) {
+                result["company_known"] = true;
+                const std::string knownRuc = PQgetvalue(res.get(), 0, 0);
+                result["ruc_matches_company"] =
+                    !ruc.empty() && !knownRuc.empty() && ruc == knownRuc;
+              } else {
+                result["company_known"] = false;
+              }
+            }
+#endif
+          }
+          return makeJsonResponse(http::status::ok, json::value(result));
         });
 
   // GET /api/auth/users
@@ -773,6 +1254,7 @@ void registerRoutes(router::Router &r) {
 
   // Multi-tenant: listar unidades mineras del usuario + cambiar tenant activo
   // sin reautenticar (ver handlers arriba, antes de registerRoutes).
+  r.get("/api/auth/avatar/hd", handleMyAvatarHd);
   r.get("/api/auth/tenants", handleListMyTenants);
   r.post("/api/auth/tenants/switch", handleSwitchTenant);
 

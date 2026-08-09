@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(beemetry_backend LANGUAGES CXX)
 
+# open62541 1.3.10 aún usa FindPythonInterp. Declarar la compatibilidad de
+# forma explícita evita una advertencia de política sin alterar su resolución.
+if(POLICY CMP0148)
+  cmake_policy(SET CMP0148 OLD)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -57,6 +63,7 @@ find_package(OpenCV REQUIRED)
 find_package(Python3 QUIET COMPONENTS Interpreter)
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_library(ARGON2_LIBRARY NAMES argon2 REQUIRED)
 
 set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime prefix (include/ + lib/) for cartoon ONNX")
 if(DEFINED ENV{ONNXRUNTIME_ROOT} AND "${ONNXRUNTIME_ROOT}" STREQUAL "")
@@ -98,6 +105,8 @@ set(AUTH_MODULES
   src/auth/auth_storage_pg.cpp
   src/auth/auth_routes.cpp
   src/auth/permissions.cpp
+  src/auth/tax_id.cpp
+  src/auth/tax_registry_client.cpp
 )
 
 # Módulos biométricos
@@ -112,6 +121,7 @@ set(BIOMETRIC_MODULES
 set(MINING_MODULES
   src/mining/kpi_service.cpp
   src/mining/sensor_service.cpp
+  src/mining/igp_seismic_client.cpp
   src/mining/surveillance_service.cpp
   src/mining/mining_gateway.cpp
   src/mining/mining_routes.cpp
@@ -129,6 +139,8 @@ set(REPORTS_MODULES
   src/reports/report_service.cpp
   src/reports/report_routes.cpp
   src/reports/report_pdf_export.cpp
+  src/reports/report_export_jobs.cpp
+  src/reports/report_document_settings.cpp
   src/reports/report_portable.cpp
   src/formula/formula_service.cpp
   src/formula/formula_routes.cpp
@@ -139,9 +151,14 @@ set(PLATFORM_MODULES
   src/platform/platform_routes.cpp
   src/tenant/tenant_assets_routes.cpp
   src/map/map_routes.cpp
+  src/map/wms_proxy.cpp
+  src/map/wms_proxy_security.cpp
   src/gdal/conversion_service.cpp
   src/gdal/gdal_routes.cpp
   src/text/text_routes.cpp
+  src/support/whatsapp_client.cpp
+  src/support/mining_chatbot_service.cpp
+  src/support/support_routes.cpp
 )
 
 add_executable(beemetry_backend
@@ -194,6 +211,7 @@ target_link_libraries(beemetry_backend PRIVATE
   Threads::Threads
   OpenSSL::SSL
   OpenSSL::Crypto
+  ${ARGON2_LIBRARY}
 )
 
 if(TARGET Boost::system)
@@ -281,8 +299,12 @@ if(Catch2_FOUND)
   enable_testing()
   add_executable(beemetry_backend_tests
     tests/test_http_utils.cpp
+    tests/test_wms_proxy_security.cpp
+    tests/test_tax_id.cpp
     src/http/http_utils.cpp
     src/config/app_config.cpp
+    src/map/wms_proxy_security.cpp
+    src/auth/tax_id.cpp
   )
   target_include_directories(beemetry_backend_tests PRIVATE
     ${Boost_INCLUDE_DIRS}
@@ -291,6 +313,8 @@ if(Catch2_FOUND)
   target_link_libraries(beemetry_backend_tests PRIVATE
     Catch2::Catch2WithMain
     Threads::Threads
+    OpenSSL::Crypto
+    ${ARGON2_LIBRARY}
   )
   if(TARGET Boost::system)
     target_link_libraries(beemetry_backend_tests PRIVATE Boost::system)
@@ -299,6 +323,9 @@ if(Catch2_FOUND)
     target_link_libraries(beemetry_backend_tests PRIVATE Boost::json)
   endif()
   add_test(NAME backend_unit_tests COMMAND beemetry_backend_tests)
+  set_tests_properties(backend_unit_tests PROPERTIES
+    ENVIRONMENT "BEEMETRY_ARGON2_MEMORY_KIB=8192;BEEMETRY_ARGON2_TIME_COST=1"
+  )
 else()
   message(STATUS "Catch2: NO encontrado -- target de pruebas backend deshabilitado (ver ADR-060)")
 endif()

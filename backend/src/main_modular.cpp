@@ -159,7 +159,7 @@ int main() {
     server::ConnectionManager::initialize(15000, std::chrono::seconds(300)); // Soporta 15K conexiones
     
     // Configuración del servidor
-    const char* port_env = std::getenv("MAPAS_PORT");
+    const char* port_env = std::getenv("BEEMETRY_MAPAS_PORT");
     unsigned short port = port_env ? std::atoi(port_env) : 8081;
     
     std::cout << "[MAIN] Starting Mining Platform Backend v2.0" << std::endl;

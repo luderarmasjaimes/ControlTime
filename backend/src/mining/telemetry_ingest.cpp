@@ -12,8 +12,7 @@
 #endif
 
 #include <chrono>
-#include <cstdio>
-#include <ctime>
+#include <cstring>
 #include <iostream>
 
 #include "config/constants.hpp"
@@ -149,6 +148,18 @@ bool TelemetryIngestor::resolveSensor(const std::string& code,
 }
 
 bool TelemetryIngestor::enqueue(TelemetryRow&& row) {
+#if HAVE_RDKAFKA
+    // En modo Kafka el flusher_ (drena queue_ -> COPY) no se arranca — solo
+    // corre consumer_thread_ (Kafka -> COPY). Encolar aquí sin producir a
+    // Kafka dejaría la fila varada en memoria para siempre (visto en vivo:
+    // integración ThingsBoard con mapas_backend_telemetry_queued creciendo
+    // y _inserted_total en 0). Mismo camino que ingestLine() ya usaba.
+    if (mode_ == Mode::Kafka) {
+        produceRow(row);
+        m_received_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+#endif
     {
         std::lock_guard<std::mutex> lk(q_mtx_);
         if (queue_.size() >= max_queue_) {
@@ -219,23 +230,100 @@ bool TelemetryIngestor::ensureConn() {
     return true;
 }
 
-static std::string nowTimestampUtc() {
-    using namespace std::chrono;
-    auto now = system_clock::now();
-    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
-    std::time_t t = system_clock::to_time_t(now);
-    std::tm tm{};
-#if defined(_WIN32)
-    gmtime_s(&tm, &t);
-#else
-    gmtime_r(&t, &tm);
-#endif
-    char buf[40];
-    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03d+00",
-                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
-                  tm.tm_min, tm.tm_sec, static_cast<int>(ms.count()));
-    return std::string(buf);
+// ── ADR-008: COPY binario ──────────────────────────────────────────────
+// Formato binario nativo de PostgreSQL (COPY ... WITH (FORMAT binary)):
+// firma de 11 bytes + flags(int32=0) + longitud de extensión(int32=0),
+// luego por fila: int16 con la cantidad de campos, y por campo un int32 de
+// longitud (o -1 para NULL) seguido de esa cantidad de bytes en la
+// representación binaria del tipo de columna (big-endian / network order).
+// Evita el parseo de texto→número en el servidor en el hot path de ingesta,
+// que es justamente lo que este ADR pide ("COPY binario maximiza el
+// throughput de escritura").
+namespace {
+
+void appendBE16(std::string& buf, std::int16_t v) {
+    const auto u = static_cast<std::uint16_t>(v);
+    const char b[2] = {static_cast<char>((u >> 8) & 0xFF),
+                       static_cast<char>(u & 0xFF)};
+    buf.append(b, 2);
 }
+
+void appendBE32(std::string& buf, std::int32_t v) {
+    const auto u = static_cast<std::uint32_t>(v);
+    const char b[4] = {
+        static_cast<char>((u >> 24) & 0xFF), static_cast<char>((u >> 16) & 0xFF),
+        static_cast<char>((u >> 8) & 0xFF), static_cast<char>(u & 0xFF)};
+    buf.append(b, 4);
+}
+
+void appendBE64(std::string& buf, std::int64_t v) {
+    const auto u = static_cast<std::uint64_t>(v);
+    char b[8];
+    for (int i = 0; i < 8; ++i) {
+        b[i] = static_cast<char>((u >> (56 - 8 * i)) & 0xFF);
+    }
+    buf.append(b, 8);
+}
+
+void appendBEDouble(std::string& buf, double d) {
+    std::uint64_t bits;
+    std::memcpy(&bits, &d, sizeof(bits));
+    appendBE64(buf, static_cast<std::int64_t>(bits));
+}
+
+/** @brief Parsea un UUID con guiones ("xxxxxxxx-xxxx-...") a sus 16 bytes crudos (formato binario nativo de la columna uuid). */
+bool parseUuidBytes(const std::string& s, unsigned char out[16]) {
+    std::string hex;
+    hex.reserve(32);
+    for (char ch : s) {
+        if (ch != '-') hex.push_back(ch);
+    }
+    if (hex.size() != 32) return false;
+    auto hexVal = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') return ch - '0';
+        if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+        if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+        return -1;
+    };
+    for (int i = 0; i < 16; ++i) {
+        const int hi = hexVal(hex[static_cast<std::size_t>(i * 2)]);
+        const int lo = hexVal(hex[static_cast<std::size_t>(i * 2 + 1)]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = static_cast<unsigned char>((hi << 4) | lo);
+    }
+    return true;
+}
+
+void appendUuidField(std::string& buf, const std::string& uuidText, bool& okOut) {
+    unsigned char raw[16];
+    if (!parseUuidBytes(uuidText, raw)) {
+        okOut = false;
+        return;
+    }
+    appendBE32(buf, 16);
+    buf.append(reinterpret_cast<const char*>(raw), 16);
+}
+
+constexpr std::int64_t kPgEpochOffsetMicros = 946684800LL * 1000000LL;  // 2000-01-01 - 1970-01-01
+
+/** @brief Microsegundos desde el epoch de Postgres (2000-01-01 UTC), representación binaria de timestamptz. */
+std::int64_t nowPgTimestampMicros() {
+    using namespace std::chrono;
+    const auto usSinceUnixEpoch =
+        duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
+    return usSinceUnixEpoch - kPgEpochOffsetMicros;
+}
+
+/** @brief Igual que nowPgTimestampMicros() pero para un epoch-ms explícito
+ * (backfill histórico) en vez de "ahora". */
+std::int64_t epochMsToPgTimestampMicros(std::int64_t epochMs) {
+    return epochMs * 1000LL - kPgEpochOffsetMicros;
+}
+
+constexpr char kBinaryCopySignature[11] = {'P', 'G', 'C', 'O', 'P', 'Y',
+                                           '\n', '\xFF', '\r', '\n', '\0'};
+
+} // namespace
 
 bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch) {
     if (batch.empty()) return true;
@@ -248,7 +336,7 @@ bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch) {
     PGresult* res = PQexec(
         c,
         "COPY telemetry_raw (tenant_id, sensor_id, captured_at, value_numeric, "
-        "quality_code) FROM STDIN");
+        "quality_code) FROM STDIN WITH (FORMAT binary)");
     if (!res || PQresultStatus(res) != PGRES_COPY_IN) {
         if (res) PQclear(res);
         m_flush_errors_.fetch_add(1, std::memory_order_relaxed);
@@ -259,27 +347,51 @@ bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch) {
     }
     PQclear(res);
 
-    const std::string ts = nowTimestampUtc();
-    std::string lineBuf;
-    lineBuf.reserve(128);
-    bool ok = true;
-    for (const auto& r : batch) {
-        lineBuf.clear();
-        lineBuf += r.tenant_id;
-        lineBuf += '\t';
-        lineBuf += r.sensor_id;
-        lineBuf += '\t';
-        lineBuf += ts;
-        lineBuf += '\t';
-        lineBuf += std::to_string(r.value_numeric);
-        lineBuf += '\t';
-        lineBuf += std::to_string(r.quality_code);
-        lineBuf += '\n';
-        if (PQputCopyData(c, lineBuf.data(),
-                          static_cast<int>(lineBuf.size())) != 1) {
-            ok = false;
-            break;
+    std::string header;
+    header.reserve(19);
+    header.append(kBinaryCopySignature, sizeof(kBinaryCopySignature));
+    appendBE32(header, 0);  // flags
+    appendBE32(header, 0);  // longitud de extensión de cabecera
+    bool ok = PQputCopyData(c, header.data(), static_cast<int>(header.size())) == 1;
+
+    const std::int64_t capturedAtMicros = nowPgTimestampMicros();
+    std::string rowBuf;
+    rowBuf.reserve(64);
+    for (std::size_t i = 0; ok && i < batch.size(); ++i) {
+        const auto& r = batch[i];
+        rowBuf.clear();
+        appendBE16(rowBuf, 5);  // 5 campos por fila
+
+        bool uuidOk = true;
+        appendUuidField(rowBuf, r.tenant_id, uuidOk);
+        appendUuidField(rowBuf, r.sensor_id, uuidOk);
+        if (!uuidOk) {
+            // UUID malformado (no debería ocurrir: viene de sensor_cache_
+            // resuelto contra la BD) — se descarta la fila, no todo el lote.
+            m_dropped_unknown_.fetch_add(1, std::memory_order_relaxed);
+            continue;
         }
+
+        appendBE32(rowBuf, 8);  // captured_at: timestamptz = int64
+        appendBE64(rowBuf, r.captured_at_epoch_ms > 0
+                                ? epochMsToPgTimestampMicros(r.captured_at_epoch_ms)
+                                : capturedAtMicros);
+
+        appendBE32(rowBuf, 8);  // value_numeric: double precision = float8
+        appendBEDouble(rowBuf, r.value_numeric);
+
+        appendBE32(rowBuf, 2);  // quality_code: smallint = int16
+        appendBE16(rowBuf, static_cast<std::int16_t>(r.quality_code));
+
+        if (PQputCopyData(c, rowBuf.data(), static_cast<int>(rowBuf.size())) != 1) {
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        std::string trailer;
+        appendBE16(trailer, -1);  // -1 en el conteo de campos = fin de datos
+        ok = PQputCopyData(c, trailer.data(), static_cast<int>(trailer.size())) == 1;
     }
 
     if (PQputCopyEnd(c, ok ? nullptr : "ingest aborted") != 1) ok = false;
@@ -352,13 +464,18 @@ bool TelemetryIngestor::kafkaInitConsumer() {
 void TelemetryIngestor::produceRow(const TelemetryRow& row) {
     RdKafka::Producer* p = static_cast<RdKafka::Producer*>(producer_);
     if (!p) return;
-    // Payload compacto: tenant\tsensor\tvalue\tquality  (key=sensor → partición)
+    // Payload compacto: tenant\tsensor\tvalue\tquality\tcaptured_at_epoch_ms
+    // (key=sensor → partición). El 5to campo es nuevo; consumerLoop() lo
+    // trata como opcional (mensajes viejos en el topic sin ese campo siguen
+    // parseando bien, quedan con captured_at_epoch_ms=0 = comportamiento
+    // legacy "now" en copyBatch()).
     std::string payload;
-    payload.reserve(96);
+    payload.reserve(112);
     payload += row.tenant_id; payload += '\t';
     payload += row.sensor_id; payload += '\t';
     payload += std::to_string(row.value_numeric); payload += '\t';
-    payload += std::to_string(row.quality_code);
+    payload += std::to_string(row.quality_code); payload += '\t';
+    payload += std::to_string(row.captured_at_epoch_ms);
     RdKafka::ErrorCode e = p->produce(
         kafka_topic_, RdKafka::Topic::PARTITION_UA,
         RdKafka::Producer::RK_MSG_COPY,
@@ -407,10 +524,19 @@ void TelemetryIngestor::consumerLoop() {
                 TelemetryRow r;
                 r.tenant_id = s.substr(0, a);
                 r.sensor_id = s.substr(a + 1, b - a - 1);
+                // 5to campo (captured_at_epoch_ms) es opcional: mensajes
+                // producidos antes de esta extensión no lo traen.
+                std::size_t dd = s.find('\t', cc + 1);
                 try { r.value_numeric = std::stod(s.substr(b + 1, cc - b - 1)); }
                 catch (...) { r.value_numeric = 0; }
-                try { r.quality_code = std::stoi(s.substr(cc + 1)); }
+                std::string qualityPart = (dd == std::string::npos)
+                    ? s.substr(cc + 1) : s.substr(cc + 1, dd - cc - 1);
+                try { r.quality_code = std::stoi(qualityPart); }
                 catch (...) { r.quality_code = 0; }
+                if (dd != std::string::npos) {
+                    try { r.captured_at_epoch_ms = std::stoll(s.substr(dd + 1)); }
+                    catch (...) { r.captured_at_epoch_ms = 0; }
+                }
                 batch.push_back(std::move(r));
                 m_consumed_.fetch_add(1, std::memory_order_relaxed);
             }

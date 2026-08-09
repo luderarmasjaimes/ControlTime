@@ -1,7 +1,10 @@
 #include "report_service.hpp"
 #include "../config/app_config.hpp"
 #include "../auth/auth_storage_pg.hpp"
+#include "../auth/permissions.hpp"
 #include "report_workflow.hpp"
+
+#include <cstdlib>
 
 #include "storage/pg_pool.hpp"
 #include "storage/pg_result.hpp"
@@ -33,8 +36,11 @@ std::vector<Project> listProjectsPg(const std::string &databaseUrl, std::string 
   return projects;
 }
 
-std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::string &company, std::string &error) {
+std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::string &tenantId, std::string &error) {
   std::vector<Report> reps;
+  // ADR-039 (migración completa): sin tenant real no hay nada que listar —
+  // evita un roundtrip a Postgres solo para que el cast ::uuid de '' falle.
+  if (tenantId.empty()) return reps;
 #if HAS_LIBPQ
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
@@ -46,12 +52,13 @@ std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::str
     error = "failed to ensure auth schema";
     return reps;
   }
-  const char *listParams[1] = {company.c_str()};
+  const char *listParams[1] = {tenantId.c_str()};
   static const char *kListReportsSql =
       "SELECT id, project_id, title, status, created_at, updated_at, "
       "COALESCE(company_name,''), COALESCE(signed_by_name,''), "
-      "COALESCE(signed_by_role,''), COALESCE(signed_at::text,'') "
-      "FROM reports WHERE deleted_at IS NULL AND company_name = $1 "
+      "COALESCE(signed_by_role,''), COALESCE(signed_at::text,''), "
+      "COALESCE(tenant_id::text,'') "
+      "FROM reports WHERE deleted_at IS NULL AND tenant_id = $1::uuid "
       "ORDER BY created_at DESC";
   storage::PgResult res{PQexecParams(conn, kListReportsSql, 1, nullptr, listParams,
                                      nullptr, nullptr, 0)};
@@ -68,15 +75,22 @@ std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::str
           r.signedByName = PQgetvalue(res.get(), i, 7);
           r.signedByRole = PQgetvalue(res.get(), i, 8);
           r.signedAt = PQgetvalue(res.get(), i, 9);
+          r.tenantId = PQgetvalue(res.get(), i, 10);
           reps.push_back(std::move(r));
       }
+  } else {
+    error = PQerrorMessage(conn);
   }
 #endif
   return reps;
 }
 
-bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, const std::string &company, Report &out,
+bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, const std::string &tenantId, Report &out,
                      std::string &error) {
+  if (tenantId.empty()) {
+    error = "report_not_found";
+    return false;
+  }
 #if HAS_LIBPQ
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
@@ -88,13 +102,20 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, cons
     error = "failed to ensure auth schema";
     return false;
   }
-  const char *getParams[2] = {id.c_str(), company.c_str()};
+  const char *getParams[2] = {id.c_str(), tenantId.c_str()};
+  // ADR-021: version_number viene de MAX(...) sobre report_content_revision
+  // (ADR-015) — la tabla `reports` no tiene columna propia de versión; es la
+  // única fuente de verdad para "qué versión es esta" que el cliente debe
+  // mostrar, en vez de su contador local de ediciones (document.meta.version).
   static const char *kGetReportSql =
       "SELECT id, project_id::text, title, content_json::text, status, "
       "created_at::text, updated_at::text, COALESCE(company_name,''), "
       "COALESCE(signed_by_name,''), COALESCE(signed_by_role,''), "
-      "COALESCE(signed_at::text,'') "
-      "FROM reports WHERE id = $1 AND company_name = $2 "
+      "COALESCE(signed_at::text,''), "
+      "COALESCE((SELECT MAX(version_number) FROM report_content_revision "
+      "WHERE report_id = reports.id), 1), "
+      "COALESCE(tenant_id::text,'') "
+      "FROM reports WHERE id = $1 AND tenant_id = $2::uuid "
       "AND deleted_at IS NULL";
   storage::PgResult res{PQexecParams(conn, kGetReportSql, 2, nullptr, getParams,
                                      nullptr, nullptr, 0)};
@@ -120,6 +141,8 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, cons
   out.signedByName = PQgetvalue(res.get(), 0, 8);
   out.signedByRole = PQgetvalue(res.get(), 0, 9);
   out.signedAt = PQgetvalue(res.get(), 0, 10);
+  out.versionNumber = std::atoi(PQgetvalue(res.get(), 0, 11));
+  out.tenantId = PQgetvalue(res.get(), 0, 12);
   return true;
 #else
   error = "postgres support is not compiled";
@@ -130,7 +153,16 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, cons
 bool createReportPg(const std::string &databaseUrl, const Report &r,
                     std::string &outNewId, std::string &error,
                     const std::string &auditUsername, const std::string &auditCompany,
-                    const std::string &auditToken) {
+                    const std::string &auditToken, int &outVersionNumber) {
+  outVersionNumber = 0;
+  // ADR-039 (migración completa, 2026-07-13): tenant_id ya no es opcional —
+  // la columna es NOT NULL en BD; se valida aquí primero para devolver un
+  // error de negocio claro ("tenant_required") en vez de un fallo genérico
+  // de constraint de Postgres.
+  if (r.tenantId.empty()) {
+    error = "tenant_required";
+    return false;
+  }
 #if HAS_LIBPQ
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
@@ -164,17 +196,20 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
   // Consulta parametrizada (PQexecParams): sin concatenar literales. Postgres
   // castea cada parámetro de texto al tipo de columna (uuid, jsonb, text).
   // project_id nullable → nullptr en el arreglo de parámetros = SQL NULL.
+  // company_name se conserva solo como campo de display legacy (ya validado
+  // arriba que tenant_id es real y obligatorio — ADR-039).
   std::string contentStr = json::serialize(r.contentJson);
-  const char *paramValues[5] = {
+  const char *paramValues[6] = {
       r.projectId.empty() ? nullptr : r.projectId.c_str(),
       r.title.c_str(),
       contentStr.c_str(),
       r.status.c_str(),
-      r.company.c_str()};
+      r.company.c_str(),
+      r.tenantId.c_str()};
   static const char *kInsertReportSql =
-      "INSERT INTO reports (project_id, title, content_json, status, company_name) "
-      "VALUES ($1, $2, $3, $4, $5) RETURNING id::text";
-  storage::PgResult res{PQexecParams(conn, kInsertReportSql, 5, nullptr, paramValues,
+      "INSERT INTO reports (project_id, title, content_json, status, company_name, tenant_id) "
+      "VALUES ($1, $2, $3, $4, $5, $6::uuid) RETURNING id::text";
+  storage::PgResult res{PQexecParams(conn, kInsertReportSql, 6, nullptr, paramValues,
                                      nullptr, nullptr, 0)};
   if (!res) {
     error = PQerrorMessage(conn);
@@ -196,10 +231,12 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
   // revisión (version_number=1) se crea en el mismo momento que el informe,
   // no queda "viviendo solo en el cliente". Best-effort: un fallo aquí no
   // debe bloquear la creación del informe en sí (mismo criterio que la
-  // auditoría de workflow más abajo).
+  // auditoría de workflow más abajo). auditCompany (empresa propia de la
+  // sesión) resuelve el auth_users.id del creador — independiente del
+  // tenant_id del informe (ADR-039).
   {
     const char *revParams[4] = {outNewId.c_str(), contentStr.c_str(),
-                                auditUsername.c_str(), r.company.c_str()};
+                                auditUsername.c_str(), auditCompany.c_str()};
     storage::PgResult revRes{PQexecParams(
         conn,
         "INSERT INTO report_content_revision "
@@ -209,6 +246,7 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
         "'creacion_inicial')",
         4, nullptr, revParams, nullptr, nullptr, 0)};
   }
+  outVersionNumber = 1;  // primera revisión, hardcodeada arriba (version_number=1)
 
   if (useAudit) {
     if (!pgExecOk(conn, "COMMIT")) {
@@ -224,11 +262,18 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
 }
 
 bool updateReportPg(const std::string &databaseUrl, const std::string &id,
-                    const std::string &company, const Report &r, std::string &error,
+                    const std::string &tenantId, const Report &r, std::string &error,
                     const std::string &auditUsername, const std::string &auditCompany,
-                    const std::string &auditToken,
+                    const std::string &auditToken, int &outVersionNumber,
+                    const std::string &userId,
                     const std::string &signerRole,
-                    const std::string &workflowComment) {
+                    const std::string &workflowComment,
+                    const std::string &expectedVersion) {
+  outVersionNumber = 0;
+  if (tenantId.empty()) {
+    error = "tenant_required";
+    return false;
+  }
 #if HAS_LIBPQ
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
@@ -259,11 +304,15 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
 
   // ADR-017: el servidor es la autoridad de la máquina de estados; el
   // cliente solo propone. Se lee el status ACTUAL (con lock de fila) para
-  // validar la transición antes de aplicar cualquier cambio.
-  const char *lockParams[2] = {id.c_str(), company.c_str()};
+  // validar la transición antes de aplicar cualquier cambio. ADR-039: el
+  // filtro de aislamiento es tenant_id (UUID), no company_name.
+  const char *lockParams[2] = {id.c_str(), tenantId.c_str()};
   storage::PgResult lockRes{PQexecParams(
       conn,
-      "SELECT status FROM reports WHERE id = $1 AND company_name = $2 "
+      "SELECT status, "
+      "COALESCE((SELECT MAX(version_number) FROM report_content_revision "
+      "WHERE report_id = reports.id), 1) "
+      "FROM reports WHERE id = $1 AND tenant_id = $2::uuid "
       "AND deleted_at IS NULL FOR UPDATE",
       2, nullptr, lockParams, nullptr, nullptr, 0)};
   if (!lockRes.okTuples() || PQntuples(lockRes.get()) < 1) {
@@ -272,10 +321,60 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
     return false;
   }
   const std::string currentStatus = PQgetvalue(lockRes.get(), 0, 0);
+  const std::string currentVersionStr = PQgetvalue(lockRes.get(), 0, 1);
+  // ADR-022: concurrencia optimista — se compara DENTRO del mismo lock de
+  // fila (nadie más puede colar un UPDATE entre este SELECT y el de abajo),
+  // así que esta comparación es la garantía real, no solo una verificación
+  // de cortesía del lado del cliente.
+  if (!expectedVersion.empty() && expectedVersion != currentVersionStr) {
+    pgExecOk(conn, "ROLLBACK");
+    error = "version_conflict:" + currentVersionStr;
+    return false;
+  }
   const bool statusChanged = currentStatus != r.status;
+
+  // ADR-079: un informe firmado o archivado es inmutable — ni un PUT de
+  // "mismo estado" (solo contenido) ni una transición pueden alterarlo,
+  // sin excepción de rol (ni siquiera admin). Corregir un informe firmado
+  // exige un informe nuevo, no editar el existente — cierra un hueco real:
+  // antes, `from == to` siempre pasaba `isValidReportTransition` (regla
+  // "sin cambio de estado siempre se permite"), así que cualquier miembro
+  // del tenant podía reescribir silenciosamente el contenido de un informe
+  // ya firmado con un PUT que repitiera status="signed".
+  if (currentStatus == "signed" || currentStatus == "archived") {
+    pgExecOk(conn, "ROLLBACK");
+    error = "report_immutable:" + currentStatus;
+    return false;
+  }
+
   if (!isValidReportTransition(currentStatus, r.status)) {
     pgExecOk(conn, "ROLLBACK");
     error = "invalid_workflow_transition:" + currentStatus + "->" + r.status;
+    return false;
+  }
+
+  // ADR-079: la máquina de estados (arriba) solo valida que el par
+  // from->to sea geométricamente válido; esto valida que el ROL de quien
+  // pide el cambio tenga autoridad real para pedirlo. Antes de este fix no
+  // existía ningún chequeo de rol/permiso en todo el módulo de informes —
+  // solo se verificaba pertenencia al tenant — así que cualquier usuario
+  // autenticado (operator/geologist/safety/viewer) podía aprobar y firmar
+  // cualquier informe (hallazgo de auditoría 2026-08-02). El permiso
+  // requerido depende únicamente del estado ACTUAL (ya que signed/archived
+  // quedaron bloqueados arriba, sin excepción):
+  //   - draft/rejected: 'informes.edit' — el autor edita y envía a revisión,
+  //     o retoma un informe rechazado.
+  //   - in_review/approved: 'informes.sign' — solo quien puede aprobar/
+  //     firmar puede tocar el contenido o mover el workflow desde aquí
+  //     (evita que el autor original edite su informe después de
+  //     enviarlo a revisión).
+  const std::string requiredPermission =
+      (currentStatus == "draft" || currentStatus == "rejected")
+          ? "informes.edit"
+          : "informes.sign";
+  if (!auth::hasPermission(userId, tenantId, signerRole, requiredPermission)) {
+    pgExecOk(conn, "ROLLBACK");
+    error = "forbidden:" + requiredPermission;
     return false;
   }
 
@@ -283,12 +382,13 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
   // fecha) — no basta el hash de integridad. Se captura SOLO en el momento
   // exacto de la transición approved->signed (nunca se re-sobreescribe en
   // transiciones posteriores como signed->archived, que preservan la firma
-  // original). El nombre se resuelve del lado servidor (auth_users), nunca
-  // se confía en el cliente para "quién firmó".
+  // original). El nombre se resuelve del lado servidor (auth_users, vía
+  // auditCompany — la empresa propia de la sesión que firma, independiente
+  // del tenant_id del informe), nunca se confía en el cliente para "quién firmó".
   const bool isSigningNow = statusChanged && r.status == "signed";
   std::string signerName;
   if (isSigningNow) {
-    const char *signerParams[2] = {auditUsername.c_str(), company.c_str()};
+    const char *signerParams[2] = {auditUsername.c_str(), auditCompany.c_str()};
     storage::PgResult signerRes{PQexecParams(
         conn,
         "SELECT TRIM(first_name || ' ' || last_name) FROM auth_users "
@@ -302,37 +402,37 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
     }
   }
 
-  // UPDATE parametrizado; company aparece dos veces (SET y filtro tenant).
-  // Cuando la transición es la firma real, se añaden las columnas de firma
-  // documental (ADR-018) al mismo UPDATE atómico.
+  // UPDATE parametrizado; company_name YA NO se toca aquí (ADR-039: es solo
+  // display legacy, inmutable después de creado) — el filtro de aislamiento
+  // es tenant_id. Cuando la transición es la firma real, se añaden las
+  // columnas de firma documental (ADR-018) al mismo UPDATE atómico.
   std::string contentStr = json::serialize(r.contentJson);
   bool ok;
   if (isSigningNow) {
-    // signed_by (FK UUID) se resuelve por subquery de username+company dentro
-    // del mismo UPDATE atómico; signed_by_name/signed_by_role quedan
+    // signed_by (FK UUID) se resuelve por subquery de username+auditCompany
+    // dentro del mismo UPDATE atómico; signed_by_name/signed_by_role quedan
     // desnormalizados para que la firma siga siendo legible aunque el
     // usuario cambie de nombre/rol o sea desactivado después.
     static const char *kUpdateReportSignedSql =
         "UPDATE reports SET title = $1, content_json = $2, status = $3, "
-        "company_name = $4, "
-        "signed_by = (SELECT id FROM auth_users WHERE username = $8 "
-        "AND company_name = $4 LIMIT 1), "
+        "signed_by = (SELECT id FROM auth_users WHERE username = $4 "
+        "AND company_name = $5 LIMIT 1), "
         "signed_by_name = $6, signed_by_role = $7, signed_at = NOW() "
-        "WHERE id = $5 AND company_name = $4 AND deleted_at IS NULL";
-    const char *updParams[8] = {r.title.c_str(),   contentStr.c_str(),
-                                r.status.c_str(),  company.c_str(),
-                                id.c_str(),         signerName.c_str(),
-                                signerRole.c_str(), auditUsername.c_str()};
-    storage::PgResult updRes{PQexecParams(conn, kUpdateReportSignedSql, 8, nullptr,
+        "WHERE id = $8 AND tenant_id = $9::uuid AND deleted_at IS NULL";
+    const char *updParams[9] = {r.title.c_str(),        contentStr.c_str(),
+                                r.status.c_str(),        auditUsername.c_str(),
+                                auditCompany.c_str(),    signerName.c_str(),
+                                signerRole.c_str(),      id.c_str(),
+                                tenantId.c_str()};
+    storage::PgResult updRes{PQexecParams(conn, kUpdateReportSignedSql, 9, nullptr,
                                           updParams, nullptr, nullptr, 0)};
     ok = updRes.okCommand();
   } else {
-    const char *updParams[5] = {r.title.c_str(), contentStr.c_str(),
-                                r.status.c_str(), company.c_str(), id.c_str()};
     static const char *kUpdateReportSql =
-        "UPDATE reports SET title = $1, content_json = $2, status = $3, "
-        "company_name = $4 "
-        "WHERE id = $5 AND company_name = $4 AND deleted_at IS NULL";
+        "UPDATE reports SET title = $1, content_json = $2, status = $3 "
+        "WHERE id = $4 AND tenant_id = $5::uuid AND deleted_at IS NULL";
+    const char *updParams[5] = {r.title.c_str(), contentStr.c_str(),
+                                r.status.c_str(), id.c_str(), tenantId.c_str()};
     storage::PgResult updRes{PQexecParams(conn, kUpdateReportSql, 5, nullptr,
                                           updParams, nullptr, nullptr, 0)};
     ok = updRes.okCommand();
@@ -375,7 +475,7 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
   // Best-effort: un fallo aquí no debe revertir el guardado del contenido.
   if (ok) {
     const char *revParams[4] = {id.c_str(), contentStr.c_str(),
-                                auditUsername.c_str(), company.c_str()};
+                                auditUsername.c_str(), auditCompany.c_str()};
     storage::PgResult revRes{PQexecParams(
         conn,
         "INSERT INTO report_content_revision "
@@ -385,8 +485,16 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
         "WHERE report_id = $1::uuid), 0) + 1, "
         "$2::jsonb, "
         "(SELECT id FROM auth_users WHERE username = $3 AND company_name = $4 LIMIT 1), "
-        "'autosave')",
+        "'autosave') RETURNING version_number",
         4, nullptr, revParams, nullptr, nullptr, 0)};
+    // ADR-021: el cliente necesita el version_number real para no depender de
+    // su propio contador local (document.meta.version, que cuenta ediciones,
+    // no revisiones confirmadas). Best-effort: si por algún motivo no viene
+    // (no debería, dado que `ok` ya es true), outVersionNumber queda en 0 y el
+    // cliente cae a su fallback local — no bloquea el guardado ya confirmado.
+    if (revRes.okTuples() && PQntuples(revRes.get()) > 0) {
+      outVersionNumber = std::atoi(PQgetvalue(revRes.get(), 0, 0));
+    }
   }
 
   if (ok) {
@@ -405,9 +513,13 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
 }
 
 bool deleteReportPg(const std::string &databaseUrl, const std::string &id,
-                    const std::string &company, std::string &error,
+                    const std::string &tenantId, std::string &error,
                     const std::string &auditUsername, const std::string &auditCompany,
                     const std::string &auditToken) {
+  if (tenantId.empty()) {
+    error = "tenant_required";
+    return false;
+  }
 #if HAS_LIBPQ
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
@@ -431,11 +543,32 @@ bool deleteReportPg(const std::string &databaseUrl, const std::string &id,
       return false;
     }
   }
-  // Soft-delete parametrizado; el filtro por company preserva el tenant check.
-  const char *delParams[2] = {id.c_str(), company.c_str()};
+  // ADR-079: un informe firmado es inmutable — ni admin puede eliminarlo
+  // (solo archivarlo ya fue posible vía workflow). Mismo criterio de
+  // integridad documental que la inmutabilidad aplicada en updateReportPg.
+  {
+    const char *statusParams[2] = {id.c_str(), tenantId.c_str()};
+    storage::PgResult statusRes{PQexecParams(conn,
+        "SELECT status FROM reports WHERE id = $1 AND tenant_id = $2::uuid "
+        "AND deleted_at IS NULL",
+        2, nullptr, statusParams, nullptr, nullptr, 0)};
+    if (!statusRes.okTuples() || PQntuples(statusRes.get()) < 1) {
+      if (useAudit) pgExecOk(conn, "ROLLBACK");
+      error = "report_not_found";
+      return false;
+    }
+    if (std::string(PQgetvalue(statusRes.get(), 0, 0)) == "signed") {
+      if (useAudit) pgExecOk(conn, "ROLLBACK");
+      error = "report_immutable:signed";
+      return false;
+    }
+  }
+  // Soft-delete parametrizado; el filtro por tenant_id (ADR-039) preserva el
+  // aislamiento.
+  const char *delParams[2] = {id.c_str(), tenantId.c_str()};
   static const char *kDeleteReportSql =
       "UPDATE reports SET deleted_at = NOW() "
-      "WHERE id = $1 AND company_name = $2 AND deleted_at IS NULL";
+      "WHERE id = $1 AND tenant_id = $2::uuid AND deleted_at IS NULL";
   storage::PgResult delRes{PQexecParams(conn, kDeleteReportSql, 2, nullptr,
                                         delParams, nullptr, nullptr, 0)};
   bool ok = delRes.okCommand();
@@ -460,8 +593,9 @@ bool deleteReportPg(const std::string &databaseUrl, const std::string &id,
 }
 
 json::array listReportRevisionsPg(const std::string &databaseUrl, const std::string &id,
-                                  const std::string &company, std::string &error) {
+                                  const std::string &tenantId, std::string &error) {
   json::array revisions;
+  if (tenantId.empty()) return revisions;
 #if HAS_LIBPQ
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
@@ -469,9 +603,10 @@ json::array listReportRevisionsPg(const std::string &databaseUrl, const std::str
     error = PQerrorMessage(conn);
     return revisions;
   }
-  // El join contra reports por (id, company_name) es el filtro de tenant:
-  // si el informe no existe o pertenece a otra empresa, no devuelve filas.
-  const char *params[2] = {id.c_str(), company.c_str()};
+  // El join contra reports por (id, tenant_id) es el filtro de tenant
+  // (ADR-039): si el informe no existe o pertenece a otro tenant, no
+  // devuelve filas.
+  const char *params[2] = {id.c_str(), tenantId.c_str()};
   static const char *kListRevisionsSql =
       "SELECT rev.revision_id::text, rev.version_number, "
       "rev.content_json::text, rev.created_at::text, "
@@ -479,7 +614,7 @@ json::array listReportRevisionsPg(const std::string &databaseUrl, const std::str
       "FROM report_content_revision rev "
       "JOIN reports r ON r.id = rev.report_id "
       "LEFT JOIN auth_users u ON u.id = rev.created_by "
-      "WHERE rev.report_id = $1::uuid AND r.company_name = $2 "
+      "WHERE rev.report_id = $1::uuid AND r.tenant_id = $2::uuid "
       "ORDER BY rev.version_number DESC";
   storage::PgResult res{PQexecParams(conn, kListRevisionsSql, 2, nullptr, params,
                                      nullptr, nullptr, 0)};
@@ -507,6 +642,221 @@ json::array listReportRevisionsPg(const std::string &databaseUrl, const std::str
   error = "postgres support is not compiled";
 #endif
   return revisions;
+}
+
+bool createExportJobPg(const std::string &databaseUrl, const std::string &reportId,
+                       const std::string &tenantId, const std::string &exportFormat,
+                       const json::value &optionsJson, const std::string &createdByUserId,
+                       const std::string &contentRevisionId, std::string &outJobId,
+                       std::string &error) {
+#if HAS_LIBPQ
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  const std::string optionsStr = json::serialize(optionsJson);
+  const char *params[6] = {
+      reportId.c_str(),
+      tenantId.empty() ? nullptr : tenantId.c_str(),
+      exportFormat.c_str(),
+      optionsStr.c_str(),
+      createdByUserId.empty() ? nullptr : createdByUserId.c_str(),
+      contentRevisionId.empty() ? nullptr : contentRevisionId.c_str(),
+  };
+  static const char *kInsertJobSql =
+      "INSERT INTO report_export_job "
+      "(report_id, tenant_id, export_format, options, created_by, content_revision_id) "
+      "VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid, $6::bigint) "
+      "RETURNING job_id::text";
+  storage::PgResult res{PQexecParams(conn, kInsertJobSql, 6, nullptr, params,
+                                     nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) < 1) {
+    error = res ? res.error() : PQerrorMessage(conn);
+    return false;
+  }
+  outJobId = PQgetvalue(res.get(), 0, 0);
+  return true;
+#else
+  error = "postgres support is not compiled";
+  return false;
+#endif
+}
+
+bool getExportJobPg(const std::string &databaseUrl, const std::string &jobId,
+                    const std::string &tenantId, ExportJob &out, std::string &error) {
+  if (tenantId.empty()) {
+    error = "export_job_not_found";
+    return false;
+  }
+#if HAS_LIBPQ
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  // Filtro de tenant directo sobre report_export_job.tenant_id (copiado del
+  // informe al crear el job) — mismo guard IDOR que getReportByIdPg, sin
+  // necesitar un join contra reports.
+  const char *params[2] = {jobId.c_str(), tenantId.c_str()};
+  static const char *kGetJobSql =
+      "SELECT job_id::text, report_id::text, export_format, status, "
+      "COALESCE(storage_uri,''), COALESCE(error_message,''), options::text, "
+      "created_at::text, COALESCE(started_at::text,''), COALESCE(completed_at::text,'') "
+      "FROM report_export_job WHERE job_id = $1::uuid AND tenant_id = $2::uuid";
+  storage::PgResult res{PQexecParams(conn, kGetJobSql, 2, nullptr, params,
+                                     nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) < 1) {
+    error = "export_job_not_found";
+    return false;
+  }
+  out.jobId = PQgetvalue(res.get(), 0, 0);
+  out.reportId = PQgetvalue(res.get(), 0, 1);
+  out.exportFormat = PQgetvalue(res.get(), 0, 2);
+  out.status = PQgetvalue(res.get(), 0, 3);
+  out.storageUri = PQgetvalue(res.get(), 0, 4);
+  out.errorMessage = PQgetvalue(res.get(), 0, 5);
+  try {
+    const char *opts = PQgetvalue(res.get(), 0, 6);
+    out.options = (opts && opts[0]) ? json::parse(std::string(opts)) : json::object{};
+  } catch (...) {
+    out.options = json::object{};
+  }
+  out.createdAt = PQgetvalue(res.get(), 0, 7);
+  out.startedAt = PQgetvalue(res.get(), 0, 8);
+  out.completedAt = PQgetvalue(res.get(), 0, 9);
+  return true;
+#else
+  error = "postgres support is not compiled";
+  return false;
+#endif
+}
+
+bool updateExportJobStatusPg(const std::string &databaseUrl, const std::string &jobId,
+                             const std::string &status, const std::string &storageUri,
+                             const std::string &errorMessage, std::string &error) {
+#if HAS_LIBPQ
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  const char *params[4] = {
+      jobId.c_str(),
+      status.c_str(),
+      storageUri.empty() ? nullptr : storageUri.c_str(),
+      errorMessage.empty() ? nullptr : errorMessage.c_str(),
+  };
+  // started_at/completed_at se resuelven server-side a partir del status
+  // destino, nunca los manda el caller: evita que un worker con reloj
+  // desincronizado (o una respuesta duplicada del sidecar) pise timestamps.
+  static const char *kUpdateJobSql =
+      "UPDATE report_export_job SET "
+      "status = $2, "
+      "storage_uri = COALESCE($3, storage_uri), "
+      "error_message = $4, "
+      "started_at = CASE WHEN $2 = 'running' AND started_at IS NULL "
+      "  THEN NOW() ELSE started_at END, "
+      "completed_at = CASE WHEN $2 IN ('success','failed','cancelled') "
+      "  THEN NOW() ELSE completed_at END "
+      "WHERE job_id = $1::uuid";
+  storage::PgResult res{PQexecParams(conn, kUpdateJobSql, 4, nullptr, params,
+                                     nullptr, nullptr, 0)};
+  if (!res.okCommand()) {
+    error = res ? res.error() : PQerrorMessage(conn);
+    return false;
+  }
+  return true;
+#else
+  error = "postgres support is not compiled";
+  return false;
+#endif
+}
+
+bool upsertExportJobAssetPg(const std::string &databaseUrl, const std::string &jobId,
+                            int pageNumber, const std::string &kind,
+                            const std::string &storageUri, const std::string &speakerNotes,
+                            double durationSeconds, std::string &error) {
+#if HAS_LIBPQ
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  const std::string pageNumberStr = std::to_string(pageNumber);
+  const std::string durationStr = std::to_string(durationSeconds);
+  const char *params[6] = {
+      jobId.c_str(),
+      pageNumberStr.c_str(),
+      kind.c_str(),
+      storageUri.empty() ? nullptr : storageUri.c_str(),
+      speakerNotes.empty() ? nullptr : speakerNotes.c_str(),
+      durationStr.c_str(),
+  };
+  // ON CONFLICT (job_id, page_number): re-grabar/editar la narración de una
+  // página ya narrada reemplaza la fila anterior en vez de acumular filas
+  // huérfanas — coherente con "una narración por página por job".
+  static const char *kUpsertAssetSql =
+      "INSERT INTO report_export_job_asset "
+      "(job_id, page_number, kind, storage_uri, speaker_notes, duration_seconds) "
+      "VALUES ($1::uuid, $2::int, $3, $4, $5, $6::numeric) "
+      "ON CONFLICT (job_id, page_number) DO UPDATE SET "
+      "kind = EXCLUDED.kind, storage_uri = EXCLUDED.storage_uri, "
+      "speaker_notes = EXCLUDED.speaker_notes, duration_seconds = EXCLUDED.duration_seconds";
+  storage::PgResult res{PQexecParams(conn, kUpsertAssetSql, 6, nullptr, params,
+                                     nullptr, nullptr, 0)};
+  if (!res.okCommand()) {
+    error = res ? res.error() : PQerrorMessage(conn);
+    return false;
+  }
+  return true;
+#else
+  error = "postgres support is not compiled";
+  return false;
+#endif
+}
+
+std::vector<ExportJobAsset> listExportJobAssetsPg(const std::string &databaseUrl,
+                                                  const std::string &jobId, std::string &error) {
+  std::vector<ExportJobAsset> assets;
+#if HAS_LIBPQ
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return assets;
+  }
+  const char *params[1] = {jobId.c_str()};
+  static const char *kListAssetsSql =
+      "SELECT asset_id::text, job_id::text, page_number, kind, "
+      "COALESCE(storage_uri,''), COALESCE(speaker_notes,''), "
+      "COALESCE(duration_seconds,0)::text "
+      "FROM report_export_job_asset WHERE job_id = $1::uuid ORDER BY page_number ASC";
+  storage::PgResult res{PQexecParams(conn, kListAssetsSql, 1, nullptr, params,
+                                     nullptr, nullptr, 0)};
+  if (res.okTuples()) {
+    for (int i = 0; i < PQntuples(res.get()); ++i) {
+      ExportJobAsset a;
+      a.assetId = PQgetvalue(res.get(), i, 0);
+      a.jobId = PQgetvalue(res.get(), i, 1);
+      a.pageNumber = std::atoi(PQgetvalue(res.get(), i, 2));
+      a.kind = PQgetvalue(res.get(), i, 3);
+      a.storageUri = PQgetvalue(res.get(), i, 4);
+      a.speakerNotes = PQgetvalue(res.get(), i, 5);
+      a.durationSeconds = std::atof(PQgetvalue(res.get(), i, 6));
+      assets.push_back(std::move(a));
+    }
+  } else {
+    error = res ? res.error() : PQerrorMessage(conn);
+  }
+#else
+  error = "postgres support is not compiled";
+#endif
+  return assets;
 }
 
 } // namespace reports

@@ -43,6 +43,14 @@ struct TelemetryRow {
     std::string sensor_id;  // uuid (texto)
     double value_numeric{0.0};
     int quality_code{0};
+    // Marca de tiempo explícita de captura (epoch ms, UTC). 0 = sin definir:
+    // el flusher usa now() al momento del COPY — comportamiento histórico
+    // sin cambios para MQTT/Modbus/OPC-UA/HTTP (todos "tiempo real", el
+    // dato se genera y se ingesta casi al mismo instante). Backfill/sync
+    // desde una plataforma externa (ThingsBoard/AWS, ver thingsboard_sync.*)
+    // SÍ necesita preservar la fecha real del dato histórico — usar este
+    // campo en vez de dejarlo en 0 para esos casos.
+    std::int64_t captured_at_epoch_ms{0};
 };
 
 class TelemetryIngestor {

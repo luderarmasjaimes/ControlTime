@@ -109,7 +109,7 @@ std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
 std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &company,
                                         const std::string &identityKey,
-                                        const std::string &passwordHash,
+                                        const std::string &password,
                                         std::string &error,
                                         std::string *errorCodeOut = nullptr);
 
@@ -160,6 +160,95 @@ bool revokeRefreshTokenPg(const std::string &databaseUrl,
 /** @brief Revoca todos los refresh tokens vigentes de un usuario (logout global / incidente de seguridad). @return true si el UPDATE se ejecutó sin error. */
 bool revokeAllRefreshTokensForUserPg(const std::string &databaseUrl,
                                      const std::string &userId);
+
+// ── Migración de credenciales a Argon2id (auditoría 2026-08-02) ───────────
+
+/** @brief Resultado de la migración masiva de hashes legados. */
+struct PasswordMigrationResult {
+  bool ran = false;        ///< false si no había nada que migrar o no hubo BD.
+  int scanned = 0;         ///< filas con hash legado crudo encontradas.
+  int migrated = 0;        ///< filas efectivamente envueltas en Argon2id.
+  int failed = 0;          ///< filas que no se pudieron migrar.
+  int remainingRaw = 0;    ///< hashes legados crudos que siguen en la tabla.
+  int remainingWrapped = 0;///< envueltos, pendientes de rehash real en su login.
+  std::string error;
+};
+
+/**
+ * @brief Envuelve en Argon2id TODOS los hashes de contraseña legados.
+ *
+ * Idempotente y segura de ejecutar en cada arranque: solo toca filas cuyo
+ * `password_hash` no empieza por `$argon2id$` ni por `legacy1:`. Cada fila se
+ * actualiza con un UPDATE condicionado al hash antiguo, así que un login
+ * concurrente que ya haya hecho el rehash real nunca se pisa.
+ *
+ * Elimina de la base el material débil (`std::hash` de 64 bits, salt fijo, sin
+ * estiramiento) sin necesitar las contraseñas en claro y sin expulsar a nadie.
+ * La conversión a un Argon2id auténtico ocurre después, por usuario, en su
+ * siguiente login correcto.
+ */
+PasswordMigrationResult migrateLegacyPasswordHashesPg(const std::string &databaseUrl);
+#endif
+
+// ── ADR-085: CRUD administrado de empresas (db_scripts/50) ────────────────
+
+/** @brief Fila de `auth_companies` tal como la ve la pantalla de administración (ver CompanyManagementView.tsx). */
+struct AuthCompanyRecord {
+  std::string companyId;
+  std::string name;
+  std::string ruc;             ///< vacío si no se cargó o si se enmascaró para el llamador (ver listCompaniesAdminPg).
+  std::string countryCode = "PE";
+  std::string domicilioFiscal;
+  std::string tenantId;
+  bool active = true;
+  bool demoData = false;
+  std::string createdAt;
+  std::string updatedAt;
+  std::string updatedBy;
+  std::string deactivatedAt;
+  std::string deactivatedBy;
+};
+
+#if HAS_LIBPQ
+/** @brief Lista `auth_companies` para la pantalla de administración (a diferencia de GET /api/auth/companies, incluye inactivas si se pide y expone RUC/tenant). @param maskRuc Si true, el RUC vuelve vacío en cada fila (solicitante con `empresas.view` pero sin `empresas.manage`). */
+json::array listCompaniesAdminPg(const std::string &databaseUrl,
+                                 bool includeInactive, bool maskRuc);
+
+/** @brief Busca una empresa por su `company_id` (uuid). @return true si existe. */
+bool getCompanyByIdPg(const std::string &databaseUrl,
+                      const std::string &companyId, AuthCompanyRecord &out);
+
+/**
+ * @brief Da de alta una empresa: inserta primero apoyándose en el índice
+ * único `ux_auth_companies_name_norm` (ON CONFLICT DO NOTHING RETURNING) —
+ * si no devuelve fila es que ya existía (error="company_already_exists"),
+ * cerrando la condición de carrera que tenía el POST original (dos altas
+ * concurrentes del mismo nombre normalizado). Solo entonces provisiona el
+ * tenant real vía `findOrCreateTenantForCompanyPg` y lo persiste en la fila.
+ * @return true si la empresa quedó creada (ver `out`); false en cualquier
+ * otro caso (ver `error`: "company_already_exists" | "tenant_provision_failed"
+ * | "database_unavailable" | "company_create_failed").
+ */
+bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
+                     const std::string &ruc, const std::string &countryCode,
+                     const std::string &domicilioFiscal,
+                     const std::string &actorUserId,
+                     const std::string &actorRole, AuthCompanyRecord &out,
+                     std::string &error);
+
+/** @brief Edita RUC/país/domicilio de una empresa existente. NUNCA toca `name` (el nombre es referenciado por nombre en auth_users/reports/mineria_empresas — renombrar queda fuera de alcance, ver ADR-085). @return true si la fila existía y se actualizó. */
+bool updateCompanyPg(const std::string &databaseUrl,
+                     const std::string &companyId, const std::string &ruc,
+                     const std::string &countryCode,
+                     const std::string &domicilioFiscal,
+                     const std::string &actorUserId, AuthCompanyRecord &out,
+                     std::string &error);
+
+/** @brief Activa/desactiva una empresa (soft delete — nunca borra la fila: hay informes/telemetría/usuarios enlazados por nombre). @param activeUsersAffected Devuelve cuántos usuarios activos tiene la empresa, para que el frontend lo muestre en la confirmación. @return true si la fila existía y se actualizó. */
+bool setCompanyActivePg(const std::string &databaseUrl,
+                        const std::string &companyId, bool active,
+                        const std::string &actorUserId,
+                        int &activeUsersAffected, std::string &error);
 #endif
 
 } // namespace auth

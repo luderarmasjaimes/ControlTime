@@ -3,6 +3,7 @@
 #include "../http/http_utils.hpp"
 #include "../auth/auth_session.hpp"
 #include "../auth/auth_storage_pg.hpp"
+#include "../auth/permissions.hpp"
 #include "../security/validators.hpp"
 
 #include <cstdlib>
@@ -112,7 +113,7 @@ static const uint8_t kOfflineJpeg[] = {
 // Devuelve respuesta JPEG de placeholder (cámara offline / script fallido).
 // Prioridad: env SURVEILLANCE_OFFLINE_PLACEHOLDER → kOfflineJpeg embebido.
 static http::response<http::string_body> makeCameraOfflinePlaceholder() {
-    if (const char *p = std::getenv("SURVEILLANCE_OFFLINE_PLACEHOLDER"); p && *p) {
+    if (const char *p = std::getenv("BEEMETRY_SURVEILLANCE_OFFLINE_PLACEHOLDER"); p && *p) {
         std::ifstream pf(p, std::ios::binary);
         if (pf) {
             std::string bytes((std::istreambuf_iterator<char>(pf)), {});
@@ -130,18 +131,35 @@ namespace mining {
 http::response<http::string_body>
 handleGetCameras(const http::request<http::string_body>& req,
                  const std::unordered_map<std::string, std::string>& query) {
+  // Auth fix (auditoría de seguridad 2026-07-13): este endpoint no exigía
+  // sesión — cualquiera podía listar nombre/ubicación/URL RTMP de cámaras de
+  // cualquier tenant sin autenticarse. Ahora exige sesión y, si se pide un
+  // tenant_id específico, verifica membresía real (mismo criterio que
+  // handleCameraSnapshot más abajo); sin tenant_id explícito, se acota al
+  // tenant activo de la sesión en vez de listar todos los tenants.
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+  }
+  const auto itTenantCam = query.find("tenant_id");
+  const bool hasExplicitTenant = itTenantCam != query.end() && !itTenantCam->second.empty();
+  const std::string targetTenant = hasExplicitTenant ? itTenantCam->second : session->tenantId;
+  if (hasExplicitTenant &&
+      !auth::userBelongsToTenant(session->userId, session->tenantId, itTenantCam->second)) {
+    return makeJsonResponse(http::status::forbidden,
+                            json::object{{"error", "no_pertenece_a_esa_unidad"}});
+  }
+
   json::array cameras;
   if (gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
     auto __pg_lease = storage::PgPool::instance().acquire(gDatabaseUrl);
     PGconn *conn = __pg_lease.get();
     if (PQstatus(conn) == CONNECTION_OK) {
-      const auto itTenantCam = query.find("tenant_id");
-      const bool scopedCam = itTenantCam != query.end() && !itTenantCam->second.empty();
-      // Scoped: filtra por tenant con parámetro $1. No-scoped: sin filtro.
+      const bool scopedCam = !targetTenant.empty();
       storage::PgResult res;
       if (scopedCam) {
-        const char *scopeParams[1] = {itTenantCam->second.c_str()};
+        const char *scopeParams[1] = {targetTenant.c_str()};
         res = storage::PgResult{PQexecParams(
             conn,
             "SELECT id, name, location, rtmp_url, status, lat, lng, "
@@ -149,22 +167,22 @@ handleGetCameras(const http::request<http::string_body>& req,
             "WHERE tenant_id = $1::uuid ORDER BY id ASC",
             1, nullptr, scopeParams, nullptr, nullptr, 0)};
       } else {
-        res = storage::PgResult{PQexec(conn,
-                     "SELECT id, name, location, rtmp_url, status, lat, lng, "
-                     "tenant_id::text FROM surveillance_cameras "
-                     "ORDER BY tenant_id ASC, id ASC")};
+        // Sesión sin tenant_id propio (legacy) y sin tenant_id explícito
+        // verificado: no hay un scope seguro que aplicar — no se listan
+        // cámaras de otros tenants por defecto.
+        return makeJsonResponse(http::status::ok, json::object{{"cameras", json::array{}}});
       }
       if (res.okTuples()) {
         int rows = PQntuples(res.get());
         for (int i = 0; i < rows; ++i) {
           cameras.push_back(json::object{
-              {"id", std::stoi(PQgetvalue(res.get(), i, 0))},
+              {"id", http_utils::safeStoi(PQgetvalue(res.get(), i, 0))},
               {"name", PQgetvalue(res.get(), i, 1)},
               {"location", PQgetvalue(res.get(), i, 2)},
               {"rtmp_url", PQgetvalue(res.get(), i, 3)},
               {"status", PQgetvalue(res.get(), i, 4)},
-              {"lat", std::stod(PQgetvalue(res.get(), i, 5))},
-              {"lng", std::stod(PQgetvalue(res.get(), i, 6))},
+              {"lat", http_utils::safeStod(PQgetvalue(res.get(), i, 5))},
+              {"lng", http_utils::safeStod(PQgetvalue(res.get(), i, 6))},
               {"tenant_id", PQgetvalue(res.get(), i, 7)}});
         }
       }
@@ -203,13 +221,22 @@ handleCameraSnapshot(const http::request<http::string_body>& req,
     return makeJsonResponse(http::status::bad_request,
                             json::object{{"error", "invalid camera_id"}});
   }
+  // IDOR fix (auditoría de seguridad 2026-07-13): antes se aceptaba CUALQUIER
+  // tenant_id del query param con solo exigir sesión válida (de cualquier
+  // tenant) — un usuario de la unidad A podía leer la cámara de la unidad B
+  // adivinando su camera_id. Ahora se verifica membresía real antes de
+  // consultar la cámara.
+  if (!auth::userBelongsToTenant(session->userId, session->tenantId, itTenant->second)) {
+    return makeJsonResponse(http::status::forbidden,
+                            json::object{{"error", "no_pertenece_a_esa_unidad"}});
+  }
   if (gAuthStorageMode != AuthStorageMode::Postgres) {
     return makeJsonResponse(http::status::internal_server_error,
                             json::object{{"error", "db_unavailable"}});
   }
 #if HAS_LIBPQ
   {
-    const char *scriptEnv = std::getenv("SURVEILLANCE_SNAPSHOT_SCRIPT");
+    const char *scriptEnv = std::getenv("BEEMETRY_SURVEILLANCE_SNAPSHOT_SCRIPT");
     const std::string script =
         (scriptEnv && scriptEnv[0]) ? std::string(scriptEnv)
                                   : std::string("/app/scripts/surveillance_camera_snapshot.py");
@@ -286,7 +313,7 @@ handleCameraSnapshot(const http::request<http::string_body>& req,
     const std::string quietRedir = " > /dev/null 2>&1";
     // Timeout configurable: evita que un script colgado bloquee el hilo indefinidamente
     const int snapTimeout = []() {
-        if (const char* e = std::getenv("SURVEILLANCE_SNAPSHOT_TIMEOUT_S")) {
+        if (const char* e = std::getenv("BEEMETRY_SURVEILLANCE_SNAPSHOT_TIMEOUT_S")) {
             try { return std::max(1, std::stoi(e)); } catch (...) {}
         }
         return 15;
@@ -354,12 +381,19 @@ handleCreateCamera(const http::request<http::string_body>& req,
   const std::string name     = getStr("name");
   const std::string location = getStr("location");
   const std::string rtmpUrl  = getStr("rtmp_url");
-  const std::string tenantId = !session->tenantId.empty()
-                                   ? session->tenantId
-                                   : getStr("tenant_id");
+  // Fix (auditoría de seguridad 2026-07-13): antes, si la sesión no tenía
+  // tenant_id propio (usuario legacy), se confiaba ciegamente en el tenant_id
+  // del BODY para crear la cámara — sin verificar membresía. Ahora se exige
+  // membresía real (mismo criterio que handleCameraSnapshot).
+  const std::string requestedTenant = getStr("tenant_id");
+  const std::string tenantId = !session->tenantId.empty() ? session->tenantId : requestedTenant;
   if (name.empty() || rtmpUrl.empty() || tenantId.empty()) {
     return makeJsonResponse(http::status::bad_request,
                             json::object{{"error", "name, rtmp_url and tenant_id are required"}});
+  }
+  if (!auth::userBelongsToTenant(session->userId, session->tenantId, tenantId)) {
+    return makeJsonResponse(http::status::forbidden,
+                            json::object{{"error", "no_pertenece_a_esa_unidad"}});
   }
   double lat = 0.0, lng = 0.0;
   if (auto it = obj.if_contains("lat"); it && it->is_double())
@@ -467,6 +501,12 @@ handleUpdateCamera(const http::request<http::string_body>& req,
   if (tenantId.empty()) {
     return makeJsonResponse(http::status::bad_request,
                             json::object{{"error", "tenant_id required"}});
+  }
+  // Fix (auditoría de seguridad 2026-07-13): verificar membresía real antes
+  // de permitir modificar una cámara del tenant solicitado.
+  if (!auth::userBelongsToTenant(session->userId, session->tenantId, tenantId)) {
+    return makeJsonResponse(http::status::forbidden,
+                            json::object{{"error", "no_pertenece_a_esa_unidad"}});
   }
 
   auto __pg = storage::PgPool::instance().acquire(gDatabaseUrl);
@@ -593,6 +633,12 @@ handleDeleteCamera(const http::request<http::string_body>& req,
   if (tenantId.empty()) {
     return makeJsonResponse(http::status::bad_request,
                             json::object{{"error", "tenant_id required"}});
+  }
+  // Fix (auditoría de seguridad 2026-07-13): verificar membresía real antes
+  // de permitir borrar una cámara del tenant solicitado.
+  if (!auth::userBelongsToTenant(session->userId, session->tenantId, tenantId)) {
+    return makeJsonResponse(http::status::forbidden,
+                            json::object{{"error", "no_pertenece_a_esa_unidad"}});
   }
 
   auto __pg = storage::PgPool::instance().acquire(gDatabaseUrl);
