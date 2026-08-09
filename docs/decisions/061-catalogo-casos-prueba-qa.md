@@ -58,3 +58,38 @@ Se descarta: no está confirmado si `viewer` debe ser seleccionable desde esa pa
 - `frontend/src/auth/roleConstants.ts` (defecto de 6 vs 7 roles)
 - `frontend/src/components/ReportStudioV2/components/layout/RibbonToolbar.tsx` (menú de plataforma, confirma ausencia de "Video")
 - ADR-036 ("7 roles unificados" — la discrepancia de este ADR es contra esa decisión)
+
+## Actualización 2026-08-05 — Hallazgo G2 cerrado
+
+Gerencia decidió: implementar mantenimiento completo de empresas (no solo
+alta), pantalla de administración, RBAC granular ver/mantener, y datos de
+prueba multiperfil. Cuatro ADR nuevos cierran G2 por completo (ADR-078 ya
+había cerrado la mitad — el alta con dedup):
+
+- **ADR-085** (`crud-empresas-y-pantalla-administracion`): `PUT`/`DELETE`
+  (soft delete) sobre `/api/auth/companies/{id}`, campo RUC, pantalla
+  `CompanyManagementView.tsx` — la parte de G2 que ADR-078 había dejado
+  pendiente explícitamente.
+- **ADR-086** (`rbac-granular-empresas-view-manage`): permisos
+  `empresas.view`/`empresas.manage` reemplazan el `role=="admin"`
+  hardcodeado original de ADR-078 — responde la pregunta "¿quién autoriza?"
+  que este ADR (línea 27) había dejado como decisión de producto pendiente.
+- **ADR-087** (`validacion-ruc-registro-externo-opcional`): checksum de RUC
+  extraído a un módulo reutilizable + fix de un bug real donde `company`
+  nunca se comparaba contra nada; consulta externa opcional al padrón SUNAT
+  (sin proveedor contratado todavía) documentada como excepción explícita a
+  ADR-001 — responde "¿RUC?" (línea 27).
+- **ADR-088** (`seed-empresas-distribuidoras-usuarios-demo`): TimeTelemetry,
+  Beemetry y 4 distribuidoras reales del rubro minero peruano con RUC
+  sintético marcado como tal (no verificado — no existe API oficial
+  gratuita de SUNAT, ver ADR-087), 24 usuarios de prueba ficticios
+  validando las 4 combinaciones RBAC de ADR-086 — responde "¿deduplicación?"
+  con datos reales de prueba (el índice único que cierra la condición de
+  carrera del dedup vive en ADR-085).
+
+El caso de prueba original de este catálogo para G2 ("verificación de
+ausencia": confirmar que `POST /api/auth/companies` no existía) queda
+**invertido** — ahora debe verificar presencia y comportamiento correcto
+del CRUD completo. G1 (inserción de video) fue cerrado por separado en
+ADR-062/064/065 (ver `docs/decisions/README.md`) y no se toca en esta
+actualización.

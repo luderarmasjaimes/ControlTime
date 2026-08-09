@@ -1,5 +1,64 @@
 # ADR-059 — Plan Maestro de Pruebas QA
 
+## Actualización 2026-08-05 — corrida real de las 3 capas automatizadas, 2 regresiones de navegación encontradas y corregidas
+
+Corrida completa contra el stack Docker real (`beemetry-api`/`beemetry-web`
+healthy) tras un reinicio de Docker Desktop (mismo bloqueo operativo que
+documentó ADR-072 el 2026-07-24 — se resolvió reiniciando la app):
+
+- **Capa 1 (unit frontend)**: `tsc --noEmit` → 0 errores. `vitest run` → **35
+  tests passed (9 archivos)**.
+- **Capa 2 (unit backend, Catch2)**: corrida directa de
+  `/app/build/beemetry_backend_tests` dentro de `beemetry-api` → **610
+  aserciones en 20 test cases, todas passed** — cifra real muy por encima de
+  las 27/7 documentadas en ADR-060 (2026-07-21); se corrigió la cifra ahí, no
+  se agregó ningún test nuevo en esta pasada.
+- **Capa 3 (e2e frontend, Playwright)**: la corrida inicial dio **1/8
+  passed**, muy por debajo del "6/6" que citaba `CHANGELOG.md`/el commit
+  `9782c09`. Investigado y corregido en el propio código de test (no en la
+  app):
+  1. **ADR-042 renombró la categoría de menú "Reportes" → "Informes"** y
+     ningún spec se actualizó — `openCategory(page, 'Reportes')` nunca
+     encontraba el botón, bloqueando los 5 specs que navegan a esa área.
+     Corregido en los 4 archivos que lo usan (`editor.spec.ts`,
+     `editor-save.spec.ts`, `report-v2-admin.spec.ts`,
+     `user-maintenance.spec.ts`) + comentario desactualizado en `helpers.ts`.
+  2. **i18n (ADR-075) cambió las etiquetas visibles** de los tabs internos
+     `'Report'` → "Reporte" y `'Report v2'` → "Informes" (el `name` interno
+     de cada tab, en `App.tsx`, no cambió — solo `label` vía `t(...)`).
+     `getByRole('button', { name: 'Abrir Report'/'Abrir Report v2' })` ya no
+     matcheaba nada. Corregido a `'Abrir Reporte'` / `'Abrir Informes'`
+     respectivamente en los mismos 4 archivos.
+  3. **Race real en `dismissUserMaintenancePrompt()`**: desde ADR-079,
+     `canMaintain` puede depender de `usePermissions()` (fetch async a
+     `GET /api/auth/permissions`); el helper original comprobaba
+     `isVisible()` una sola vez justo después de `page.goto('/')`, antes de
+     que el efecto de React montara el prompt — el modal se escapaba y su
+     overlay (`z-[1100]`) bloqueaba clicks posteriores. Corregido con
+     `waitFor({ timeout: 3000 })` + una segunda invocación dentro de
+     `openCategory()`.
+  4. **`dashboard.spec.ts` verificaba texto ya removido**: "Prod. Mensual"
+     no existe en el dashboard actual (KPIs de cabecera reemplazados por red
+     de sensores + calidad del aire, ver comentario propio en
+     `MiningDashboard.tsx`) y el botón de mapa se llama "Abrir Satélite", no
+     "Abrir Map" (mismo patrón de i18n que el punto 2). Corregido.
+
+  Tras estos 4 fixes: **5/8 passed** (`dashboard`, `editor`, `editor-save`,
+  y 1 de 2 `map-performance`; el otro `map-performance` sigue `skip`
+  intencional, sin relación con esta pasada).
+
+  **3 specs siguen fallando** (`report-v2-admin.spec.ts` ×2,
+  `user-maintenance.spec.ts`), todos con `realLogin()` contra la cuenta real
+  `larmas`/Alpayana (rol real verificado en `sensors_db`: **`operator`**, no
+  admin/manager) — se atascan más adentro, en la pestaña "Datos" del ribbon
+  de ReportStudioV2 o en el botón "Guardar", sin lanzar el `POST
+  /api/reports` esperado. Hipótesis no confirmada por falta de acceso al
+  Browser pane en esta sesión (herramienta no disponible): podría ser un gate
+  de permiso real introducido por ADR-079 (`informes.edit`/`informes.sign`)
+  que un `operator` ya no satisface para ese punto del flujo, no
+  necesariamente otro bug de test. **Queda sin resolver — no se fuerza una
+  corrección sin poder verificar la causa real en un navegador.**
+
 **Status**: accepted, primera fase implementada y verificada en vivo (2026-07-21). Ver ADR-060 para el detalle de la Capa 2 (tests backend).
 **Fecha**: 2026-07-20
 **Autores**: EC

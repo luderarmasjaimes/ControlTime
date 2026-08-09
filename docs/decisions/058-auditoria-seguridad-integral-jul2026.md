@@ -101,20 +101,22 @@ esfuerzo de mayor alcance que una pasada de auditoría).
   cerrable en la misma pasada de auditoría.
   **Cerrado el mismo día** (2026-07-19), después de esta auditoría, con su
   propio trabajo de implementación — ver "Actualización 2026-07-19" en
-  ADR-029 para el diseño final (cookie `HttpOnly` + `csrf_token` de doble
+  ADR-029 para el diseño final (cookie `HttpOnly` + `csrf_token_v2` de doble
   envío) y su implementación real en `http_utils.{hpp,cpp}`,
   `auth_session.cpp`, `main.cpp`, `auth_routes.cpp` y
   `frontend/src/auth/{authStorage,authApi}.ts`.
+- **Seguimiento 2026-07-27:** ADR-076 implementa CSPRNG para identificadores y
+  secretos; ADR-077 implementa Argon2id con rehash oportunista del legado.
+  Ambos tienen build, pruebas y E2E, pero no sustituyen el pentest externo.
 - **Pentest externo de caja negra** (ya es la tarea #9 del backlog
   operativo de reportabilidad, ver `docs/decisions/README.md`): los checks
   automatizables de esta plataforma están cubiertos por esta auditoría y
   las anteriores (ADR-043); un pentest formal requiere contratación y
   alcance por un equipo de seguridad externo — sigue sin agendar a la
   fecha de este ADR.
-- **`echarts@6`** (1 CVE moderada restante en la versión actual): la
-  corrección implica un salto semver-major que puede romper todos los
-  gráficos de la plataforma → se trata como una migración deliberada
-  futura, no una corrección forzada dentro de esta auditoría.
+- **`echarts@6` cerrado 2026-07-27:** migrado a 6.1.x; TypeScript, Vitest
+  25/25 y build productivo aprobaron. `npm audit --omit=dev`: 0
+  vulnerabilidades productivas.
 - **Menores** (aceptados, sin plan de cierre inmediato): `db_replica` corre
   como `user: root` dentro de su contenedor (solo de uso interno, sin
   puerto publicado al host); el compose de DEV expone mailpit/mqtt/tiles
