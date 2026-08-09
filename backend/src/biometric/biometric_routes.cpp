@@ -21,6 +21,23 @@ using config::BiometricProvider;
 
 namespace biometric {
 
+/** X-Capture-Session-Id: una por pestana (authApi.ts). Aisla el estado de
+ * captura/histeresis de lentes entre capturas concurrentes -- sin esto,
+ * gBiometricCaptureState era global de proceso y una segunda pestana (o
+ * trafico de pruebas) resetaba/contaminaba la captura de otra. */
+std::string captureSessionIdFromRequest(
+    const http::request<http::string_body> &req) {
+  auto it = req.find("X-Capture-Session-Id");
+  if (it == req.end()) {
+    return kBiometricCaptureDefaultSessionId;
+  }
+  std::string id(it->value());
+  if (id.empty() || id.size() > 128) {
+    return kBiometricCaptureDefaultSessionId;
+  }
+  return id;
+}
+
 static http::response<http::string_body>
 handleBiometricStatus(const http::request<http::string_body> &req,
                       const std::unordered_map<std::string, std::string> &query) {
@@ -97,6 +114,8 @@ handleProcessFrame(const http::request<http::string_body> &req,
                               json::object{{"error", "invalid image data"}});
     }
 
+    const std::string sessionId = captureSessionIdFromRequest(req);
+
     std::cerr << "[AI_OVAL] /api/process_frame decoded w=" << frame.cols
               << " h=" << frame.rows << std::endl;
 
@@ -104,7 +123,7 @@ handleProcessFrame(const http::request<http::string_body> &req,
     cv::imencode(".jpg", frame, jpg, {cv::IMWRITE_JPEG_QUALITY, 60});
     const std::string base64 = encodeBase64(jpg);
 
-    auto eval = runBiometricVerifyForImageBase64(base64, std::nullopt);
+    auto eval = runBiometricVerifyForImageBase64(base64, sessionId);
 
     bool eyesOpen = true;
     bool mouthClosed = true;
@@ -133,62 +152,63 @@ handleProcessFrame(const http::request<http::string_body> &req,
     int stateOut = 1;
     {
       std::scoped_lock lk(gBiometricCaptureMutex);
+      auto &slot = getOrCreateBiometricCaptureSession(sessionId);
+      auto &st = slot.state;
+      auto &capturedImages = slot.capturedImages;
 
-      gBiometricCaptureState.detected = detected;
-      gBiometricCaptureState.eyesOpen = eyesOpen;
-      gBiometricCaptureState.mouthClosed = mouthClosed;
-      gBiometricCaptureState.noGlasses = noGlasses;
-      gBiometricCaptureState.faceStraight = frontal;
-      gBiometricCaptureState.hasFaceOval = false;
+      st.detected = detected;
+      st.eyesOpen = eyesOpen;
+      st.mouthClosed = mouthClosed;
+      st.noGlasses = noGlasses;
+      st.faceStraight = frontal;
+      st.hasFaceOval = false;
 
       if (eval.aiEval.has_value() && eval.aiEval->available &&
           eval.aiEval->hasFaceOvalEllipse) {
         const auto &e = eval.aiEval->faceOvalEllipse;
-        gBiometricCaptureState.hasFaceOval = true;
-        gBiometricCaptureState.faceOvalCx = static_cast<double>(e.center.x);
-        gBiometricCaptureState.faceOvalCy = static_cast<double>(e.center.y);
-        gBiometricCaptureState.faceOvalW = static_cast<double>(e.size.width);
-        gBiometricCaptureState.faceOvalH = static_cast<double>(e.size.height);
-        gBiometricCaptureState.faceOvalAngleDeg = static_cast<double>(e.angle);
+        st.hasFaceOval = true;
+        st.faceOvalCx = static_cast<double>(e.center.x);
+        st.faceOvalCy = static_cast<double>(e.center.y);
+        st.faceOvalW = static_cast<double>(e.size.width);
+        st.faceOvalH = static_cast<double>(e.size.height);
+        st.faceOvalAngleDeg = static_cast<double>(e.angle);
       }
 
       const bool frameValid =
           eval.ok && eyesOpen && mouthClosed && noGlasses && frontal;
 
       if (frameValid) {
-        gBiometricCaptureState.captureInvalidStreak = 0;
-        if (gBiometricCaptureState.captureCount < 3) {
-          gBiometricCapturedImages.push_back("data:image/jpeg;base64," + base64);
-          if (gBiometricCapturedImages.size() > 3) {
-            gBiometricCapturedImages.erase(gBiometricCapturedImages.begin());
+        st.captureInvalidStreak = 0;
+        if (st.captureCount < 3) {
+          capturedImages.push_back("data:image/jpeg;base64," + base64);
+          if (capturedImages.size() > 3) {
+            capturedImages.erase(capturedImages.begin());
           }
         }
-        gBiometricCaptureState.captureCount =
-            std::min(3, gBiometricCaptureState.captureCount + 1);
+        st.captureCount = std::min(3, st.captureCount + 1);
       } else {
-        gBiometricCaptureState.captureInvalidStreak++;
-        if (gBiometricCaptureState.captureInvalidStreak >= 5) {
-          gBiometricCaptureState.captureCount = 0;
-          gBiometricCaptureState.captureInvalidStreak = 0;
-          gBiometricCapturedImages.clear();
+        st.captureInvalidStreak++;
+        if (st.captureInvalidStreak >= 5) {
+          st.captureCount = 0;
+          st.captureInvalidStreak = 0;
+          capturedImages.clear();
         }
       }
 
-      const double livenessScore = std::min(
-          100.0, static_cast<double>(gBiometricCaptureState.captureCount) * 35.0);
-      gBiometricCaptureState.livenessScore = livenessScore;
+      const double livenessScore =
+          std::min(100.0, static_cast<double>(st.captureCount) * 35.0);
+      st.livenessScore = livenessScore;
 
-      if (gBiometricCaptureState.captureCount >= 3) {
-        gBiometricCaptureState.state = 7;
+      if (st.captureCount >= 3) {
+        st.state = 7;
       } else if (detected) {
-        gBiometricCaptureState.state = 4;
+        st.state = 4;
       } else {
-        gBiometricCaptureState.state = 1;
+        st.state = 1;
       }
-      gBiometricCaptureState.stateName =
-          captureStateLabel(gBiometricCaptureState.state);
-      gBiometricCaptureState.updatedAt = std::chrono::steady_clock::now();
-      stateOut = gBiometricCaptureState.state;
+      st.stateName = captureStateLabel(st.state);
+      st.updatedAt = std::chrono::steady_clock::now();
+      stateOut = st.state;
     }
 
     return makeJsonResponse(http::status::ok,
@@ -199,13 +219,45 @@ handleProcessFrame(const http::request<http::string_body> &req,
   }
 }
 
+// Lectura de DNI por cámara (PDF417 del DNI antiguo 1997 + MRZ de todas las
+// versiones, ver ai_engine/dni_scan.py). Público como /api/process_frame:
+// el autoregistro (AuthGateway.tsx) ocurre antes de tener sesión. Nunca
+// consulta RENIEC/SUNAT -- solo decodifica lo ya impreso en el documento.
 static http::response<http::string_body>
-handleStatus(const http::request<http::string_body> &,
+handleScanDniDocument(const http::request<http::string_body> &req,
+                      const std::unordered_map<std::string, std::string> &) {
+  if (req.body().empty()) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "image body is required"}});
+  }
+  std::vector<unsigned char> frameRaw(req.body().begin(), req.body().end());
+  const auto result = scanDocumentWithAiEngine(frameRaw);
+  if (!result.error.empty()) {
+    return makeJsonResponse(
+        http::status::ok,
+        json::object{{"found", false}, {"method", "none"}, {"error", result.error}});
+  }
+  return makeJsonResponse(
+      http::status::ok,
+      json::object{{"found", result.found},
+                   {"method", result.method},
+                   {"dni", result.dni},
+                   {"first_name", result.firstName},
+                   {"last_name", result.lastName},
+                   {"sex", result.sex},
+                   {"birth_date", result.birthDate},
+                   {"expiry_date", result.expiryDate},
+                   {"checksum_valid", result.checksumValid}});
+}
+
+static http::response<http::string_body>
+handleStatus(const http::request<http::string_body> &req,
              const std::unordered_map<std::string, std::string> &) {
+  const std::string sessionId = captureSessionIdFromRequest(req);
   BiometricCaptureRuntimeState s;
   {
     std::scoped_lock lk(gBiometricCaptureMutex);
-    s = gBiometricCaptureState;
+    s = getOrCreateBiometricCaptureSession(sessionId).state;
   }
 
   json::value faceOvalVal = nullptr;
@@ -241,6 +293,7 @@ void registerRoutes(router::Router &r) {
   r.get("/api/auth/biometric/status", handleBiometricStatus);
   r.post("/api/auth/biometric/verify-frame", handleVerifyFrame);
   r.post("/api/process_frame", handleProcessFrame);
+  r.post("/api/dni/scan-document", handleScanDniDocument);
   r.get("/api/status", handleStatus);
 }
 

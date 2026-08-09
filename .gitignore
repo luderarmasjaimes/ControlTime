@@ -20,6 +20,7 @@ dist/
 build/
 __pycache__/
 *.pyc
+.pytest_cache/
 ai_platform/rag/data/
 ai_platform/state/
 _deployed_frontend.js
@@ -28,3 +29,10 @@ biometric-models/
 
 # Salida generada por Doxygen (backend/Doxyfile) — no es código fuente.
 backend/docs/html/
+
+# Material TLS del mining gateway (backend/src/main.cpp, puerto 8443). Nunca
+# commitear claves privadas — se regeneran localmente/en la VPS con
+# scripts/gen-mining-gateway-cert.sh o un cert real (Let's Encrypt) en prod.
+certs/*.key
+certs/*.crt
+!certs/.gitkeep

@@ -1,0 +1,12 @@
+{
+  "name": "beemetry-backend",
+  "version-string": "1.0.0",
+  "builtin-baseline": "2f8d9f7d3f041e70643c18954cee799459e7eb75",
+  "dependencies": [
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": ["calib3d", "dnn", "ffmpeg", "jpeg", "png", "tiff", "webp", "thread"]
+    }
+  ]
+}

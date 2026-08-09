@@ -1,11 +1,9 @@
-version: '3.8'
-
 services:
   db:
     image: timescale/timescaledb:latest-pg15
     environment:
       POSTGRES_USER: sensors
-      POSTGRES_PASSWORD: sensors_pass
+      POSTGRES_PASSWORD: ${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
       POSTGRES_DB: sensors_db
     volumes:
       - db_data:/var/lib/postgresql/data
@@ -14,12 +12,22 @@ services:
   web:
     image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-yourorg}/informe-backend:latest
     environment:
-      - DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=sensors_pass
+      - BEEMETRY_DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
+      - BEEMETRY_JWT_SECRET=${BEEMETRY_JWT_SECRET:?Definir BEEMETRY_JWT_SECRET en .env}
+      - BEEMETRY_AUTH_COOKIE_SECURE=true
+      # ADR-081: admite lista separada por comas si hay más de un frontend
+      # (mismo backend) — cada uno debe estar detrás de HTTPS.
+      - BEEMETRY_CORS_ALLOWED_ORIGIN=${BEEMETRY_CORS_ALLOWED_ORIGIN:?Definir el/los origen(es) HTTPS publico(s) exacto(s)}
+      - BEEMETRY_ARGON2_TIME_COST=${BEEMETRY_ARGON2_TIME_COST:-3}
+      - BEEMETRY_ARGON2_MEMORY_KIB=${BEEMETRY_ARGON2_MEMORY_KIB:-65536}
+      - BEEMETRY_ARGON2_PARALLELISM=${BEEMETRY_ARGON2_PARALLELISM:-1}
+      - BEEMETRY_AUTH_LEGACY_PASSWORD_SALT=${BEEMETRY_AUTH_LEGACY_PASSWORD_SALT:?Definir el valor historico durante la migracion}
+      - BEEMETRY_REPORT_EXPORT_KEY=${BEEMETRY_REPORT_EXPORT_KEY:?Definir clave estable y aleatoria para archivos mreport}
       - MAPAS_PORT=8081
       - MAPAS_DATA_ROOT=/data
       - AI_ENGINE_URL=http://ai_engine:5000
       - CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
-      - OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
+      - BEEMETRY_OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
       - AI_ENGINE_TIMEOUT_MS=3000
       - AI_ENGINE_CARTOON_TIMEOUT_MS=${AI_ENGINE_CARTOON_TIMEOUT_MS:-120000}
       - AI_ENGINE_MAX_IMAGE_BYTES=${AI_ENGINE_MAX_IMAGE_BYTES:-2500000}
@@ -37,7 +45,10 @@ services:
     volumes:
       - ./data:/data:ro
     ports:
-      - "8082:8081"
+      # 8081 solo loopback (mismo motivo que docker-compose.yml): ya se sirve
+      # same-origin vía el proxy nginx del servicio frontend.
+      - "127.0.0.1:8082:8081"
+      # 8443: mining gateway TLS, ingesta directa de sensores externos.
       - "8443:8443"
     restart: unless-stopped
 
@@ -75,6 +86,13 @@ services:
     volumes:
       - ./data:/data:ro
     restart: unless-stopped
+
+  # ADR-080: en dev, docker-compose.yml trae un valor de PDF_OWNER_PASSWORD_SECRET
+  # por defecto (inseguro a propósito) — en producción es obligatorio definir
+  # uno propio, mismo patrón que BEEMETRY_REPORT_EXPORT_KEY arriba.
+  pdf_export:
+    environment:
+      - PDF_OWNER_PASSWORD_SECRET=${PDF_OWNER_PASSWORD_SECRET:?Definir clave estable y aleatoria para el cifrado de PDFs exportados}
 
 volumes:
   db_data: {}

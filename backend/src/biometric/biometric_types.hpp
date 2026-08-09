@@ -4,6 +4,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <opencv2/opencv.hpp>
@@ -76,8 +77,26 @@ struct AiEngineEmbeddingResult {
 
 struct AiEngineCartoonResult {
   std::string imageBase64;
+  /** Maestro PNG 4K; no se incluye en JWT/session/localStorage. */
+  std::string imageHdBase64;
   std::string error;
   bool ok() const { return !imageBase64.empty() && error.empty(); }
+};
+
+/** @brief Lectura de DNI por cámara (PDF417 del DNI antiguo + MRZ de todas
+ * las versiones, ver ai_engine/dni_scan.py). Nunca consulta RENIEC/SUNAT. */
+struct AiEngineDniScanResult {
+  bool found = false;
+  std::string method;  ///< "pdf417" | "mrz" | "none"
+  std::string dni;
+  std::string firstName;
+  std::string lastName;
+  std::string sex;
+  std::string birthDate;
+  std::string expiryDate;
+  bool checksumValid = false;
+  std::string error;
+  bool ok() const { return found && error.empty(); }
 };
 
 struct FaceAnalysis {
@@ -112,9 +131,30 @@ struct AccessoryDnnContext {
   std::string initError;
 };
 
+/**
+ * Estado de captura por sesion (X-Capture-Session-Id, generado por pestana
+ * en el frontend). Antes gBiometricCaptureState/gBiometricCapturedImages
+ * eran variables globales unicas de proceso: dos capturas concurrentes
+ * (dos pestanas, o incluso trafico de pruebas) se pisaban entre si.
+ */
+struct BiometricCaptureSessionSlot {
+  BiometricCaptureRuntimeState state;
+  std::vector<std::string> capturedImages;
+  std::chrono::steady_clock::time_point lastTouched =
+      std::chrono::steady_clock::now();
+};
+
+/** Clave usada cuando el llamador no manda X-Capture-Session-Id (compat). */
+extern const std::string kBiometricCaptureDefaultSessionId;
+
 extern std::mutex gBiometricCaptureMutex;
-extern BiometricCaptureRuntimeState gBiometricCaptureState;
-extern std::vector<std::string> gBiometricCapturedImages;
+extern std::unordered_map<std::string, BiometricCaptureSessionSlot>
+    gBiometricCaptureSessions;
+
+/** El llamador debe tener gBiometricCaptureMutex tomado. Limpia sesiones
+ * inactivas por mas de 10 minutos antes de crear/devolver la pedida. */
+BiometricCaptureSessionSlot &
+getOrCreateBiometricCaptureSession(const std::string &sessionId);
 
 std::string captureStateLabel(int state);
 

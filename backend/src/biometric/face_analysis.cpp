@@ -182,7 +182,7 @@ std::vector<fs::path> cascadeSearchDirs() {
     dirs.push_back(p);
   };
 
-  const char *haarDir = std::getenv("OPENCV_HAAR_DIR");
+  const char *haarDir = std::getenv("BEEMETRY_OPENCV_HAAR_DIR");
   if (haarDir && *haarDir) {
     pushUnique(fs::path(haarDir));
   }
@@ -837,6 +837,26 @@ FaceAnalysis analyzeFaceImage(const std::string &base64Image,
       return fromSdk;
     }
   }
+  
+  if (!gAiEngineUrl.empty()) {
+    std::vector<unsigned char> raw;
+    if (decodeBase64(base64Image, raw) && !raw.empty()) {
+      auto aiEm = fetchFaceEmbeddingFromAiEngine(raw);
+      if (aiEm.ok()) {
+        FaceAnalysis result;
+        result.provider = "insightface_onnx";
+        result.ok = true;
+        result.qualityScore = 1.0;
+        result.faceTemplate = std::move(aiEm.embedding);
+        return result;
+      }
+      // InsightFace es motor secundario (ADR-089): si falla (baja luz,
+      // movimiento, modelo aun cargando), cae al pipeline legacy en vez
+      // de bloquear la validacion completa. kLegacyStripCore ya limpia
+      // los issues legacy cuando MediaPipe/ai_engine confirma el ICAO.
+    }
+  }
+
   return analyzeFaceImageLegacy(base64Image, mode);
 }
 

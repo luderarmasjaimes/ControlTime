@@ -57,6 +57,16 @@ analyzeFrameWithAiEngine(
   std::string boundary = "----InformeBoundary" + makeId();
   std::string body;
   body.reserve(imageBytes.size() + 256);
+  // session_id: aisla la histeresis de lentes/EAR en eye_analyzer.py por
+  // captura (antes eran variables globales de modulo compartidas por TODAS
+  // las capturas concurrentes -- una segunda pestana, o incluso trafico de
+  // pruebas, contaminaba la deteccion de otra sesion).
+  if (glassesSessionKey.has_value() && !glassesSessionKey->empty()) {
+    body += "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"session_id\"\r\n\r\n";
+    body += *glassesSessionKey;
+    body += "\r\n";
+  }
   body += "--" + boundary + "\r\n";
   body +=
       "Content-Disposition: form-data; name=\"image\"; filename=\"frame.jpg\"\r\n";
@@ -347,8 +357,12 @@ fetchFaceEmbeddingFromAiEngine(const std::vector<unsigned char> &imageBytes) {
   }
 
   beast::flat_buffer buffer;
-  http::response<http::string_body> res;
-  http::read(stream, buffer, res, ec);
+  // El JSON incluye miniatura + maestro PNG 4K en base64. El límite por
+  // defecto de Beast puede ser insuficiente para retratos con mucho detalle.
+  http::response_parser<http::string_body> parser;
+  parser.body_limit(64U * 1024U * 1024U);
+  http::read(stream, buffer, parser, ec);
+  auto res = parser.release();
   stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 
   if (ec) {
@@ -495,6 +509,11 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
       return out;
     }
     out.imageBase64 = json::value_to<std::string>(obj.at("image_base64"));
+    if (obj.if_contains("image_hd_base64") &&
+        obj.at("image_hd_base64").is_string()) {
+      out.imageHdBase64 =
+          json::value_to<std::string>(obj.at("image_hd_base64"));
+    }
     return out;
   } catch (...) {
     out.error = "ai_engine_parse_failed";
@@ -504,6 +523,13 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
 
 AiEngineCartoonResult
 fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes) {
+  // El sidecar local conserva la silueta con MediaPipe y entrega miniatura +
+  // maestro 4K. Se prefiere para evitar ampliar un tensor AnimeGAN de 512 px.
+  AiEngineCartoonResult sidecar = fetchCartoonAvatarFromAiEngine(imageBytes);
+  if (sidecar.ok()) {
+    return sidecar;
+  }
+
   AiEngineCartoonResult out;
   if (informeCartoonOnnxRuntimeLinked() && !gCartoonOnnxModelPath.empty() &&
       fs::exists(gCartoonOnnxModelPath)) {
@@ -516,7 +542,115 @@ fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes) {
       return out;
     }
   }
-  return fetchCartoonAvatarFromAiEngine(imageBytes);
+  out.error = sidecar.error.empty() ? "all_local_avatar_generators_failed"
+                                    : sidecar.error;
+  return out;
+}
+
+AiEngineDniScanResult
+scanDocumentWithAiEngine(const std::vector<unsigned char> &imageBytes) {
+  AiEngineDniScanResult out;
+  if (gAiEngineUrl.empty()) {
+    out.error = "ai_engine_disabled";
+    return out;
+  }
+  if (imageBytes.empty() || imageBytes.size() > gAiEngineMaxImageBytes) {
+    out.error = "ai_engine_skipped_size_limit";
+    return out;
+  }
+
+  ParsedHttpEndpoint endpoint;
+  if (!parseHttpEndpoint(gAiEngineUrl + "/scan_document", endpoint)) {
+    out.error = "ai_engine_invalid_url";
+    return out;
+  }
+
+  std::string boundary = "----InformeBoundary" + makeId();
+  std::string body;
+  body.reserve(imageBytes.size() + 256);
+  body += "--" + boundary + "\r\n";
+  body +=
+      "Content-Disposition: form-data; name=\"image\"; filename=\"frame.jpg\"\r\n";
+  body += "Content-Type: image/jpeg\r\n\r\n";
+  body.append(reinterpret_cast<const char *>(imageBytes.data()),
+              static_cast<std::streamsize>(imageBytes.size()));
+  body += "\r\n--" + boundary + "--\r\n";
+
+  beast::error_code ec;
+  asio::io_context ioc;
+  asio::ip::tcp::resolver resolver{ioc};
+  beast::tcp_stream stream{ioc};
+  stream.expires_after(std::chrono::milliseconds(gAiEngineTimeoutMs));
+
+  auto const results = resolver.resolve(endpoint.host, endpoint.port, ec);
+  if (ec) {
+    out.error = "ai_engine_resolve_failed";
+    return out;
+  }
+
+  stream.connect(results, ec);
+  if (ec) {
+    out.error = "ai_engine_connect_failed";
+    return out;
+  }
+
+  http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
+  req.set(http::field::host, endpoint.host);
+  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+  req.set(http::field::content_type,
+          "multipart/form-data; boundary=" + boundary);
+  req.body() = std::move(body);
+  req.prepare_payload();
+
+  http::write(stream, req, ec);
+  if (ec) {
+    out.error = "ai_engine_write_failed";
+    return out;
+  }
+
+  beast::flat_buffer buffer;
+  http::response<http::string_body> res;
+  http::read(stream, buffer, res, ec);
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+
+  if (ec) {
+    out.error = "ai_engine_read_failed";
+    return out;
+  }
+  if (res.result() != http::status::ok) {
+    out.error = "ai_engine_http_not_ok";
+    return out;
+  }
+
+  try {
+    auto payload = json::parse(res.body());
+    if (!payload.is_object()) {
+      out.error = "ai_engine_invalid_json";
+      return out;
+    }
+    const auto &obj = payload.as_object();
+    const auto getStr = [&obj](const char *key) -> std::string {
+      return obj.if_contains(key) && obj.at(key).is_string()
+                 ? json::value_to<std::string>(obj.at(key))
+                 : std::string();
+    };
+    out.found = obj.if_contains("found") && obj.at("found").is_bool() &&
+               obj.at("found").as_bool();
+    out.method = getStr("method");
+    out.dni = getStr("dni");
+    out.firstName = getStr("first_name");
+    out.lastName = getStr("last_name");
+    out.sex = getStr("sex");
+    out.birthDate = getStr("birth_date");
+    out.expiryDate = getStr("expiry_date");
+    out.checksumValid = obj.if_contains("checksum_valid") &&
+                        obj.at("checksum_valid").is_bool() &&
+                        obj.at("checksum_valid").as_bool();
+    return out;
+  } catch (const std::exception &) {
+    out.error = "ai_engine_parse_failed";
+    return out;
+  }
 }
 
 } // namespace biometric
