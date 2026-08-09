@@ -1,6 +1,0 @@
-Proveedor,Modalidad,DataCenterPrimario,DataCenterSecundario,vCPU,RAM_GB,Storage,IOPS_Garantizados,Ancho_Banda,SLA_Disponibilidad,RTO,RPO,Firewall_Administrado,Anti_DDoS,Backups_Externos,Recuperacion_Granular,Monitoreo_24x7,NOC_24x7,VPN_SiteToSite,VLAN,Provisionamiento_Dias,Costo_Mensual_USD,Costo_Setup_USD,Costo_Anual_USD,Observaciones
-Cirion,,,,,,,,,,,,,,,,,,,,,,,,
-GTD,,,,,,,,,,,,,,,,,,,,,,,,
-Claro Empresas,,,,,,,,,,,,,,,,,,,,,,,,
-WIN Empresas,,,,,,,,,,,,,,,,,,,,,,,,
-Equinix / Partner,,,,,,,,,,,,,,,,,,,,,,,,
