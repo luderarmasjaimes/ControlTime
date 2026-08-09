@@ -1,6 +1,6 @@
 # ADR-035 — Plataforma enterprise multi-unidad para operaciones mineras LATAM
 
-**Status**: propuesto (2026-07-12)
+**Status**: propuesto (2026-07-12) — revisado 2026-08-08 (auditoría de ADRs abiertos): sigue en F0 (un edge autónomo por unidad, estado actual del stack). Ninguna fase F1-F4 tiene trabajo de código iniciado; permanece como propuesta activa a la espera de una decisión de negocio sobre expansión multi-región, no un ADR olvidado. No requiere acción de código hasta que se apruebe iniciar F1.
 **Autores**: EC
 **Ámbito**: plataforma / arquitectura
 **Relacionado**: ADR-001 (soberanía on-prem), ADR-002 (gateway C++), ADR-005/006/032 (dos BD + réplica), ADR-007/008/034 (ingesta y core IoT), ADR-029 (JWT/identidad), ADR-030 (auditoría), ADR-031 (plataforma compartida)

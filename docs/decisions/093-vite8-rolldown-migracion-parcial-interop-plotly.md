@@ -1,6 +1,6 @@
 # ADR-093 — Vite 8/Rolldown: migración parcial sin commitear, bug de interop CJS→ESM en Plotly, fix aplicado
 
-**Status**: partial — toolchain actualizado y el bug encontrado corregido, pero **todo el árbol sigue sin commitear** (ver Consecuencias)
+**Status**: implemented (cerrado 2026-08-08) — toolchain actualizado y el bug de interop corregido; el bloqueador (árbol de `frontend/` sin commitear) se resolvió en la sesión de commit masivo de 2026-08-08 (750 archivos organizados en commits temáticos, ver `refactor(frontend): completar migración JS→TS (ADR-069)` y `feat(frontend): funcionalidades de plataforma acumuladas (ADRs 040-095)`). Se deja el resto de esta sección íntegro por trazabilidad del hallazgo original.
 **Fecha**: 2026-08-07
 **Autores**: EC (auditoría de ADRs pendientes solicitada por Gerencia)
 **Ámbito**: plataforma
