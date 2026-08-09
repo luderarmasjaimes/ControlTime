@@ -16,6 +16,7 @@ import {
     Layout,
     ShieldCheck,
     Users,
+    Building2,
     UserRound,
     Sigma,
     BellRing,
@@ -67,6 +68,7 @@ const ReportStudioV2 = React.lazy(() => import('./components/ReportStudioV2/App'
 const FormulaEngineEmbed = React.lazy(() => import('./components/Formula/FormulaEngineEmbed'))
 const UserMaintenanceModal = React.lazy(() => import('./components/ReportStudioV2/components/modals/UserMaintenanceModal'))
 const UserManagementView = React.lazy(() => import('./components/ReportStudioV2/components/views/UserManagementView'))
+const CompanyManagementView = React.lazy(() => import('./components/ReportStudioV2/components/views/CompanyManagementView'))
 const PermissionsManagementView = React.lazy(() => import('./components/ReportStudioV2/components/views/PermissionsManagementView'))
 const AlarmConfigView = React.lazy(() => import('./components/ReportStudioV2/components/views/AlarmConfigView'))
 
@@ -296,6 +298,11 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
         hasPermission('usuarios.manage') ||
         hasPermission('permisos.manage') ||
         hasPermission('alarmas.manage')
+    // ADR-085/086: flag propio, deliberadamente NO incluido en canMaintain —
+    // un manager con solo `empresas.view` (sin usuarios.manage/permisos.manage/
+    // alarmas.manage) debe ver el catálogo de empresas sin heredar acceso a
+    // las otras pantallas administrativas.
+    const canViewCompanies = isAdmin || hasPermission('empresas.view')
     const currentDateLabel = useMemo(() =>
         new Intl.DateTimeFormat(`${language}-${countryIso2}`, {
             dateStyle: 'medium',
@@ -579,6 +586,13 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
             tip: t('nav.openModule', { name: t('nav.users') })
         },
         {
+            name: 'CompanyManagement',
+            label: t('nav.companies'),
+            icon: Building2,
+            glyph: 'EMP',
+            tip: t('nav.openModule', { name: t('nav.companies') })
+        },
+        {
             name: 'Permissions',
             label: t('nav.access'),
             icon: ShieldCheck,
@@ -603,6 +617,19 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
             tip: t('nav.openModule', { name: t('nav.manage') }),
             items: ['UserManagement', 'Permissions', 'AlarmConfig'],
             navTag: 'ADM',
+        },
+        {
+            // ADR-085/086: grupo propio (no dentro de 'mantenimiento') para que
+            // su visibilidad dependa solo de `canViewCompanies` — si viviera en
+            // 'mantenimiento', un manager con solo empresas.view vería también
+            // las pestañas de Usuarios/Permisos/Alarmas sin poder abrirlas
+            // (esas exigen canMaintain en su propio punto de montaje).
+            id: 'empresas',
+            title: t('nav.companies'),
+            icon: Building2,
+            tip: t('nav.openModule', { name: t('nav.companies') }),
+            items: ['CompanyManagement'],
+            navTag: 'EMP',
         },
         {
             id: 'monitoreo',
@@ -654,8 +681,11 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
     }, [activeTab, activeMainMenu])
 
     const visibleEnterpriseGroups = useMemo(
-        () => enterpriseGroups.filter((group) => group.id !== 'mantenimiento' || canMaintain),
-        [canMaintain, language]
+        () => enterpriseGroups.filter((group) =>
+            (group.id !== 'mantenimiento' || canMaintain) &&
+            (group.id !== 'empresas' || canViewCompanies)
+        ),
+        [canMaintain, canViewCompanies, language]
     )
     const activeGroup = visibleEnterpriseGroups.find((group) => group.id === activeMainMenu) || visibleEnterpriseGroups[0]
     const visibleTabs = tabs.filter((tab) => activeGroup.items.includes(tab.name))
@@ -1022,6 +1052,9 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
                                 render, consistente con el que ya protegía a UserMaintenanceModal. */}
                             {activeTab === 'UserManagement' && canMaintain && (
                                 <UserManagementView />
+                            )}
+                            {activeTab === 'CompanyManagement' && canViewCompanies && (
+                                <CompanyManagementView />
                             )}
                             {activeTab === 'Permissions' && canMaintain && (
                                 <PermissionsManagementView />

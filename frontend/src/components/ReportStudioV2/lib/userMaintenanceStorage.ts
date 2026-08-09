@@ -199,6 +199,7 @@ interface ApplyUserMaintenanceParams {
     observation?: string;
     firstName?: string;
     lastName?: string;
+    dni?: string;
     email?: string;
     phone?: string;
     mobile?: string;
@@ -276,6 +277,7 @@ export function applyUserMaintenance({
     } else if (action === 'edit_data') {
       target.first_name = details?.firstName || target.first_name;
       target.last_name = details?.lastName || target.last_name;
+      target.dni = details?.dni || target.dni;
       target.email = details?.email || target.email;
       target.phone = details?.phone || target.phone;
       target.mobile = details?.mobile || target.mobile;

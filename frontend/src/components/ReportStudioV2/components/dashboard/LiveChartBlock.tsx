@@ -1,5 +1,5 @@
 import React from 'react';
-import createPlotlyComponent from 'react-plotly.js/factory';
+import * as PlotlyFactoryModule from 'react-plotly.js/factory';
 // Distribución "basic" de Plotly en vez del bundle completo (2026-08-02).
 // El bundle completo pesa 4.75MB (1.43MB gzip) porque arrastra TODOS los tipos
 // de traza: mapas geográficos, 3D/WebGL, financieros, ternarios, sankey…
@@ -7,7 +7,26 @@ import createPlotlyComponent from 'react-plotly.js/factory';
 // `scatter` y `bar` (ver los traces de abajo), y ambos vienen en la
 // distribución `basic`, que baja a ~1MB. El resto de gráficos de la
 // plataforma ya usan echarts.
-import Plotly from 'plotly.js-basic-dist-min';
+import * as PlotlyModule from 'plotly.js-basic-dist-min';
+
+// Ambos paquetes son UMD/CJS puros (no ESM real). El interop CJS→ESM difiere
+// entre el esbuild de dev (prebundle de deps) y el Rolldown de build (Vite 8):
+// `react-plotly.js/factory` ya es un CJS con `exports.default = fn` propio, así
+// que esbuild en dev termina envolviéndolo DOS veces (`{default:{default:fn}}`)
+// mientras que Rolldown en build solo una vez (`{default:fn}`) — un `?? .default`
+// simple resuelve uno mal en el otro bundler. Se pela `.default` hasta dar con
+// una función real en vez de asumir un número fijo de envolturas.
+function unwrapDefault<T>(mod: unknown): T {
+  let value: any = mod;
+  while (value && typeof value !== 'function' && 'default' in value) {
+    value = value.default;
+  }
+  return value as T;
+}
+// Sin @types/react-plotly.js (ver vite-env.d.ts), el módulo no tipa una
+// función `default` real — se tipa el resultado como el factory que es.
+const createPlotlyComponent = unwrapDefault<(Plotly: unknown) => React.ComponentType<any>>(PlotlyFactoryModule);
+const Plotly = (PlotlyModule as any).default ?? PlotlyModule;
 
 const Plot = createPlotlyComponent(Plotly);
 

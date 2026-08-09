@@ -53,7 +53,11 @@ export function initAccessibility(): void {
   }, 'Guardar informe');
 
   registerShortcut('ctrl+p', () => {
-    window.print();
+    // No llamar window.print() directo: imprimiría .studio-layout completo
+    // (toda la pantalla del editor). Debe pasar por el botón real del ribbon
+    // (data-action="print" -> handlePrintPreview), que abre el visor de
+    // solo lectura (.ro-overlay) y acota la impresión al informe.
+    (document.querySelector('[data-action="print"]') as HTMLElement | null)?.click();
   }, 'Imprimir');
 
   registerShortcut('ctrl+z', () => {

@@ -164,6 +164,26 @@ export async function sendSupportChatMessage(
   }
 }
 
+/** Intención del turno: el backend la usa para el presupuesto de tokens de la
+ * respuesta (ver support::numPredictFor). "expand" necesita mucho más que un
+ * turno conversacional; con el límite único anterior la ampliación se cortaba
+ * a media frase. */
+export type SupportChatIntent = 'chat' | 'summarize' | 'expand' | 'ideas';
+
+/** Mensaje del chat de soporte. `promptContent` permite que lo que se MUESTRA
+ * en la burbuja y lo que se ENVÍA al modelo difieran: los chips
+ * Resumir/Ampliar/Ideas muestran una etiqueta corta pero envían el texto a
+ * procesar incrustado, para no depender de que el modelo resuelva bien a qué
+ * se refiere "tu mensaje anterior". `transient` marca los avisos que genera la
+ * propia UI (errores de conexión): se ven en pantalla pero nunca se mandan
+ * como historial, o el modelo los toma por turnos suyos. */
+export interface SupportChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  promptContent?: string;
+  transient?: boolean;
+}
+
 /**
  * Igual que sendSupportChatMessage, pero consume el endpoint de streaming
  * (backend/src/main.cpp::handleChatStreamSse, text/event-stream) y reenvía
@@ -176,9 +196,13 @@ export async function sendSupportChatMessage(
  */
 export async function streamSupportChatMessage(
   qualifying: Record<string, string>,
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  messages: SupportChatMessage[],
   onChunk: (fragment: string) => void,
+  intent: SupportChatIntent = 'chat',
 ): Promise<{ error?: string }> {
+  const wireMessages = messages
+    .filter((m) => !m.transient)
+    .map((m) => ({ role: m.role, content: m.promptContent ?? m.content }));
   let res: Response;
   try {
     res = await fetch(`${apiBaseUrl()}/support/chat/stream`, {
@@ -188,7 +212,7 @@ export async function streamSupportChatMessage(
         'Content-Type': 'application/json',
         ...authHeaders(),
       },
-      body: JSON.stringify({ qualifying, messages }),
+      body: JSON.stringify({ qualifying, messages: wireMessages, intent }),
     });
   } catch {
     return { error: 'network_error' };
@@ -416,6 +440,34 @@ export async function createVideoExportJob(
       transition: options.transition ?? 'cut',
     },
   );
+  return response.data;
+}
+
+/**
+ * Adjunta la narración de UNA página de un job PPTX (Stage 4): `audioBlob`
+ * (grabación real, se sube como cuerpo binario con su propio Content-Type —
+ * el backend la escribe a disco y la referencia queda lista para el próximo
+ * `createVideoExportJob`) o `speakerNotes` (texto, guardado para una futura
+ * conversión TTS — sin proveedor integrado todavía, la página queda muda
+ * hasta que se resuelva ese follow-up). Pasar ambos vacíos no tiene efecto
+ * útil — el caller decide cuál de los dos enviar.
+ */
+export async function uploadSlideNarration(
+  reportId: string,
+  pptxJobId: string,
+  pageNumber: number,
+  payload: { audioBlob: Blob; durationSeconds: number } | { speakerNotes: string },
+): Promise<{ status: string; kind: string }> {
+  const path = `/reports/${encodeURIComponent(reportId)}/export/jobs/${encodeURIComponent(pptxJobId)}/narration/${pageNumber}`;
+  if ('audioBlob' in payload) {
+    const response = await api.post(path, payload.audioBlob, {
+      headers: { 'Content-Type': payload.audioBlob.type || 'audio/webm' },
+      params: { duration_seconds: payload.durationSeconds },
+      timeout: 30000,
+    });
+    return response.data;
+  }
+  const response = await api.post(path, { speaker_notes: payload.speakerNotes }, { timeout: 15000 });
   return response.data;
 }
 

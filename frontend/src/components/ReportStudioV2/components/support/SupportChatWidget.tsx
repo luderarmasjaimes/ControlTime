@@ -5,6 +5,8 @@ import {
   streamSupportChatMessage,
   escalateSupportChatToWhatsapp,
   textCorrectQuick,
+  type SupportChatIntent,
+  type SupportChatMessage,
 } from '../../lib/api';
 import { useEditorStore } from '../../store/useEditorStore';
 import { getSession } from '../../../../auth/authStorage';
@@ -12,10 +14,7 @@ import { resolveMiningUnitName } from '../../lib/sessionChrome';
 import { DOCUMENT_TEMPLATES, getTemplateSections, type TemplateSectionDef } from '../../lib/documentTemplates';
 import VoiceDictation from '../document/VoiceDictation';
 
-interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
+type ChatMessage = SupportChatMessage;
 
 interface Qualifying {
   name: string;
@@ -167,9 +166,23 @@ export default function SupportChatWidget() {
     ]);
   };
 
-  const sendText = async (text: string) => {
+  /**
+   * @param text        lo que se muestra en la burbuja del usuario.
+   * @param promptText  lo que se envía realmente al modelo (por defecto `text`).
+   *                    Los chips lo usan para incrustar el texto a procesar.
+   * @param intent      presupuesto de tokens de la respuesta en el backend.
+   */
+  const sendText = async (
+    text: string,
+    { promptText, intent = 'chat' }: { promptText?: string; intent?: SupportChatIntent } = {},
+  ) => {
     if (!text || sending) return;
-    const next: ChatMessage[] = [...messages, { role: 'user', content: text }];
+    const userMessage: ChatMessage = { role: 'user', content: text };
+    if (promptText && promptText !== text) userMessage.promptContent = promptText;
+    // Los avisos locales de error ("No pude conectarme…") se descartan del
+    // historial: son de la UI, no turnos del asistente. Si viajaban al backend
+    // el modelo los leía como algo que él mismo había dicho.
+    const next: ChatMessage[] = [...messages.filter((m) => !m.transient), userMessage];
     setMessages(next);
     setDraft('');
     setSending(true);
@@ -195,12 +208,14 @@ export default function SupportChatWidget() {
             });
           }
         },
+        intent,
       );
       if (!gotAnyChunk || result.error) {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
+            transient: true,
             content:
               'No pude conectarme con el asistente de IA en este momento. Puedes pulsar "Hablar con soporte humano" para escalar por WhatsApp.',
           },
@@ -234,9 +249,48 @@ export default function SupportChatWidget() {
     setCopiedFlash(true);
     setTimeout(() => setCopiedFlash(false), 1800);
   };
-  const askSummarize = () => sendText('Resume tu mensaje anterior en pocas frases, sin perder los datos clave.');
-  const askExpand = () => sendText('Amplía tu mensaje anterior con más información técnica relevante sobre el tema, sin repetir lo ya dicho.');
-  const askIdeas = () => sendText('Sugiere brevemente otras funciones útiles que esta plataforma podría ofrecer relacionadas con este tema.');
+  /**
+   * Los tres chips envían el texto sobre el que hay que operar INCRUSTADO en
+   * la petición, en vez de referirse a él como "tu mensaje anterior".
+   *
+   * Corrección 2026-08-03: la referencia indirecta obligaba al modelo a
+   * localizar el turno correcto dentro del historial, y bastaba con que el
+   * prompt se recortara (o con que el modelo se despistara: en producción
+   * corre gemma2:2b, 2B de parámetros) para que resumiera o ampliara otra
+   * cosa -- el "no funciona el resumen / la ampliación" reportado. Con el
+   * texto incrustado la operación es autocontenida y no depende del historial.
+   * La burbuja del usuario sigue mostrando solo la etiqueta corta.
+   */
+  const CHIP_TEXT_LIMIT = 6000;
+  const targetText = (content: string) => stripChatBoilerplate(content).slice(0, CHIP_TEXT_LIMIT);
+
+  const askSummarize = (content: string) =>
+    sendText('Resumir la respuesta anterior', {
+      intent: 'summarize',
+      promptText:
+        'Resume en 3 a 5 frases el texto delimitado más abajo, conservando los datos numéricos, ' +
+        'nombres de sensores, zonas y fechas que aparezcan. No añadas información que no esté en ' +
+        'el texto. Responde solo con el resumen.\n\n<<<TEXTO>>>\n' + targetText(content) + '\n<<<FIN>>>',
+    });
+
+  const askExpand = (content: string) =>
+    sendText('Ampliar la respuesta anterior', {
+      intent: 'expand',
+      promptText:
+        'Amplía el texto delimitado más abajo con más información técnica relevante sobre el mismo ' +
+        'tema (causas, criterios y umbrales habituales, buenas prácticas de monitoreo minero), sin ' +
+        'repetir lo ya dicho y sin inventar datos de la cuenta que no aparezcan en el texto. ' +
+        'Responde solo con el texto ampliado.\n\n<<<TEXTO>>>\n' + targetText(content) + '\n<<<FIN>>>',
+    });
+
+  const askIdeas = (content: string) =>
+    sendText('Ideas relacionadas', {
+      intent: 'ideas',
+      promptText:
+        'A partir del texto delimitado más abajo, sugiere en viñetas breves otras funciones útiles ' +
+        'que esta plataforma de monitoreo minero podría ofrecer sobre ese mismo tema. Responde solo ' +
+        'con las viñetas.\n\n<<<TEXTO>>>\n' + targetText(content) + '\n<<<FIN>>>',
+    });
 
   const escalate = async () => {
     setEscalating(true);
@@ -467,7 +521,9 @@ export default function SupportChatWidget() {
             <>
               <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {messages.map((m, i) => {
-                  const isLastAssistant = m.role === 'assistant' && i === messages.length - 1;
+                  // Los avisos locales (error de conexión) no llevan acciones:
+                  // no hay nada que copiar, resumir ni ampliar en ellos.
+                  const isLastAssistant = m.role === 'assistant' && !m.transient && i === messages.length - 1;
                   return (
                     <div key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
                       <div
@@ -485,13 +541,13 @@ export default function SupportChatWidget() {
                           <button onClick={() => copyToCanvas(m.content)} title="Copiar el texto al lienzo del editor" style={chipStyle}>
                             {copiedFlash ? <Check size={11} /> : <Clipboard size={11} />} Copiar al lienzo
                           </button>
-                          <button onClick={askSummarize} title="Resumir este contenido" style={chipStyle}>
+                          <button onClick={() => askSummarize(m.content)} title="Resumir este contenido" style={chipStyle}>
                             <FileText size={11} /> Resumir
                           </button>
-                          <button onClick={askExpand} title="Ampliar con más información relevante" style={chipStyle}>
+                          <button onClick={() => askExpand(m.content)} title="Ampliar con más información relevante" style={chipStyle}>
                             <Sparkles size={11} /> Ampliar
                           </button>
-                          <button onClick={askIdeas} title="Ideas de otras funciones útiles" style={chipStyle}>
+                          <button onClick={() => askIdeas(m.content)} title="Ideas de otras funciones útiles" style={chipStyle}>
                             <Lightbulb size={11} /> Ideas
                           </button>
                         </div>

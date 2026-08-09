@@ -29,7 +29,12 @@ export interface ExportResult {
 
 /**
  * Exporta el documento como PDF de alta fidelidad vía servidor.
- * Fallback: window.print() si el servidor no responde.
+ * Fallback: si el servidor no responde, NO llama window.print() acá mismo
+ * (esta función no tiene acceso al visor de solo lectura .ro-overlay que
+ * acota la impresión nativa del navegador al informe — llamarlo aquí
+ * imprimiría el editor completo). Devuelve method:'print-fallback' y deja
+ * que el caller (App.tsx::handleExportPdf) abra la vista previa de
+ * impresión real.
  */
 export async function exportPDF(doc: any, options: ExportOptions = {}): Promise<ExportResult> {
   const payload = {
@@ -68,7 +73,6 @@ export async function exportPDF(doc: any, options: ExportOptions = {}): Promise<
     return { success: true, method: 'server' };
   } catch (err) {
     log.warn('[EXPORT] Server PDF failed, falling back to print:', err);
-    window.print();
     return { success: true, method: 'print-fallback' };
   }
 }
@@ -106,35 +110,11 @@ export async function exportDOCX(doc: any, options: ExportOptions = {}): Promise
   }
 }
 
-/**
- * Exporta como PPTX vía servidor.
- */
-export async function exportPPTX(doc: any, options: ExportOptions = {}): Promise<ExportResult> {
-  const payload = {
-    document: doc,
-    format: 'pptx',
-    theme: options.theme || 'mining-corporate',
-    author: options.author || 'Beemetry Platform',
-  };
-
-  try {
-    const response = await fetch(`${API_BASE}/export/pptx`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      credentials: 'include',
-    });
-
-    if (!response.ok) throw new Error(`Server returned ${response.status}`);
-
-    const blob = await response.blob();
-    downloadBlob(blob, generateFilename(doc, 'pptx'), 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
-    return { success: true, method: 'server' };
-  } catch (err) {
-    log.warn('[EXPORT] PPTX server export failed:', err);
-    return { success: false, error: (err as Error).message };
-  }
-}
+// PPTX (modo presentación) tiene su propio pipeline server-side asíncrono
+// (report_export_job vía createPptxExportJob/pollExportJob/fetchExportJobBlob
+// en lib/api.ts, invocado directamente desde App.tsx::handleExportPptx) — a
+// diferencia de PDF/DOCX no existe un fallback cliente sensato (el servidor
+// tiene que capturar la página real, no hay forma de "imprimir" un PPTX).
 
 /** Client-side DOCX fallback using HTML conversion */
 function exportDOCXClientFallback(doc: any, options: ExportOptions = {}): ExportResult {
@@ -181,6 +161,27 @@ function exportDOCXClientFallback(doc: any, options: ExportOptions = {}): Export
             ? `${sensorSnap.value}${sensorSnap.unit ? ` ${sensorSnap.unit}` : ''}`
             : 'Sin snapshot';
           htmlParts.push(`<div class="kpi"><div class="kpi-value">${escapeHtml(sensorValue)}</div><div>${escapeHtml(el.props?.title || 'Sensor')}</div></div>`);
+        } else if (el.type === 'seismic-report') {
+          // Mismo snapshot congelado que kpi/sensor arriba (ADR-012).
+          const seisSnap = el.props?.snapshot;
+          const igpEvents: any[] = seisSnap?.igpEvents || [];
+          const companyCount = seisSnap?.companyCount;
+          const source = el.props?.source || 'both';
+          htmlParts.push(`<p><strong>${escapeHtml(el.props?.title || 'Reporte Sismográfico')}</strong> (${escapeHtml(el.props?.startDate || '')} — ${escapeHtml(el.props?.endDate || '')})</p>`);
+          if (source === 'igp' || source === 'both') {
+            htmlParts.push('<table><tr><th>Fecha</th><th>Mag.</th><th>Prof.(km)</th><th>Referencia</th></tr>');
+            if (igpEvents.length > 0) {
+              igpEvents.slice(-10).reverse().forEach((ev) => {
+                htmlParts.push(`<tr><td>${escapeHtml(String(ev.fecha_local || '—').slice(0, 10))}</td><td>${escapeHtml(String(ev.magnitud ?? '—'))}</td><td>${escapeHtml(String(ev.profundidad ?? '—'))}</td><td>${escapeHtml(String(ev.referencia || '—'))}</td></tr>`);
+              });
+            } else {
+              htmlParts.push('<tr><td colspan="4">Sin sismos oficiales en el rango.</td></tr>');
+            }
+            htmlParts.push('</table>');
+          }
+          if (source === 'company' || source === 'both') {
+            htmlParts.push(`<p>Microsismicidad — sensores propios: <strong>${companyCount != null ? escapeHtml(String(companyCount)) : 'Sin snapshot'}</strong> eventos detectados en el rango.</p>`);
+          }
         } else if (el.type === 'table' && el.props?.rows) {
           htmlParts.push('<table>');
           el.props.rows.forEach((row: any[], ri: number) => {

@@ -26,6 +26,29 @@ export interface TextStyleSpan {
   color?: string;
   fontSize?: number;
   fontFamily?: string;
+  /** Color de resaltado (highlight) de fondo detrás del texto de este
+   * rango — 'transparent' o ausente = sin resaltar. Distinto de
+   * `props.backgroundColor` del bloque (el fondo de TODO el cuadro de
+   * texto): esto es el resaltado tipo marcador de Word, por selección. */
+  highlightColor?: string;
+  /** Marca este rango como un encabezado del documento (mismos ids que
+   * HEADING_STYLES en lib/headingStyles.ts: 'title'|'h1'..'h6') para que
+   * la Tabla de Contenidos lo detecte igual que un bloque entero con
+   * `props.headingStyle` — ver TableOfContents.tsx. undefined = texto
+   * normal, no aparece en el TOC. */
+  headingStyle?: string;
+  /** Referencia cruzada resuelta en render (ADR-019 — numeración/TOC/refs
+   * diferidas). `targetId` es el `TocItem.id` de un encabezado (ver
+   * `generateTocData()`/`resolveHeadingRefLabel()` en TableOfContents.tsx).
+   * El texto ALMACENADO en este rango (`text.slice(start,end)`) es solo un
+   * placeholder estable (nunca editado a mano, ver
+   * `insertReferenceAtRange` en PageCanvas.tsx) — lo que se MUESTRA se
+   * sustituye en cada render por el número de sección vigente del target,
+   * así que mover/insertar una sección re-numera y re-resuelve la
+   * referencia automáticamente, sin texto fijo que se desincronice. No es
+   * una propiedad de estilo (no entra en `STYLE_KEYS`/`BaseTextStyle`): no
+   * tiene "base" ni se hereda fuera de su propio rango. */
+  ref?: { targetId: string };
 }
 
 export interface BaseTextStyle {
@@ -35,11 +58,15 @@ export interface BaseTextStyle {
   color: string;
   fontSize: number;
   fontFamily: string;
+  highlightColor: string;
+  headingStyle: string;
 }
 
 export type EffectiveTextStyle = BaseTextStyle;
 
-const STYLE_KEYS: (keyof BaseTextStyle)[] = ['bold', 'italic', 'underline', 'color', 'fontSize', 'fontFamily'];
+const STYLE_KEYS: (keyof BaseTextStyle)[] = [
+  'bold', 'italic', 'underline', 'color', 'fontSize', 'fontFamily', 'highlightColor', 'headingStyle',
+];
 
 /** Descarta spans inválidos/fuera de rango y los ordena por inicio —
  * primera línea de defensa para datos legados o corruptos. */
@@ -59,6 +86,11 @@ export function sanitizeSpans(rawSpans: unknown, textLength: number): TextStyleS
       if (typeof raw.color === 'string') span.color = raw.color;
       if (typeof raw.fontSize === 'number') span.fontSize = raw.fontSize;
       if (typeof raw.fontFamily === 'string') span.fontFamily = raw.fontFamily;
+      if (typeof raw.highlightColor === 'string') span.highlightColor = raw.highlightColor;
+      if (typeof raw.headingStyle === 'string') span.headingStyle = raw.headingStyle;
+      if (raw.ref && typeof raw.ref === 'object' && typeof (raw.ref as any).targetId === 'string') {
+        span.ref = { targetId: (raw.ref as any).targetId };
+      }
       return span;
     })
     .filter((s): s is TextStyleSpan => s !== null)
@@ -92,12 +124,31 @@ function stylesEqual(a: EffectiveTextStyle, b: EffectiveTextStyle): boolean {
 export interface StyledSegment {
   text: string;
   style: EffectiveTextStyle;
+  /** Presente si este segmento proviene de un span con `.ref` (ver
+   * TextStyleSpan.ref) — se preserva a través de segments↔spans para que
+   * aplicar formato (negrita, color…) sobre una referencia no la rompa. */
+  refTargetId?: string;
 }
 
-/** Parte `text` en segmentos contiguos con estilo uniforme cada uno —
- * usado tanto para el overlay "fantasma" durante la edición como para el
- * render estático (no-Konva) de bloques con formato mixto. */
-export function buildStyledSegments(text: string, spans: TextStyleSpan[], base: BaseTextStyle): StyledSegment[] {
+/** Parte `text` en segmentos contiguos con estilo (y referencia, si aplica)
+ * uniforme cada uno — usado tanto para el overlay "fantasma" durante la
+ * edición como para el render estático (no-Konva) de bloques con formato
+ * mixto.
+ *
+ * `resolveRef`, si se pasa, sustituye el texto MOSTRADO de cualquier
+ * segmento cubierto por un span `.ref` por el valor resuelto (ADR-019) —
+ * el texto ALMACENADO (`text`) nunca se toca, solo lo que este helper
+ * devuelve para pintar. Sin `resolveRef` (p.ej. durante `applyStyleToRange`,
+ * que solo necesita la estructura, no el valor resuelto) el placeholder
+ * literal se conserva tal cual. Un target borrado/inválido resuelve a
+ * `undefined` y se muestra un marcador visible en vez de desaparecer en
+ * silencio. */
+export function buildStyledSegments(
+  text: string,
+  spans: TextStyleSpan[],
+  base: BaseTextStyle,
+  resolveRef?: (targetId: string) => string | undefined,
+): StyledSegment[] {
   if (!text) return [];
   const breakpoints = new Set<number>([0, text.length]);
   for (const span of spans) {
@@ -111,12 +162,17 @@ export function buildStyledSegments(text: string, spans: TextStyleSpan[], base: 
     const end = sorted[i + 1];
     if (end <= start) continue;
     const style = getEffectiveStyleAt(spans, base, start);
-    const chunk = text.slice(start, end);
+    const refSpan = spans.find((s) => s.ref && start >= s.start && start < s.end);
+    const refTargetId = refSpan?.ref?.targetId;
+    let chunk = text.slice(start, end);
+    if (refTargetId && resolveRef) {
+      chunk = resolveRef(refTargetId) ?? '⚠';
+    }
     const prev = segments[segments.length - 1];
-    if (prev && stylesEqual(prev.style, style)) {
+    if (prev && stylesEqual(prev.style, style) && prev.refTargetId === refTargetId) {
       prev.text += chunk;
     } else {
-      segments.push({ text: chunk, style });
+      segments.push({ text: chunk, style, ...(refTargetId ? { refTargetId } : {}) });
     }
   }
   return segments;
@@ -132,13 +188,21 @@ function segmentsToSpans(segments: StyledSegment[], base: BaseTextStyle): TextSt
     const start = offset;
     const end = offset + seg.text.length;
     offset = end;
-    if (!stylesEqual(seg.style, { ...base })) {
+    const hasStyleDiff = !stylesEqual(seg.style, { ...base });
+    if (hasStyleDiff || seg.refTargetId) {
       const span: TextStyleSpan = { start, end };
       for (const key of STYLE_KEYS) {
         if (seg.style[key] !== base[key]) (span as any)[key] = seg.style[key];
       }
+      if (seg.refTargetId) span.ref = { targetId: seg.refTargetId };
       const prev = spans[spans.length - 1];
-      if (prev && prev.end === start && STYLE_KEYS.every((k) => (prev as any)[k] === (span as any)[k])) {
+      const prevRefId = prev?.ref?.targetId;
+      if (
+        prev &&
+        prev.end === start &&
+        prevRefId === seg.refTargetId &&
+        STYLE_KEYS.every((k) => (prev as any)[k] === (span as any)[k])
+      ) {
         prev.end = end;
       } else {
         spans.push(span);
@@ -153,7 +217,13 @@ function segmentsToSpans(segments: StyledSegment[], base: BaseTextStyle): TextSt
  * la lista de spans resultante. Para propiedades booleanas (bold/italic/
  * underline) se replica el comportamiento de Word: si TODO el rango ya
  * tiene la propiedad activa, se desactiva; si no, se activa para todo el
- * rango (aunque estuviera parcialmente activa).
+ * rango (aunque estuviera parcialmente activa). Este toggle solo aplica
+ * cuando `options.toggle` no es `false` — los presets de encabezado (ver
+ * `applyHeadingStyleToSelection` en PageCanvas.tsx) necesitan asignar
+ * bold/italic/underline como valores LITERALES (p.ej. forzar italic:false),
+ * no alternarlos; con el toggle siempre activo, un preset que pide
+ * italic:false terminaba invertido a true porque cualquier valor definido
+ * (incluido `false`) disparaba la lógica de alternancia.
  */
 export function applyStyleToRange(
   text: string,
@@ -162,20 +232,23 @@ export function applyStyleToRange(
   rangeStart: number,
   rangeEnd: number,
   patch: Partial<BaseTextStyle>,
+  options?: { toggle?: boolean },
 ): TextStyleSpan[] {
   const start = Math.max(0, Math.min(text.length, Math.min(rangeStart, rangeEnd)));
   const end = Math.max(0, Math.min(text.length, Math.max(rangeStart, rangeEnd)));
   if (end <= start) return spans;
 
   const resolvedPatch: Partial<BaseTextStyle> = { ...patch };
-  for (const key of ['bold', 'italic', 'underline'] as const) {
-    if (patch[key] === undefined) continue;
-    // Toggle: si CADA carácter del rango ya tiene la propiedad activa,
-    // el clic la desactiva; en cualquier otro caso, la activa para todo
-    // el rango — igual que el botón Negrita/Cursiva/Subrayado de Word.
-    const segmentsInRange = buildStyledSegments(text.slice(start, end), reindexSpans(spans, start, end), base);
-    const allActive = segmentsInRange.length > 0 && segmentsInRange.every((seg) => seg.style[key] === true);
-    (resolvedPatch as any)[key] = !allActive;
+  if (options?.toggle !== false) {
+    for (const key of ['bold', 'italic', 'underline'] as const) {
+      if (patch[key] === undefined) continue;
+      // Toggle: si CADA carácter del rango ya tiene la propiedad activa,
+      // el clic la desactiva; en cualquier otro caso, la activa para todo
+      // el rango — igual que el botón Negrita/Cursiva/Subrayado de Word.
+      const segmentsInRange = buildStyledSegments(text.slice(start, end), reindexSpans(spans, start, end), base);
+      const allActive = segmentsInRange.length > 0 && segmentsInRange.every((seg) => seg.style[key] === true);
+      (resolvedPatch as any)[key] = !allActive;
+    }
   }
 
   const before = buildStyledSegments(text.slice(0, start), spans, base);
@@ -275,9 +348,11 @@ export interface CssStyleLike {
   color: string;
   fontSize: string;
   fontFamily: string;
+  backgroundColor?: string;
 }
 
 export function styleToCss(style: EffectiveTextStyle): CssStyleLike {
+  const highlight = style.highlightColor;
   return {
     fontWeight: style.bold ? 700 : 400,
     fontStyle: style.italic ? 'italic' : 'normal',
@@ -285,5 +360,8 @@ export function styleToCss(style: EffectiveTextStyle): CssStyleLike {
     color: style.color,
     fontSize: `${style.fontSize}px`,
     fontFamily: style.fontFamily,
+    // 'transparent' o vacío = sin resaltado; no se emite backgroundColor
+    // para no pintar un rectángulo transparente inútil sobre cada span.
+    ...(highlight && highlight !== 'transparent' ? { backgroundColor: highlight } : {}),
   };
 }

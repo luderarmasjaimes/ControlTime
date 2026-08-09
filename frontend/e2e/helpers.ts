@@ -13,15 +13,26 @@ import type { Page } from '@playwright/test'
  * "¿desea hacerlo ahora?" previo a ese modal.
  */
 export async function dismissUserMaintenancePrompt(page: Page): Promise<void> {
+  // El prompt depende de `canMaintain`, que desde ADR-079 puede resolver via
+  // `usePermissions()` (fetch async a GET /api/auth/permissions) en vez de
+  // solo `session.role` sincrono -- un `isVisible()` de un solo intento,
+  // llamado justo despues de `page.goto('/')`, puede correr ANTES de que el
+  // efecto de React siquiera exista en el DOM, y el prompt se escapa (nunca
+  // se descarta, y bloquea clicks posteriores con su overlay `z-[1100]`).
+  // Se espera un tiempo acotado en vez de comprobar una sola vez.
   const dismissBtn = page.getByRole('button', { name: 'Ahora no' })
-  if (await dismissBtn.isVisible().catch(() => false)) {
+  try {
+    await dismissBtn.waitFor({ state: 'visible', timeout: 3000 })
     await dismissBtn.click()
+  } catch {
+    // No aparecio dentro de la ventana de espera -- condicional a `canMaintain`
+    // para este usuario/rol, no es necesariamente un error.
   }
 }
 
 /**
  * La navegación es de dos niveles (ADR-040): una categoría (p.ej.
- * "Reportes", "Mapas") que hay que abrir/expandir primero, y recién ahí
+ * "Informes", "Mapas") que hay que abrir/expandir primero, y recién ahí
  * aparecen sus módulos ("Abrir Report", "Abrir Report v2", "Abrir Map",
  * etc.) como botones propios. Las specs viejas asumían una lista plana de
  * módulos visibles de entrada -- desactualizado desde que se introdujo ese
@@ -36,6 +47,10 @@ export async function dismissUserMaintenancePrompt(page: Page): Promise<void> {
  * concatenado al mismo texto y podría, en teoría, dar más de un candidato.
  */
 export async function openCategory(page: Page, categoryLabel: string): Promise<void> {
+  // Segunda oportunidad de descartar el prompt de mantenimiento: puede
+  // aparecer despues de la primera llamada en el spec (ver comentario en
+  // dismissUserMaintenancePrompt) y su overlay intercepta este click.
+  await dismissUserMaintenancePrompt(page)
   const categoryBtn = page.locator('button').filter({ hasText: categoryLabel }).first()
   if (await categoryBtn.isVisible().catch(() => false)) {
     await categoryBtn.click()

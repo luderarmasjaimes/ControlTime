@@ -7,7 +7,7 @@
  * Reusa useConnectivity()/connectivityMonitor.ts como ÚNICO detector de
  * calidad de conexión (ver nota del brief: no construir un segundo
  * mecanismo). Este módulo solo TRADUCE ese estado a: (a) qué parámetros de
- * query mandarle a /api/map/markers (bbox más chico, limit más bajo -- capas
+ * query mandarle a /api/map/markers (bbox con margen adaptativo, limit más bajo -- capas
  * "menos"), (b) cada cuánto refrescar, y (c) cómo decodificar la respuesta
  * si el backend la sirve en el formato compacto (ver decodeCompactMarkers).
  *
@@ -26,14 +26,14 @@
 import type { ConnectivityState } from './connectivityMonitor';
 
 export interface FieldModePlan {
-    /** Si está activo el modo campo (compacta wire format + intervalos largos + bbox más chico). */
+    /** Si está activo el modo campo (compacta wire format + intervalos largos). */
     active: boolean;
     /** Intervalo de refresco de marcadores, ms. */
     refreshIntervalMs: number;
     /** Si se debe pedir el formato compacto vía `?compact=1`. */
     requestCompact: boolean;
-    /** Factor de recorte del bbox actual del viewport (1 = sin recorte, 0.5 = mitad del área). */
-    bboxShrinkFactor: number;
+    /** Margen por lado agregado al viewport (0.25 = 25%); evita refetch en cada paneo corto. */
+    bboxPaddingRatio: number;
     /** Límite de marcadores a pedir (más bajo en campo, para no saturar un enlace 3G/satelital). */
     limit: number;
 }
@@ -56,7 +56,7 @@ export function planForConnectivity(state: ConnectivityState): FieldModePlan {
             active: true,
             refreshIntervalMs: OFFLINE_RECOVERING_REFRESH_MS,
             requestCompact: true,
-            bboxShrinkFactor: 0.5,
+            bboxPaddingRatio: 0,
             limit: FIELD_LIMIT,
         };
     }
@@ -65,7 +65,7 @@ export function planForConnectivity(state: ConnectivityState): FieldModePlan {
             active: true,
             refreshIntervalMs: DEGRADED_REFRESH_MS,
             requestCompact: true,
-            bboxShrinkFactor: 0.6,
+            bboxPaddingRatio: 0.1,
             limit: FIELD_LIMIT,
         };
     }
@@ -73,7 +73,7 @@ export function planForConnectivity(state: ConnectivityState): FieldModePlan {
         active: false,
         refreshIntervalMs: NORMAL_REFRESH_MS,
         requestCompact: false,
-        bboxShrinkFactor: 1,
+        bboxPaddingRatio: 0.25,
         limit: NORMAL_LIMIT,
     };
 }

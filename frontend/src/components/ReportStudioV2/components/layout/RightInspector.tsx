@@ -6,6 +6,10 @@ import { readImageFileAsDataUrl, resolveReportImageSrc } from '../../lib/reportI
 import { getSession } from '../../../../auth/authStorage';
 import { fetchTenantGallery, fetchTenantGalleryImageDataUrl, type TenantGalleryImage } from '../../lib/tenantGallery';
 import ColorPalette from '../shared/ColorPalette';
+import { applyListToText } from '../../lib/listFormatting';
+import { COVER_TEMPLATES } from '../../lib/coverTemplates';
+import { resolveMiningUnitName } from '../../lib/sessionChrome';
+import { DOCUMENT_TEMPLATES, findDocumentTemplate } from '../../lib/documentTemplates';
 
 import {
   Lock,
@@ -29,9 +33,12 @@ import {
   Pin,
   PinOff,
   ChevronLeft,
+  ChevronDown,
   Plug,
   Unplug,
   RefreshCw,
+  LayoutTemplate,
+  X,
 } from 'lucide-react';
 
 const ELEMENT_TYPE_META: Record<string, { icon: React.ElementType; tip: string }> = {
@@ -384,6 +391,79 @@ function KpiInspector({ element, onUpdate }: SubInspectorProps) {
   );
 }
 
+/* ───────── SEISMIC REPORT INSPECTOR (Reporte Sismográfico IGP/CENSIS + sensores propios) ───────── */
+function SeismicReportInspector({ element, onUpdate }: SubInspectorProps) {
+  const props = element.props || {};
+  const updateProps = (patch: Record<string, unknown>) => onUpdate({ props: { ...props, ...patch } });
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div className="inspector-form">
+      <span className="inspector-section-label" title="Sismos oficiales IGP/CENSIS (en vivo) y/o microsismicidad de la red propia de la mina">
+        Reporte Sismográfico
+      </span>
+      <div className="input-group" title="Rótulo visible del bloque en el informe">
+        <label>Título</label>
+        <input
+          className="input-premium"
+          value={props.title || ''}
+          onChange={(e) => updateProps({ title: e.target.value })}
+          placeholder="Ej: Reporte Sismográfico"
+        />
+      </div>
+      <div className="input-group" title="Qué columnas mostrar: solo el catálogo oficial, solo la red propia, o ambas lado a lado">
+        <label>Fuente</label>
+        <select
+          className="input-premium"
+          value={props.source || 'both'}
+          onChange={(e) => updateProps({ source: e.target.value })}
+        >
+          <option value="both">Ambas (2 columnas: IGP/CENSIS + sensores propios)</option>
+          <option value="igp">Solo oficial (IGP/CENSIS)</option>
+          <option value="company">Solo sensores propios de la mina</option>
+        </select>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div className="input-group" title="Fecha de inicio del rango a consultar">
+          <label>Fecha inicio</label>
+          <input
+            type="date"
+            className="input-premium"
+            value={props.startDate || ''}
+            max={props.endDate || todayStr}
+            onChange={(e) => updateProps({ startDate: e.target.value })}
+          />
+        </div>
+        <div className="input-group" title="Fecha final del rango a consultar">
+          <label>Fecha fin</label>
+          <input
+            type="date"
+            className="input-premium"
+            value={props.endDate || ''}
+            min={props.startDate || undefined}
+            max={todayStr}
+            onChange={(e) => updateProps({ endDate: e.target.value })}
+          />
+        </div>
+      </div>
+      <button
+        type="button"
+        className="btn-premium-outline"
+        style={{ width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 4 }}
+        onClick={() => updateProps({ connected: props.connected === false })}
+        title={
+          props.connected === false
+            ? 'Reanudar la consulta en vivo al IGP y a la base de datos'
+            : 'Congelar este bloque en su último resultado — deja de consultar la red'
+        }
+      >
+        {props.connected === false ? <Plug size={14} /> : <Unplug size={14} />}
+        {props.connected === false ? 'Conectar en vivo' : 'Desconectar (congelar)'}
+      </button>
+    </div>
+  );
+}
+
 interface ImageInspectorProps extends SubInspectorProps {
   onOpenCaptureModal?: (tab: string) => void;
 }
@@ -594,7 +674,10 @@ const TextInspector = React.memo(function TextInspector({ element, onUpdate }: S
       </div>
       <div className="input-group" title="Tipo de lista aplicada al bloque">
         <label>Lista</label>
-        <select className="input-premium" value={props.listType || 'none'} onChange={(e) => updateProps({ listType: e.target.value })}>
+        <select className="input-premium" value={props.listType || 'none'} onChange={(e) => {
+          const listType = e.target.value as 'none' | 'bullet' | 'number';
+          updateProps({ listType, text: applyListToText(String(props.text ?? ''), listType) });
+        }}>
           <option value="none">Sin lista</option>
           <option value="bullet">Viñetas</option>
           <option value="ordered">Numerada</option>
@@ -753,6 +836,14 @@ const CoverInspector = React.memo(function CoverInspector({ element, onUpdate }:
   return (
     <div className="inspector-form">
       <span className="inspector-section-label" title="Carátula del informe — ocupa toda la primera hoja">Carátula</span>
+      <div className="input-group" title="Diseño de la carátula — cada uno pensado para una audiencia distinta (Gerencia, Control Interno, Auditoría Interna, Campo, Normativo)">
+        <label>Plantilla</label>
+        <select className="input-premium" value={props.coverTemplate || 'corporate'} onChange={(e) => updateProps({ coverTemplate: e.target.value })}>
+          {COVER_TEMPLATES.map((t) => (
+            <option key={t.id} value={t.id}>{t.label} — {t.desc}</option>
+          ))}
+        </select>
+      </div>
       <div className="input-group" title="Título principal de la carátula">
         <label>Título</label>
         <input className="input-premium" type="text" value={props.title || ''} onChange={(e) => updateProps({ title: e.target.value })} placeholder="Informe Técnico" />
@@ -1033,10 +1124,108 @@ function WrapInspector({ element, onUpdate }: SubInspectorProps) {
 
 interface RightInspectorProps {
   onRequestImageReplace?: (pageNumber: number, elementId: string, tab?: string) => void;
+  /** Panel "Plantillas de Documento" (pedido explícito 2026-07-30) -- vive
+   * como prop controlada desde App.tsx (ver onOpenDocumentTemplates del
+   * ribbon) en vez de estado interno, porque el disparador (botón del
+   * ribbon) vive fuera de este componente. */
+  showTemplatesPanel?: boolean;
+  onCloseTemplatesPanel?: () => void;
+}
+
+/* ───────── PLANTILLAS DE DOCUMENTO ───────── */
+function DocumentTemplatesPanel({ onClose }: { onClose?: () => void }) {
+  const applyDocumentTemplate = useEditorStore((s) => s.applyDocumentTemplate);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [showOtros, setShowOtros] = useState(false);
+
+  const session = getSession();
+  const company = session?.company?.trim() || 'tu empresa';
+  const unit = resolveMiningUnitName(session);
+
+  const principales = DOCUMENT_TEMPLATES.filter((t) => t.group === 'principal');
+  const otros = DOCUMENT_TEMPLATES.filter((t) => t.group === 'otros');
+  const pending = pendingId ? findDocumentTemplate(pendingId) : null;
+
+  const confirmApply = () => {
+    if (!pendingId) return;
+    applyDocumentTemplate(pendingId);
+    setPendingId(null);
+    onClose?.();
+  };
+
+  if (pending) {
+    return (
+      <div className="inspector-form">
+        <span className="inspector-section-label">Confirmar reemplazo del documento</span>
+        <p style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.5, marginTop: 6 }}>
+          Esto reemplazará <strong>todo el contenido actual del informe</strong> por la plantilla
+          «{pending.label}», personalizada para <strong>{company}</strong> — <strong>{unit}</strong>.
+          Esta acción no se puede deshacer con Ctrl+Z página por página (reemplaza el documento completo).
+        </p>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button className="btn-premium-outline" style={{ flex: 1 }} onClick={() => setPendingId(null)}>
+            Cancelar
+          </button>
+          <button
+            className="btn-premium-outline"
+            style={{ flex: 1, background: 'var(--accent)', color: '#0b1220', fontWeight: 700 }}
+            onClick={confirmApply}
+          >
+            Reemplazar documento
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="inspector-form">
+      <span className="inspector-section-label" title="Cada plantilla carga un documento completo (carátula + índice + secciones) ya redactado y personalizado">
+        Plantillas de Documento
+      </span>
+      <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 8px' }}>
+        Se personalizarán para <strong>{company}</strong> — <strong>{unit}</strong>.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {principales.map((t) => (
+          <button
+            key={t.id}
+            className="btn-premium-outline"
+            style={{ textAlign: 'left', padding: '8px 10px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}
+            onClick={() => setPendingId(t.id)}
+            title={t.description}
+          >
+            <span style={{ fontWeight: 700, fontSize: 12 }}>{t.label}</span>
+            <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>{t.description}</span>
+          </button>
+        ))}
+        <button
+          className="btn-premium-outline"
+          style={{ textAlign: 'left', padding: '8px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+          onClick={() => setShowOtros((v) => !v)}
+        >
+          <span style={{ fontWeight: 700, fontSize: 12 }}>Otros documentos de utilidad</span>
+          {showOtros ? <ChevronDown size={14} /> : <ChevronLeft size={14} style={{ transform: 'rotate(180deg)' }} />}
+        </button>
+        {showOtros && otros.map((t) => (
+          <button
+            key={t.id}
+            className="btn-premium-outline"
+            style={{ textAlign: 'left', padding: '8px 10px 8px 18px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}
+            onClick={() => setPendingId(t.id)}
+            title={t.description}
+          >
+            <span style={{ fontWeight: 700, fontSize: 12 }}>{t.label}</span>
+            <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>{t.description}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* ───────── MAIN COMPONENT ───────── */
-export default function RightInspector({ onRequestImageReplace }: RightInspectorProps) {
+export default function RightInspector({ onRequestImageReplace, showTemplatesPanel, onCloseTemplatesPanel }: RightInspectorProps) {
   const selectedPage = useEditorStore((s) => s.selectedPage);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
   const page = useEditorStore((s) => s.doc.pages.find((p) => p.page_number === selectedPage));
@@ -1063,7 +1252,7 @@ export default function RightInspector({ onRequestImageReplace }: RightInspector
   // Al seleccionar un bloque en el lienzo, el panel se expande automáticamente
   // para mostrar sus propiedades (además de hover/pin). Es el comportamiento
   // esperado: seleccionar objeto ⇒ ver y editar sus parámetros de inmediato.
-  const isExpanded = isHovered || isPinned || Boolean(selected);
+  const isExpanded = isHovered || isPinned || Boolean(selected) || Boolean(showTemplatesPanel);
 
   const typeMeta = selected ? ELEMENT_TYPE_META[selected.type] : null;
   const TypeIcon = typeMeta?.icon || Settings2;
@@ -1082,11 +1271,23 @@ export default function RightInspector({ onRequestImageReplace }: RightInspector
       )}
 
       <div className="panel-title-row">
-        <h3 className="panel-title panel-title--inspector" title="Propiedades del bloque seleccionado en el lienzo">
-          <Settings2 size={18} color="var(--accent)" aria-hidden />
-          {isExpanded && <span>Propiedades</span>}
+        <h3 className="panel-title panel-title--inspector" title={showTemplatesPanel ? 'Elegir una plantilla de documento completo' : 'Propiedades del bloque seleccionado en el lienzo'}>
+          {showTemplatesPanel
+            ? <LayoutTemplate size={18} color="var(--accent)" aria-hidden />
+            : <Settings2 size={18} color="var(--accent)" aria-hidden />}
+          {isExpanded && <span>{showTemplatesPanel ? 'Plantillas de Documento' : 'Propiedades'}</span>}
         </h3>
-        {isExpanded && (
+        {isExpanded && showTemplatesPanel && (
+          <button
+            type="button"
+            className="panel-pin-btn"
+            onClick={() => onCloseTemplatesPanel?.()}
+            title="Cerrar plantillas de documento"
+          >
+            <X size={14} aria-hidden />
+          </button>
+        )}
+        {isExpanded && !showTemplatesPanel && (
           <button
             type="button"
             className={`panel-pin-btn${isPinned ? ' panel-pin-btn--active' : ''}`}
@@ -1137,8 +1338,15 @@ export default function RightInspector({ onRequestImageReplace }: RightInspector
         </div>
       )}
 
+      {/* ── PLANTILLAS DE DOCUMENTO ── */}
+      {showTemplatesPanel && isExpanded && (
+        <div className="inspector-content-scroll" style={{ marginTop: 4 }}>
+          <DocumentTemplatesPanel onClose={onCloseTemplatesPanel} />
+        </div>
+      )}
+
       {/* ── ELEMENT INSPECTOR ── */}
-      {selected && isExpanded && (
+      {!showTemplatesPanel && selected && isExpanded && (
         <div className="inspector-content-scroll" style={{ marginTop: 4 }}>
           {selected.type === 'table' && (
             <TableInspector
@@ -1148,6 +1356,12 @@ export default function RightInspector({ onRequestImageReplace }: RightInspector
           )}
           {selected.type === 'kpi' && (
             <KpiInspector
+              element={selected}
+              onUpdate={handleUpdate}
+            />
+          )}
+          {selected.type === 'seismic-report' && (
+            <SeismicReportInspector
               element={selected}
               onUpdate={handleUpdate}
             />

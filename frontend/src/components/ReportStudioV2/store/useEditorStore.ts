@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { getReportLayoutMetrics } from '../lib/reportLayoutMetrics';
 import { REPORT_IMAGE_PLACEHOLDER_SVG } from '../lib/reportImageSrc';
+import { generateTocData } from '../components/document/TableOfContents';
+import { HEADING_STYLES } from '../lib/headingStyles';
+import { buildDocumentTemplate } from '../lib/documentTemplates';
 
 import { log } from '../../../lib/logger';
 const INSERT_GAP = 12;
@@ -483,12 +486,19 @@ const defaultPropsByType = (type: string): ElementProps => {
     // igual que el encabezado/pie (ADR-046), para que no puedan quedar
     // desactualizados ni ser editados/borrados a mano.
     return {
-      title: 'Informe Técnico',
+      // Vacíos a propósito (no 'Informe Técnico'/'CONFIDENCIAL' fijos): así
+      // el render (PageCanvas.tsx) cae al fallback de la plantilla elegida
+      // (lib/coverTemplates.ts) cuando el usuario no escribió nada propio.
+      // 'corporate' (default si no se especifica) tiene los mismos valores
+      // que antes tenía este objeto, así que informes ya guardados sin
+      // `coverTemplate` siguen viéndose idénticos.
+      title: '',
       date: new Date().toISOString().slice(0, 10),
-      classification: 'CONFIDENCIAL',
+      classification: '',
       docCode: '',
       bgColor: '',
-      textColor: '#ffffff',
+      textColor: '',
+      coverTemplate: 'corporate',
     };
   }
 
@@ -523,6 +533,22 @@ const defaultPropsByType = (type: string): ElementProps => {
     };
   }
 
+  if (type === 'seismic-report') {
+    // Últimos 30 días por defecto, igual que el panel del dashboard
+    // principal (MiningDashboard.tsx) del que proviene este bloque.
+    const today = new Date();
+    const start = new Date(today);
+    start.setUTCDate(start.getUTCDate() - 29);
+    return {
+      title: 'Reporte Sismográfico',
+      // 'igp' | 'company' | 'both' -- controla 1 o 2 columnas en el render.
+      source: 'both',
+      startDate: start.toISOString().slice(0, 10),
+      endDate: today.toISOString().slice(0, 10),
+      connected: true,
+    };
+  }
+
   return {
     title: type === 'kpi' ? 'Tonelaje movido' : `${type.toUpperCase()} BLOCK`,
     value: '—',
@@ -544,6 +570,171 @@ export const defaultBorderByType = (type: string): ElementBorder =>
   type === 'text' || type === 'header' || type === 'footer' || type === 'cover'
     ? { enabled: false, width: 1, style: 'solid', color: '#a9b8d3' }
     : { enabled: true, width: 1, style: 'solid', color: '#a9b8d3' };
+
+// ── Bloques Técnicos (presentación avanzada) ───────────────────────────────
+// Paleta y textos tomados EXACTAMENTE del modelo corporativo minero
+// (docs/Modelo_Informe_Tecnico_Monitoreo_Sensores_Mineros_LATAM.docx):
+// cajas de resaltado semánticas con los mismos tintes de celda del documento
+// (#EEF3F7 nota, #E2F0D9 conforme, #FFF2CC observación, #F4CCCC no conforme,
+// #17365D dictamen ejecutivo en navy con texto claro). Cada variante define
+// el fondo de la caja, el color del borde/acento y el color del título.
+export interface TechCalloutVariant {
+  bg: string;
+  border: string;
+  /** Color del título (primera línea, en negrita). */
+  titleColor: string;
+  /** Color del cuerpo (resto del texto). */
+  bodyColor: string;
+  title: string;
+  body: string;
+}
+
+export const TECH_CALLOUT_VARIANTS: Record<string, TechCalloutVariant> = {
+  info: {
+    bg: '#EEF3F7', border: '#4F81BD', titleColor: '#17365D', bodyColor: '#1F3350',
+    title: 'NOTA',
+    body: 'Texto informativo de la nota. Reemplace con el contenido correspondiente.',
+  },
+  success: {
+    bg: '#E2F0D9', border: '#70AD47', titleColor: '#375623', bodyColor: '#2E4318',
+    title: 'CONFORME',
+    body: 'Criterio cumplido o resultado conforme. Describa la evidencia que lo sustenta.',
+  },
+  warning: {
+    bg: '#FFF2CC', border: '#C69214', titleColor: '#7F6000', bodyColor: '#5C4A00',
+    title: 'OBSERVACIÓN',
+    body: 'Condición que requiere atención o seguimiento. Detalle la acción recomendada.',
+  },
+  danger: {
+    bg: '#F4CCCC', border: '#C0504D', titleColor: '#843C0C', bodyColor: '#6B2B2B',
+    title: 'CRÍTICO / NO CONFORME',
+    body: 'No conformidad o riesgo crítico. Especifique la acción inmediata y el responsable.',
+  },
+  dictamen: {
+    bg: '#17365D', border: '#0F2742', titleColor: '#FFFFFF', bodyColor: '#DCE6F1',
+    title: 'DICTAMEN EJECUTIVO',
+    body: 'Conclusión ejecutiva del informe. Resuma el estado del sistema y la decisión requerida.',
+  },
+};
+
+// ── Plantillas de sección (tablas especializadas del modelo minero) ─────────
+// Cada plantilla = un encabezado H2 + una tabla pre-llenada con datos
+// demostrativos tomados del documento. `hasHeader:false` para las que son
+// fichas tipo formulario (columna-etiqueta) en vez de tabla de datos.
+export interface SectionTemplateDef {
+  label: string;
+  heading: string;
+  rows: string[][];
+  hasHeader?: boolean; // default true
+}
+
+export const SECTION_TEMPLATES: Record<string, SectionTemplateDef> = {
+  'estado-sistema': {
+    label: 'Estado por sistema',
+    heading: 'Estado consolidado por sistema',
+    rows: [
+      ['Sistema', 'Instalados', 'Operativos', 'Degradados', 'Inoperativos', 'Disponibilidad', 'Condición'],
+      ['Radar de taludes', '2', '2', '0', '0', '99.1 %', 'VERDE'],
+      ['Prismas/RTS', '120', '115', '3', '2', '96.3 %', 'VERDE'],
+      ['Inclinómetros', '14', '11', '2', '1', '88.4 %', 'AMARILLO'],
+      ['Piezómetros', '26', '23', '2', '1', '91.0 %', 'AMARILLO'],
+    ],
+  },
+  'matriz-riesgo': {
+    label: 'Matriz peligro–mecanismo–sensor',
+    heading: 'Matriz peligro–mecanismo–sensor',
+    rows: [
+      ['Sector', 'Peligro', 'Mecanismo', 'Sensor primario', 'Sensor de respaldo', 'Acción asociada'],
+      ['Talud Oeste', 'Falla profunda', 'Deslizamiento compuesto', 'Radar', 'Inclinómetro + prismas', 'TARP geotécnico'],
+      ['Botadero', 'Deformación basal', 'Corte profundo', 'ShapeArray', 'GNSS + piezómetros', 'Control de descarga'],
+      ['Relaves', 'Presión de poros', 'Inestabilidad hidráulica', 'Piezómetros', 'Inclinómetros', 'Plan de contingencia'],
+    ],
+  },
+  'inventario': {
+    label: 'Inventario maestro de sensores',
+    heading: 'Inventario maestro de sensores',
+    rows: [
+      ['Código', 'Tecnología', 'Sector', 'Variable', 'Frecuencia', 'Comunicación', 'Últ. calib.', 'Estado', 'Criticidad', 'Observación'],
+      ['RAD-01', 'Radar', 'Tajo Oeste', 'mm / velocidad', '2 min', 'Radio 5 GHz', 'N/A', 'Operativo', 'A', 'Cobertura 98 %'],
+      ['INC-07', 'Inclinómetro', 'Oeste', 'Despl. profundidad', 'Semanal', 'Manual', '10/01/26', 'Inoperativo', 'A', 'Obstrucción 42.5 m'],
+      ['PZ-14', 'Piezómetro', 'Oeste', 'Presión de poros', '10 min', 'Radio 900 MHz', 'Vencida', 'Degradado', 'A', 'Intermitencia'],
+    ],
+  },
+  'kpi-dict': {
+    label: 'Diccionario de KPI',
+    heading: 'Diccionario de KPI',
+    rows: [
+      ['KPI', 'Definición / fórmula', 'Meta', 'Frecuencia', 'Propietario'],
+      ['Disponibilidad', 'Horas disponibles / horas del periodo', '≥ 95 %', 'Mensual', 'Instrumentación'],
+      ['Completitud', 'Registros válidos / registros esperados', '≥ 96 %', 'Diaria', 'TI/OT'],
+      ['MTTR', 'Horas de reparación / fallas', '≤ 4 h críticos', 'Mensual', 'Mantenimiento'],
+    ],
+  },
+  'tarp': {
+    label: 'Matriz de alarmas / TARP',
+    heading: 'Alarmas, TARP y respuesta operacional',
+    rows: [
+      ['Nivel', 'Criterio general', 'Validación', 'Respuesta', 'Responsable', 'Tiempo máx.'],
+      ['VERDE', 'Comportamiento dentro de línea base', 'Automática + revisión rutinaria', 'Operación normal', 'Control geotécnico', 'Turno'],
+      ['AMARILLO', 'Cambio significativo o pérdida parcial', 'Segundo sensor + inspección', 'Aumentar frecuencia y vigilar', 'Geotecnia de turno', '30 min'],
+      ['NARANJA', 'Aceleración o coincidencia multisensor', 'Confirmación inmediata', 'Restringir área y activar comando', 'Jefe Geotecnia / Mina', '10 min'],
+      ['ROJO', 'Falla inminente o pérdida crítica de control', 'No demorar evacuación', 'Evacuar, aislar y activar emergencia', 'Gerencia / Emergencias', 'Inmediato'],
+    ],
+  },
+  'hallazgos': {
+    label: 'Registro de hallazgos',
+    heading: 'Hallazgos y no conformidades',
+    rows: [
+      ['ID', 'Hallazgo', 'Criterio', 'Riesgo', 'Clasif.', 'Acción requerida', 'Responsable', 'Plazo'],
+      ['H-01', 'INC-07 obstruido antes de la profundidad crítica', 'Procedimiento GEO-PRO-004', 'Pérdida de detección profunda', 'Crítica', 'Instalar reemplazo y control temporal', 'Geotecnia', '7 días'],
+      ['H-02', 'PZ-14 con calibración vencida e intermitencia', 'Plan metrológico', 'Interpretación hidrogeológica incierta', 'Alta', 'Calibrar/reemplazar cable y validar', 'Instrumentación', '48 h'],
+    ],
+  },
+  'plan-accion': {
+    label: 'Plan de acción y seguimiento',
+    heading: 'Plan de acción y seguimiento',
+    rows: [
+      ['N°', 'Acción', 'Prioridad', 'Responsable', 'Inicio', 'Vencimiento', 'Avance', 'Evidencia', 'Estado'],
+      ['1', 'Reemplazar INC-07', 'Crítica', 'Geotecnia', '[ ]', '[ ]', '0 %', 'Lectura cero + acta', 'Abierta'],
+      ['2', 'Rehabilitar PZ-14', 'Alta', 'Instrumentación', '[ ]', '[ ]', '25 %', 'Serie validada 72 h', 'En curso'],
+    ],
+  },
+  'ficha-sensor': {
+    label: 'Ficha individual de sensor',
+    heading: 'Ficha individual de sensor',
+    hasHeader: false,
+    rows: [
+      ['Código', '[ ]', 'Tecnología', '[ ]'],
+      ['Marca / modelo', '[ ]', 'N.° de serie', '[ ]'],
+      ['Ubicación', '[ ]', 'Coordenadas / cota', '[ ]'],
+      ['Variable medida', '[ ]', 'Rango / precisión', '[ ]'],
+      ['Última calibración', '[ ]', 'Próxima calibración', '[ ]'],
+      ['Criticidad', 'A / B / C', 'Redundancia', '[ ]'],
+    ],
+  },
+  'checklist': {
+    label: 'Lista de verificación en campo',
+    heading: 'Lista de verificación en campo',
+    rows: [
+      ['N°', 'Verificación', 'Resultado', 'Observación'],
+      ['1', 'Identificación y código legibles.', '☐ C   ☐ NC   ☐ N/A', ''],
+      ['2', 'Ubicación coincide con plano y coordenadas.', '☐ C   ☐ NC   ☐ N/A', ''],
+      ['3', 'Protección física y gabinete en buen estado.', '☐ C   ☐ NC   ☐ N/A', ''],
+      ['4', 'Batería, panel solar o UPS verificados.', '☐ C   ☐ NC   ☐ N/A', ''],
+    ],
+  },
+  'firmas': {
+    label: 'Registro de firmas',
+    heading: 'Registro de firmas',
+    rows: [
+      ['Función', 'Nombre', 'CIP / Registro', 'Firma', 'Fecha'],
+      ['Elaborado por', '', '', '', ''],
+      ['Revisado por', '', '', '', ''],
+      ['Validado por', '', '', '', ''],
+      ['Aprobado por', '', '', '', ''],
+    ],
+  },
+};
 
 const createElement = (
   type: string,
@@ -628,11 +819,13 @@ const createElement = (
           ? Math.min(420, contentW)
           : type === 'sensor'
             ? Math.min(240, contentW)
-            : type === 'toc' || type === 'text'
+            : type === 'toc' || type === 'text' || type === 'seismic-report'
               // Un bloque de texto nuevo ocupa todo el ancho de la columna de
               // contenido (como un párrafo de Word) — antes quedaba fijo en
               // 320px, un recuadro angosto sin relación con el ancho real de
-              // la hoja seleccionada (A4/A3, vertical/horizontal).
+              // la hoja seleccionada (A4/A3, vertical/horizontal). El reporte
+              // sísmico necesita ancho completo para mostrar 2 columnas
+              // (oficial IGP + sensores propios) lado a lado sin apretarse.
               ? contentW
               : Math.min(320, contentW),
     height:
@@ -640,6 +833,7 @@ const createElement = (
       : type === 'table' ? 200
       : type === 'sensor' ? 140
       : type === 'toc' ? 340
+      : type === 'seismic-report' ? 320
       : 180,
     zIndex: nextIndex,
     locked: false,
@@ -714,6 +908,91 @@ const createHeaderFooterPair = (
   },
 ];
 
+// ── Paginación automática de la Tabla de Contenidos ─────────────────────────
+// Pedido explícito del negocio: el TOC solo se puede insertar en la página 2
+// (nunca la 1, reservada a carátula) y, si la lista de encabezados crece más
+// de lo que entra en una página, debe "derramarse" solo a páginas
+// siguientes en vez de recortarse o quedar con scroll interno.
+//
+// El bloque original (props.tocContinuationIndex === undefined, o 0) vive en
+// la página 2. Cada bloque de continuación (tocContinuationIndex === 1, 2…)
+// vive en una página propia, insertada/retirada automáticamente por
+// `syncTocPages()` según cuántas entradas hay realmente — nunca se
+// almacenan las entradas en sí en props (se recalculan siempre desde los
+// encabezados reales vía generateTocData, ver TableOfContents.tsx), así que
+// esto se autorepara solo aunque el usuario edite/borre encabezados después.
+
+// Estimación en px de alto por fila de índice + cabecera del bloque — debe
+// coincidir con el render real (PageCanvas.tsx / ReadOnlyViewer.tsx, bloque
+// 'toc'): título "Tabla de Contenidos" (~48px) + ~26px por fila.
+const TOC_ROW_HEIGHT_PX = 26;
+const TOC_HEADER_HEIGHT_PX = 48;
+const TOC_PADDING_PX = 44; // padding interno del shield (18px arriba/abajo aprox + borde)
+
+export function tocCapacityForBoxHeight(boxHeight: number): number {
+  const usable = boxHeight - TOC_HEADER_HEIGHT_PX - TOC_PADDING_PX;
+  return Math.max(1, Math.floor(usable / TOC_ROW_HEIGHT_PX));
+}
+
+/** Alto de un bloque TOC de continuación: toda el área de contenido de una
+ * página propia (mismo criterio que un bloque de texto que ocupa toda la
+ * columna, ver createElement 'toc'/'text'). */
+function tocContinuationHeight(m: ReturnType<typeof getReportLayoutMetrics>): number {
+  return Math.max(200, m.CONTENT_BOTTOM - m.CONTENT_TOP);
+}
+
+function createTocContinuationElement(
+  pageNumber: number,
+  continuationIndex: number,
+  m: ReturnType<typeof getReportLayoutMetrics>,
+): ReportElement {
+  return {
+    id: `toc-continuation-${continuationIndex}-${pageNumber}-${Date.now()}`,
+    type: 'toc',
+    x: m.CONTENT_LEFT,
+    y: m.CONTENT_TOP,
+    width: m.CONTENT_RIGHT - m.CONTENT_LEFT,
+    height: tocContinuationHeight(m),
+    zIndex: 0,
+    locked: false,
+    props: { ...defaultPropsByType('toc'), tocContinuationIndex: continuationIndex },
+    border: defaultBorderByType('toc'),
+  };
+}
+
+/**
+ * Slice de entradas del índice que le corresponde mostrar a UN bloque `toc`
+ * concreto (original o de continuación) — fuente única para PageCanvas.tsx
+ * (edición) y ReadOnlyViewer.tsx (lectura), así ambos quedan siempre
+ * consistentes con lo que `syncTocPages()` decidió. El offset de cada
+ * bloque se recalcula recorriendo TODOS los bloques toc del documento en
+ * orden (original primero, luego continuaciones por índice) usando el alto
+ * REAL de cada uno — si el usuario redimensiona el bloque original a mano,
+ * el resto se re-acomoda solo en el siguiente render, sin esperar a
+ * `syncTocPages()`.
+ */
+export function tocSliceForElementId(doc: ReportDocument, elementId: string): ReturnType<typeof generateTocData> {
+  const entries = generateTocData(doc);
+  const allTocEls: { id: string; height: number; continuationIndex: number }[] = [];
+  doc.pages.forEach((page) => {
+    page.elements.forEach((el) => {
+      if (el.type !== 'toc') return;
+      const ci = typeof el.props?.tocContinuationIndex === 'number' ? el.props.tocContinuationIndex : 0;
+      allTocEls.push({ id: el.id, height: el.height, continuationIndex: ci });
+    });
+  });
+  allTocEls.sort((a, b) => a.continuationIndex - b.continuationIndex);
+
+  let offset = 0;
+  for (const item of allTocEls) {
+    const capacity = tocCapacityForBoxHeight(item.height);
+    const slice = entries.slice(offset, offset + capacity);
+    if (item.id === elementId) return slice;
+    offset += capacity;
+  }
+  return [];
+}
+
 const createInitialPage = (): ReportPage => {
   const m = getReportLayoutMetrics('document');
   return { page_number: 1, elements: createHeaderFooterPair(1, m, 'document') };
@@ -758,6 +1037,16 @@ export interface EditorState {
   reorderPages: (from: number, to: number) => void;
   selectPage: (pageNumber: number) => void;
   addElement: (type: string, patch?: AddElementPatch) => void;
+  /** Inserta la Tabla de Contenidos SIEMPRE en la página 2 (nunca la 1,
+   * carátula) — crea la página 2 si aún no existe. Si ya hay un TOC en el
+   * documento, no duplica: solo selecciona el existente. */
+  addTocElement: () => void;
+  /** Reconcilia cuántas páginas de CONTINUACIÓN del TOC existen contra
+   * cuántas hacen falta según el número real de encabezados — inserta o
+   * retira páginas de continuación (nunca la página 2, la del bloque
+   * original). No-op si no hay ningún TOC en el documento. Debe llamarse
+   * cada vez que el doc cambia (ver App.tsx). */
+  syncTocPages: () => void;
   /** Inserta una imagen libre (movible/redimensionable) centrada en la
    * página dada — usado por "Insertar Imagen Empresa" (ADR-048 revisado):
    * a diferencia de `addElement('image', ...)`, NO participa del flujo
@@ -766,6 +1055,34 @@ export interface EditorState {
    * página de carátula. */
   addCenteredImage: (pageNumber: number, src: string) => void;
   addTextTemplate: (template: string) => void;
+  /** Bloques de presentación avanzada (Sección "Bloques Técnicos" del ribbon
+   * de reportabilidad) tomados del modelo corporativo minero: cajas de
+   * resaltado semánticas (`callout-info|success|warning|danger|dictamen`),
+   * pie de figura (`caption`) y tira de tarjetas KPI (`kpi-strip`). Todos se
+   * construyen SOBRE el bloque `text` existente (fondo + borde + spans), sin
+   * un tipo de elemento nuevo, para reutilizar el render, la edición, el
+   * export y el visor de solo lectura ya probados. Ver TECH_BLOCK_VARIANTS. */
+  addTechnicalBlock: (kind: string) => void;
+  /** Plantillas de sección completas del modelo minero: inserta un
+   * encabezado (H2) + una tabla especializada pre-llenada (matriz
+   * peligro-mecanismo-sensor, inventario, diccionario KPI, TARP, hallazgos,
+   * plan de acción, ficha de sensor, checklist de campo, registro de firmas,
+   * estado por sistema). Ver SECTION_TEMPLATES. Reutiliza los elementos
+   * `text` y `table` existentes. */
+  addSectionTemplate: (kind: string) => void;
+  /** Gráficos estáticos con datos ingresados (no el dashboard en vivo):
+   * `chart-line` (línea con meta), `chart-hbar` (barras horizontales con
+   * etiquetas), `chart-combo` (línea + barras, doble eje) — las 3 figuras
+   * del modelo. Guarda los datos en props del elemento `chart`. */
+  addStaticChart: (kind: string) => void;
+  /** Plantillas de DOCUMENTO completo (pedido explícito 2026-07-30, distinto
+   * de addTextTemplate/addSectionTemplate que insertan un bloque en la
+   * página actual): reemplaza TODO el documento por una estructura
+   * multi-página ya redactada (carátula + índice + contenido), personalizada
+   * con la sesión activa (empresa/unidad minera/usuario). Ver
+   * lib/documentTemplates.ts. Reutiliza `loadDocument` para no duplicar el
+   * backfill de encabezado/pie por página. */
+  applyDocumentTemplate: (templateId: string, answers?: Record<string, string>) => void;
   selectElement: (id: string | undefined) => void;
   updateElement: (pageNumber: number, elementId: string, patch: Partial<ReportElement>) => void;
   removeElement: (pageNumber: number, elementId: string) => void;
@@ -849,6 +1166,15 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     } catch {
       log.error('useEditorStore.loadDocument: JSON inválido');
     }
+  },
+  applyDocumentTemplate: (templateId, answers) => {
+    const built = buildDocumentTemplate(templateId, answers);
+    if (!built) {
+      log.error(`useEditorStore.applyDocumentTemplate: plantilla desconocida "${templateId}"`);
+      return;
+    }
+    const state = get();
+    state.loadDocument(built, state.currentReportId, state.currentReportTitle || 'Informe sin título');
   },
   setLayoutMode: (layoutMode) =>
     set((state) => ({
@@ -1028,7 +1354,15 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       // portada a toda página no convive con la franja de encabezado/pie,
       // igual que "primera página diferente" en Word.
       if (type === 'cover') {
-        const coverElement = createElement('cover', activePage.page_number, activePage.elements.length, m);
+        const baseCoverElement = createElement('cover', activePage.page_number, activePage.elements.length, m);
+        // Las 5 opciones del ribbon (Corporativo/Técnico/Ejecutivo/Campo/
+        // Normativo, ver lib/coverTemplates.ts) pasan su id en
+        // `patch.props.coverTemplate` — se mergea acá porque esta rama de
+        // 'cover' es un caso especial que antes ignoraba `patch` por
+        // completo (a diferencia del resto de tipos, más abajo).
+        const coverElement = patch.props && typeof patch.props === 'object'
+          ? { ...baseCoverElement, props: { ...(baseCoverElement.props || {}), ...patch.props } }
+          : baseCoverElement;
         const withoutChrome = activePage.elements.filter((el) => el.type !== 'header' && el.type !== 'footer');
         pages[currentIndex] = { ...activePage, elements: [...withoutChrome, coverElement] };
         return {
@@ -1081,6 +1415,154 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         },
         selectedPage: nextPageNumber,
         selectedElementId: nextPlacement.element.id,
+      };
+    }),
+  addTocElement: () =>
+    set((state) => {
+      // Ya existe un TOC (bloque original, no de continuación) en cualquier
+      // página -- no duplicar, solo enfocarlo.
+      for (const page of state.doc.pages) {
+        const existing = page.elements.find(
+          (el) => el.type === 'toc' && el.props?.tocContinuationIndex == null,
+        );
+        if (existing) {
+          return { selectedPage: page.page_number, selectedElementId: existing.id };
+        }
+      }
+
+      const m = metricsFromMeta(state.doc.meta);
+      const layoutMode = state.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
+      const pages = [...state.doc.pages];
+
+      // Página 2 reservada para el TOC -- crearla (y la 1, si tampoco
+      // existiera) si el documento todavía no llega hasta ahí.
+      while (pages.length < 2) {
+        const pageNumber = pages.length + 1;
+        pages.push({ page_number: pageNumber, elements: createHeaderFooterPair(pageNumber, m, layoutMode) });
+      }
+
+      const pageTwoIndex = pages.findIndex((p) => p.page_number === 2);
+      const pageTwo = pages[pageTwoIndex];
+      const tocElement: ReportElement = {
+        id: `toc-2-${Date.now()}`,
+        type: 'toc',
+        x: m.CONTENT_LEFT,
+        y: m.CONTENT_TOP,
+        width: m.CONTENT_RIGHT - m.CONTENT_LEFT,
+        height: tocContinuationHeight(m),
+        zIndex: pageTwo.elements.length,
+        locked: false,
+        props: defaultPropsByType('toc'),
+        border: defaultBorderByType('toc'),
+      };
+      pages[pageTwoIndex] = { ...pageTwo, elements: [...pageTwo.elements, tocElement] };
+
+      return {
+        doc: {
+          ...state.doc,
+          pages,
+          meta: { ...state.doc.meta, version: state.doc.meta.version + 1, updatedAt: new Date().toISOString() },
+        },
+        selectedPage: 2,
+        selectedElementId: tocElement.id,
+      };
+    }),
+  syncTocPages: () =>
+    set((state) => {
+      // Ubicar el bloque TOC original (nunca de continuación) y su página.
+      let primaryPageIdx = -1;
+      let primaryElement: ReportElement | null = null;
+      state.doc.pages.forEach((page, idx) => {
+        if (primaryElement) return;
+        const found = page.elements.find(
+          (el) => el.type === 'toc' && el.props?.tocContinuationIndex == null,
+        );
+        if (found) {
+          primaryPageIdx = idx;
+          primaryElement = found;
+        }
+      });
+      if (!primaryElement || primaryPageIdx < 0) {
+        return state; // sin TOC en el documento -- nada que reconciliar.
+      }
+
+      const m = metricsFromMeta(state.doc.meta);
+      const layoutMode = state.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
+      const entries = generateTocData(state.doc);
+      const primaryCapacity = tocCapacityForBoxHeight((primaryElement as ReportElement).height);
+      const continuationCapacity = tocCapacityForBoxHeight(tocContinuationHeight(m));
+
+      const overflowCount = Math.max(0, entries.length - primaryCapacity);
+      const neededContinuationPages = overflowCount > 0
+        ? Math.ceil(overflowCount / Math.max(1, continuationCapacity))
+        : 0;
+
+      // Páginas de continuación EXISTENTES hoy, en orden, inmediatamente
+      // después de la página del TOC original (cualquier bloque toc con
+      // tocContinuationIndex numérico en cualquier página del documento).
+      const existingContinuationPageIdx: number[] = [];
+      state.doc.pages.forEach((page, idx) => {
+        if (idx === primaryPageIdx) return;
+        if (page.elements.some((el) => el.type === 'toc' && typeof el.props?.tocContinuationIndex === 'number')) {
+          existingContinuationPageIdx.push(idx);
+        }
+      });
+
+      if (existingContinuationPageIdx.length === neededContinuationPages) {
+        return state; // ya está exactamente como debe estar -- no-op real.
+      }
+
+      let pages = [...state.doc.pages];
+
+      if (existingContinuationPageIdx.length > neededContinuationPages) {
+        // Sobran páginas de continuación -- retirar las últimas, pero SOLO
+        // si no tienen nada más que header/footer/el bloque toc (no se
+        // destruye contenido que el usuario haya agregado ahí después).
+        const toRemove = existingContinuationPageIdx.slice(neededContinuationPages);
+        const removablePageNumbers = new Set<number>();
+        toRemove.forEach((idx) => {
+          const page = pages[idx];
+          const onlyChrome = page.elements.every(
+            (el) => el.type === 'header' || el.type === 'footer' || el.type === 'toc',
+          );
+          if (onlyChrome) removablePageNumbers.add(page.page_number);
+        });
+        if (removablePageNumbers.size > 0) {
+          pages = pages
+            .filter((p) => !removablePageNumbers.has(p.page_number))
+            .map((p, i) => ({ ...p, page_number: i + 1 }));
+        }
+      } else {
+        // Faltan páginas de continuación -- insertarlas justo después de la
+        // última página de TOC conocida (original o la última continuación).
+        const lastKnownIdx = existingContinuationPageIdx.length > 0
+          ? Math.max(primaryPageIdx, ...existingContinuationPageIdx)
+          : primaryPageIdx;
+        const toInsert = neededContinuationPages - existingContinuationPageIdx.length;
+        const insertions: ReportPage[] = [];
+        for (let i = 0; i < toInsert; i += 1) {
+          const continuationIndex = existingContinuationPageIdx.length + i + 1;
+          const tempPageNumber = lastKnownIdx + 2 + i; // solo para generar ids únicos, se renumera abajo
+          const newPage: ReportPage = {
+            page_number: tempPageNumber,
+            elements: createHeaderFooterPair(tempPageNumber, m, layoutMode),
+          };
+          newPage.elements.push(createTocContinuationElement(tempPageNumber, continuationIndex, m));
+          insertions.push(newPage);
+        }
+        pages = [
+          ...pages.slice(0, lastKnownIdx + 1),
+          ...insertions,
+          ...pages.slice(lastKnownIdx + 1),
+        ].map((p, i) => ({ ...p, page_number: i + 1 }));
+      }
+
+      return {
+        doc: {
+          ...state.doc,
+          pages,
+          meta: { ...state.doc.meta, version: state.doc.meta.version + 1, updatedAt: new Date().toISOString() },
+        },
       };
     }),
   addCenteredImage: (pageNumber, src) =>
@@ -1154,6 +1636,23 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         element.height = 110;
         element.props.text = 'Hallazgos Técnicos:\n1.\n2.\n3.';
         element.props.fontSize = 14;
+      } else if (template === 'annexes' || template === 'references') {
+        // Mismo estilo que aplicar "Heading 1" a mano (RibbonToolbar.tsx,
+        // onApplyHeadingStyle) -- headingStyle es lo que generateTocData()
+        // (TableOfContents.tsx) usa para detectar secciones, así ANEXOS y
+        // BIBLIOGRAFÍA/REFERENCIAS aparecen solos en el índice, igual que
+        // cualquier otro título del informe.
+        const h1 = HEADING_STYLES.find((hs) => hs.id === 'h1')!;
+        element.props.text = template === 'annexes' ? 'ANEXOS' : 'BIBLIOGRAFÍA / REFERENCIAS';
+        element.props.headingStyle = 'h1';
+        element.props.fontFamily = h1.fontFamily;
+        element.props.fontSize = h1.fontSize;
+        element.props.bold = h1.fontWeight >= 600;
+        element.props.italic = h1.italic;
+        element.props.underline = h1.underline;
+        element.props.fontColor = h1.color;
+        element.props.textAlign = h1.textAlign;
+        element.props.lineHeight = h1.lineHeight;
       }
 
       pages[currentIndex] = {
@@ -1169,6 +1668,323 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         },
         selectedPage: activePage.page_number,
         selectedElementId: element.id,
+      };
+    }),
+  addTechnicalBlock: (kind) =>
+    set((state) => {
+      const m = metricsFromMeta(state.doc.meta);
+      const pages = [...state.doc.pages];
+      const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
+      const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
+      const activePage = pages[currentIndex];
+      const baseIndex = activePage.elements.length;
+      const contentLeft = m.CONTENT_LEFT;
+      const contentWidth = m.CONTENT_RIGHT - m.CONTENT_LEFT;
+      const stamp = Date.now();
+      const newElements: ReportElement[] = [];
+
+      // Posiciona el bloque nuevo DEBAJO del contenido existente (mismo flujo
+      // que addElement, ADR-046: encabezado/pie no cuentan), en vez de apilar
+      // todo en un punto fijo — así insertar varios bloques seguidos no los
+      // superpone. La tira KPI usa este mismo `startY` para sus 4 tarjetas
+      // (van en fila, misma altura).
+      const contentEls = activePage.elements.filter((el) => el.type !== 'header' && el.type !== 'footer');
+      const maxBottom = contentEls.length
+        ? Math.max(...contentEls.map((el) => el.y + el.height))
+        : m.CONTENT_TOP - INSERT_GAP;
+      const startY = Math.max(m.CONTENT_TOP, maxBottom + INSERT_GAP);
+
+      // — Tira de tarjetas KPI: 4 tarjetas estáticas en fila (valor + meta),
+      //   igual que el "Dashboard ejecutivo" del modelo. Cada tarjeta es un
+      //   bloque de texto con fondo tenue, borde de acento y el valor grande
+      //   en negrita (span) sobre la etiqueta y la meta. Estáticas a
+      //   propósito: son de presentación, no consultan la BD (el bloque KPI
+      //   en vivo sigue disponible aparte en "Contenido").
+      if (kind === 'kpi-strip') {
+        const CARDS = [
+          { value: '96.8 %', label: 'Disponibilidad', meta: 'Meta ≥ 95 %' },
+          { value: '92 / 98', label: 'Sensores operativos', meta: '6 con restricción' },
+          { value: '0', label: 'Alarmas rojas', meta: 'al cierre del periodo' },
+          { value: '97.4 %', label: 'Datos completos', meta: 'Meta ≥ 96 %' },
+        ];
+        const gap = 12;
+        const cardW = Math.floor((contentWidth - gap * (CARDS.length - 1)) / CARDS.length);
+        const cardH = 96;
+        CARDS.forEach((card, i) => {
+          const text = `${card.value}\n${card.label}\n${card.meta}`;
+          const valueEnd = card.value.length;
+          const labelEnd = valueEnd + 1 + card.label.length;
+          newElements.push({
+            id: `tech-kpi-${stamp}-${i}`,
+            type: 'text',
+            x: contentLeft + i * (cardW + gap),
+            y: startY,
+            width: cardW,
+            height: cardH,
+            zIndex: baseIndex + i,
+            locked: false,
+            props: {
+              ...defaultPropsByType('text'),
+              text,
+              backgroundColor: '#EEF3F7',
+              fontFamily: 'Arial',
+              fontColor: '#334155',
+              fontSize: 12,
+              textAlign: 'center',
+              lineHeight: 1.3,
+              spans: [
+                // Valor grande, negrita, navy corporativo.
+                { start: 0, end: valueEnd, bold: true, color: '#17365D', fontSize: 24 },
+                // Etiqueta en semibold, gris azulado.
+                { start: valueEnd + 1, end: labelEnd, bold: true, color: '#475569', fontSize: 12 },
+              ],
+            },
+            border: { enabled: true, width: 1, style: 'solid', color: '#4F81BD' },
+          });
+        });
+      } else if (kind === 'caption') {
+        // Pie de figura: estilo "Caption" del documento (itálica, azul
+        // #4F81BD, pequeño, centrado, sin fondo ni borde).
+        newElements.push({
+          id: `tech-caption-${stamp}`,
+          type: 'text',
+          x: contentLeft,
+          y: startY,
+          width: contentWidth,
+          height: 30,
+          zIndex: baseIndex,
+          locked: false,
+          props: {
+            ...defaultPropsByType('text'),
+            text: 'Figura N. Descripción de la figura. Datos demostrativos.',
+            backgroundColor: 'transparent',
+            fontFamily: 'Arial',
+            fontColor: '#4F81BD',
+            fontSize: 12,
+            italic: true,
+            textAlign: 'center',
+            lineHeight: 1.2,
+          },
+          border: { enabled: false, width: 1, style: 'solid', color: '#4F81BD' },
+        });
+      } else {
+        // Cajas de resaltado semánticas (callout-info|success|warning|danger|dictamen).
+        const variantKey = kind.startsWith('callout-') ? kind.slice('callout-'.length) : 'info';
+        const v = TECH_CALLOUT_VARIANTS[variantKey] || TECH_CALLOUT_VARIANTS.info;
+        const text = `${v.title}\n${v.body}`;
+        const titleEnd = v.title.length;
+        newElements.push({
+          id: `tech-callout-${variantKey}-${stamp}`,
+          type: 'text',
+          x: contentLeft,
+          y: startY,
+          width: contentWidth,
+          height: 78,
+          zIndex: baseIndex,
+          locked: false,
+          props: {
+            ...defaultPropsByType('text'),
+            text,
+            backgroundColor: v.bg,
+            fontFamily: 'Arial',
+            fontColor: v.bodyColor,
+            fontSize: 13,
+            textAlign: 'left',
+            lineHeight: 1.35,
+            spans: [
+              // Título en negrita, ligeramente mayor, con el color de acento.
+              { start: 0, end: titleEnd, bold: true, color: v.titleColor, fontSize: 14 },
+            ],
+          },
+          border: { enabled: true, width: 2, style: 'solid', color: v.border },
+        });
+      }
+
+      pages[currentIndex] = {
+        ...activePage,
+        elements: [...activePage.elements, ...newElements],
+      };
+
+      return {
+        doc: {
+          ...state.doc,
+          pages,
+          meta: { ...state.doc.meta, version: state.doc.meta.version + 1, updatedAt: new Date().toISOString() },
+        },
+        selectedPage: activePage.page_number,
+        selectedElementId: newElements[0]?.id,
+      };
+    }),
+  addSectionTemplate: (kind) =>
+    set((state) => {
+      const tpl = SECTION_TEMPLATES[kind];
+      if (!tpl) return {} as Partial<EditorState>;
+      const m = metricsFromMeta(state.doc.meta);
+      const pages = [...state.doc.pages];
+      const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
+      const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
+      const activePage = pages[currentIndex];
+      const baseIndex = activePage.elements.length;
+      const contentLeft = m.CONTENT_LEFT;
+      const contentWidth = m.CONTENT_RIGHT - m.CONTENT_LEFT;
+      const stamp = Date.now();
+
+      // Posición: debajo del contenido existente (encabezado/pie no cuentan).
+      const contentEls = activePage.elements.filter((el) => el.type !== 'header' && el.type !== 'footer');
+      const maxBottom = contentEls.length
+        ? Math.max(...contentEls.map((el) => el.y + el.height))
+        : m.CONTENT_TOP - INSERT_GAP;
+      const startY = Math.max(m.CONTENT_TOP, maxBottom + INSERT_GAP);
+
+      // Encabezado H2 (mismo mecanismo que ANEXOS/REFERENCIAS — headingStyle
+      // hace que aparezca en el índice automático).
+      const h2 = HEADING_STYLES.find((hs) => hs.id === 'h2') || HEADING_STYLES[0];
+      const headingEl: ReportElement = {
+        id: `sec-h-${kind}-${stamp}`,
+        type: 'text',
+        x: contentLeft,
+        y: startY,
+        width: contentWidth,
+        height: 40,
+        zIndex: baseIndex,
+        locked: false,
+        props: {
+          ...defaultPropsByType('text'),
+          text: tpl.heading,
+          headingStyle: 'h2',
+          fontFamily: h2.fontFamily,
+          fontSize: h2.fontSize,
+          bold: h2.fontWeight >= 600,
+          italic: h2.italic,
+          underline: h2.underline,
+          fontColor: h2.color,
+          textAlign: h2.textAlign,
+          lineHeight: h2.lineHeight,
+        },
+      };
+
+      const hasHeader = tpl.hasHeader !== false;
+      const rowH = 34;
+      const tableHeight = tpl.rows.length * rowH + 8;
+      const tableEl: ReportElement = {
+        id: `sec-t-${kind}-${stamp}`,
+        type: 'table',
+        x: contentLeft,
+        y: startY + headingEl.height + 8,
+        width: contentWidth,
+        height: tableHeight,
+        zIndex: baseIndex + 1,
+        locked: false,
+        props: {
+          ...defaultPropsByType('table'),
+          rows: tpl.rows.map((r) => [...r]),
+          hasHeader,
+          // Cabecera navy del documento corporativo.
+          headerBg: '#17365D',
+          headerTextColor: '#FFFFFF',
+          headerBold: true,
+          fontSize: 12,
+          cellPadding: 6,
+          bandedRows: true,
+          bandColor: '#F5F8FA',
+        },
+        border: defaultBorderByType('table'),
+      };
+
+      pages[currentIndex] = {
+        ...activePage,
+        elements: [...activePage.elements, headingEl, tableEl],
+      };
+
+      return {
+        doc: {
+          ...state.doc,
+          pages,
+          meta: { ...state.doc.meta, version: state.doc.meta.version + 1, updatedAt: new Date().toISOString() },
+        },
+        selectedPage: activePage.page_number,
+        selectedElementId: tableEl.id,
+      };
+    }),
+  addStaticChart: (kind) =>
+    set((state) => {
+      const m = metricsFromMeta(state.doc.meta);
+      const pages = [...state.doc.pages];
+      const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
+      const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
+      const activePage = pages[currentIndex];
+      const baseIndex = activePage.elements.length;
+      const contentLeft = m.CONTENT_LEFT;
+      const contentWidth = m.CONTENT_RIGHT - m.CONTENT_LEFT;
+      const stamp = Date.now();
+
+      const contentEls = activePage.elements.filter((el) => el.type !== 'header' && el.type !== 'footer');
+      const maxBottom = contentEls.length
+        ? Math.max(...contentEls.map((el) => el.y + el.height))
+        : m.CONTENT_TOP - INSERT_GAP;
+      const startY = Math.max(m.CONTENT_TOP, maxBottom + INSERT_GAP);
+
+      // Datos demostrativos idénticos a las 3 figuras del modelo.
+      let chartProps: ElementProps;
+      if (kind === 'chart-hbar') {
+        chartProps = {
+          live: false,
+          chartKind: 'hbar',
+          title: 'Operatividad por tecnología',
+          categories: ['Radar', 'Prismas', 'Inclinómetros', 'ShapeArray', 'Piezómetros', 'Meteo', 'GNSS'],
+          series: [99, 96, 88, 97, 91, 94, 98],
+          xLabel: 'Operatividad (%)',
+        };
+      } else if (kind === 'chart-combo') {
+        chartProps = {
+          live: false,
+          chartKind: 'combo',
+          title: 'Correlación: deformación y precipitación',
+          categories: Array.from({ length: 15 }, (_, i) => String(i + 1)),
+          series: [0.05, 0.11, 0.16, 0.22, 0.27, 0.29, 0.35, 0.42, 0.5, 0.55, 0.58, 0.7, 0.8, 0.95, 1.13],
+          series2: [1, 2, 3, 4, 2, 0, 5, 7, 3, 0, 1, 4, 11, 18, 30],
+          seriesLabel: 'Desplazamiento (mm)',
+          series2Label: 'Lluvia (mm)',
+        };
+      } else {
+        chartProps = {
+          live: false,
+          chartKind: 'line',
+          title: 'Disponibilidad mensual del sistema',
+          categories: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun'],
+          series: [94.8, 96.1, 95.5, 97.0, 96.7, 98.2],
+          threshold: 95,
+          thresholdLabel: 'Meta ≥ 95 %',
+          seriesLabel: 'Disponibilidad (%)',
+        };
+      }
+
+      const chartEl: ReportElement = {
+        id: `chart-static-${kind}-${stamp}`,
+        type: 'chart',
+        x: contentLeft,
+        y: startY,
+        width: contentWidth,
+        height: 260,
+        zIndex: baseIndex,
+        locked: false,
+        props: { ...defaultPropsByType('chart'), ...chartProps },
+        border: defaultBorderByType('chart'),
+      };
+
+      pages[currentIndex] = {
+        ...activePage,
+        elements: [...activePage.elements, chartEl],
+      };
+
+      return {
+        doc: {
+          ...state.doc,
+          pages,
+          meta: { ...state.doc.meta, version: state.doc.meta.version + 1, updatedAt: new Date().toISOString() },
+        },
+        selectedPage: activePage.page_number,
+        selectedElementId: chartEl.id,
       };
     }),
   selectElement: (id) => set({ selectedElementId: id }),

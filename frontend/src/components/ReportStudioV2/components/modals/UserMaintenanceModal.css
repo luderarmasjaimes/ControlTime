@@ -1,0 +1,414 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   UserMaintenanceModal — hoja propia y autocontenida.
+   Bug real corregido: este modal se dispara desde App.tsx (el shell externo,
+   justo tras el login) pero sus clases (antes con prefijo rum-/ra-) solo
+   vivían en ReportStudioV2/styles.css, que únicamente se importa al entrar al módulo
+   ReportStudioV2 (App.tsx:64). Fuera de ese contexto el modal renderizaba
+   controles HTML nativos sin estilo alguno. Se importa directo en el propio
+   componente para que funcione sin importar desde dónde se monte, con la
+   paleta de marca vigente (#F07E41, ver index.css --primary) en vez del
+   azul que tenía la versión de styles.css.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.rum-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(2, 6, 16, 0.88);
+  backdrop-filter: blur(6px);
+}
+
+.rum-modal {
+  --rum-accent: #f07e41;
+  --rum-accent-strong: #ff934f;
+  --rum-panel: rgba(10, 18, 33, 0.96);
+  --rum-panel-2: rgba(16, 27, 46, 0.94);
+  --rum-line: rgba(148, 163, 184, 0.16);
+  --rum-text: #eef4f8;
+  --rum-muted: #8fa1b4;
+  width: min(1120px, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 20px;
+  border: 1px solid rgba(240, 126, 65, 0.28);
+  background: linear-gradient(150deg, var(--rum-panel-2), var(--rum-panel));
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  color: var(--rum-text);
+  font-family: var(--font-mining-ui, 'Rajdhani', 'Inter', sans-serif);
+}
+
+.rum-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--rum-line);
+  background:
+    radial-gradient(circle at 95% 0%, rgba(240, 126, 65, 0.14), transparent 55%),
+    rgba(8, 15, 27, 0.9);
+  flex: 0 0 auto;
+}
+
+.rum-title-wrap {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.rum-title-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--rum-accent-strong);
+  border: 1px solid rgba(240, 126, 65, 0.36);
+  background: linear-gradient(145deg, rgba(240, 126, 65, 0.18), rgba(240, 126, 65, 0.04));
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.rum-title-wrap h3 {
+  margin: 0;
+  font-family: var(--font-mining-display, 'Barlow Semi Condensed', sans-serif);
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #fff;
+}
+
+.rum-title-wrap p {
+  margin: 3px 0 0;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--rum-muted);
+  letter-spacing: 0.02em;
+}
+
+.rum-close-btn {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid var(--rum-line);
+  background: rgba(38, 52, 70, 0.6);
+  color: #c6d1dc;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.rum-close-btn:hover {
+  border-color: rgba(240, 113, 113, 0.5);
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.rum-body {
+  display: grid;
+  grid-template-columns: 1.25fr 0.9fr;
+  gap: 16px;
+  padding: 16px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Lista de usuarios ─────────────────────────────────────────────────── */
+.rum-users {
+  border: 1px solid var(--rum-line);
+  border-radius: 14px;
+  overflow: auto;
+  min-height: 280px;
+  background: rgba(6, 13, 24, 0.5);
+  scrollbar-width: thin;
+  scrollbar-color: #536174 transparent;
+}
+
+.rum-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.rum-table th,
+.rum-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.09);
+  text-align: left;
+}
+
+.rum-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #101d2e;
+  font-size: 0.64rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--rum-muted);
+}
+
+.rum-table tbody tr { cursor: pointer; transition: background 0.12s; }
+.rum-table tbody tr:hover td { background: rgba(240, 126, 65, 0.05); }
+.rum-selected td {
+  background: linear-gradient(90deg, rgba(240, 126, 65, 0.16), rgba(240, 126, 65, 0.03)) !important;
+  box-shadow: inset 3px 0 var(--rum-accent);
+}
+
+.rum-radio {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(4, 12, 23, 0.6);
+  display: inline-block;
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.rum-radio:checked {
+  border-color: var(--rum-accent);
+  background: var(--rum-accent);
+  box-shadow: 0 0 0 3px rgba(240, 126, 65, 0.22);
+}
+.rum-radio:checked::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: #0b1220;
+}
+
+.rum-empty {
+  text-align: center;
+  color: #64748b;
+  padding: 28px !important;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ── Formulario de acción ─────────────────────────────────────────────── */
+.rum-form {
+  border: 1px solid var(--rum-line);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 280px;
+  overflow: auto;
+  background: rgba(6, 13, 24, 0.5);
+  scrollbar-width: thin;
+  scrollbar-color: #536174 transparent;
+}
+
+.rum-field { display: flex; flex-direction: column; gap: 5px; }
+.rum-field label {
+  color: #8396a9;
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.rum-field input,
+.rum-field select,
+.rum-field textarea {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  outline: none;
+  color: #e6edf3;
+  background: rgba(4, 12, 23, 0.72);
+  font-size: 0.76rem;
+  font-family: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.rum-field textarea { min-height: 56px; resize: vertical; }
+.rum-field select option { background: #14213a; }
+.rum-field input:focus,
+.rum-field select:focus,
+.rum-field textarea:focus {
+  border-color: rgba(240, 126, 65, 0.55);
+  box-shadow: 0 0 0 3px rgba(240, 126, 65, 0.1);
+}
+.rum-field input::placeholder,
+.rum-field textarea::placeholder { color: #55697d; }
+
+.rum-security {
+  border: 1px dashed rgba(240, 126, 65, 0.3);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(240, 126, 65, 0.04);
+}
+
+.rum-security-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--rum-accent-strong);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.rum-security-methods {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.rum-security-methods label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--rum-muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.rum-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.rum-state::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.rum-active { background: rgba(34, 197, 94, 0.1); color: #86efac; }
+.rum-blocked { background: rgba(245, 158, 11, 0.1); color: #fcd34d; }
+.rum-suspended { background: rgba(56, 189, 248, 0.1); color: #7dd3fc; }
+.rum-deleted { background: rgba(244, 63, 94, 0.1); color: #fda4af; }
+
+.rum-status {
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  border: 1px solid transparent;
+}
+.rum-status-info { background: rgba(56, 189, 248, 0.08); border-color: rgba(56, 189, 248, 0.2); color: #93cdf1; }
+.rum-status-ok { background: rgba(34, 197, 94, 0.1); border-color: rgba(34, 197, 94, 0.25); color: #86efac; }
+.rum-status-error { background: rgba(244, 63, 94, 0.1); border-color: rgba(244, 63, 94, 0.25); color: #fda4af; }
+
+.rum-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.rum-btn {
+  min-height: 38px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.15s, border-color 0.15s, opacity 0.15s;
+  font-family: inherit;
+}
+.rum-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.rum-btn:disabled { opacity: 0.42; cursor: not-allowed; transform: none; }
+
+.rum-btn-ghost {
+  background: rgba(38, 52, 70, 0.65);
+  border-color: var(--rum-line);
+  color: #c6d1dc;
+}
+.rum-btn-ghost:hover:not(:disabled) { border-color: rgba(148, 163, 184, 0.35); }
+
+.rum-btn-primary {
+  background: linear-gradient(135deg, #d9632d, var(--rum-accent));
+  border-color: rgba(255, 165, 105, 0.5);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(240, 126, 65, 0.2);
+}
+.rum-btn-primary:hover:not(:disabled) { background: linear-gradient(135deg, #eb7139, #ff9253); }
+
+/* ── Auditoría reciente ───────────────────────────────────────────────── */
+.rum-audit {
+  flex: 0 0 auto;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--rum-line);
+  background: rgba(8, 15, 27, 0.6);
+}
+.rum-audit h4 {
+  margin: 0 0 8px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--rum-muted);
+}
+.rum-audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 130px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #536174 transparent;
+}
+.rum-audit-list > p {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.7rem;
+}
+.rum-audit-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--rum-line);
+  font-size: 0.68rem;
+}
+.rum-audit-item strong { color: #e2e8f0; font-size: 0.68rem; }
+.rum-audit-item div div { color: var(--rum-muted); margin-top: 1px; }
+.rum-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.rum-dot.ok { background: #4ade80; box-shadow: 0 0 6px rgba(74, 222, 128, 0.6); }
+.rum-dot.fail { background: #f87171; box-shadow: 0 0 6px rgba(248, 113, 113, 0.6); }
+
+@media (max-width: 900px) {
+  .rum-body { grid-template-columns: 1fr; overflow: auto; }
+  .rum-users { max-height: 260px; }
+}

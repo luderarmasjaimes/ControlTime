@@ -1,7 +1,8 @@
 import React, { memo, useEffect, useState, useCallback } from 'react';
 import { Building2, ChevronDown, Check } from 'lucide-react';
-import { getSession, updateSessionTokens } from '../../auth/authStorage';
+import { getSession, updateSessionTokens, authHeaders as sharedAuthHeaders } from '../../auth/authStorage';
 import { log } from '../../lib/logger';
+import { useI18n } from '../../i18n/I18nProvider';
 
 interface TenantEntry {
     tenant_id: string;
@@ -12,8 +13,10 @@ interface TenantEntry {
 }
 
 function authHeaders(): Record<string, string> {
-    const token = getSession()?.token || '';
-    return token ? { Authorization: `Bearer ${token}` } : {};
+  // ADR-082: la credencial es la cookie HttpOnly `access_token`, que el
+  // navegador adjunta sola. Aqui solo viaja el token CSRF del double-submit,
+  // que el backend exige en toda peticion que mute estado.
+  return sharedAuthHeaders();
 }
 
 /**
@@ -24,6 +27,7 @@ function authHeaders(): Record<string, string> {
  * sin dropdown — no hay nada que "cambiar".
  */
 const TenantSwitcher = () => {
+    const { t } = useI18n();
     const [tenants, setTenants] = useState<TenantEntry[]>([]);
     const [open, setOpen] = useState(false);
     const [switching, setSwitching] = useState(false);
@@ -93,7 +97,8 @@ const TenantSwitcher = () => {
                 onClick={() => setOpen((v) => !v)}
                 disabled={switching}
                 className="hidden xl:flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/45 bg-emerald-950/30 text-[10px] text-emerald-100 hover:bg-emerald-900/40 disabled:opacity-60"
-                title="Cambiar de unidad minera"
+                title={t('tenant.change')}
+                aria-label={t('tenant.change')}
             >
                 <Building2 size={12} className="text-emerald-300" />
                 <span className="max-w-[10rem] truncate">{active.tenant_name}</span>
@@ -102,7 +107,7 @@ const TenantSwitcher = () => {
             {open && (
                 <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] rounded-lg border border-slate-700 bg-slate-950/95 py-1 shadow-2xl backdrop-blur-md">
                     <div className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
-                        Unidades mineras
+                        {t('tenant.units')}
                     </div>
                     {tenants.map((t) => (
                         <button

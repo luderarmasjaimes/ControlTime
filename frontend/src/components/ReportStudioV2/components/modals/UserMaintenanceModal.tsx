@@ -8,6 +8,7 @@ import {
   listMaintenanceAuditUnified,
 } from '../../lib/userMaintenanceStorage';
 import { ensureCompanyUsers } from '../../lib/userBootstrap';
+import './UserMaintenanceModal.css';
 
 const ACTIONS = [
   { value: 'delete', label: 'Eliminar', icon: UserX },
@@ -137,17 +138,19 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
   };
 
   return (
-    <div className="ra-overlay" onClick={onClose}>
+    <div className="rum-overlay" onClick={onClose}>
       <div className="rum-modal" onClick={(event) => event.stopPropagation()}>
         <div className="rum-header">
           <div className="rum-title-wrap">
-            <Users size={18} />
+            <div className="rum-title-icon">
+              <Users size={18} />
+            </div>
             <div>
               <h3>Mantenimiento de Usuarios</h3>
-              <p>{company || 'Empresa'} - {users.length} usuario(s) - Fuente: {dataSource}</p>
+              <p>{company || 'Empresa'} · {users.length} usuario(s) · Fuente: {dataSource}</p>
             </div>
           </div>
-          <button className="ra-close-btn" onClick={onClose} title="Cerrar">
+          <button className="rum-close-btn" onClick={onClose} title="Cerrar">
             <X size={16} />
           </button>
         </div>
@@ -184,7 +187,7 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
                         type="radio"
                         readOnly
                         checked={selectedUsername === user.username}
-                        style={{ accentColor: '#2563eb' }}
+                        className="rum-radio"
                       />
                     </td>
                     <td>{user.fullName}</td>
@@ -198,7 +201,7 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
           </div>
 
           <div className="rum-form">
-            <div className="ra-field">
+            <div className="rum-field">
               <label>Accion de mantenimiento</label>
               <select value={action} onChange={(event) => setAction(event.target.value)}>
                 {ACTIONS.map((item) => (
@@ -208,7 +211,7 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
             </div>
 
             {requiresReason && (
-              <div className="ra-field">
+              <div className="rum-field">
                 <label>Motivo</label>
                 <textarea
                   rows={2}
@@ -220,7 +223,7 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
             )}
 
             {action === 'suspend' && (
-              <div className="ra-field">
+              <div className="rum-field">
                 <label>Fecha fin suspension</label>
                 <input
                   type="date"
@@ -232,7 +235,7 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
 
             {action === 'change_profile' && (
               <>
-                <div className="ra-field">
+                <div className="rum-field">
                   <label>Nuevo perfil</label>
                   <select value={newRole} onChange={(event) => setNewRole(event.target.value)}>
                     {ROLE_OPTIONS.map((option) => (
@@ -240,7 +243,7 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
                     ))}
                   </select>
                 </div>
-                <div className="ra-field">
+                <div className="rum-field">
                   <label>Observacion</label>
                   <textarea
                     rows={2}
@@ -277,7 +280,7 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
               </div>
 
               {securityMethod === 'password' ? (
-                <div className="ra-field">
+                <div className="rum-field">
                   <label>Password de confirmacion</label>
                   <input
                     type="password"
@@ -287,7 +290,7 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
                   />
                 </div>
               ) : (
-                <div className="ra-field">
+                <div className="rum-field">
                   <label>Confirmacion facial (simulada)</label>
                   <input
                     type="text"
@@ -302,8 +305,8 @@ function UserMaintenanceModal({ onClose }: UserMaintenanceModalProps) {
             <div className={`rum-status rum-status-${status.type}`}>{status.text}</div>
 
             <div className="rum-actions">
-              <button className="ra-btn-ghost" onClick={onClose}>Cerrar</button>
-              <button className="ra-btn-primary" onClick={applyChanges} disabled={saving || !selectedUsername}>
+              <button className="rum-btn rum-btn-ghost" onClick={onClose}>Cerrar</button>
+              <button className="rum-btn rum-btn-primary" onClick={applyChanges} disabled={saving || !selectedUsername}>
                 {saving ? 'Aplicando...' : 'Aplicar Cambios'}
               </button>
             </div>

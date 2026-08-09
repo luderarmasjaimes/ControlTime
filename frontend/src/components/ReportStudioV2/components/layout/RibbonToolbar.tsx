@@ -9,9 +9,13 @@ import {
   Copy, Scissors, Clipboard, BookOpen, CheckSquare, Shield, Clock,
   PanelLeftClose, PanelRightClose, Maximize2, LayoutTemplate, FilePlus2,
   Hash, Minus, Camera, Mic, ArrowLeftRight, Gauge, Pin, PinOff, Highlighter,
+  Info, LayoutGrid, Captions, Rows3, LineChart, Waves, FileStack, Link2,
 } from 'lucide-react';
 import ColorPalette from '../shared/ColorPalette';
 import { HEADING_STYLES, type HeadingStyleDef } from '../../lib/headingStyles';
+import { useEditorStore } from '../../store/useEditorStore';
+import { generateTocData } from '../document/TableOfContents';
+import { tryInsertRefAtActiveTextSelection } from '../../lib/activeTextFormatBridge';
 
 /* ─────────────────────────────────────────────────────────────────────────────
    RIBBON TOOLBAR — Etapa 1 Funcionalidad Core
@@ -41,6 +45,37 @@ const COVER_TEMPLATES = [
   { id: 'normative', label: 'Normativo', desc: 'Cumplimiento legal' },
 ];
 
+// Cajas de resaltado semánticas del modelo corporativo minero — los tintes
+// (bg/border) coinciden con TECH_CALLOUT_VARIANTS del store (useEditorStore).
+const CALLOUT_OPTIONS = [
+  { id: 'callout-info',     label: 'Nota',                desc: 'Información / referencia', bg: '#EEF3F7', border: '#4F81BD' },
+  { id: 'callout-success',  label: 'Conforme',            desc: 'Criterio cumplido',       bg: '#E2F0D9', border: '#70AD47' },
+  { id: 'callout-warning',  label: 'Observación',         desc: 'Atención / seguimiento',  bg: '#FFF2CC', border: '#C69214' },
+  { id: 'callout-danger',   label: 'Crítico',             desc: 'No conformidad / riesgo', bg: '#F4CCCC', border: '#C0504D' },
+  { id: 'callout-dictamen', label: 'Dictamen ejecutivo',  desc: 'Conclusión destacada',    bg: '#17365D', border: '#0F2742' },
+];
+
+// Plantillas de sección (tablas especializadas) — ids = SECTION_TEMPLATES del store.
+const SECTION_OPTIONS = [
+  { id: 'estado-sistema', label: 'Estado por sistema',        desc: 'Tabla semáforo de disponibilidad' },
+  { id: 'matriz-riesgo',  label: 'Matriz peligro–sensor',     desc: 'Peligro · mecanismo · sensor' },
+  { id: 'inventario',     label: 'Inventario de sensores',    desc: 'Inventario maestro' },
+  { id: 'kpi-dict',       label: 'Diccionario de KPI',        desc: 'Definiciones y metas' },
+  { id: 'tarp',           label: 'Matriz de alarmas / TARP',  desc: 'Niveles y respuesta' },
+  { id: 'hallazgos',      label: 'Registro de hallazgos',     desc: 'No conformidades' },
+  { id: 'plan-accion',    label: 'Plan de acción',            desc: 'Seguimiento de acciones' },
+  { id: 'ficha-sensor',   label: 'Ficha de sensor',           desc: 'Formulario individual' },
+  { id: 'checklist',      label: 'Checklist de campo',        desc: 'Verificación en terreno' },
+  { id: 'firmas',         label: 'Registro de firmas',        desc: 'Elaboró · revisó · aprobó' },
+];
+
+// Gráficos estáticos con datos — ids = addStaticChart del store.
+const CHART_OPTIONS = [
+  { id: 'chart-line',  label: 'Línea con meta',         desc: 'Tendencia + línea de meta' },
+  { id: 'chart-hbar',  label: 'Barras horizontales',    desc: 'Comparación con etiquetas' },
+  { id: 'chart-combo', label: 'Combo doble eje',        desc: 'Línea + barras (2 ejes)' },
+];
+
 interface RibbonBtnProps {
   icon?: React.ElementType;
   label?: string;
@@ -50,10 +85,14 @@ interface RibbonBtnProps {
   title?: string;
   className?: string;
   variant?: string;
+  /** Enganche para atajos de teclado globales (ver accessibility.ts), que
+   * ubican el botón real vía document.querySelector('[data-action=...]')
+   * en vez de duplicar la lógica del handler. */
+  dataAction?: string;
 }
 
 /** Botón compacto para ribbon */
-function RibbonBtn({ icon: Icon, label, onClick, active, disabled, title, className = '', variant }: RibbonBtnProps) {
+function RibbonBtn({ icon: Icon, label, onClick, active, disabled, title, className = '', variant, dataAction }: RibbonBtnProps) {
   return (
     <button
       type="button"
@@ -61,6 +100,7 @@ function RibbonBtn({ icon: Icon, label, onClick, active, disabled, title, classN
       onClick={onClick}
       disabled={disabled}
       title={title || label}
+      data-action={dataAction}
     >
       {Icon && <Icon size={14} />}
       {label && <span className="ribbon-btn-label">{label}</span>}
@@ -92,7 +132,6 @@ interface RibbonToolbarProps {
   snapEnabled?: boolean;
   onToggleGrid?: () => void;
   onToggleSnap?: () => void;
-  isRecording?: boolean;
   isOptimizing?: boolean;
   zoomPercent?: number;
   onOpenReportsAdmin?: () => void;
@@ -115,11 +154,17 @@ interface RibbonToolbarProps {
   onAddPage?: () => void;
   onDuplicatePage?: () => void;
   onAddTemplate?: (template: string) => void;
+  onOpenDocumentTemplates?: () => void;
+  onAddTechnicalBlock?: (kind: string) => void;
+  onAddSectionTemplate?: (kind: string) => void;
+  onAddStaticChart?: (kind: string) => void;
   onApplyHeadingStyle?: (style: HeadingStyleDef) => void;
   onToggleBold?: () => void;
   onToggleItalic?: () => void;
   onToggleUnderline?: () => void;
   onSetAlignment?: (align: string) => void;
+  onSetListStyle?: (listType: 'none' | 'bullet' | 'number') => void;
+  currentListStyle?: string;
   onSetFontFamily?: (family: string) => void;
   onSetFontSize?: (size: number) => void;
   onSetFontColor?: (color: string) => void;
@@ -136,6 +181,11 @@ interface RibbonToolbarProps {
   rightPanelVisible?: boolean;
   onExportDocx?: () => void;
   onExportPptx?: () => void;
+  /** Convierte el último PPTX exportado en esta sesión a un MP4 sin
+   * narración (Stage 3) — deshabilitado hasta que haya un job PPTX exitoso
+   * (`canExportPptxVideo`), ver App.tsx::handleConvertPptxToVideo. */
+  onExportPptxVideo?: () => void;
+  canExportPptxVideo?: boolean;
   onExportMiningReport?: () => void;
   onImportMiningReport?: () => void;
   currentFontFamily?: string;
@@ -159,18 +209,20 @@ interface RibbonToolbarProps {
 export default function RibbonToolbar({
   onExportPdf, onExportVideo, onPrint, onReviewDocument, onOptimizeDocument,
   onZoomIn, onZoomOut, onZoomSet, gridEnabled, snapEnabled, onToggleGrid, onToggleSnap,
-  isRecording, isOptimizing, zoomPercent, onOpenReportsAdmin, onSaveReport,
+  isOptimizing, zoomPercent, onOpenReportsAdmin, onSaveReport,
   isSaving, saveLabel, onOpenFormulaAnalysis, onSyncMiningKpis, isSyncingKpis,
   kpiAutoSyncEnabled, onToggleKpiAutoSync, layoutMode, onLayoutModeChange,
   paperSize, onPaperSizeChange, orientation, onOrientationChange,
-  onInsertElement, onAddPage, onDuplicatePage, onAddTemplate,
+  onInsertElement, onAddPage, onDuplicatePage, onAddTemplate, onOpenDocumentTemplates, onAddTechnicalBlock,
+  onAddSectionTemplate, onAddStaticChart,
   onApplyHeadingStyle, onToggleBold, onToggleItalic, onToggleUnderline,
   onSetAlignment, onSetFontFamily, onSetFontSize, onSetFontColor,
   onSetHighlightColor, onApplyCase,
+  onSetListStyle, currentListStyle,
   onSetLineHeight, currentLineHeight,
   onInsertTOC, onInsertCoverPage, onStartWorkflow,
   onToggleLeftPanel, onToggleRightPanel, leftPanelVisible, rightPanelVisible,
-  onExportDocx, onExportPptx, onExportMiningReport, onImportMiningReport,
+  onExportDocx, onExportPptx, onExportPptxVideo, canExportPptxVideo, onExportMiningReport, onImportMiningReport,
   currentFontFamily, currentFontSize, currentFontColor, currentHighlightColor, currentHeadingStyle,
   currentAlignment,
   onCreateSnapshot, onShowVersionHistory,
@@ -182,6 +234,10 @@ export default function RibbonToolbar({
   const [showZoomDropdown, setShowZoomDropdown] = useState(false);
   const [showLineSpacing, setShowLineSpacing] = useState(false);
   const [showCoverDropdown, setShowCoverDropdown] = useState(false);
+  const [showCalloutDropdown, setShowCalloutDropdown] = useState(false);
+  const [showSectionDropdown, setShowSectionDropdown] = useState(false);
+  const [showRefDropdown, setShowRefDropdown] = useState(false);
+  const [showChartDropdown, setShowChartDropdown] = useState(false);
   // Anclada por defecto (igual que Word/Office) — al desanclar, la barra se
   // oculta automáticamente al sacar el mouse y reaparece al pasar por encima
   // o al cambiar de pestaña, para ganar altura de lienzo.
@@ -318,8 +374,12 @@ export default function RibbonToolbar({
                     active={currentAlignment === 'justify'} />
                 </div>
                 <div className="ribbon-format-row">
-                  <RibbonBtn icon={List} title="Crear lista con viñetas" />
-                  <RibbonBtn icon={ListOrdered} title="Crear lista numerada" />
+                  <RibbonBtn icon={List} title="Crear lista con viñetas"
+                    onClick={() => onSetListStyle?.(currentListStyle === 'bullet' ? 'none' : 'bullet')}
+                    active={currentListStyle === 'bullet'} />
+                  <RibbonBtn icon={ListOrdered} title="Crear lista numerada"
+                    onClick={() => onSetListStyle?.(currentListStyle === 'number' ? 'none' : 'number')}
+                    active={currentListStyle === 'number'} />
                   <div className="ribbon-line-spacing-wrap">
                     <RibbonBtn
                       icon={Minus}
@@ -412,11 +472,49 @@ export default function RibbonToolbar({
                 <RibbonBtn icon={Target} label="KPI" onClick={() => onInsertElement?.('kpi')} title="Insertar un indicador KPI" />
                 <RibbonBtn icon={MapIcon} label="Mapa" onClick={() => onInsertElement?.('map')} title="Insertar un mapa detallado de la mina" />
                 <RibbonBtn icon={Activity} label="Sensor" onClick={() => onInsertElement?.('sensor')} title="Insertar la lectura de un sensor en tiempo real" />
+                <RibbonBtn icon={Waves} label="Sismos" onClick={() => onInsertElement?.('seismic-report')} title="Insertar el reporte sísmico: sismos oficiales IGP/CENSIS y/o microsismicidad de la red propia, con rango de fechas seleccionable" />
               </RibbonGroup>
 
               <RibbonGroup title="Documento">
                 <RibbonBtn icon={BookOpen} label="Índice" onClick={onInsertTOC} title="Insertar tabla de contenidos automática" />
                 <RibbonBtn icon={Hash} label="Numeración" title="Activar numeración automática de páginas" />
+                <div className="ribbon-cover-wrap">
+                  <RibbonBtn
+                    icon={Link2}
+                    label="Referencia"
+                    onClick={() => setShowRefDropdown((v) => !v)}
+                    title="Insertar una referencia cruzada a un encabezado (ADR-019) — el número se resuelve solo y se actualiza si el documento se reordena"
+                  />
+                  {showRefDropdown && (
+                    <div className="ribbon-cover-dropdown" onMouseLeave={() => setShowRefDropdown(false)}>
+                      {(() => {
+                        const tocItems = generateTocData(useEditorStore.getState().doc);
+                        if (tocItems.length === 0) {
+                          return (
+                            <div className="ribbon-cover-option" style={{ cursor: 'default', opacity: 0.7 }}>
+                              <span className="ribbon-cover-desc">
+                                Sin encabezados en el documento — aplique Título/Heading a un bloque de texto primero.
+                              </span>
+                            </div>
+                          );
+                        }
+                        return tocItems.map((item) => (
+                          <button
+                            key={item.id}
+                            className="ribbon-cover-option"
+                            onClick={() => {
+                              tryInsertRefAtActiveTextSelection(item.id);
+                              setShowRefDropdown(false);
+                            }}
+                          >
+                            <span className="ribbon-cover-label">{item.number}</span>
+                            <span className="ribbon-cover-desc">{item.text}</span>
+                          </button>
+                        ));
+                      })()}
+                    </div>
+                  )}
+                </div>
                 <div className="ribbon-cover-wrap">
                   <RibbonBtn icon={LayoutTemplate} label="Carátula" onClick={() => setShowCoverDropdown((v) => !v)} title="Insertar una carátula de informe" />
                   {showCoverDropdown && (
@@ -438,6 +536,79 @@ export default function RibbonToolbar({
 
               <RibbonGroup title="Plantillas">
                 <RibbonBtn icon={FileText} label="Hallazgos" onClick={() => onAddTemplate?.('findings')} title="Insertar plantilla de hallazgos técnicos" />
+                <RibbonBtn icon={FileStack} label="Doc. Completo" onClick={() => onOpenDocumentTemplates?.()} variant="ai"
+                  title="Elegir una plantilla de documento completo (Informe Técnico, Propuesta, Mantenimiento, etc.) — reemplaza todo el informe, personalizado con tu empresa/unidad minera" />
+              </RibbonGroup>
+
+              {/* ── Bloques Técnicos (presentación avanzada del modelo minero) ── */}
+              <RibbonGroup title="Bloques Técnicos">
+                <div className="ribbon-cover-wrap">
+                  <RibbonBtn icon={Info} label="Caja resaltado" onClick={() => setShowCalloutDropdown((v) => !v)}
+                    title="Insertar una caja de resaltado semántica (Nota, Conforme, Observación, Crítico, Dictamen)" variant="ai" />
+                  {showCalloutDropdown && (
+                    <div className="ribbon-cover-dropdown" onMouseLeave={() => setShowCalloutDropdown(false)}>
+                      {CALLOUT_OPTIONS.map((co) => (
+                        <button
+                          key={co.id}
+                          className="ribbon-cover-option"
+                          onClick={() => { onAddTechnicalBlock?.(co.id); setShowCalloutDropdown(false); }}
+                        >
+                          <span className="ribbon-callout-swatch" style={{ background: co.bg, borderColor: co.border }} aria-hidden />
+                          <span className="ribbon-cover-label">{co.label}</span>
+                          <span className="ribbon-cover-desc">{co.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <RibbonBtn icon={LayoutGrid} label="Tarjetas KPI" onClick={() => onAddTechnicalBlock?.('kpi-strip')}
+                  title="Insertar una tira de 4 tarjetas KPI (valor + meta), como el dashboard ejecutivo del modelo" />
+                <RibbonBtn icon={Captions} label="Pie de figura" onClick={() => onAddTechnicalBlock?.('caption')}
+                  title="Insertar un pie de figura con estilo (itálica azul, centrado): «Figura N. …»" />
+              </RibbonGroup>
+
+              {/* ── Plantillas de sección especializadas del modelo minero ── */}
+              <RibbonGroup title="Secciones">
+                <div className="ribbon-cover-wrap">
+                  <RibbonBtn icon={Rows3} label="Sección técnica" onClick={() => setShowSectionDropdown((v) => !v)}
+                    title="Insertar una sección con tabla especializada pre-armada (estado por sistema, inventario, TARP, hallazgos, plan de acción, ficha de sensor, checklist, firmas…)" variant="reports" />
+                  {showSectionDropdown && (
+                    <div className="ribbon-cover-dropdown ribbon-cover-dropdown--tall" onMouseLeave={() => setShowSectionDropdown(false)}>
+                      {SECTION_OPTIONS.map((so) => (
+                        <button
+                          key={so.id}
+                          className="ribbon-cover-option"
+                          onClick={() => { onAddSectionTemplate?.(so.id); setShowSectionDropdown(false); }}
+                        >
+                          <span className="ribbon-cover-label">{so.label}</span>
+                          <span className="ribbon-cover-desc">{so.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </RibbonGroup>
+
+              {/* ── Gráficos estáticos con datos (las 3 figuras del modelo) ── */}
+              <RibbonGroup title="Gráficos con datos">
+                <div className="ribbon-cover-wrap">
+                  <RibbonBtn icon={LineChart} label="Gráfico de datos" onClick={() => setShowChartDropdown((v) => !v)}
+                    title="Insertar un gráfico con datos ingresados: línea con meta, barras horizontales o combo de doble eje" variant="primary" />
+                  {showChartDropdown && (
+                    <div className="ribbon-cover-dropdown" onMouseLeave={() => setShowChartDropdown(false)}>
+                      {CHART_OPTIONS.map((ch) => (
+                        <button
+                          key={ch.id}
+                          className="ribbon-cover-option"
+                          onClick={() => { onAddStaticChart?.(ch.id); setShowChartDropdown(false); }}
+                        >
+                          <span className="ribbon-cover-label">{ch.label}</span>
+                          <span className="ribbon-cover-desc">{ch.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </RibbonGroup>
             </>
           )}
@@ -616,13 +787,19 @@ export default function RibbonToolbar({
               </RibbonGroup>
 
               <RibbonGroup title="Impresión">
-                <RibbonBtn icon={Printer} label="Imprimir" onClick={onPrint} title="Imprimir el informe o abrir vista previa de impresión" />
+                <RibbonBtn icon={Printer} label="Imprimir" onClick={onPrint} dataAction="print" title="Imprimir el informe o abrir vista previa de impresión" />
               </RibbonGroup>
 
               <RibbonGroup title="Video">
-                <RibbonBtn icon={Video} label={isRecording ? '● REC' : 'Grabar'}
-                  onClick={onExportVideo} active={isRecording}
-                  title={isRecording ? 'Detener la grabación del informe' : 'Grabar un vídeo del informe (máximo 30 segundos)'} />
+                <RibbonBtn icon={Video} label="Grabar"
+                  onClick={onExportVideo}
+                  title="Grabar un vídeo de pantalla/ventana e insertarlo en la página activa" />
+                <RibbonBtn icon={Video} label="Convertir a MP4"
+                  onClick={onExportPptxVideo}
+                  disabled={!canExportPptxVideo}
+                  title={canExportPptxVideo
+                    ? 'Convertir el último PPTX exportado en esta sesión a un vídeo (sin narración)'
+                    : 'Exporta primero el informe a PPTX para poder convertirlo a vídeo'} />
               </RibbonGroup>
             </>
           )}

@@ -8,7 +8,23 @@ export interface Session {
     tenantId: string
     role: string
     loginType: string
-    /** Access token JWT de vida corta (ADR-029 revisado). Se renueva vía POST /api/auth/refresh sin repetir login. */
+    /**
+     * ADR-082 (auditoría de seguridad 2026-08-02): SIEMPRE cadena vacía.
+     *
+     * El access token ya no se guarda aquí ni en ningún sitio accesible por JS
+     * — vive en la cookie HttpOnly `access_token` que emite el backend. Se
+     * conserva el campo, vacío, porque hay ~15 puntos del código que hacen
+     * `session?.token ? { Authorization: ... } : {}`: con la cadena vacía esos
+     * puntos simplemente no añaden el header y la petición se autentica por
+     * cookie, sin necesidad de tocarlos uno a uno.
+     *
+     * Antes se persistía el JWT en localStorage, así que cualquier XSS en la
+     * SPA podía leerlo y mandárselo a un servidor externo, convirtiendo un
+     * fallo puntual de sanitización en una toma de cuenta que sobrevivía al
+     * cierre de la pestaña.
+     *
+     * @deprecated No leer. Se eliminará cuando no queden consumidores.
+     */
     token: string
     /** ISO 8601 — vencimiento estimado del access token (claim `exp` del JWT). */
     accessTokenExpiresAt?: string
@@ -36,7 +52,7 @@ interface SessionUser {
 
 /**
  * ADR-029, "Actualización 2026-07-19": lee una cookie por nombre desde
- * `document.cookie`. Solo sirve para cookies NO HttpOnly (p.ej. `csrf_token`)
+ * `document.cookie`. Solo sirve para cookies NO HttpOnly (p.ej. `csrf_token_v2`)
  * -- una cookie HttpOnly como `refresh_token` es invisible para JS a
  * propósito y nunca aparecerá acá, lo cual es el objetivo del fix.
  */
@@ -70,9 +86,31 @@ function computeExpiresAt(expiresInSeconds?: number): string | undefined {
     return new Date(Date.now() + expiresInSeconds * 1000).toISOString()
 }
 
+/**
+ * Cabeceras de autenticación para cualquier petición a la API.
+ *
+ * ADR-082: la credencial va en la cookie HttpOnly `access_token`, que el
+ * navegador adjunta sola en peticiones al mismo origen. Lo que este helper
+ * añade es el token CSRF del patrón double-submit: la cookie `csrf_token_v2`
+ * SÍ es legible por JS a propósito, y repetir su valor en `X-CSRF-Token`
+ * demuestra que la petición viene de código del propio origen. Un sitio de
+ * terceros puede conseguir que el navegador mande la cookie, pero no puede
+ * leerla para reproducir el header.
+ *
+ * Se envía también en GET (donde el backend no lo exige) para no obligar a
+ * cada punto de llamada a saber si su método muta estado o no.
+ */
+export function authHeaders(): Record<string, string> {
+    const csrf = readCookie('csrf_token_v2')
+    return csrf ? { 'X-CSRF-Token': csrf } : {}
+}
+
 export function createSession(user: SessionUser, loginType = 'user'): Session {
     const role = typeof user.role === 'string' ? user.role.toLowerCase() : 'operator'
-    const accessToken = typeof user.access_token === 'string' ? user.access_token : (typeof user.token === 'string' ? user.token : '')
+    // ADR-082: el access_token que devuelve el backend NO se persiste — ya
+    // llegó como cookie HttpOnly en la misma respuesta. Se ignora aquí a
+    // propósito para que no acabe en localStorage por accidente.
+    const accessToken = ''
     const session: Session = {
         userId: user.id,
         username: user.username,
@@ -102,12 +140,16 @@ export function createSession(user: SessionUser, loginType = 'user'): Session {
  * `refreshToken` -- ese token vive únicamente en la cookie HttpOnly que pone
  * el backend (invisible para este código, a propósito).
  */
-export function updateSessionTokens(accessToken: string, expiresInSeconds?: number): Session | null {
+export function updateSessionTokens(_accessToken: string, expiresInSeconds?: number): Session | null {
     const session = getSession()
     if (!session) {
         return null
     }
-    session.token = accessToken
+    // ADR-082: solo se refresca el vencimiento (lo usa
+    // `isAccessTokenExpiringSoon` para renovar de forma preventiva). El token
+    // en sí lo renovó el backend en la cookie HttpOnly de esta misma respuesta;
+    // guardarlo aquí reintroduciría justo el problema que el ADR elimina.
+    session.token = ''
     session.accessTokenExpiresAt = computeExpiresAt(expiresInSeconds)
     localStorage.setItem(SESSION_KEY, JSON.stringify(session))
     return session

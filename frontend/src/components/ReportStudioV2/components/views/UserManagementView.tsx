@@ -2,17 +2,24 @@ import React, { memo, useEffect, useMemo, useState, useRef, useCallback } from '
 import {
   ShieldCheck, Users, X, Lock, Unlock, UserCog, Clock,
   Search, Edit2, RotateCcw, Save, Trash2, AlertTriangle,
-  CheckCircle2, ScanFace, UserPlus, Building2, Plus, ShieldOff
+  CheckCircle2, ScanFace, UserPlus, Building2, Plus, ShieldOff, ScanLine
 } from 'lucide-react';
 import { ADMIN_ASSIGNABLE_ROLES, getRoleLabel, getRoleColor } from '../../../../auth/roleConstants';
-import { getSession } from '../../../../auth/authStorage';
+import { getSession, authHeaders as sharedAuthHeaders } from '../../../../auth/authStorage';
 import { applyUserMaintenanceUnified, listCompanyUsersUnified, listMaintenanceAuditUnified } from '../../lib/userMaintenanceStorage';
 import { log } from '../../../../lib/logger';
+import { useI18n } from '../../../../i18n/I18nProvider';
+import { requestConfirmation } from '../../../UI/ConfirmActionDialog';
+import { DocumentScanCapture } from '../../../UI/DocumentScanCapture';
+import type { DniScanResult } from '../../../../auth/authApi';
+import './accessAdministration.css';
 // Modal movido internamente para evitar errores de resolucion dinamica en tiempo de ejecucion
 
 function authHeaders(): Record<string, string> {
-  const token = getSession()?.token || '';
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  // ADR-082: la credencial es la cookie HttpOnly `access_token`, que el
+  // navegador adjunta sola. Aqui solo viaja el token CSRF del double-submit,
+  // que el backend exige en toda peticion que mute estado.
+  return sharedAuthHeaders();
 }
 
 interface TenantAssignment {
@@ -52,6 +59,7 @@ interface IntegratedBiometricModalProps {
 }
 
 function UserManagementView() {
+  const { t } = useI18n();
   const session = getSession();
   const company = session?.company || '';
 
@@ -88,6 +96,7 @@ function UserManagementView() {
     newRole: 'operator',
     firstName: '',
     lastName: '',
+    dni: '',
     email: '',
     phone: '',
     mobile: '',
@@ -95,6 +104,7 @@ function UserManagementView() {
     securityPassword: '',
     securityMethod: 'password', // 'password' or 'facial'
   });
+  const [showDniScan, setShowDniScan] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
@@ -187,7 +197,7 @@ function UserManagementView() {
   };
 
   const revokeTenant = async (username: string, tenantName: string) => {
-    if (!window.confirm(`¿Revocar el acceso de ${username} a ${tenantName}?`)) return;
+    if (!(await requestConfirmation(t('confirm.revokeTenant', { user: username, tenant: tenantName })))) return;
     try {
       const res = await fetch(`/api/auth/users/${encodeURIComponent(username)}/tenants/remove`, {
         method: 'POST', headers: authHeaders(),
@@ -227,6 +237,7 @@ function UserManagementView() {
         ...prev,
         firstName: selectedUser.firstName || '',
         lastName: selectedUser.lastName || '',
+        dni: selectedUser.dni || '',
         email: selectedUser.email || '',
         phone: selectedUser.phone || '',
         mobile: selectedUser.mobile || '',
@@ -257,6 +268,7 @@ function UserManagementView() {
           newRole: formData.newRole,
           firstName: formData.firstName,
           lastName: formData.lastName,
+          dni: formData.dni,
           email: formData.email,
           phone: formData.phone,
           mobile: formData.mobile,
@@ -532,25 +544,28 @@ function UserManagementView() {
   };
 
   return (
-    <div className="flex h-screen w-full flex-col bg-slate-950/20 p-2 lg:p-3 overflow-hidden">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
+    <main className="access-admin access-users" aria-labelledby="users-title">
+      <header className="access-admin__header access-users__header">
+        <div className="access-admin__identity">
+          <span className="access-admin__eyebrow">Administración de identidad</span>
+          <div className="access-admin__title-row">
+          <div className="access-admin__title-icon">
             <Users className="text-indigo-400" size={24} />
           </div>
           <div>
-            <h1 className="text-xl font-black text-slate-100 uppercase tracking-tight">Administración de Usuarios</h1>
-            <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">{company || 'EMPRESA NO IDENTIFICADA'} | {users.length} Registros</p>
+            <h1 id="users-title">Administración de usuarios</h1>
+            <p>{company || 'Empresa no identificada'} · {users.length} registros</p>
+          </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="relative">
+        <div className="access-admin__actions access-users__toolbar">
+          <div className="access-search">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
             <input
               type="text"
               placeholder="Buscar por nombre, DNI o usuario..."
-              className="w-80 pl-9 pr-4 py-2 bg-slate-900/50 border border-slate-700/50 rounded-xl text-sm focus:border-indigo-500/50 transition-all outline-none text-slate-200"
+              className="access-search__input"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
             />
@@ -558,7 +573,7 @@ function UserManagementView() {
             <button
               type="button"
               onClick={loadData}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+            className="access-button access-button--icon"
             title="Sincronizar"
           >
             <RotateCcw size={16} />
@@ -566,22 +581,20 @@ function UserManagementView() {
           <button
             type="button"
             onClick={() => { setShowCreateForm(v => !v); setSelectedUsername(''); }}
-            className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center gap-2 transition-all shadow-lg ${
-              showCreateForm ? 'bg-slate-700 text-slate-200' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20'
-            }`}
+            className={`access-button ${showCreateForm ? 'access-button--ghost' : 'access-button--primary'}`}
           >
             {showCreateForm ? <X size={14} /> : <UserPlus size={14} />}
             {showCreateForm ? 'Cancelar' : 'Nuevo Usuario'}
           </button>
         </div>
-      </div>
+      </header>
 
       {showCreateForm && (
-        <div className="mb-3 p-4 rounded-2xl bg-slate-900/60 border border-indigo-500/20 backdrop-blur-xl animate-in fade-in slide-in-from-top-2 shrink-0">
+        <section className="access-create-panel">
           <h3 className="text-[11px] font-black text-slate-100 uppercase tracking-wider flex items-center gap-2 mb-3">
             <UserPlus size={13} className="text-indigo-400" /> Alta de Nuevo Usuario — {company}
           </h3>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="access-create-grid">
             <div>
               <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Nombres</label>
               <input type="text" className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
@@ -634,14 +647,14 @@ function UserManagementView() {
           <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-2 opacity-60">
             El usuario queda vinculado a {company} con el perfil elegido. El enrolamiento biométrico se completa en su primer ingreso.
           </p>
-        </div>
+        </section>
       )}
 
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="access-users__workspace">
         {/* Tabla de Usuarios */}
-        <div className="lg:col-span-8 flex flex-col min-h-0 bg-slate-900/40 border border-white/5 rounded-2xl overflow-hidden backdrop-blur-xl shrink-0">
-          <div className="flex-1 overflow-auto">
-            <table className="w-full text-left border-collapse min-w-[600px]">
+        <section className="access-users__list-card">
+          <div className="access-users__table-scroll">
+            <table className="access-users-table">
               <thead className="sticky top-0 z-10 bg-slate-900/90 backdrop-blur shadow-sm">
                 <tr className="border-b border-white/5">
                   <th className="px-5 py-4 text-[10px] font-black text-slate-500 uppercase">Perfil</th>
@@ -660,7 +673,7 @@ function UserManagementView() {
           <tr
             key={user.username}
             onClick={() => { setSelectedUsername(user.username); setShowCreateForm(false); }}
-            className={`group cursor-pointer transition-colors ${selectedUsername === user.username ? 'bg-indigo-500/10' : 'hover:bg-white/5'}`}
+            className={selectedUsername === user.username ? 'is-selected' : ''}
           >
             <td className="px-5 py-1.5">
                       <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase border ${getRoleColor(user.role).replace('text-', 'bg-').replace('400', '500/20')} ${getRoleColor(user.role)} ${getRoleColor(user.role).replace('text-', 'border-').replace('400', '500/30')}`}>
@@ -695,11 +708,11 @@ function UserManagementView() {
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
 
         {/* Panel de Control de Usuario Seleccionado */}
-        <div className="lg:col-span-4 flex flex-col min-h-0 relative">
-          <div className="flex-1 flex flex-col bg-slate-900/60 border border-white/10 rounded-2xl overflow-hidden backdrop-blur-2xl shadow-2xl">
+        <aside className="access-users__detail-card">
+          <div className="access-users__detail-inner">
             {selectedUser ? (
               <div className="flex flex-col h-full min-h-0">
                 <div className="p-4 border-b border-white/5 bg-gradient-to-br from-slate-800/50 to-transparent shrink-0">
@@ -819,6 +832,17 @@ function UserManagementView() {
                               value={formData.lastName} onChange={e => setFormData({...formData, lastName: e.target.value})} />
                           </div>
                           <div className="col-span-2">
+                            <label className="text-[8px] font-black text-slate-500 uppercase mb-0.5 block">DNI</label>
+                            <div className="flex gap-1.5">
+                              <input type="text" maxLength={12} className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] text-white"
+                                value={formData.dni} onChange={e => setFormData({...formData, dni: e.target.value})} />
+                              <button type="button" onClick={() => setShowDniScan(true)} title="Escanear DNI con la cámara"
+                                className="shrink-0 px-2 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20 transition-colors">
+                                <ScanLine size={14} />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="col-span-2">
                             <label className="text-[8px] font-black text-slate-500 uppercase mb-0.5 block">Email Institucional</label>
                             <input type="email" className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] text-white"
                               value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} />
@@ -915,6 +939,19 @@ function UserManagementView() {
                         operatorUsername={session?.username}
                         company={company}
                       />
+                      <DocumentScanCapture
+                        isOpen={showDniScan}
+                        onClose={() => setShowDniScan(false)}
+                        onSuccess={(result: DniScanResult) => {
+                          setShowDniScan(false);
+                          setFormData(prev => ({
+                            ...prev,
+                            dni: result.dni || prev.dni,
+                            firstName: result.first_name || prev.firstName,
+                            lastName: result.last_name || prev.lastName,
+                          }));
+                        }}
+                      />
                     </div>
                   )}
 
@@ -960,9 +997,9 @@ function UserManagementView() {
               </div>
             )}
           </div>
-        </div>
+        </aside>
       </div>
-    </div>
+    </main>
   );
 }
 

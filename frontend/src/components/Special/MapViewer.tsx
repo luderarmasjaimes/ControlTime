@@ -10,7 +10,15 @@ import { clusterMarkers, isCluster, type ClusterableMarker } from '../../lib/map
 import { planForConnectivity, isCompactPayload, decodeCompactMarkers } from '../../lib/mapFieldMode';
 import { saveMarkerSnapshot, loadMarkerSnapshot, formatSnapshotAge } from '../../lib/mapOfflineCache';
 import { createTimeoutWmsLayer } from '../../lib/timeoutWmsLayer';
-import { getSession } from '../../auth/authStorage';
+import { authHeaders as sharedAuthHeaders } from '../../auth/authStorage';
+import {
+    applyMarkerDiff,
+    boundsToQuery,
+    markerIdentity,
+    markerIsInsideBounds,
+    padBounds,
+    type MapBoundsLike,
+} from '../../lib/mapMarkerState';
 
 import { log } from '../../lib/logger';
 
@@ -22,24 +30,27 @@ import { log } from '../../lib/logger';
  * mismo patrón ya usado en ImageInsertModal.tsx (Authorization: Bearer).
  */
 const authHeaders = (): Record<string, string> => {
-    const session = getSession();
-    return session?.token ? { Authorization: `Bearer ${session.token}` } : {};
+    // ADR-082: la credencial es la cookie HttpOnly `access_token`, que el
+    // navegador adjunta sola. Aqui solo viaja el token CSRF del double-submit.
+    return sharedAuthHeaders();
 };
 
 const WMS_CATALOG_DATA: any = WMS_CATALOG;
 
 const INITIAL_VIEW = { lat: -17.2464, lng: -70.612, zoom: 13 };
 
-const BASEMAPS: Record<string, { label: string; url: string; attribution: string; maxNativeZoom?: number }> = {
+const BASEMAPS: Record<string, { label: string; url: string; attribution: string; maxNativeZoom?: number; subdomains?: string }> = {
     satellite: {
         label: 'Satelital',
-        url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        url: 'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
         attribution: '© Google Satellite',
+        subdomains: '0123',
     },
     hybrid: {
         label: 'Híbrido',
-        url: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+        url: 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
         attribution: '© Google Hybrid',
+        subdomains: '0123',
     },
     terrain: {
         label: 'Terreno',
@@ -141,6 +152,26 @@ const officialGeoStyle = (feature: any) => {
     };
 };
 
+type RenderedLayerCache = Map<string, { signature: string; layer: any }>;
+type DesiredLayer = { signature: string; create: () => any };
+
+/** Conserva las capas Leaflet que no cambiaron y reemplaza solo el delta. */
+const syncLeafletLayers = (group: any, cache: RenderedLayerCache, desired: Map<string, DesiredLayer>) => {
+    cache.forEach((entry, key) => {
+        const next = desired.get(key);
+        if (!next || next.signature !== entry.signature) {
+            group.removeLayer(entry.layer);
+            cache.delete(key);
+        }
+    });
+    desired.forEach((next, key) => {
+        if (cache.has(key)) return;
+        const layer = next.create();
+        layer.addTo(group);
+        cache.set(key, { signature: next.signature, layer });
+    });
+};
+
 interface MapViewerProps {
     layout?: string;
     siteLabel?: string;
@@ -168,6 +199,12 @@ const MapViewer = ({
     const drillingLayerRef = useRef<any>(null);
     const externalWmsLayerRef = useRef<any>(null);
     const officialGeoLayerRef = useRef<any>(null);
+    const markerFetchAbortRef = useRef<AbortController | null>(null);
+    const acceptedBoundsRef = useRef<MapBoundsLike | null>(null);
+    const viewportDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const renderedMarkerLayersRef = useRef(new Map<string, { signature: string; layer: any }>());
+    const renderedWarningLayersRef = useRef(new Map<string, { signature: string; layer: any }>());
+    const renderedTargetLayersRef = useRef(new Map<string, { signature: string; layer: any }>());
     const [baseMap, setBaseMap] = useState('satellite');
     const [allMarkers, setAllMarkers] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
@@ -191,6 +228,8 @@ const MapViewer = ({
     const [geoComplianceLoading, setGeoComplianceLoading] = useState(false);
     const [geoComplianceError, setGeoComplianceError] = useState<string | null>(null);
     const [mapZoom, setMapZoom] = useState(INITIAL_VIEW.zoom);
+    const [viewportBounds, setViewportBounds] = useState<MapBoundsLike | null>(null);
+    const [viewportRevision, setViewportRevision] = useState(0);
     // "Última actualización: hace N min" -- solo se muestra cuando los
     // marcadores en pantalla vienen del snapshot de IndexedDB (conectividad
     // OFFLINE total), no cuando vienen de un fetch en vivo exitoso. No
@@ -271,12 +310,6 @@ const MapViewer = ({
         map.createPane('ops-official');
         map.getPane('ops-official').style.zIndex = '605';
 
-        baseLayerRef.current = L.tileLayer(BASEMAPS.satellite.url, {
-            maxZoom: 22,
-            maxNativeZoom: BASEMAPS.satellite.maxNativeZoom,
-            attribution: BASEMAPS.satellite.attribution,
-        }).addTo(map);
-
         markerLayerRef.current = L.layerGroup().addTo(map);
         warningLayerRef.current = L.layerGroup().addTo(map);
         geofenceLayerRef.current = L.layerGroup().addTo(map);
@@ -287,15 +320,55 @@ const MapViewer = ({
         const onResize = () => map.invalidateSize({ pan: false });
         window.addEventListener('resize', onResize);
 
+        // El host cambia de tamaño sin que cambie window (menú superior,
+        // Suspense, panel de cumplimiento y transiciones flex). Sin observar
+        // el DIV, Leaflet conserva el tamaño anterior y solo solicita tiles
+        // para un rectángulo pequeño: exactamente los grandes huecos grises
+        // observados en producción.
+        let resizeFrame: number | null = null;
+        let lastWidth = 0;
+        let lastHeight = 0;
+        const resizeObserver = typeof ResizeObserver !== 'undefined'
+            ? new ResizeObserver((entries) => {
+                const rect = entries[0]?.contentRect;
+                if (!rect || (Math.abs(rect.width - lastWidth) < 1 && Math.abs(rect.height - lastHeight) < 1)) return;
+                lastWidth = rect.width;
+                lastHeight = rect.height;
+                if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+                resizeFrame = requestAnimationFrame(() => {
+                    resizeFrame = null;
+                    if (mapRef.current === map) map.invalidateSize({ pan: false, debounceMoveend: true });
+                });
+            })
+            : null;
+        if (mapContainerRef.current) resizeObserver?.observe(mapContainerRef.current);
+
         // El tamaño de celda del clustering depende del zoom actual (ver
         // mapClustering.ts) -- sin esto, acercar/alejar el mapa no
         // reagruparía los marcadores.
-        const onZoomEnd = () => setMapZoom(map.getZoom());
-        map.on('zoomend', onZoomEnd);
+        const onViewportChanged = () => {
+            setMapZoom(map.getZoom());
+            const bounds = map.getBounds();
+            setViewportBounds({
+                south: bounds.getSouth(), west: bounds.getWest(),
+                north: bounds.getNorth(), east: bounds.getEast(),
+            });
+            if (viewportDebounceRef.current) clearTimeout(viewportDebounceRef.current);
+            viewportDebounceRef.current = setTimeout(() => setViewportRevision((value) => value + 1), 250);
+        };
+        onViewportChanged();
+        map.on('moveend', onViewportChanged);
 
         return () => {
             window.removeEventListener('resize', onResize);
-            map.off('zoomend', onZoomEnd);
+            resizeObserver?.disconnect();
+            if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+            map.off('moveend', onViewportChanged);
+            if (viewportDebounceRef.current) clearTimeout(viewportDebounceRef.current);
+            markerFetchAbortRef.current?.abort();
+            renderedMarkerLayersRef.current.clear();
+            renderedWarningLayersRef.current.clear();
+            renderedTargetLayersRef.current.clear();
             officialGeoLayerRef.current = null;
             map.remove();
             mapRef.current = null;
@@ -311,13 +384,21 @@ const MapViewer = ({
     }, [refreshGeoCompliance]);
 
     useEffect(() => {
-        if (!mapRef.current || !baseLayerRef.current) return;
+        if (!mapRef.current) return;
         const cfg = BASEMAPS[baseMap] || BASEMAPS.satellite;
-        mapRef.current.removeLayer(baseLayerRef.current);
+        if (baseLayerRef.current) mapRef.current.removeLayer(baseLayerRef.current);
         baseLayerRef.current = L.tileLayer(cfg.url, {
             maxZoom: 22,
             maxNativeZoom: cfg.maxNativeZoom,
             attribution: cfg.attribution,
+            subdomains: cfg.subdomains,
+            updateWhenZooming: false,
+            // Paneo: solicitar progresivamente (cada updateInterval), pero
+            // conservar cuatro anillos de tiles para que nunca aparezca el
+            // fondo gris mientras llega la siguiente columna/fila.
+            updateWhenIdle: false,
+            updateInterval: 250,
+            keepBuffer: 4,
         }).addTo(mapRef.current);
     }, [baseMap]);
 
@@ -375,7 +456,9 @@ const MapViewer = ({
             // teselas nuevas en cada frame de la animación de zoom -- contra
             // un servidor lento eso solo satura el cupo de conexiones con
             // peticiones que quedan obsoletas antes de completarse.
-            const layer = createTimeoutWmsLayer(url, {
+            const proxyUrl = new URL('/api/map/wms-proxy', window.location.origin);
+            proxyUrl.searchParams.set('source', url);
+            const layer = createTimeoutWmsLayer(proxyUrl.pathname + proxyUrl.search, {
                 layers,
                 format: 'image/png',
                 transparent: true,
@@ -383,7 +466,9 @@ const MapViewer = ({
                 opacity: wmsOpacity / 100,
                 tileSize: 512,
                 updateWhenZooming: false,
-                keepBuffer: 4,
+                updateWhenIdle: true,
+                keepBuffer: 1,
+                maxAttempts: 1,
             } as any);
             layer.on('loading', () => setWmsStatus(`Cargando WMS (${version}): ${layers}`));
             layer.on('load', () => setWmsStatus(`WMS activo (${version}): ${layers}`));
@@ -407,6 +492,7 @@ const MapViewer = ({
         // escrituras pendientes (los marcadores son telemetría de servidor,
         // no ediciones del usuario -- no hay conflicto que resolver).
         if (connectivity.state === 'OFFLINE') {
+            markerFetchAbortRef.current?.abort();
             const snapshot = await loadMarkerSnapshot();
             if (snapshot) {
                 setAllMarkers(snapshot.markers);
@@ -420,48 +506,55 @@ const MapViewer = ({
         }
         setOfflineSnapshotAge(null);
 
+        markerFetchAbortRef.current?.abort();
+        const controller = new AbortController();
+        markerFetchAbortRef.current = controller;
         setLoading(true);
         try {
-            // "Modo campo" (ver mapFieldMode.ts): con DEGRADADO, se pide
-            // formato compacto + un bbox recortado sobre el viewport actual
-            // + un limit más bajo -- reusa useConnectivity() como único
-            // detector de calidad de conexión, no se construye uno nuevo.
+            // Todas las consultas quedan acotadas al viewport más un margen.
+            // El margen evita refetch en paneos cortos; nunca se recorta el
+            // viewport visible, que era la causa de marcadores ausentes.
             const plan = planForConnectivity(connectivity.state);
             const apiUrl = new URL('/api/map/markers', window.location.origin);
             if (plan.requestCompact) apiUrl.searchParams.set('compact', '1');
             apiUrl.searchParams.set('limit', String(plan.limit));
-            if (plan.bboxShrinkFactor < 1 && mapRef.current) {
+            if (mapRef.current) {
                 const b = mapRef.current.getBounds();
-                const latCenter = (b.getNorth() + b.getSouth()) / 2;
-                const lngCenter = (b.getEast() + b.getWest()) / 2;
-                const latHalf = ((b.getNorth() - b.getSouth()) / 2) * plan.bboxShrinkFactor;
-                const lngHalf = ((b.getEast() - b.getWest()) / 2) * plan.bboxShrinkFactor;
-                apiUrl.searchParams.set('bbox_lat', `${latCenter - latHalf},${latCenter + latHalf}`);
-                apiUrl.searchParams.set('bbox_lng', `${lngCenter - lngHalf},${lngCenter + lngHalf}`);
+                const accepted = padBounds({
+                    south: b.getSouth(), west: b.getWest(),
+                    north: b.getNorth(), east: b.getEast(),
+                }, plan.bboxPaddingRatio);
+                acceptedBoundsRef.current = accepted;
+                const query = boundsToQuery(accepted);
+                apiUrl.searchParams.set('bbox_lat', query.bboxLat);
+                apiUrl.searchParams.set('bbox_lng', query.bboxLng);
             }
-            const res = await fetch(apiUrl.toString(), { headers: authHeaders() });
+            const res = await fetch(apiUrl.toString(), { headers: authHeaders(), signal: controller.signal });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             const markers = isCompactPayload(data)
                 ? decodeCompactMarkers(data)
                 : Array.isArray(data?.markers) ? data.markers : [];
-            setAllMarkers(markers);
+            if (!controller.signal.aborted) setAllMarkers(markers);
             // Guarda el snapshot exitoso para la próxima vez que se pierda
             // la conectividad por completo (best-effort, no bloquea el
             // render si IndexedDB falla por cualquier motivo).
             void saveMarkerSnapshot(markers);
         } catch (err) {
+            if ((err as any)?.name === 'AbortError') return;
             log.error('Error loading map markers', err);
             setAllMarkers([]);
         } finally {
-            setLoading(false);
-            refreshGeoCompliance();
+            if (markerFetchAbortRef.current === controller) {
+                markerFetchAbortRef.current = null;
+                setLoading(false);
+            }
         }
-    }, [refreshGeoCompliance, connectivity.state]);
+    }, [connectivity.state]);
 
     useEffect(() => {
         fetchMarkers();
-    }, [fetchMarkers]);
+    }, [fetchMarkers, viewportRevision]);
 
     // Intervalo de refresco adaptativo: en ONLINE_PLENO no hace falta poll
     // activo aparte del inicial (el push diferencial por WS, tarea 3, cubre
@@ -475,6 +568,46 @@ const MapViewer = ({
         const id = setInterval(fetchMarkers, plan.refreshIntervalMs);
         return () => clearInterval(id);
     }, [connectivity.state, fetchMarkers]);
+
+    // El backend publica diffs por tenant. Se aplican por identidad y solo si
+    // el punto pertenece al bbox aceptado, evitando descargar y reconciliar
+    // nuevamente miles de marcadores en cada actualización.
+    useEffect(() => {
+        if (typeof process !== 'undefined' && (process as any).env?.VITEST) return;
+        if (connectivity.state === 'OFFLINE') return;
+        let disposed = false;
+        let socket: WebSocket | null = null;
+        let retryTimer: ReturnType<typeof setTimeout> | null = null;
+        let backoffMs = 1000;
+
+        const connect = () => {
+            if (disposed) return;
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            socket.onopen = () => { backoffMs = 1000; };
+            socket.onmessage = (event) => {
+                try {
+                    const payload = JSON.parse(event.data);
+                    if (payload?.channel !== 'map_markers_diff') return;
+                    setAllMarkers((current) => applyMarkerDiff(current, payload, acceptedBoundsRef.current));
+                } catch (_) {
+                    // Otros canales o frames no JSON comparten este socket.
+                }
+            };
+            socket.onerror = () => { try { socket?.close(); } catch (_) {} };
+            socket.onclose = () => {
+                if (disposed) return;
+                retryTimer = setTimeout(connect, backoffMs);
+                backoffMs = Math.min(backoffMs * 2, 30000);
+            };
+        };
+        connect();
+        return () => {
+            disposed = true;
+            if (retryTimer) clearTimeout(retryTimer);
+            try { socket?.close(); } catch (_) {}
+        };
+    }, [connectivity.state]);
 
     const visibleMarkers = useMemo(() => {
         const now = Date.now();
@@ -495,21 +628,22 @@ const MapViewer = ({
             if (t === 'equipment' && !showEquipment) return false;
             if (t === 'personnel' && !showPersonnel) return false;
             if (t !== 'equipment' && t !== 'personnel' && !showSensors) return false;
+            if (viewportBounds && !markerIsInsideBounds(m, viewportBounds)) return false;
             return true;
         });
-    }, [allMarkers, showEquipment, showPersonnel, showSensors, showWarningsOnly, timeWindow]);
+    }, [allMarkers, showEquipment, showPersonnel, showSensors, showWarningsOnly, timeWindow, viewportBounds]);
 
     useEffect(() => {
         if (!mapRef.current || !markerLayerRef.current) return;
-        markerLayerRef.current.clearLayers();
-        warningLayerRef.current.clearLayers();
-        targetLayerRef.current.clearLayers();
         haulRouteLayerRef.current.clearLayers();
         drillingLayerRef.current.clearLayers();
 
         const equipmentPoints: [number, number][] = [];
         const warningPoints: [number, number][] = [];
         const sensorPoints: [number, number][] = [];
+        const desiredMarkers = new Map<string, DesiredLayer>();
+        const desiredWarnings = new Map<string, DesiredLayer>();
+        const desiredTargets = new Map<string, DesiredLayer>();
 
         // Normaliza a ClusterableMarker (lat/lng numéricos ya validados) y
         // agrupa por grilla dependiente del zoom actual -- a 10k sensores
@@ -531,25 +665,25 @@ const MapViewer = ({
             if (markerStatus === 'warning') warningPoints.push([lat, lng]);
 
             if (markerStatus === 'warning') {
-                L.circle([lat, lng], {
-                    radius: 90,
-                    color: '#f59e0b',
-                    weight: 2,
-                    fillColor: '#f59e0b',
-                    fillOpacity: 0.12,
-                    pane: 'ops-warning',
-                } as any).addTo(warningLayerRef.current);
+                const key = `warning:${markerIdentity(m)}`;
+                desiredWarnings.set(key, {
+                    signature: `${lat}:${lng}`,
+                    create: () => L.circle([lat, lng], {
+                        radius: 90, color: '#f59e0b', weight: 2,
+                        fillColor: '#f59e0b', fillOpacity: 0.12, pane: 'ops-warning',
+                    } as any),
+                });
             }
 
             if (showTargets && (m.type === 'sensor' || String(m.status || '').toLowerCase() === 'warning')) {
-                L.circle([lat, lng], {
-                    radius: 180,
-                    color: '#38bdf8',
-                    weight: 1,
-                    dashArray: '4 6',
-                    fillOpacity: 0,
-                    pane: 'ops-targets',
-                } as any).addTo(targetLayerRef.current);
+                const key = `target:${markerIdentity(m)}`;
+                desiredTargets.set(key, {
+                    signature: `${lat}:${lng}`,
+                    create: () => L.circle([lat, lng], {
+                        radius: 180, color: '#38bdf8', weight: 1,
+                        dashArray: '4 6', fillOpacity: 0, pane: 'ops-targets',
+                    } as any),
+                });
             }
         });
 
@@ -561,22 +695,22 @@ const MapViewer = ({
                 // gigante si 2000 sensores caen en la misma celda a zoom
                 // bajo). Todo dibujado en canvas -- circleMarker, no DOM.
                 const radius = Math.min(11 + Math.log2(item.count) * 3, 26);
-                L.circleMarker([item.lat, item.lng], {
-                    radius,
-                    pane: 'ops-markers',
-                    color: '#fff',
-                    weight: 2,
-                    fillColor: '#0ea5e9',
-                    fillOpacity: 0.85,
-                } as any)
-                    .bindTooltip(`${item.count} activos`, { direction: 'center', permanent: false })
-                    .bindPopup(
-                        `<div style="padding:4px 2px">
-                            <div style="font-weight:700;font-size:12px">${item.count} activos agrupados</div>
-                            <div style="font-size:10px;color:#64748b;margin-top:2px">Acercar el zoom para ver el detalle individual</div>
-                        </div>`
-                    )
-                    .addTo(markerLayerRef.current);
+                const memberIds = item.members.map((member) => String(member.id)).sort().join(',');
+                const key = `cluster:${memberIds}`;
+                desiredMarkers.set(key, {
+                    signature: `${item.lat}:${item.lng}:${item.count}:${mapZoom}`,
+                    create: () => L.circleMarker([item.lat, item.lng], {
+                        radius, pane: 'ops-markers', color: '#fff', weight: 2,
+                        fillColor: '#0ea5e9', fillOpacity: 0.85,
+                    } as any)
+                        .bindTooltip(`${item.count} activos`, { direction: 'center', permanent: false })
+                        .bindPopup(
+                            `<div style="padding:4px 2px">
+                                <div style="font-weight:700;font-size:12px">${item.count} activos agrupados</div>
+                                <div style="font-size:10px;color:#64748b;margin-top:2px">Acercar el zoom para ver el detalle individual</div>
+                            </div>`
+                        ),
+                });
                 return;
             }
 
@@ -584,23 +718,25 @@ const MapViewer = ({
             const lat = item.lat;
             const lng = item.lng;
             const color = markerColor(m);
-            L.circleMarker([lat, lng], {
-                radius: 7,
-                pane: 'ops-markers',
-                color: '#fff',
-                weight: 2,
-                fillColor: color,
-                fillOpacity: 0.95,
-            } as any)
-                .bindPopup(
+            const key = `marker:${markerIdentity(m)}`;
+            desiredMarkers.set(key, {
+                signature: `${lat}:${lng}:${color}:${m.name || ''}:${m.type || ''}:${m.status || ''}`,
+                create: () => L.circleMarker([lat, lng], {
+                    radius: 7, pane: 'ops-markers', color: '#fff', weight: 2,
+                    fillColor: color, fillOpacity: 0.95,
+                } as any).bindPopup(
                     `<div style="padding:4px 2px">
                         <div style="font-weight:700;font-size:12px">${m.name || 'Marcador'}</div>
                         <div style="font-size:11px;color:#475569;text-transform:capitalize">${m.type || 'sensor'} · ${m.status || 'n/a'}</div>
                         <div style="font-size:10px;color:#64748b;margin-top:2px">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
                     </div>`
-                )
-                .addTo(markerLayerRef.current);
+                ),
+            });
         });
+
+        syncLeafletLayers(markerLayerRef.current, renderedMarkerLayersRef.current, desiredMarkers);
+        syncLeafletLayers(warningLayerRef.current, renderedWarningLayersRef.current, desiredWarnings);
+        syncLeafletLayers(targetLayerRef.current, renderedTargetLayersRef.current, desiredTargets);
 
         // Rutas de acarreo: une equipos visibles para visualizar flujo operacional.
         if (showHaulRoutes && equipmentPoints.length >= 2) {

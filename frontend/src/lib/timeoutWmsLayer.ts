@@ -35,6 +35,7 @@ export interface TimeoutWmsOptions extends Record<string, any> {
 
 interface WmsTileImg extends HTMLImageElement {
     _wmsAbort?: AbortController | null;
+    _wmsRemoved?: boolean;
 }
 
 /**
@@ -53,8 +54,6 @@ export function createTimeoutWmsLayer(url: string, options: TimeoutWmsOptions): 
             tile.setAttribute('role', 'presentation');
 
             const tileUrl = this.getTileUrl(coords);
-            const controller = new AbortController();
-            tile._wmsAbort = controller;
             let objectUrl: string | null = null;
 
             const cleanup = () => {
@@ -65,6 +64,10 @@ export function createTimeoutWmsLayer(url: string, options: TimeoutWmsOptions): 
             };
 
             const attemptLoad = (attempt: number) => {
+                // Cada intento requiere una señal nueva: un AbortController
+                // abortado no puede reutilizarse para el reintento.
+                const controller = new AbortController();
+                tile._wmsAbort = controller;
                 const timer = setTimeout(() => controller.abort(), timeoutMs);
                 fetch(tileUrl, { signal: controller.signal })
                     .then((res) => {
@@ -89,7 +92,7 @@ export function createTimeoutWmsLayer(url: string, options: TimeoutWmsOptions): 
                         // AbortError por _removeTile (tesela ya no hace
                         // falta, salió del viewport): no reintentar, no es
                         // un fallo del servidor.
-                        if (err?.name === 'AbortError' && controller.signal.aborted && !tile._wmsAbort) {
+                        if (err?.name === 'AbortError' && tile._wmsRemoved) {
                             return;
                         }
                         if (attempt < maxAttempts) {
@@ -107,6 +110,7 @@ export function createTimeoutWmsLayer(url: string, options: TimeoutWmsOptions): 
         _removeTile(this: any, key: string) {
             const tile = this._tiles[key]?.el;
             if (tile?._wmsAbort) {
+                tile._wmsRemoved = true;
                 tile._wmsAbort.abort();
                 tile._wmsAbort = null;
             }

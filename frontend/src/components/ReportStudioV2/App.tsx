@@ -4,24 +4,29 @@ import RibbonToolbar from './components/layout/RibbonToolbar';
 import LeftLibrary from './components/layout/LeftLibrary';
 import RightInspector from './components/layout/RightInspector';
 import MultipageView from './components/document/MultipageView';
-import TableOfContents from './components/document/TableOfContents';
 import WorkflowPanel, { createWorkflowEntry, WorkflowStatusBadge, type WorkflowStatus, type WorkflowEntry, type WorkflowSignature } from './components/document/WorkflowPanel';
 import VersionHistory, { createSnapshot, type VersionSnapshot } from './components/document/VersionHistory';
 import VersionComparator from './components/document/VersionComparator';
 import VoiceDictation from './components/document/VoiceDictation';
 import PerformanceDashboard from './components/dashboard/PerformanceDashboard';
 import { useEditorStore, type OptimizationSuggestion } from './store/useEditorStore';
+import { usePermissions } from '../../auth/usePermissions';
 import ReportsAdminModal from './components/modals/ReportsAdminModal';
 import ReadOnlyViewer from './components/viewers/ReadOnlyViewer';
+import PdfPasswordModal from './components/PdfPasswordModal';
 import ShareReportModal from './components/modals/ShareReportModal';
 import DeleteReportConfirm from './components/modals/DeleteReportConfirm';
 import MapCaptureModal from './components/modals/MapCaptureModal';
 import ImageInsertModal from './components/modals/ImageInsertModal';
 import VideoInsertModal from './components/modals/VideoInsertModal';
+import NarrationModal from './components/modals/NarrationModal';
+import Apa7CitationModal from './components/modals/Apa7CitationModal';
+import SaveTitleModal from './components/modals/SaveTitleModal';
 import FormulaAnalysisModal from './components/modals/FormulaAnalysisModal';
+import SupportChatWidget from './components/support/SupportChatWidget';
 import { saveReportAsync } from './lib/reportsStorage';
 import { startAutosave, stopAutosave, subscribeAutosave } from './lib/autosaveEngine';
-import { exportPDF, exportDOCX, exportPPTX } from './lib/exportEngine';
+import { exportPDF, exportDOCX } from './lib/exportEngine';
 import { initAccessibility, destroyAccessibility } from './lib/accessibility';
 import { measurePerfAsync } from './lib/performanceMonitor';
 import {
@@ -34,6 +39,12 @@ import {
   syncMiningKpisFromExternal,
   fetchMiningKpis,
   fetchMineSensors,
+  fetchSeismicReport,
+  createPptxExportJob,
+  createVideoExportJob,
+  uploadSlideNarration,
+  pollExportJob,
+  fetchExportJobBlob,
 } from './lib/api';
 import { getSession, type Session } from '../../auth/authStorage';
 import { telemetryTenantIdFromSession } from '../../auth/telemetryTenant';
@@ -47,6 +58,9 @@ import {
 } from './lib/offlineSqlite';
 import { log } from '../../lib/logger';
 import { tryApplyToActiveTextSelection, tryApplyCaseToActiveTextSelection } from './lib/activeTextFormatBridge';
+import { applyListToText } from './lib/listFormatting';
+import { useI18n } from '../../i18n/I18nProvider';
+import { requestConfirmation, requestNotice } from '../UI/ConfirmActionDialog';
 import './styles.css';
 import './ribbon.css';
 
@@ -85,7 +99,12 @@ export default function App({
   platformCompanyName,
   telemetryTenantId: telemetryTenantIdProp,
 }: AppProps) {
+  const { language, t } = useI18n();
   const session = getSession() as StudioSession | null;
+  // ADR-079: mismo hook/permiso que el backend exige en report_service.cpp —
+  // filtra qué transiciones de workflow se ofrecen según lo que el usuario
+  // realmente puede hacer, en vez de mostrar "Firmar"/"Aprobar" a cualquiera.
+  const { hasPermission: hasReportPermission } = usePermissions();
   const telemetryTenantId = telemetryTenantIdProp ?? telemetryTenantIdFromSession(session);
   const loggedAuthor = session?.fullName || session?.username || 'Usuario';
   const connectivity = useConnectivity();
@@ -101,9 +120,14 @@ export default function App({
 
   const doc = useEditorStore((s) => s.doc);
   const addElement = useEditorStore((s) => s.addElement);
+  const addTocElement = useEditorStore((s) => s.addTocElement);
+  const syncTocPages = useEditorStore((s) => s.syncTocPages);
   const addCenteredImage = useEditorStore((s) => s.addCenteredImage);
   const updateElement = useEditorStore((s) => s.updateElement);
   const addTextTemplate = useEditorStore((s) => s.addTextTemplate);
+  const addTechnicalBlock = useEditorStore((s) => s.addTechnicalBlock);
+  const addSectionTemplate = useEditorStore((s) => s.addSectionTemplate);
+  const addStaticChart = useEditorStore((s) => s.addStaticChart);
   const addPage = useEditorStore((s) => s.addPage);
   const duplicatePage = useEditorStore((s) => s.duplicatePage);
   const reviewDocumentQuality = useEditorStore((s) => s.reviewDocumentQuality);
@@ -116,7 +140,6 @@ export default function App({
   const setGridEnabled = useEditorStore((s) => s.setGridEnabled);
   const setSnapEnabled = useEditorStore((s) => s.setSnapEnabled);
 
-  const [isRecording, setIsRecording] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [reviewResult, setReviewResult] = useState<ReturnType<typeof reviewDocumentQuality> | null>(null);
@@ -131,6 +154,13 @@ export default function App({
   const [showReportsAdmin, setShowReportsAdmin] = useState(false);
   const [showReadOnly, setShowReadOnly] = useState(false);
   const [readOnlyReport, setReadOnlyReport] = useState<any>(null);
+  // ADR-080: contraseña del PDF recién descargado desde el ribbon — se
+  // muestra una sola vez (ver PdfPasswordModal), no se persiste.
+  const [pdfPassword, setPdfPassword] = useState<string | null>(null);
+  // Stage 3 (PPTX -> video): job pptx exitoso más reciente de ESTA sesión —
+  // habilita el botón "Convertir a MP4"; se reinicia si el informe cambia
+  // (evita reusar un job de otro reportId al cambiar de informe abierto).
+  const [lastPptxJobId, setLastPptxJobId] = useState<string | null>(null);
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareTarget, setShareTarget] = useState<any>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -140,7 +170,18 @@ export default function App({
   const [showMapCapture, setShowMapCapture] = useState(false);
   const [showImageInsertModal, setShowImageInsertModal] = useState(false);
   const [showVideoInsertModal, setShowVideoInsertModal] = useState(false);
+  const [showNarrationModal, setShowNarrationModal] = useState(false);
+  const [showApa7Modal, setShowApa7Modal] = useState(false);
+  // Reemplazo de window.prompt() para nombrar un informe nuevo al guardar
+  // (ver promptForTitle más abajo, y SaveTitleModal.tsx) — mismo estilo
+  // visual que el resto de modales de la plataforma (clases ra-*).
+  const [titlePromptState, setTitlePromptState] = useState<{
+    defaultValue: string;
+    heading?: string;
+    resolve: (value: string | null) => void;
+  } | null>(null);
   const [videoInsertOpenSeq, setVideoInsertOpenSeq] = useState(0);
+  const [videoInsertInitialTab, setVideoInsertInitialTab] = useState<'webcam' | 'screen'>('webcam');
   const [imageInsertReplaceTarget, setImageInsertReplaceTarget] = useState<ImageInsertIntent | null>(null);
   const [imageInsertInitialTab, setImageInsertInitialTab] = useState('file');
   const [imageInsertOpenSeq, setImageInsertOpenSeq] = useState(0);
@@ -154,6 +195,11 @@ export default function App({
   // ── Stage 1 new state ──
   const [leftPanelVisible, setLeftPanelVisible] = useState(true);
   const [rightPanelVisible, setRightPanelVisible] = useState(true);
+  // Panel de "Plantillas de Documento" en la barra lateral derecha (pedido
+  // explícito 2026-07-30) -- vive en App.tsx (no en el store) siguiendo la
+  // misma convención que rightPanelVisible, ya que RightInspector es un
+  // componente no controlado que solo gestiona su propio expand/collapse.
+  const [showTemplatesPanel, setShowTemplatesPanel] = useState(false);
   const [showWorkflow, setShowWorkflow] = useState(false);
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>('draft');
   // Firma documental (ADR-018): solo lectura en el cliente, la escribe el
@@ -176,7 +222,18 @@ export default function App({
       setRightPanelVisible(true);
     }
   }, [selectedElementId]);
-  const [showToc, setShowToc] = useState(false);
+
+  // Reconcilia páginas de continuación del TOC (ver
+  // useEditorStore.ts::syncTocPages) cada vez que el documento cambia —
+  // p.ej. al agregar/quitar un encabezado, la lista de entradas puede
+  // crecer o encogerse y necesitar más o menos páginas propias. Es un
+  // no-op barato cuando el número de páginas de continuación ya es
+  // correcto (o no hay TOC en el documento), así que engancharlo a
+  // `doc` (cambia en cada edición) es seguro.
+  useEffect(() => {
+    syncTocPages();
+  }, [doc, syncTocPages]);
+
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   const [snapshots, setSnapshots] = useState<VersionSnapshot[]>([]);
   // ── Stage 2 state ──
@@ -237,14 +294,34 @@ export default function App({
   // "Estilo actual" quedaba siempre en "Normal" sin importar la selección.
   const currentHeadingStyle = currentProps.headingStyle;
   const currentAlignment = currentProps.textAlign;
+  const currentListStyle = currentProps.listType;
+  // Ribbon "Crear lista con viñetas/numerada" — antes eran botones sin
+  // onClick (no hacían nada); la única forma de aplicar listas era el
+  // atajo de teclado oculto Ctrl+Shift+7/8/0 dentro de PageCanvas.tsx.
+  // El marcador ("• "/"1. ") es texto literal, no CSS, porque el bloque
+  // puede renderizarse como <Text> de Konva (sin pseudo-elementos).
+  const applyListStyleToWholeBlock = useCallback((listType: 'none' | 'bullet' | 'number') => {
+    const original = String(currentProps.text ?? '');
+    handleUpdateSelectedProps({ listType, text: applyListToText(original, listType) });
+  }, [currentProps.text, handleUpdateSelectedProps]);
   const isBold = currentProps.bold;
   const isItalic = currentProps.italic;
   const isUnderline = currentProps.underline;
 
+  // Reemplaza window.prompt(): abre SaveTitleModal y resuelve la promesa con
+  // el título ingresado, o null si el usuario cancela (mismo contrato que
+  // window.prompt() devolviendo null al cancelar, para no tener que tocar
+  // la lógica de los llamadores más abajo).
+  const promptForTitle = useCallback((defaultValue: string, heading?: string): Promise<string | null> => {
+    return new Promise((resolve) => {
+      setTitlePromptState({ defaultValue, heading, resolve });
+    });
+  }, []);
+
   // ── Guardar informe ────────────────────────────────────────────────────────
   const handleSaveReport = async () => {
     if (!session) {
-      alert('Por favor inicia sesión para guardar un informe.');
+      void requestNotice(t('notice.loginToSave'));
       return;
     }
 
@@ -254,15 +331,12 @@ export default function App({
     // guardando la copia offline como un informe NUEVO (nunca se descarta
     // trabajo silenciosamente).
     if (workingOfflineConflict && currentReportId) {
-      const wantsOverwrite = confirm(
-        'Este informe tiene cambios OFFLINE sin resolver sobre una versión distinta a la actual del servidor.\n\n' +
-          'Aceptar = actualizar la versión existente en el servidor con tus cambios offline (la sobrescribe).\n' +
-          'Cancelar = guardar tus cambios offline como un INFORME NUEVO, sin tocar la versión que ya está en el servidor.',
-      );
+      const wantsOverwrite = await requestConfirmation(t('confirm.offlineOverwrite'));
       if (!wantsOverwrite) {
+        const suggestedOfflineTitle = `${currentReportTitle} (copia offline)`;
         const newTitle =
-          (window.prompt('Nombre para el nuevo informe:', `${currentReportTitle} (copia offline)`) || '').trim() ||
-          `${currentReportTitle} (copia offline)`;
+          ((await promptForTitle(suggestedOfflineTitle, 'Guardar copia offline como informe nuevo')) || '').trim() ||
+          suggestedOfflineTitle;
         setIsSaving(true);
         setSaveLabel('Guardando...');
         try {
@@ -306,7 +380,7 @@ export default function App({
 
     let title = currentReportTitle;
     if (!currentReportId) {
-      const input = window.prompt('Nombre del informe:', title);
+      const input = await promptForTitle(title, 'Nombrar informe nuevo');
       if (input === null) return; // cancelled
       title = (input || '').trim() || title;
     }
@@ -357,7 +431,7 @@ export default function App({
       // ADR-039 (migración completa): un usuario sin tenant asignado ya no
       // puede crear/editar informes (antes caía a company_name legacy).
       if (err?.response?.data?.error === 'tenant_required') {
-        alert('Tu usuario no está vinculado a ninguna unidad minera (tenant). Contacta a un administrador para que te asigne una antes de guardar informes.');
+        void requestNotice(t('notice.noTenant'));
       }
     } finally {
       setIsSaving(false);
@@ -421,9 +495,10 @@ export default function App({
       try {
         const pending = await loadOfflineSnapshot(full.id);
         if (pending?.dirty) {
-          const restore = confirm(
-            `Este equipo tiene cambios sin sincronizar de una edición sin conexión (${new Date(pending.updatedAt).toLocaleString('es-PE')}). ¿Restaurarlos ahora?`,
-          );
+          const locale = language === 'pt' ? 'pt-BR' : language === 'fr' ? 'fr-CA' : language === 'en' ? 'en-US' : 'es-PE';
+          const restore = await requestConfirmation(t('confirm.restoreOffline', {
+            date: new Date(pending.updatedAt).toLocaleString(locale),
+          }));
           if (restore) {
             loadDocument(pending.documentJson, full.id, pending.title || full.title);
             setAiStatus('Cambios offline restaurados — se sincronizarán en el próximo autoguardado.');
@@ -435,57 +510,9 @@ export default function App({
     } catch (err) {
       log.error('handleOpenEdit', err);
       setAiStatus('No se pudo cargar el informe para editar.');
-      alert('No se pudo cargar el informe desde el servidor. Revisa la sesión o la red.');
+      void requestNotice(t('notice.reportLoadError'));
     }
   };
-
-  const handleExportVideo = useCallback(async () => {
-    if (!navigator?.mediaDevices?.getDisplayMedia || typeof MediaRecorder === 'undefined') {
-      alert('Exportacion a video no disponible en este navegador.');
-      return;
-    }
-
-    try {
-      setIsRecording(true);
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 30 },
-        audio: false,
-      });
-
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
-      const chunks: BlobPart[] = [];
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunks.push(event.data);
-        }
-      };
-
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `informe-tecnico-minero-${Date.now()}.webm`;
-        link.click();
-        URL.revokeObjectURL(url);
-        stream.getTracks().forEach((track) => track.stop());
-        setIsRecording(false);
-      };
-
-      recorder.start(300);
-      const maxSeconds = 30;
-      setTimeout(() => {
-        if (recorder.state !== 'inactive') {
-          recorder.stop();
-        }
-      }, maxSeconds * 1000);
-    } catch (error) {
-      log.error('No se pudo grabar video del informe', error);
-      setIsRecording(false);
-      alert('No se pudo iniciar la grabacion de video.');
-    }
-  }, []);
 
   // ADR-021 (revisado): prefiere la versión confirmada por el servidor
   // (ADR-015); doc.meta.version (contador local de ediciones) solo se usa
@@ -571,11 +598,21 @@ export default function App({
     setAiStatus('Elija archivo local o cámara web; al confirmar se insertará la imagen en la página activa.');
   }, [bumpImageInsertModal]);
 
-  const openVideoInsertForNew = useCallback(() => {
+  const openVideoInsertForNew = useCallback((initialTab: 'webcam' | 'screen' = 'webcam') => {
+    setVideoInsertInitialTab(initialTab);
     setVideoInsertOpenSeq((n) => n + 1);
     setShowVideoInsertModal(true);
     setAiStatus('Elija cámara web o pantalla/ventana; al confirmar se insertará el video en la página activa.');
   }, []);
+
+  // El botón "Grabar" (RibbonToolbar y LeftLibrary) grababa la pantalla y
+  // forzaba la descarga de un .webm al disco (ver antiguo handleExportVideo)
+  // -- pedido explícito del negocio: debe insertarse directo en el lienzo,
+  // igual que "Insertar Video" (biblioteca de contenidos). Reutiliza el mismo
+  // modal, abierto directo en la pestaña "Pantalla/Ventana".
+  const handleRecordScreenToCanvas = useCallback(() => {
+    openVideoInsertForNew('screen');
+  }, [openVideoInsertForNew]);
 
   // ── Callbacks estables para LeftLibrary (React.memo) ──
   // Antes eran arrow functions inline en el JSX: se recreaban en cada
@@ -598,8 +635,26 @@ export default function App({
   }, [duplicatePage, selectedPage]);
 
   const handleAddFindings = useCallback(() => addTextTemplate('findings'), [addTextTemplate]);
+  const handleAddAnnexes = useCallback(() => addTextTemplate('annexes'), [addTextTemplate]);
+  const handleAddReferences = useCallback(() => addTextTemplate('references'), [addTextTemplate]);
+  // Bloques Técnicos de presentación avanzada (cajas de resaltado, pie de
+  // figura, tira de tarjetas KPI) — ver addTechnicalBlock en el store.
+  const handleAddTechnicalBlock = useCallback((kind: string) => addTechnicalBlock(kind), [addTechnicalBlock]);
+  const handleAddSectionTemplate = useCallback((kind: string) => addSectionTemplate(kind), [addSectionTemplate]);
+  const handleAddStaticChart = useCallback((kind: string) => addStaticChart(kind), [addStaticChart]);
+
+  const handleOpenApa7Modal = useCallback(() => setShowApa7Modal(true), []);
+  const closeApa7Modal = useCallback(() => setShowApa7Modal(false), []);
+  const handleApa7Insert = useCallback((apaText: string) => {
+    addElement('text', { props: { text: `• ${apaText}`, fontSize: 12 } });
+    setShowApa7Modal(false);
+    setAiStatus('Referencia insertada con formato APA 7.');
+  }, [addElement]);
   const handleAddCover = useCallback(() => addElement('cover'), [addElement]);
-  const handleAddToc = useCallback(() => addElement('toc'), [addElement]);
+  // Pedido explícito del negocio: el índice solo se puede insertar en la
+  // página 2 (nunca la 1, carátula) — addTocElement() crea esa página si
+  // hace falta y no duplica si ya existe un TOC en el documento.
+  const handleAddToc = useCallback(() => addTocElement(), [addTocElement]);
 
   const openImageInsertForReplace = useCallback(
     (pageNumber: number, elementId: string, initialTab = 'file') => {
@@ -870,12 +925,10 @@ export default function App({
           } catch (err: any) {
             if (err?.response?.status === 409) {
               const serverVersion = err.response.data?.server_version;
-              const wantsServerVersion = confirm(
-                `El informe fue actualizado en el servidor (versión ${serverVersion}) mientras trabajabas sin conexión ` +
-                `(tu copia offline partió de la versión ${pending.baseVersionNumber ?? '—'}).\n\n` +
-                `Aceptar = actualizar tu copia con la versión del servidor (se pierden tus cambios offline).\n` +
-                `Cancelar = seguir trabajando con tu copia offline — al guardar, podrás elegir sobrescribir la versión del servidor o guardar como un informe nuevo.`,
-              );
+              const wantsServerVersion = await requestConfirmation(t('confirm.serverVersion', {
+                server: serverVersion ?? '—',
+                local: pending.baseVersionNumber ?? '—',
+              }));
               if (wantsServerVersion) {
                 const full = await fetchReportById(currentReportId);
                 const docPayload = full.content_json ?? full.contentJson;
@@ -1005,13 +1058,15 @@ export default function App({
     const currentDoc = useEditorStore.getState().doc;
     const kpiTargets: Array<{ pageNumber: number; element: any }> = [];
     const sensorTargets: Array<{ pageNumber: number; element: any }> = [];
+    const seismicTargets: Array<{ pageNumber: number; element: any }> = [];
     for (const page of currentDoc.pages) {
       for (const element of page.elements) {
         if (element.type === 'kpi') kpiTargets.push({ pageNumber: page.page_number, element });
         else if (element.type === 'sensor') sensorTargets.push({ pageNumber: page.page_number, element });
+        else if (element.type === 'seismic-report') seismicTargets.push({ pageNumber: page.page_number, element });
       }
     }
-    if (kpiTargets.length === 0 && sensorTargets.length === 0) {
+    if (kpiTargets.length === 0 && sensorTargets.length === 0 && seismicTargets.length === 0) {
       return;
     }
 
@@ -1065,6 +1120,31 @@ export default function App({
         log.error('No se pudo capturar snapshot de sensores antes de firmar', err);
       }
     }
+
+    if (seismicTargets.length > 0) {
+      // Cada bloque puede tener su propio rango de fechas -- se consulta uno
+      // por uno (no hay endpoint batch) en vez de asumir un rango compartido.
+      for (const { pageNumber, element } of seismicTargets) {
+        const start = element.props?.startDate;
+        const end = element.props?.endDate;
+        if (!start || !end) continue;
+        try {
+          const data = await fetchSeismicReport(start, end);
+          updateElementFn(pageNumber, element.id, {
+            props: {
+              ...element.props,
+              snapshot: {
+                igpEvents: data?.igp?.events || [],
+                companyCount: (data?.company?.events || []).length,
+                fetchedAt: capturedAt,
+              },
+            },
+          });
+        } catch (err) {
+          log.error('No se pudo capturar snapshot de reporte sísmico antes de firmar', err);
+        }
+      }
+    }
   }, [telemetryTenantId]);
 
   const handleWorkflowTransition = useCallback(async (nextStatus: WorkflowStatus, comment: string) => {
@@ -1099,8 +1179,18 @@ export default function App({
       }
     } catch (err: any) {
       const serverError = err?.response?.data?.error || '';
-      if (err?.response?.status === 400 && serverError.startsWith('invalid_workflow_transition')) {
+      const serverNeed = err?.response?.data?.need || '';
+      const serverStatus = err?.response?.status;
+      // ADR-079: el backend es la autoridad real — estos casos pueden
+      // dispararse aunque el botón ya esté filtrado por permiso (p.ej. el
+      // permiso del usuario cambió en otra pestaña, o el estado del informe
+      // cambió mientras se revisaba).
+      if (serverStatus === 400 && serverError.startsWith('invalid_workflow_transition')) {
         setAiStatus(`Transición rechazada: ${previousStatus} → ${nextStatus} no es válida.`);
+      } else if (serverStatus === 403 && serverError === 'forbidden') {
+        setAiStatus(`No tiene permiso para esta acción${serverNeed ? ` (requiere: ${serverNeed})` : ''}.`);
+      } else if (serverStatus === 409 && serverError === 'report_immutable') {
+        setAiStatus('Este informe ya está firmado/archivado y no puede modificarse.');
       } else {
         log.error('Workflow transition failed', err);
         setAiStatus('Error al aplicar la transición de workflow. Intente nuevamente.');
@@ -1146,7 +1236,7 @@ export default function App({
   // cliente sin pasar antes por el servidor.
   const handleExportMiningReport = useCallback(async () => {
     if (!currentReportId) {
-      alert('Guarda el informe antes de exportarlo a .mreport (el archivo se genera en el servidor).');
+      void requestNotice(t('notice.saveBeforePortable'));
       return;
     }
     setAiStatus('Exportando .mreport...');
@@ -1191,18 +1281,35 @@ export default function App({
     input.click();
   }, [loadDocument]);
 
+  // Vista previa de impresión (ADR-080): abre el mismo visor de solo lectura
+  // que ya reusa el export server-side (ReadOnlyViewer), acotando la
+  // impresión nativa del navegador al contenido del informe en vez de a la
+  // página completa de la app (antes onPrint llamaba window.print() directo).
+  // Declarado antes de handleExportPdf porque su fallback cliente lo reusa.
+  const handlePrintPreview = useCallback(() => {
+    setReadOnlyReport({
+      id: currentReportId,
+      title: currentReportTitle,
+      contentJson: doc,
+      tenantId: session?.tenantId,
+    });
+    setShowReadOnly(true);
+  }, [currentReportId, currentReportTitle, doc, session]);
+
   // ── Export handlers ──
   // ADR-016: si el informe ya está guardado, usa el export server-side real
   // (Chromium headless, misma fidelidad visual que el visor de lectura). Si
-  // aún no tiene id (borrador sin guardar), no hay nada que el servidor
-  // pueda renderizar todavía — cae al viejo camino cliente (window.print()).
+  // aún no tiene id (borrador sin guardar) o el servidor falla, no hay nada
+  // que renderizar todavía server-side — cae al viejo camino cliente, que
+  // ahora abre la vista previa de impresión (.ro-overlay) en vez de llamar
+  // window.print() sobre el editor completo (ver exportEngine.ts::exportPDF).
   // Exports medidos contra el presupuesto O3 de ADR-023 (<5s) — antes
   // measurePerfAsync existía pero no se llamaba desde ningún export real.
   const handleExportPdf = useCallback(async () => {
     if (currentReportId) {
       setAiStatus('Exportando PDF (servidor)...');
       try {
-        const { blob, filename } = await measurePerfAsync('export', () => fetchReportPdfBlob(currentReportId));
+        const { blob, filename, password } = await measurePerfAsync('export', () => fetchReportPdfBlob(currentReportId));
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -1212,6 +1319,9 @@ export default function App({
         a.remove();
         URL.revokeObjectURL(url);
         setAiStatus('PDF exportado (servidor)');
+        // ADR-080: el PDF llega cifrado y con marca de agua — la contraseña
+        // se muestra una única vez, nunca queda guardada en el backend.
+        if (password) setPdfPassword(password);
         return;
       } catch (err) {
         log.error('Export PDF server-side falló, usando fallback cliente', err);
@@ -1219,8 +1329,13 @@ export default function App({
     }
     setAiStatus('Exportando PDF...');
     const result = await measurePerfAsync('export', () => exportPDF(doc, { author: loggedAuthor }));
+    if (result.method === 'print-fallback') {
+      setAiStatus('Sin conexión con el servidor de export — abriendo vista previa de impresión...');
+      handlePrintPreview();
+      return;
+    }
     setAiStatus(result.success ? `PDF exportado (${result.method})` : 'Error al exportar PDF');
-  }, [doc, loggedAuthor, currentReportId]);
+  }, [doc, loggedAuthor, currentReportId, handlePrintPreview]);
 
   const handleExportDocx = useCallback(async () => {
     setAiStatus('Exportando DOCX...');
@@ -1228,20 +1343,128 @@ export default function App({
     setAiStatus(result.success ? `DOCX exportado (${result.method})` : 'Error al exportar DOCX');
   }, [doc, loggedAuthor]);
 
+  // Export PPTX (modo presentación): igual que el PDF, requiere un informe ya
+  // guardado (el servidor renderiza /print-report.html, no puede hacerlo
+  // sobre un borrador que solo existe en memoria del navegador). A diferencia
+  // del PDF, no hay fallback cliente sensato — sin sidecar no hay PPTX. Job
+  // asíncrono (report_export_job): se crea, se hace polling hasta
+  // success/failed, y recién ahí se descarga.
   const handleExportPptx = useCallback(async () => {
-    setAiStatus('Exportando PPTX...');
-    const result = await measurePerfAsync('export', () => exportPPTX(doc, { author: loggedAuthor }));
-    setAiStatus(result.success ? 'PPTX exportado' : 'Error al exportar PPTX');
-  }, [doc, loggedAuthor]);
+    if (!currentReportId) {
+      setAiStatus('Guarda el informe antes de exportar a PPTX — el servidor necesita un informe guardado para renderizarlo.');
+      return;
+    }
+    const layoutMode = doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
+    if (layoutMode !== 'presentation') {
+      const wantsSwitch = await requestConfirmation(
+        'El PPTX solo se genera en modo presentación (lienzo 16:9). ¿Cambiar el informe a modo presentación ahora?',
+      );
+      if (!wantsSwitch) return;
+      setLayoutMode('presentation');
+      setAiStatus('Informe cambiado a modo presentación. Vuelve a hacer clic en "PPTX" para exportarlo.');
+      return;
+    }
+    setAiStatus('Generando PPTX (servidor)...');
+    try {
+      const { job_id: jobId } = await measurePerfAsync('export', () => createPptxExportJob(currentReportId));
+      const finalStatus = await pollExportJob(currentReportId, jobId, {
+        onProgress: (status) => {
+          setAiStatus(
+            status.status === 'running'
+              ? 'Generando PPTX (renderizando diapositivas)...'
+              : 'PPTX en cola de exportación...',
+          );
+        },
+      });
+      if (finalStatus.status !== 'success') {
+        setAiStatus(`Error al exportar PPTX${finalStatus.error_message ? `: ${finalStatus.error_message}` : ''}`);
+        return;
+      }
+      setLastPptxJobId(jobId);
+      const { blob, filename } = await fetchExportJobBlob(currentReportId, jobId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setAiStatus('PPTX exportado (servidor)');
+    } catch (err) {
+      log.error('Export PPTX server-side falló', err);
+      const backendError = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setAiStatus(
+        backendError === 'layout_mode_not_presentation'
+          ? 'El informe no está en modo presentación.'
+          : 'Error al exportar PPTX.',
+      );
+    }
+  }, [currentReportId, doc, setLayoutMode]);
+
+  // Convierte el último PPTX exportado en esta sesión (lastPptxJobId) a un
+  // MP4 sin narración (Stage 3) — no vuelve a renderizar el informe, el
+  // backend reutiliza las imágenes de diapositiva ya generadas para ese job.
+  const handleConvertPptxToVideo = useCallback(async () => {
+    if (!currentReportId || !lastPptxJobId) {
+      setAiStatus('Exporta primero el informe a PPTX para poder convertirlo a vídeo.');
+      return;
+    }
+    setAiStatus('Generando video (servidor)...');
+    try {
+      const { job_id: videoJobId } = await measurePerfAsync('export', () =>
+        createVideoExportJob(currentReportId, lastPptxJobId, { slideDurationSeconds: 4, transition: 'cut' }),
+      );
+      const finalStatus = await pollExportJob(currentReportId, videoJobId, {
+        onProgress: () => setAiStatus('Generando video (componiendo diapositivas)...'),
+      });
+      if (finalStatus.status !== 'success') {
+        setAiStatus(`Error al generar el video${finalStatus.error_message ? `: ${finalStatus.error_message}` : ''}`);
+        return;
+      }
+      const { blob, filename } = await fetchExportJobBlob(currentReportId, videoJobId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setAiStatus('Video exportado (servidor)');
+    } catch (err) {
+      log.error('Convertir PPTX a video falló', err);
+      const backendError = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setAiStatus(
+        backendError === 'pptx_job_not_ready'
+          ? 'El PPTX de referencia ya no está disponible — vuelve a exportarlo.'
+          : 'Error al generar el video.',
+      );
+    }
+  }, [currentReportId, lastPptxJobId]);
+
+  // Sube la narración de una página al job pptx activo (NarrationModal la
+  // llama por cada página con audio/notas antes de disparar la conversión).
+  const handleUploadNarrationPage = useCallback(
+    async (pageNumber: number, payload: { audioBlob: Blob; durationSeconds: number } | { speakerNotes: string }) => {
+      if (!currentReportId || !lastPptxJobId) return;
+      await uploadSlideNarration(currentReportId, lastPptxJobId, pageNumber, payload);
+    },
+    [currentReportId, lastPptxJobId],
+  );
 
   // ── Version snapshots ──
-  const handleCreateSnapshot = useCallback(() => {
-    const desc = prompt('Descripción del snapshot:', `Versión ${doc.meta?.version || 1}`);
+  const handleCreateSnapshot = useCallback(async () => {
+    const version = doc.meta?.version || 1;
+    const desc = await promptForTitle(
+      t('snapshot.defaultDescription', { version }),
+      t('snapshot.descriptionTitle'),
+    );
     if (desc === null) return;
     const snap = createSnapshot(doc, loggedAuthor, desc);
     setSnapshots((prev) => [...prev, snap]);
     setAiStatus(`Snapshot v${snap.version} creado.`);
-  }, [doc, loggedAuthor]);
+  }, [doc, loggedAuthor, promptForTitle, t]);
 
   const handleRestoreSnapshot = useCallback((snap: VersionSnapshot) => {
     loadDocument(snap.documentData, currentReportId, currentReportTitle);
@@ -1315,8 +1538,8 @@ export default function App({
   const designToolbar = (
     <RibbonToolbar
       onExportPdf={handleExportPdf}
-      onExportVideo={handleExportVideo}
-      onPrint={() => window.print()}
+      onExportVideo={handleRecordScreenToCanvas}
+      onPrint={handlePrintPreview}
       onReviewDocument={handleReviewDocument}
       onOptimizeDocument={handleOptimizeDocument}
       onZoomIn={handleZoomIn}
@@ -1326,7 +1549,6 @@ export default function App({
       snapEnabled={snapEnabled}
       onToggleGrid={() => setGridEnabled(!gridEnabled)}
       onToggleSnap={() => setSnapEnabled(!snapEnabled)}
-      isRecording={isRecording}
       isOptimizing={isOptimizing}
       zoomPercent={zoomPercent}
       onOpenReportsAdmin={() => setShowReportsAdmin(true)}
@@ -1353,7 +1575,24 @@ export default function App({
       onAddPage={addPage}
       onDuplicatePage={() => duplicatePage(selectedPage)}
       onAddTemplate={(tmpl) => addTextTemplate(tmpl)}
-      onInsertTOC={() => setShowToc((v) => !v)}
+      onOpenDocumentTemplates={() => { setRightPanelVisible(true); setShowTemplatesPanel(true); }}
+      onAddTechnicalBlock={handleAddTechnicalBlock}
+      onAddSectionTemplate={handleAddSectionTemplate}
+      onAddStaticChart={handleAddStaticChart}
+      // Corrección de precisión (2026-07-24): este botón del ribbon decía
+      // "Insertar tabla de contenidos automática" pero solo abría el panel
+      // de navegación flotante (showToc) -- nunca insertaba el bloque TOC
+      // real en el documento. El botón que sí inserta (handleAddToc) vivía
+      // solo en la biblioteca lateral ("Índice"). Ahora ambos hacen lo mismo,
+      // consistente con lo que el título del botón promete.
+      onInsertTOC={handleAddToc}
+      // Bug real (QA TC-COV-01, corregido 2026-07-27): "Insertar Carátula"
+      // no hacía NADA — el prop `onInsertCoverPage` nunca se pasaba desde
+      // App.tsx. Ahora además las 5 opciones del dropdown (corporate/
+      // technical/executive/field/normative) insertan 5 diseños REALES y
+      // distintos (Gerencia/Control Interno/Auditoría Interna/Campo/
+      // Normativo — ver lib/coverTemplates.ts), no el mismo diseño 5 veces.
+      onInsertCoverPage={(templateId) => addElement('cover', { props: { coverTemplate: templateId } })}
       onStartWorkflow={() => setShowWorkflow((v) => !v)}
       onToggleLeftPanel={() => setLeftPanelVisible((v) => !v)}
       onToggleRightPanel={() => setRightPanelVisible((v) => !v)}
@@ -1363,6 +1602,8 @@ export default function App({
       onImportMiningReport={handleImportMiningReport}
       onExportDocx={handleExportDocx}
       onExportPptx={handleExportPptx}
+      onExportPptxVideo={() => setShowNarrationModal(true)}
+      canExportPptxVideo={!!lastPptxJobId}
       onCreateSnapshot={handleCreateSnapshot}
       onShowVersionHistory={() => setShowVersionHistory((v) => !v)}
       onShowComparator={() => setShowComparator((v) => !v)}
@@ -1406,6 +1647,8 @@ export default function App({
       onToggleItalic={() => { if (!tryApplyToActiveTextSelection({ italic: true })) handleUpdateSelectedProps({ italic: !isItalic }); }}
       onToggleUnderline={() => { if (!tryApplyToActiveTextSelection({ underline: true })) handleUpdateSelectedProps({ underline: !isUnderline }); }}
       onSetAlignment={(align) => handleUpdateSelectedProps({ textAlign: align })}
+      onSetListStyle={applyListStyleToWholeBlock}
+      currentListStyle={currentListStyle}
       onSetFontFamily={(font) => { if (!tryApplyToActiveTextSelection({ fontFamily: font })) handleUpdateSelectedProps({ fontFamily: font }); }}
       onSetFontSize={(size) => { if (!tryApplyToActiveTextSelection({ fontSize: size })) handleUpdateSelectedProps({ fontSize: size }); }}
       onSetFontColor={(color) => { if (!tryApplyToActiveTextSelection({ color })) handleUpdateSelectedProps({ fontColor: color }); }}
@@ -1438,11 +1681,16 @@ export default function App({
             onAddPage={addPage}
             onDuplicatePage={handleDuplicatePage}
             onAddFindings={handleAddFindings}
+            onAddAnnexes={handleAddAnnexes}
+            onAddReferences={handleAddReferences}
+            onAddApa7Citation={handleOpenApa7Modal}
+            onAddTechnicalBlock={handleAddTechnicalBlock}
+            onAddSectionTemplate={handleAddSectionTemplate}
+            onAddStaticChart={handleAddStaticChart}
             onAddCover={handleAddCover}
             onAddToc={handleAddToc}
             onInsertCompanyImage={handleInsertCompanyImage}
-            onExportVideo={handleExportVideo}
-            isRecording={isRecording}
+            onExportVideo={handleRecordScreenToCanvas}
           />
         )}
 
@@ -1504,7 +1752,6 @@ export default function App({
             </div>
           )}
 
-          {showToc && <TableOfContents doc={doc} onRefresh={() => setShowToc(true)} />}
           {showWorkflow && (
             <WorkflowPanel
               reportId={currentReportId ?? undefined}
@@ -1514,6 +1761,7 @@ export default function App({
               onTransition={handleWorkflowTransition}
               onClose={() => setShowWorkflow(false)}
               currentUser={loggedAuthor}
+              hasPermission={hasReportPermission}
             />
           )}
           {showVersionHistory && (
@@ -1556,7 +1804,11 @@ export default function App({
         <div id="aria-live-region" aria-live="polite" />
 
         {rightPanelVisible && (
-          <RightInspector onRequestImageReplace={openImageInsertForReplace} />
+          <RightInspector
+            onRequestImageReplace={openImageInsertForReplace}
+            showTemplatesPanel={showTemplatesPanel}
+            onCloseTemplatesPanel={() => setShowTemplatesPanel(false)}
+          />
         )}
       </div>
 
@@ -1734,6 +1986,10 @@ export default function App({
         />
       )}
 
+      {pdfPassword && (
+        <PdfPasswordModal password={pdfPassword} onClose={() => setPdfPassword(null)} />
+      )}
+
       {showShareModal && shareTarget && (
         <ShareReportModal
           report={shareTarget}
@@ -1782,6 +2038,47 @@ export default function App({
               key={`video-insert-${videoInsertOpenSeq}`}
               onClose={closeVideoInsertModal}
               onComplete={handleVideoInsertComplete}
+              initialTab={videoInsertInitialTab}
+            />,
+            document.body,
+          )
+        : null}
+
+      {typeof document !== 'undefined' && showNarrationModal
+        ? createPortal(
+            <NarrationModal
+              pageCount={doc.pages?.length || 1}
+              onClose={() => setShowNarrationModal(false)}
+              onUploadPage={handleUploadNarrationPage}
+              onSubmit={handleConvertPptxToVideo}
+            />,
+            document.body,
+          )
+        : null}
+
+      {typeof document !== 'undefined' && showApa7Modal
+        ? createPortal(
+            <Apa7CitationModal
+              onClose={closeApa7Modal}
+              onInsert={handleApa7Insert}
+            />,
+            document.body,
+          )
+        : null}
+
+      {typeof document !== 'undefined' && titlePromptState
+        ? createPortal(
+            <SaveTitleModal
+              defaultValue={titlePromptState.defaultValue}
+              heading={titlePromptState.heading}
+              onConfirm={(value) => {
+                titlePromptState.resolve(value);
+                setTitlePromptState(null);
+              }}
+              onCancel={() => {
+                titlePromptState.resolve(null);
+                setTitlePromptState(null);
+              }}
             />,
             document.body,
           )
@@ -1790,6 +2087,8 @@ export default function App({
       {showFormulaAnalysis && (
         <FormulaAnalysisModal onClose={() => setShowFormulaAnalysis(false)} />
       )}
+
+      <SupportChatWidget />
     </div>
   );
 }

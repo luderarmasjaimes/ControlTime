@@ -21,11 +21,17 @@ test('Dashboard shows KPIs and Map occupies full area on Map tab', async ({ page
   await page.setViewportSize({ width: 1280, height: 800 })
 
   // Dashboard by default
-    await expect(page.getByText(/Prod\. Mensual/i)).toBeVisible()
+  // "Prod. Mensual" ya no existe -- los KPI de cabecera se reemplazaron por
+  // red de sensores + calidad del aire (ver MiningDashboard.tsx, comentario
+  // "KPIs de cabecera reemplazados"). "Sensores en Red" es el KPI real y
+  // estable de esa tarjeta.
+  await expect(page.getByText(/Sensores en Red/i)).toBeVisible()
 
   // Switch to Map tab and verify map viewer area is rendered
+  // El boton visible es "Abrir Satelite" (name interno del tab sigue siendo
+  // 'Map', pero su label pasa por i18n -> t('nav.satellite') = 'Satelite').
   await openCategory(page, 'Mapas')
-  await page.getByRole('button', { name: 'Abrir Map', exact: true }).click()
+  await page.getByRole('button', { name: 'Abrir Satélite', exact: true }).click()
   // "Unidad Minera Toquepala" ya no aparece en ningun lado de la app (contenido
   // desactualizado, verificado 2026-07-21) -- se reemplaza por el titulo real
   // y estable del visor de mapa (MapViewer.tsx, mapTitle por defecto).

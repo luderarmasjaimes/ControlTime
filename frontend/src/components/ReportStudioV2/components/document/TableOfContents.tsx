@@ -126,6 +126,18 @@ export function generateTocData(doc: any): TocItem[] {
   return numberHeadings(headings);
 }
 
+/**
+ * Resuelve una referencia cruzada (ADR-019) al número de sección vigente de
+ * su target — misma fuente de verdad que la TOC (`generateTocData`), así
+ * que insertar/mover una sección re-numera y re-resuelve la referencia
+ * automáticamente en el siguiente render, sin ningún paso manual. Devuelve
+ * `undefined` si el `targetId` ya no existe (encabezado borrado) — el
+ * llamador (`buildStyledSegments`) decide cómo mostrar ese caso.
+ */
+export function resolveHeadingRefLabel(doc: any, targetId: string): string | undefined {
+  return generateTocData(doc).find((item) => item.id === targetId)?.number;
+}
+
 interface TableOfContentsProps {
   doc: any;
   onScrollToElement?: (id: string, pageNumber: number) => void;

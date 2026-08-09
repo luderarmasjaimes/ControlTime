@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Video as VideoIcon, Camera, MonitorPlay, X, Check, RefreshCw, Circle, Square, AlertCircle } from 'lucide-react';
+import { fixRecordedVideoElement } from '../../lib/videoDurationFix';
 
 /**
  * Tope de grabación insertable en el lienzo: el video queda embebido como
@@ -21,6 +22,26 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+/**
+ * Pide cámara+micrófono; si falla (sin micrófono físico, permiso de audio
+ * denegado, o cualquier otro motivo), reintenta solo con video antes de
+ * darse por vencido. Sin este fallback, `getUserMedia({video:true,
+ * audio:true})` rechaza la promesa COMPLETA en cuanto el audio falla —la
+ * cámara nunca llega a activarse aunque el video en sí funcione
+ * perfectamente— que es justamente por qué la toma de fotos (solo video,
+ * ver ImageInsertModal.tsx) funcionaba mientras la grabación de video
+ * (video+audio) no activaba la cámara en equipos sin micrófono utilizable.
+ */
+async function getUserMediaWithAudioFallback(): Promise<{ stream: MediaStream; hasAudio: boolean }> {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    return { stream, hasAudio: stream.getAudioTracks().length > 0 };
+  } catch {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    return { stream, hasAudio: false };
+  }
+}
+
 function pickSupportedMimeType(): string {
   const candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
   for (const c of candidates) {
@@ -32,6 +53,7 @@ function pickSupportedMimeType(): string {
 interface VideoInsertModalProps {
   onClose: () => void;
   onComplete: (dataUrl: string, meta: { source: 'webcam' | 'screen'; durationSeconds: number; mimeType: string }) => void;
+  initialTab?: 'webcam' | 'screen';
 }
 
 /**
@@ -41,8 +63,8 @@ interface VideoInsertModalProps {
  * TopToolbar para exportar un video del informe -- acá el resultado se
  * inserta como bloque en el lienzo en vez de descargarse).
  */
-function VideoInsertModal({ onClose, onComplete }: VideoInsertModalProps) {
-  const [tab, setTab] = useState<'webcam' | 'screen'>('webcam');
+function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoInsertModalProps) {
+  const [tab, setTab] = useState<'webcam' | 'screen'>(initialTab);
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -79,7 +101,7 @@ function VideoInsertModal({ onClose, onComplete }: VideoInsertModalProps) {
     let cancelled = false;
     (async () => {
       try {
-        const ms = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        const { stream: ms } = await getUserMediaWithAudioFallback();
         if (cancelled) {
           ms.getTracks().forEach((t) => t.stop());
           return;
@@ -106,6 +128,11 @@ function VideoInsertModal({ onClose, onComplete }: VideoInsertModalProps) {
   useEffect(() => {
     if (resultVideoRef.current && recordedUrl) {
       resultVideoRef.current.src = recordedUrl;
+      // El blob que produce MediaRecorder no trae Duration/índice de
+      // búsqueda -- sin este fix la vista previa (igual que el bloque ya
+      // insertado en el lienzo) se ve en negro con "0:00" hasta que el
+      // usuario arrastra el control manualmente (ver lib/videoDurationFix.ts).
+      fixRecordedVideoElement(resultVideoRef.current);
     }
   }, [recordedUrl]);
 
@@ -120,7 +147,7 @@ function VideoInsertModal({ onClose, onComplete }: VideoInsertModalProps) {
     let stream: MediaStream;
     try {
       if (source === 'webcam') {
-        stream = streamRef.current ?? (await navigator.mediaDevices.getUserMedia({ video: true, audio: true }));
+        stream = streamRef.current ?? (await getUserMediaWithAudioFallback()).stream;
       } else {
         if (!navigator.mediaDevices?.getDisplayMedia) {
           setError('Grabación de pantalla no disponible en este navegador.');

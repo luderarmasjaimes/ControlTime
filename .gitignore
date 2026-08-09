@@ -20,6 +20,7 @@ dist/
 build/
 backend/build/
 backend/build-vcpkg/
+frontend/test-results/
 __pycache__/
 *.pyc
 .pytest_cache/

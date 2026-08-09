@@ -10,8 +10,8 @@ test('Report v2 guarda informe y lo lista en Mis Informes', async ({ page }) => 
   await dismissUserMaintenancePrompt(page)
 
   await page.setViewportSize({ width: 1400, height: 900 })
-  await openCategory(page, 'Reportes')
-  await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click()
+  await openCategory(page, 'Informes')
+  await page.getByRole('button', { name: 'Abrir Informes', exact: true }).click()
 
   // Titulo unico por corrida para no chocar con informes de corridas previas
   // (el backend real persiste entre ejecuciones, a diferencia del
@@ -90,8 +90,8 @@ test('Report v2 abre visor de lectura desde administracion', async ({ page }) =>
   await dismissUserMaintenancePrompt(page)
   await page.setViewportSize({ width: 1400, height: 900 })
 
-  await openCategory(page, 'Reportes')
-  await page.getByRole('button', { name: 'Abrir Report v2', exact: true }).click()
+  await openCategory(page, 'Informes')
+  await page.getByRole('button', { name: 'Abrir Informes', exact: true }).click()
   await openMisInformes(page)
 
   const dateInputs = page.locator('.ra-filters input[type="date"]')
