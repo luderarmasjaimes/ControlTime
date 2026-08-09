@@ -436,8 +436,10 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 093 | `vite8-rolldown-migracion-parcial-interop-plotly` | ⚠️ partial (2026-08-07) | Vite 8/Rolldown + swap a `plotly.js-basic-dist-min` encontrados sin ADR y sin commitear (junto con toda la migración TS de ADR-069); rompían el módulo Informes para cualquier usuario (bug de interop CJS→ESM entre esbuild dev y Rolldown build). Corregido y verificado en ambos bundlers. `partial` porque el árbol sigue sin commitear — ver Consecuencias del ADR. |
 | 094 | `lectura-dni-camara-pdf417-mrz` | ✅ implemented, verificado con datos sintéticos (2026-08-07) | Lectura de DNI (antiguo PDF417 + MRZ de todas las versiones) vía cámara web en sidecar `ai_engine`, sin consulta a RENIEC. Alternativa elegida tras descartar validación online por riesgo de cumplimiento. QR del DNI-e 3.0 diferido. Falta prueba contra documento físico real. |
 | 095 | `usermaintenancemodal-css-autocontenida-marca` | ✅ implemented, verificado (2026-08-07) | Fix real de code-splitting: el modal se monta desde `App.tsx` fuera del chunk lazy de ReportStudioV2 y no cargaba su CSS; hoja propia autocontenida + marca corporativa `#F07E41`. |
+| 096 | `opencv-4-12-vcpkg-backend` | ✅ implemented, verificado (2026-08-08) | Backend C++ compila OpenCV 4.12.0 estático vía vcpkg manifest, reemplazando `libopencv-dev` 4.6.0 (apt/Ubuntu, congelado desde 2022). Runtime sin cambios (cascades Haar del pipeline legacy). |
+| 101 | `fix-bucle-reintento-registro` | ✅ implemented, verificado (2026-08-08) | El `useEffect` de auto-envío de registro reintentaba cada ~2.7s con los mismos datos tras cualquier error del servidor, borrando el mensaje casi al instante (`setError('')`) — se veía como pantalla parpadeando sin error visible. Un rechazo confirmado del servidor ya no rearma el auto-reintento. |
 
-**Ámbito `plataforma`: 34/37 implemented, 2 partial, 1 proposed** (recalculado 2026-08-07 tras agregar ADR-093/094/095; ver ADRs individuales para su status).
+**Ámbito `plataforma`: 36/39 implemented, 2 partial, 1 proposed** (recalculado 2026-08-08 tras agregar ADR-096/101; ver ADRs individuales para su status).
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |
@@ -513,8 +515,12 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 089 | `biometria-dermalog-cli-integration` | ✅ accepted (2026-08-05) *(fila agregada 2026-08-07 — el ADR ya existía sin fila en esta tabla, ver nota de auditoría arriba)* | SDK comercial Dermalog Face (`BiometricProvider::DermalogCli`, subproceso vía `dermalog-face-cli`) como validador biométrico principal por exigencia de cumplimiento/certificación; InsightFace (ArcFace) pasa a fallback automático si el binario Dermalog falla. Sustituye formalmente `specs/adr/ADR-005` (que ya tiene el banner `SUPERSEDED` correcto apuntando aquí). |
 | 090 | `deprecacion-adr-tempranos-ia` | ✅ accepted (2026-08-05) *(fila agregada 2026-08-07)* | Formaliza que `specs/adr/` (metodología SDD temprana) queda deprecado como fuente para el router de IA/RAG a favor de `docs/decisions/` — consistente con la nota ya existente de este mismo README (2026-07-24, "`docs/decisions/` pasa a ser la fuente canónica efectiva para RAG, agentes y CI"). |
 | 091 | `opencv-composicion-raii` | ✅ accepted (2026-08-05) *(fila agregada 2026-08-07)* | Procesamiento/composición de imágenes en C++ con OpenCV vía patrón RAII (gestión determinista de recursos nativos); implementa CANDIDATE E6. |
+| 097 | `numpy2-onnxruntime-opencv-python-ai-engine` | ✅ implemented, verificado (2026-08-08) | `ai_engine` migrado a NumPy 2.x, onnxruntime 1.23.2, opencv-python-headless 4.14.x; mediapipe e insightface se mantienen sin cambio (releases mayores demasiado recientes, sin ciclo de prueba). Shim de compatibilidad `np.int` para InsightFace 0.7.3 (bug confirmado upstream, sin release en PyPI). |
+| 098 | `aislamiento-sesion-captura-biometrica` | ✅ implemented, verificado (2026-08-08) | `X-Capture-Session-Id` por pestaña, propagado frontend→backend→ai_engine. `gBiometricCaptureState` y la histéresis de lentes/EAR en `eye_analyzer.py` eran globales de proceso compartidas por todas las capturas concurrentes. |
+| 099 | `fallback-insightface-no-bloqueante` | ✅ implemented, verificado (2026-08-08) | `analyzeFaceImage()` intentaba InsightFace primero y, si fallaba, retornaba sin caer al pipeline legacy — contradecía ADR-089 (InsightFace es motor secundario). Fallback real restaurado. |
+| 100 | `onnxruntime-thread-limit-insightface` | ✅ implemented, verificado (2026-08-08) | `/face_embedding` tardaba 4-7s con 398% CPU por sobre-suscripción de hilos de onnxruntime (host vs. cuota de cgroup del contenedor). `intra_op_num_threads=2` inyectado vía parche de `InferenceSession`: 0.6-0.8s, 8.7% CPU. |
 
-**Ámbito `ia`: 6 implemented/accepted y 1 deferred por diseño (EPP no cuenta como pendiente v0.1).**
+**Ámbito `ia`: 10 implemented/accepted y 1 deferred por diseño (EPP no cuenta como pendiente v0.1).**
 
 ### Ámbito `geo` — cartografía y geoespacial
 | # | Slug | Status | Resumen |
