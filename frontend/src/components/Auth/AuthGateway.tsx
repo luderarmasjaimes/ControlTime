@@ -16,7 +16,10 @@ import {
     UserPlus,
     ShieldCheck,
     AlertTriangle,
+    ScanLine,
 } from 'lucide-react'
+import { DocumentScanCapture } from '../UI/DocumentScanCapture'
+import type { DniScanResult } from '../../auth/authApi'
 import {
     createSession,
     getSession,
@@ -57,6 +60,9 @@ import {
     FACIAL_STRICT_OVAL_H_PCT,
 } from '../../auth/biometricOvalFrame'
 import { PlatformBrandPanelHeader } from '../../brand/PlatformBrandMark'
+import PlatformRegionBar from '../Platform/PlatformRegionBar'
+import { useI18n } from '../../i18n/I18nProvider'
+import { formatInternationalTel, phonePrefixForCountry } from '../../auth/platformPrefs'
 
 import { log } from '../../lib/logger';
 
@@ -224,6 +230,8 @@ interface AuthGatewayProps {
 }
 
 const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
+    const { t, countryIso2: country, localizeMessage } = useI18n()
+    const activePhonePrefix = phonePrefixForCountry(country, undefined)
     const [mode, setMode] = useState('login')
     const [registerTab, setRegisterTab] = useState('user')
     const [loginTab, setLoginTab] = useState('user')
@@ -235,6 +243,17 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const [loginSessionSecondsLeft, setLoginSessionSecondsLeft] = useState<number | null>(null)
     const [isProcessing, setIsProcessing] = useState(false)
     const [companies, setCompanies] = useState<string[]>(DEFAULT_COMPANIES)
+    const [showDniScan, setShowDniScan] = useState(false)
+
+    const handleDniScanSuccess = (result: DniScanResult) => {
+        setShowDniScan(false)
+        setRegisterForm((prev) => ({
+            ...prev,
+            dni: result.dni || prev.dni,
+            firstName: result.first_name || prev.firstName,
+            lastName: result.last_name || prev.lastName,
+        }))
+    }
 
     const [loginForm, setLoginForm] = useState<LoginForm>({
         company: DEFAULT_COMPANIES[0],
@@ -574,7 +593,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         if (registerTab === 'company') {
             valuesOk = Boolean(
                 registerForm.company.trim() &&
-                registerForm.ruc.trim().length >= 11 &&
+                registerForm.ruc.trim().length >= (country === 'BR' ? 14 : country === 'PE' ? 11 : 9) &&
                 registerForm.rucValid &&
                 registerForm.contractorLegalName.trim() &&
                 registerForm.firstName.trim() &&
@@ -596,7 +615,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             )
         }
         return valuesOk && Boolean(capturedImageBase64)
-    }, [registerForm, capturedImageBase64, registerTab])
+    }, [registerForm, capturedImageBase64, registerTab, country])
 
     useEffect(() => {
         const session = getSession()
@@ -674,7 +693,8 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
 
     // Real-time RUC validation
     useEffect(() => {
-        if (registerTab !== 'company' || registerForm.ruc.length < 11) {
+        const requiredLength = country === 'BR' ? 14 : country === 'PE' ? 11 : 9
+        if (registerTab !== 'company' || registerForm.ruc.length !== requiredLength) {
             setRegisterForm(prev => ({ ...prev, rucValid: false, isValidatingRuc: false }));
             return;
         }
@@ -682,7 +702,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         const timeoutId = setTimeout(async () => {
             setRegisterForm(prev => ({ ...prev, isValidatingRuc: true }));
             try {
-                const isValid = await validateCompany(registerForm.company, registerForm.ruc);
+                const isValid = await validateCompany(registerForm.company, registerForm.ruc, country);
                 setRegisterForm(prev => ({ ...prev, rucValid: isValid, isValidatingRuc: false }));
             } catch (err) {
                 log.error("RUC Validation error:", err);
@@ -691,7 +711,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         }, 800);
 
         return () => clearTimeout(timeoutId);
-    }, [registerForm.ruc, registerForm.company, registerTab]);
+    }, [registerForm.ruc, registerForm.company, registerTab, country]);
 
     const shouldUseFaceCamera =
         (mode === 'login' && loginBiometricSession) ||
@@ -714,7 +734,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
 
         async function startCamera() {
             if (!navigator.mediaDevices?.getUserMedia) {
-                setError('API de cámara no disponible en este navegador.')
+                setError(t('error.cameraApi'))
                 setCameraReady(false)
                 return
             }
@@ -778,11 +798,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             } catch (err: any) {
                 const name = err?.name || ''
                 if (name === 'NotReadableError' || name === 'TrackStartError') {
-                    setError('Cámara en uso. Cierre otras aplicaciones; reintentando…')
+                    setError(t('error.cameraBusy'))
                 } else if (name === 'NotAllowedError') {
-                    setError('Permiso de cámara denegado.')
+                    setError(t('error.cameraPermission'))
                 } else {
-                    setError('No se pudo abrir la cámara. Verifique permisos del navegador.')
+                    setError(t('error.cameraOpen'))
                 }
                 setCameraReady(false)
                 if (!cancelled && !cameraRetryTimerRef.current) {
@@ -1666,13 +1686,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             loginTab,
         })
         if (!id) {
-            setError(
-                'Indique Usuario, DNI o RUC antes del reconocimiento facial.'
-            )
+            setError(t('error.identityRequired'))
             return
         }
         if (!company) {
-            setError('Seleccione la empresa asignada / compañía.')
+            setError(t('error.companyRequired'))
             return
         }
         setError('')
@@ -1683,8 +1701,8 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             if (check.ok !== true) {
                 const msg =
                     check.reason === 'not_found' || check.reason === 'invalid_response'
-                        ? 'USUARIO NO EXISTE'
-                        : check.error || 'USUARIO NO EXISTE'
+                        ? t('error.userNotFound')
+                        : localizeMessage(check.error || t('error.userNotFound'))
                 setError(msg)
                 log.warn('[AUTH_FACE_UI] identidad rechazada antes de cámara', {
                     company,
@@ -1722,10 +1740,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             }))
             setLoginBiometricSession(true)
         } catch (e: any) {
-            setError(
-                e?.message ||
-                    'No se pudo comprobar el usuario con el servidor. Intente de nuevo.'
-            )
+            setError(localizeMessage(e?.message || t('error.identityRequired')))
         } finally {
             setIsProcessing(false)
         }
@@ -1738,15 +1753,13 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 hasVideo: Boolean(videoRef.current),
                 cameraReady,
             })
-            setError('La camara no esta lista.')
+            setError(t('error.cameraNotReady'))
             return
         }
         if (mode === 'login' && !loginBiometricSessionRef.current) {
             loginSubmitTriggeredRef.current = false
             log.warn('[AUTH_FACE_UI] handleFaceLogin abort: no sesión biométrica login')
-            setError(
-                'Active la verificación facial con el botón «Ingresar con Reconocimiento Facial».'
-            )
+            setError(t('error.activateFace'))
             return
         }
 
@@ -1754,9 +1767,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         if (!id) {
             loginSubmitTriggeredRef.current = false
             log.warn('[AUTH_FACE_UI] handleFaceLogin abort: identidad vacía')
-            setError(
-                'Indique Usuario, DNI o RUC antes del reconocimiento facial.'
-            )
+            setError(t('error.identityRequired'))
             return
         }
 
@@ -1799,7 +1810,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 provider: result?.biometric_provider || 'unknown',
             })
             const session = createSession(user, loginTab)
-            setMessage(`Rostro validado (${(score * 100).toFixed(1)}%). Ingreso autorizado.`)
+            setMessage(t('message.faceAuthorized', { score: (score * 100).toFixed(1) }))
             onAuthenticated(session)
         } catch (err: any) {
             loginSubmitTriggeredRef.current = false
@@ -1808,7 +1819,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 company: String(loginForm.company || '').trim(),
                 identity: id,
             })
-            setError(err.message)
+            setError(localizeMessage(err.message))
         } finally {
             setIsProcessing(false)
         }
@@ -1822,19 +1833,19 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
 
         try {
             if (!String(loginForm.username || '').trim()) {
-                setError('Indique Usuario, DNI o RUC.')
+                setError(t('error.identityRequired'))
                 return
             }
             if (!String(loginForm.password || '').trim()) {
-                setError('Indique la contraseña.')
+                setError(t('error.passwordRequired'))
                 return
             }
             const result = await loginWithPassword(loginForm)
             const session = createSession(result.user, loginTab)
-            setMessage('Autenticacion por usuario y contrasena validada.')
+            setMessage(t('message.passwordAuthorized'))
             onAuthenticated(session)
         } catch (err: any) {
-            setError(err.message)
+            setError(localizeMessage(err.message))
         } finally {
             setIsProcessing(false)
         }
@@ -1874,22 +1885,20 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             return
         }
         if (!videoRef.current || !cameraReady) {
-            setError('La camara no esta lista para el registro facial.')
+            setError(t('error.cameraNotReady'))
             log.warn('[AUTH_REGISTER_FLOW] blocked: camera not ready')
             releaseRegisterAutoTrigger('camera_not_ready')
             return
         }
 
         if (!faceGuide.detected) {
-            setError('Mantenga el rostro visible y centrado en el ovalo.')
+            setError(t('error.faceCentered'))
             log.warn('[AUTH_REGISTER_FLOW] blocked: face not detected')
             releaseRegisterAutoTrigger('not_detected')
             return
         }
         if (!faceGuide.qualityReady && !serverSamplesReady) {
-            setError(
-                'Complete los 5 parámetros ICAO + liveness (FACIAL): ojos, boca, frontalidad, sin lentes y anti-spoofing ≥ 70%.'
-            )
+            setError(t('error.faceQuality'))
             log.warn('[AUTH_REGISTER_FLOW] blocked: quality_gate', {
                 qualityReady: Boolean(faceGuide.qualityReady),
                 captureCount: Number(faceGuide.captureCount || 0),
@@ -1934,6 +1943,8 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             try {
                 const result = await registerUser({
                     ...registerForm,
+                    phone: formatInternationalTel(registerForm.phone, activePhonePrefix),
+                    mobile: formatInternationalTel(registerForm.mobile, activePhonePrefix),
                     faceTemplate: template,
                     faceImageBase64: imageBase64,
                     facePortraitOvalBase64: portraitOvalBase64,
@@ -1958,15 +1969,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 setCapturedImageBase64('')
                 setCapturedPortraitOvalBase64('')
                 setCapturedBustRectBase64('')
-                setMessage(
-                    'Registro completado. Ya puede iniciar sesión con su usuario y reconocimiento facial.'
-                )
-                /* alert() bloquea el hilo: difiere un tick para pintar fin de "procesando" */
-                setTimeout(() => {
-                    window.alert(
-                        'Registro facial completado correctamente. Presione OK para volver a LOGIN.'
-                    )
-                }, 0)
+                setMessage(t('message.registerComplete'))
                 setMode('login')
                 setError('')
                 registerAutoSubmitTriggeredRef.current = false
@@ -1975,8 +1978,18 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 setCapturedImageBase64('')
                 setCapturedPortraitOvalBase64('')
                 setCapturedBustRectBase64('')
-                setError(err.message)
-                releaseRegisterAutoTrigger('api_error')
+                setError(localizeMessage(err.message))
+                // NO releaseRegisterAutoTrigger aqui (a diferencia de los otros
+                // early-return de esta funcion): el servidor ya rechazo esta
+                // solicitud (ej. "username already exists"), reenviar los
+                // MISMOS datos automaticamente nunca va a tener exito. Sin este
+                // guard, el useEffect de auto-envio (captureCount se mantiene
+                // en 3/3 mientras la camara siga corriendo) reintentaba cada
+                // ~2-3s con el mismo payload, y cada intento hacia setError('')
+                // al arrancar -- el mensaje de error quedaba visible una
+                // fraccion de segundo y se borraba solo, viendose como un
+                // parpadeo sin error real. Dejar el trigger armado obliga a
+                // salir de la captura (cambia usuario/dni) para reintentar.
                 log.warn('[AUTH_REGISTER_FLOW] registerUser error', {
                     message: err?.message || String(err),
                     stack: err?.stack || null,
@@ -1992,7 +2005,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         setCapturedImageBase64(imageBase64)
         setCapturedPortraitOvalBase64(portraitOvalBase64)
         setCapturedBustRectBase64(bustRectBase64)
-        setMessage('Registro facial capturado correctamente.')
+        setMessage(t('message.faceCaptured'))
         setError('')
     }
 
@@ -2003,39 +2016,39 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         const pw = String(registerForm.password || '')
         const pc = String(registerForm.passwordConfirm || '')
         if (pw.length < 6) {
-            setError('La contraseña debe tener al menos 6 caracteres.')
+            setError(t('error.passwordLength'))
             return
         }
         if (pw !== pc) {
-            setError('Las contraseñas no coinciden.')
+            setError(t('error.passwordMismatch'))
             return
         }
         if (!String(registerForm.company || '').trim()) {
-            setError('Seleccione la empresa asignada.')
+            setError(t('error.companyRequired'))
             return
         }
         if (!String(registerForm.dni || '').trim() || registerForm.dni.trim().length < 8) {
-            setError('Indique un DNI válido (mínimo 8 caracteres).')
+            setError(t('error.workerId'))
             return
         }
         if (!String(registerForm.firstName || '').trim()) {
-            setError('Indique los nombres.')
+            setError(t('error.firstNames'))
             return
         }
         if (!String(registerForm.lastName || '').trim()) {
-            setError('Indique los apellidos.')
+            setError(t('error.lastNames'))
             return
         }
         if (!String(registerForm.email || '').trim() || registerForm.email.trim().length < 5) {
-            setError('Indique un correo electrónico válido.')
+            setError(t('error.email'))
             return
         }
         if (!String(registerForm.mobile || '').trim() || registerForm.mobile.trim().length < 6) {
-            setError('Indique un número de celular válido.')
+            setError(t('error.mobile'))
             return
         }
         if (!String(registerForm.username || '').trim() || registerForm.username.trim().length < 4) {
-            setError('El usuario de sistema debe tener al menos 4 caracteres.')
+            setError(t('error.usernameLength'))
             return
         }
         setError('')
@@ -2073,43 +2086,44 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         const pw = String(registerForm.password || '')
         const pc = String(registerForm.passwordConfirm || '')
         if (pw.length < 6) {
-            setError('La contraseña debe tener al menos 6 caracteres.')
+            setError(t('error.passwordLength'))
             return
         }
         if (pw !== pc) {
-            setError('Las contraseñas no coinciden.')
+            setError(t('error.passwordMismatch'))
             return
         }
-        if (registerForm.ruc.trim().length < 11 || !registerForm.rucValid) {
-            setError('Indique un RUC válido de 11 dígitos y espere la validación.')
+        const requiredTaxIdLength = country === 'BR' ? 14 : country === 'PE' ? 11 : 9
+        if (registerForm.ruc.trim().length !== requiredTaxIdLength || !registerForm.rucValid) {
+            setError(t('error.ruc'))
             return
         }
         if (!String(registerForm.contractorLegalName || '').trim()) {
-            setError('Indique la razón social / nombre del contratista.')
+            setError(t('error.contractorName'))
             return
         }
         if (!String(registerForm.company || '').trim()) {
-            setError('Seleccione la empresa minera asociada.')
+            setError(t('error.companyRequired'))
             return
         }
         if (!String(registerForm.dni || '').trim() || registerForm.dni.trim().length < 8) {
-            setError('Indique el DNI del representante legal (mínimo 8 caracteres).')
+            setError(t('error.representativeId'))
             return
         }
         if (!String(registerForm.firstName || '').trim()) {
-            setError('Indique los nombres del representante.')
+            setError(t('error.representativeFirstNames'))
             return
         }
         if (!String(registerForm.lastName || '').trim()) {
-            setError('Indique los apellidos del representante.')
+            setError(t('error.representativeLastNames'))
             return
         }
         if (!String(registerForm.mobile || '').trim() || registerForm.mobile.trim().length < 6) {
-            setError('Indique un celular de contacto válido.')
+            setError(t('error.mobile'))
             return
         }
         if (!String(registerForm.username || '').trim() || registerForm.username.trim().length < 4) {
-            setError('El usuario de sistema debe tener al menos 4 caracteres.')
+            setError(t('error.usernameLength'))
             return
         }
         setError('')
@@ -2143,11 +2157,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const handleRegister = async (event: { preventDefault: () => void }) => {
         event.preventDefault()
         if (registerForm.password !== registerForm.passwordConfirm) {
-            setError('Las contraseñas no coinciden.')
+            setError(t('error.passwordMismatch'))
             return
         }
         if (!canRegister) {
-            setError('Completa todos los datos y registra el rostro para continuar.')
+            setError(t('error.completeRegistration'))
             return
         }
 
@@ -2168,7 +2182,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             // informes. `contractorLegalName` se sigue capturando y enviando
             // (queda disponible como dato del contratista), pero ya no
             // reemplaza a `company`.
-            const registrationPayload = registerForm
+            const registrationPayload = {
+                ...registerForm,
+                phone: formatInternationalTel(registerForm.phone, activePhonePrefix),
+                mobile: formatInternationalTel(registerForm.mobile, activePhonePrefix),
+            }
             const result = await registerUser({
                 ...registrationPayload,
                 faceTemplate: capturedTemplate ?? undefined,
@@ -2178,10 +2196,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             })
 
             const session = createSession(result.user, registerTab)
-            setMessage('Usuario registrado y autenticado con exito.')
+            setMessage(t('message.registered'))
             onAuthenticated(session)
         } catch (err: any) {
-            setError(err.message)
+            setError(localizeMessage(err.message))
         } finally {
             setIsProcessing(false)
         }
@@ -2245,14 +2263,14 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 {showBiometricPanel && (
                 <section className="auth-panel auth-panel-main">
                     {faceCaptureOnlyView && (
-                        <PlatformBrandPanelHeader compact />
+                        <PlatformBrandPanelHeader compact subtitle={t('auth.platformSubtitle')} />
                     )}
                     <div className="camera-card camera-card-tall">
                         <div className="camera-header">
                             <div className="camera-title camera-title-with-pill">
-                                <span className="auth-pill auth-pill-inline">Control de acceso</span>
+                                <span className="auth-pill auth-pill-inline">{t('auth.accessControl')}</span>
                                 <Camera size={16} />
-                                <span>Cámara</span>
+                                <span>{t('auth.camera')}</span>
                                 <span
                                     className="auth-pill auth-pill-inline"
                                     style={{ opacity: 0.8, fontSize: '10px' }}
@@ -2262,10 +2280,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             </div>
                             <span className={cameraReady ? 'status-dot online' : 'status-dot offline'}>
                                 {cameraReady
-                                    ? 'Activa'
+                                    ? t('auth.cameraActive')
                                     : mode === 'login' && !loginBiometricSession
-                                      ? 'En espera'
-                                      : 'Sin acceso'}
+                                      ? t('auth.cameraWaiting')
+                                      : t('auth.cameraUnavailable')}
                             </span>
                             {faceSessionTimerActive &&
                                 faceTimerSecondsLeft != null && (
@@ -2324,7 +2342,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                 isCriticalTimer ? 'text-red-300' : 'text-amber-200'
                                             }`}
                                         >
-                                            Tiempo restante
+                                            {t('auth.timeRemaining')}
                                         </div>
                                     </div>
                                 )}
@@ -2403,15 +2421,15 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     {!faceGuide.qualityReady && (
                                         <div className="absolute inset-0 flex items-center justify-center">
                                             <span
-                                                className="text-sky-300 text-[10px] font-semibold px-1"
+                                                className="text-orange-300 text-[10px] font-semibold px-1"
                                                 style={{
                                                     textShadow:
                                                         '0 0 6px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.95)',
                                                 }}
                                             >
                                                 {faceGuide.detected
-                                                    ? 'RASTREANDO ROSTRO...'
-                                                    : 'BUSCANDO ROSTRO...'}
+                                                    ? t('auth.trackingFace')
+                                                    : t('auth.searchingFace')}
                                             </span>
                                         </div>
                                     )}
@@ -2423,12 +2441,12 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     <ScanFace size={48} className="animate-pulse opacity-50" />
                                     {mode === 'login' && !loginBiometricSession ? (
                                         <span className="text-sm font-medium max-w-xs">
-                                            Seleccione empresa y usuario, luego pulse «Ingresar con Reconocimiento
-                                            Facial». La cámara se activará solo entonces (máx.{' '}
-                                            {Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000)} s).
+                                            {t('auth.cameraStartHelp', {
+                                                seconds: Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000),
+                                            })}
                                         </span>
                                     ) : (
-                                        <span className="text-sm font-medium">Iniciando Biometría Facial...</span>
+                                        <span className="text-sm font-medium">{t('auth.startingBiometric')}</span>
                                     )}
                                 </div>
                             )}
@@ -2443,7 +2461,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     }}
                                 >
                                     <div className="text-[10px] tracking-wider uppercase opacity-80">
-                                        Muestras
+                                        {t('auth.samples')}
                                     </div>
                                     <div className="text-lg font-bold leading-tight text-center">
                                         {Math.min(3, Number(faceGuide.captureCount || 0))}/3
@@ -2457,7 +2475,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     <img src={`data:image/jpeg;base64,${capturedImageBase64}`} className="w-full h-full object-cover" alt="captured face" />
                                     <div className="absolute inset-0 border border-white/20 rounded-full animate-pulse pointer-events-none"></div>
                                     <div className="absolute inset-0 flex items-center justify-center">
-                                        <div className="bg-green-500 text-[8px] font-bold text-white px-1.5 py-0.5 rounded absolute -top-1">SNAPSHOT</div>
+                                        <div className="bg-green-500 text-[8px] font-bold text-white px-1.5 py-0.5 rounded absolute -top-1">{t('auth.snapshot')}</div>
                                     </div>
                                 </div>
                             )}
@@ -2483,10 +2501,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
 
                         <div className="bio-icao-panel">
                             <div className="bio-icao-section">
-                                <div className="bio-icao-title">CALIDAD ICAO</div>
+                                <div className="bio-icao-title">{t('auth.icaoQuality')}</div>
                                 <div className="bio-icao-grid-2">
                                     <div className="bio-icao-row">
-                                        <span>OJOS ABIERTOS</span>
+                                        <span>{t('auth.eyesOpen')}</span>
                                         <span
                                             className={`bio-icao-val${
                                                 faceGuide.icaoEyes === false
@@ -2500,7 +2518,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         </span>
                                     </div>
                                     <div className="bio-icao-row">
-                                        <span>BOCA CERRADA</span>
+                                        <span>{t('auth.mouthClosed')}</span>
                                         <span
                                             className={`bio-icao-val${
                                                 faceGuide.icaoMouth === false
@@ -2514,7 +2532,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         </span>
                                     </div>
                                     <div className="bio-icao-row">
-                                        <span>FRONTALIDAD</span>
+                                        <span>{t('auth.frontal')}</span>
                                         <span
                                             className={`bio-icao-val${
                                                 faceGuide.icaoFrontal === false
@@ -2530,7 +2548,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         </span>
                                     </div>
                                     <div className="bio-icao-row">
-                                        <span>SIN LENTES</span>
+                                        <span>{t('auth.noGlasses')}</span>
                                         <span
                                             className={`bio-icao-val${
                                                 faceGuide.icaoNoGlasses === false
@@ -2548,7 +2566,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 </div>
                             </div>
                             <div className="bio-icao-section">
-                                <div className="bio-icao-title">ANTI-SPOOFING (LIVENESS)</div>
+                                <div className="bio-icao-title">{t('auth.liveness')}</div>
                                 <div className="bio-icao-bar-track">
                                     <div
                                         className="bio-icao-bar-fill"
@@ -2558,7 +2576,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     />
                                 </div>
                                 <div className="bio-icao-liveness-meta">
-                                    <span>Umbral {FACIAL_ICAO.LIVENESS_SCORE_PASS}%</span>
+                                    <span>{t('auth.threshold', { value: FACIAL_ICAO.LIVENESS_SCORE_PASS })}</span>
                                     <span
                                         className={`bio-icao-pct${
                                             Number(faceGuide.livenessScore || 0) <
@@ -2586,7 +2604,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 }}
                                 style={{ marginTop: '8px', width: '100%', padding: '10px', fontSize: '13px' }}
                             >
-                                Cancelar verificación facial
+                                {t('auth.cancelFace')}
                             </button>
                         )}
                     </div>
@@ -2603,7 +2621,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             }}
                             style={{padding: '8px', fontSize: '12px'}}
                         >
-                            <ShieldCheck size={20} /> Entrar (LOGIN)
+                            <ShieldCheck size={20} /> {t('auth.enter')}
                         </button>
                         <button
                             type="button"
@@ -2618,7 +2636,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             }}
                             style={{padding: '8px', fontSize: '12px'}}
                         >
-                            <UserPlus size={20} /> Crear Cuenta (REGISTRO)
+                            <UserPlus size={20} /> {t('auth.register')}
                         </button>
                     </div>
                     )}
@@ -2633,18 +2651,19 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             : ''
                     }`}
                 >
-                    <PlatformBrandPanelHeader compact={registerFormNarrowFitView} />
+                    <PlatformBrandPanelHeader compact={registerFormNarrowFitView} subtitle={t('auth.platformSubtitle')} />
+                    <PlatformRegionBar variant="auth" />
                     {mode === 'login' ? (
                         <>
                             <div className="auth-form-section-intro">
-                                <h2 className="auth-form-section-intro-title">Acceso seguro</h2>
+                                <h2 className="auth-form-section-intro-title">{t('auth.secureAccess')}</h2>
                                 <p className="auth-form-section-intro-text">
-                                    Ingrese con usuario o empresa y contraseña, o con reconocimiento facial.
+                                    {t('auth.loginHelp')}
                                 </p>
                             </div>
                             <div className="auth-login-tab-row">
-                                <button type="button" className={loginTab === 'user' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '6px', fontSize: '11px'}} onClick={() => { setLoginTab('user'); setError(''); }}>LOGIN Usuario</button>
-                                <button type="button" className={loginTab === 'company' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '6px', fontSize: '11px'}} onClick={() => { setLoginTab('company'); setError(''); }}>LOGIN Empresa</button>
+                                <button type="button" className={loginTab === 'user' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '6px', fontSize: '11px'}} onClick={() => { setLoginTab('user'); setError(''); }}>{t('auth.loginUser')}</button>
+                                <button type="button" className={loginTab === 'company' ? 'secondary-button' : 'logout-demo'} style={{flex: 1, padding: '6px', fontSize: '11px'}} onClick={() => { setLoginTab('company'); setError(''); }}>{t('auth.loginCompany')}</button>
                             </div>
 
                             <form
@@ -2653,7 +2672,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 onSubmit={handlePasswordLogin}
                             >
                             <label className="field-label">
-                                <Building2 size={14} /> Empresa Asignada / Compañía
+                                <Building2 size={14} /> {t('auth.assignedCompany')}
                                 <select
                                     value={loginForm.company}
                                     onChange={(event) =>
@@ -2669,7 +2688,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             </label>
 
                             <label className="field-label">
-                                <UserRound size={14} /> Usuario / DNI / RUC
+                                <UserRound size={14} /> {t('auth.identity')}
                                 <input
                                     type="text"
                                     value={loginForm.username}
@@ -2679,12 +2698,12 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             username: event.target.value,
                                         }))
                                     }
-                                    placeholder="Requerido para facial y para acceso manual"
+                                    placeholder={t('auth.identityPlaceholder')}
                                     autoComplete="username"
                                 />
                             </label>
                             <label className="field-label">
-                                <KeyRound size={14} /> Contraseña
+                                <KeyRound size={14} /> {t('auth.password')}
                                 <input
                                     id="auth-login-password-input"
                                     type="password"
@@ -2695,7 +2714,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             password: event.target.value,
                                         }))
                                     }
-                                    placeholder="Para ingreso con contraseña"
+                                    placeholder={t('auth.passwordPlaceholder')}
                                     autoComplete="current-password"
                                 />
                             </label>
@@ -2707,8 +2726,8 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         <img src={`data:image/jpeg;base64,${capturedImageBase64}`} className="w-full h-full object-cover" alt="login face snapshot" />
                                     </div>
                                     <div style={{ flex: 1 }}>
-                                        <span style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', color: '#22c55e', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Rostro para Validación</span>
-                                        <span style={{ fontSize: '13px', color: '#94a3b8' }}>Biometría capturada y lista</span>
+                                        <span style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', color: '#22c55e', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{t('auth.faceReadyTitle')}</span>
+                                        <span style={{ fontSize: '13px', color: '#94a3b8' }}>{t('auth.faceReadyText')}</span>
                                     </div>
                                 </div>
                             )}
@@ -2731,7 +2750,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         handleFaceLogin(bestLoginProbeRef.current)
                                     } else {
                                         setError(
-                                            'Verificación biométrica en curso: espere 3 muestras válidas (ICAO + liveness) o 3/3 del servidor con último frame OK.'
+                                            t('error.biometricWait')
                                         )
                                     }
                                 }}
@@ -2739,18 +2758,19 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             >
                                 <ScanFace size={17} />
                                 {isProcessing
-                                    ? 'Validando rostro...'
+                                    ? t('auth.validatingFace')
                                     : !loginBiometricSession
-                                      ? 'Ingresar con Reconocimiento Facial'
+                                      ? t('auth.faceLogin')
                                       : !cameraReady
-                                        ? 'Abriendo cámara…'
+                                        ? t('auth.openingCamera')
                                         : !loginBiometricGate
-                                          ? 'Verificación biométrica en curso…'
+                                          ? t('auth.biometricRunning')
                                           : hasRequiredBiometricSamples
-                                            ? 'Envío automático en curso…'
-                                            : `Capturando biometría (${Number(
-                                                  faceGuide.captureCount || 0
-                                              )}/${FACIAL_ICAO.REQUIRED_VALID_FRAMES})…`}
+                                            ? t('auth.autoSending')
+                                            : t('auth.capturing', {
+                                                current: Number(faceGuide.captureCount || 0),
+                                                total: FACIAL_ICAO.REQUIRED_VALID_FRAMES,
+                                            })}
                             </button>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '8px' }}>
                                 <button
@@ -2759,7 +2779,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     className="auth-login-password-button"
                                     disabled={isProcessing}
                                 >
-                                    <KeyRound size={16} /> Ingresar con Password
+                                    <KeyRound size={16} /> {t('auth.passwordLogin')}
                                 </button>
                                 <button
                                     type="button"
@@ -2772,7 +2792,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         setMessage('')
                                     }}
                                 >
-                                    <UserPlus size={16} /> Registrar Usuario
+                                    <UserPlus size={16} /> {t('auth.registerUser')}
                                 </button>
                             </div>
                             {mode === 'login' && loginBiometricSession && (
@@ -2788,7 +2808,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         fontSize: '13px',
                                     }}
                                 >
-                                    Cancelar verificación facial
+                                    {t('auth.cancelFace')}
                                 </button>
                             )}
 
@@ -2796,10 +2816,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     ) : (
                         <>
                             <div className="auth-form-section-intro">
-                                <h2 className="auth-form-section-intro-title">Acceso seguro</h2>
+                                <h2 className="auth-form-section-intro-title">{t('auth.secureAccess')}</h2>
                                 <p className="auth-form-section-intro-text">
-                                    Registro de persona o empresa contratista. Use «Volver al inicio de sesión»
-                                    para regresar al login.
+                                    {t('auth.registerHelp')}
                                 </p>
                             </div>
                             <div className="register-mode-tabs">
@@ -2817,7 +2836,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         setError('')
                                     }}
                                 >
-                                    REGISTRO de Persona
+                                    {t('auth.registerPersonTab')}
                                 </button>
                                 <button
                                     type="button"
@@ -2837,7 +2856,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         setError('')
                                     }}
                                 >
-                                    REGISTRO de Empresa
+                                    {t('auth.registerCompanyTab')}
                                 </button>
                             </div>
                             {mode === 'register' &&
@@ -2854,7 +2873,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             setMessage('')
                                         }}
                                     >
-                                        Volver al inicio de sesión
+                                        {t('auth.backToLogin')}
                                     </button>
                                 )}
                             {mode === 'register' &&
@@ -2870,7 +2889,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             setMessage('')
                                         }}
                                     >
-                                        Volver al inicio de sesión
+                                        {t('auth.backToLogin')}
                                     </button>
                                 )}
 
@@ -2893,7 +2912,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             style={{ color: '#22c55e' }}
                                         />
                                     </div>
-                                    <h2 style={{ marginBottom: '8px' }}>Registro exitoso</h2>
+                                    <h2 style={{ marginBottom: '8px' }}>{t('auth.registerSuccess')}</h2>
                                     <p
                                         style={{
                                             color: '#94a3b8',
@@ -2902,8 +2921,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             lineHeight: 1.45,
                                         }}
                                     >
-                                        El registro facial se completó correctamente. Ya puede acceder al
-                                        sistema.
+                                        {t('auth.registerSuccessText')}
                                     </p>
                                     <button
                                         type="button"
@@ -2916,7 +2934,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         }}
                                         style={{ width: '100%', marginBottom: '10px' }}
                                     >
-                                        <UserPlus size={17} /> Entrar al sistema
+                                        <UserPlus size={17} /> {t('auth.enterSystem')}
                                     </button>
                                     <button
                                         type="button"
@@ -2931,7 +2949,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         }}
                                         style={{ width: '100%' }}
                                     >
-                                        Volver al inicio de sesión
+                                        {t('auth.backToLogin')}
                                     </button>
                                 </div>
                             ) : (
@@ -2939,7 +2957,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             {registerTab === 'company' && registerCompanyBiometricStep === 'form' && (
                                 <h2 className="auth-register-section-heading">
                                     <Building2 size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 6 }} />
-                                    Registro de empresa contratista
+                                    {t('auth.contractorRegistration')}
                                 </h2>
                             )}
                             <form
@@ -2955,7 +2973,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 {registerTab === 'company' ? (
                                     <div className="register-company-fields">
                                         <label className="field-label">
-                                            <Building2 size={16} /> Empresa minera asociada
+                                            <Building2 size={16} /> {t('auth.associatedMine')}
                                             <select
                                                 value={registerForm.company}
                                                 onChange={(e) =>
@@ -2974,41 +2992,41 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             </select>
                                         </label>
                                          <label className="field-label">
-                                            RUC de la Empresa (Validación automática)
+                                            {t('auth.companyRuc')}
                                             <div style={{ position: 'relative' }}>
                                                 <input
                                                     type="text"
-                                                    maxLength={11}
+                                                    maxLength={country === 'BR' ? 14 : country === 'PE' ? 11 : 9}
                                                     value={registerForm.ruc}
                                                     onChange={(e) => setRegisterForm((prev) => ({ ...prev, ruc: e.target.value }))}
                                                     required
                                                     style={{
-                                                        borderColor: registerForm.ruc.length === 11 ? (registerForm.rucValid ? '#22c55e' : '#ef4444') : undefined,
+                                                        borderColor: registerForm.ruc.length === (country === 'BR' ? 14 : country === 'PE' ? 11 : 9) ? (registerForm.rucValid ? '#22c55e' : '#ef4444') : undefined,
                                                         paddingRight: '35px'
                                                     }}
                                                 />
                                                 <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)' }}>
                                                     {registerForm.isValidatingRuc ? (
-                                                        <div className="animate-spin h-4 w-4 border-2 border-sky-500 border-t-transparent rounded-full"></div>
-                                                    ) : registerForm.ruc.length === 11 ? (
+                                                        <div className="animate-spin h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full"></div>
+                                                    ) : registerForm.ruc.length === (country === 'BR' ? 14 : country === 'PE' ? 11 : 9) ? (
                                                         registerForm.rucValid ? (
                                                             <ShieldCheck size={16} className="text-green-500" />
                                                         ) : (
-                                                            <span title="RUC no válido o no pertenece a la empresa">
+                                                            <span title={t('auth.rucInvalid')}>
                                                                 <AlertTriangle size={16} className="text-red-500" />
                                                             </span>
                                                         )
                                                     ) : null}
                                                 </div>
                                             </div>
-                                            {registerForm.ruc.length === 11 && !registerForm.rucValid && !registerForm.isValidatingRuc && (
+                                            {registerForm.ruc.length === (country === 'BR' ? 14 : country === 'PE' ? 11 : 9) && !registerForm.rucValid && !registerForm.isValidatingRuc && (
                                                 <span style={{ fontSize: '10px', color: '#ef4444', marginTop: '4px', display: 'block' }}>
-                                                    * RUC no autorizado para esta compañía.
+                                                    {t('auth.rucInvalid')}
                                                 </span>
                                             )}
                                          </label>
                                          <label className="field-label" style={{ clear: 'both' }}>
-                                             Razón social / nombre del contratista
+                                             {t('auth.contractorName')}
                                              <input
                                                  type="text"
                                                  value={registerForm.contractorLegalName}
@@ -3021,29 +3039,40 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                  required
                                              />
                                          </label>
-                                         <div className="auth-divider auth-divider--tight"><span>Representante Legal</span></div>
+                                         <div className="auth-divider auth-divider--tight"><span>{t('auth.legalRepresentative')}</span></div>
                                          <label className="field-label">
-                                             DNI Representante
-                                             <input type="text" maxLength={12} value={registerForm.dni} onChange={(e) => setRegisterForm((prev) => ({ ...prev, dni: e.target.value }))} required />
+                                             {t('auth.representativeId')}
+                                             <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                                 <input type="text" maxLength={12} value={registerForm.dni} onChange={(e) => setRegisterForm((prev) => ({ ...prev, dni: e.target.value }))} required style={{ flex: 1 }} />
+                                                 <button type="button" onClick={() => setShowDniScan(true)} title="Escanear DNI con la cámara" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '38px', height: '38px', borderRadius: '8px', border: '1px solid rgba(240,126,65,.4)', background: 'rgba(240,126,65,.1)', color: '#f07e41', cursor: 'pointer', flexShrink: 0 }}>
+                                                     <ScanLine size={16} />
+                                                 </button>
+                                             </div>
                                          </label>
                                          <div style={{display: 'flex', gap: '10px'}}>
                                              <label className="field-label" style={{flex: 1}}>
-                                                 Nombres
+                                                 {t('auth.firstNames')}
                                                  <input type="text" value={registerForm.firstName} onChange={(e) => setRegisterForm((prev) => ({ ...prev, firstName: e.target.value }))} required />
                                              </label>
                                              <label className="field-label" style={{flex: 1}}>
-                                                 Apellidos
+                                                 {t('auth.lastNames')}
                                                  <input type="text" value={registerForm.lastName} onChange={(e) => setRegisterForm((prev) => ({ ...prev, lastName: e.target.value }))} required />
                                              </label>
                                          </div>
                                          <div style={{display: 'flex', gap: '10px'}}>
                                              <label className="field-label" style={{flex: 1}}>
-                                                 Telefono Fijo
-                                                 <input type="tel" value={registerForm.phone} onChange={(e) => setRegisterForm((prev) => ({ ...prev, phone: e.target.value }))} />
+                                                 {t('auth.landline')}
+                                                 <div className="field-tel-wrap">
+                                                     <span className="field-tel-prefix">+{activePhonePrefix}</span>
+                                                     <input type="tel" inputMode="tel" value={registerForm.phone} onChange={(e) => setRegisterForm((prev) => ({ ...prev, phone: e.target.value }))} />
+                                                 </div>
                                              </label>
                                              <label className="field-label" style={{flex: 1}}>
-                                                 Celular
-                                                 <input type="tel" value={registerForm.mobile} onChange={(e) => setRegisterForm((prev) => ({ ...prev, mobile: e.target.value }))} required />
+                                                 {t('auth.mobile')}
+                                                 <div className="field-tel-wrap">
+                                                     <span className="field-tel-prefix">+{activePhonePrefix}</span>
+                                                     <input type="tel" inputMode="tel" value={registerForm.mobile} onChange={(e) => setRegisterForm((prev) => ({ ...prev, mobile: e.target.value }))} required />
+                                                 </div>
                                              </label>
                                          </div>
                                     </div>
@@ -3051,10 +3080,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     <div className="register-person-fields">
                                         <h2 className="auth-register-section-heading reg-grid-full">
                                             <UserRound size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 6 }} />
-                                            Registro de persona
+                                            {t('auth.personRegistration')}
                                         </h2>
                                         <label className="field-label reg-grid-full">
-                                            <Building2 size={16} /> Empresa Asignada
+                                            <Building2 size={16} /> {t('auth.assignedCompany')}
                                             <select
                                                 value={registerForm.company}
                                                 onChange={(e) =>
@@ -3073,22 +3102,28 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             </select>
                                         </label>
                                         <label className="field-label reg-grid-dni">
-                                            DNI Trabajador
-                                            <input
-                                                type="text"
-                                                maxLength={12}
-                                                value={registerForm.dni}
-                                                onChange={(e) =>
-                                                    setRegisterForm((prev) => ({
-                                                        ...prev,
-                                                        dni: e.target.value,
-                                                    }))
-                                                }
-                                                required
-                                            />
+                                            {t('auth.workerId')}
+                                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                                <input
+                                                    type="text"
+                                                    maxLength={12}
+                                                    value={registerForm.dni}
+                                                    onChange={(e) =>
+                                                        setRegisterForm((prev) => ({
+                                                            ...prev,
+                                                            dni: e.target.value,
+                                                        }))
+                                                    }
+                                                    required
+                                                    style={{ flex: 1 }}
+                                                />
+                                                <button type="button" onClick={() => setShowDniScan(true)} title="Escanear DNI con la cámara" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '38px', height: '38px', borderRadius: '8px', border: '1px solid rgba(240,126,65,.4)', background: 'rgba(240,126,65,.1)', color: '#f07e41', cursor: 'pointer', flexShrink: 0 }}>
+                                                    <ScanLine size={16} />
+                                                </button>
+                                            </div>
                                         </label>
                                         <label className="field-label reg-grid-nombres">
-                                            Nombres
+                                            {t('auth.firstNames')}
                                             <input
                                                 type="text"
                                                 value={registerForm.firstName}
@@ -3102,7 +3137,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             />
                                         </label>
                                         <label className="field-label reg-grid-apellidos">
-                                            Apellidos
+                                            {t('auth.lastNames')}
                                             <input
                                                 type="text"
                                                 value={registerForm.lastName}
@@ -3116,7 +3151,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             />
                                         </label>
                                         <label className="field-label reg-grid-email">
-                                            Correo electrónico
+                                            {t('auth.email')}
                                             <input
                                                 type="email"
                                                 value={registerForm.email}
@@ -3130,21 +3165,25 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             />
                                         </label>
                                         <label className="field-label reg-grid-celular">
-                                            Celular
-                                            <input
-                                                type="tel"
-                                                value={registerForm.mobile}
-                                                onChange={(e) =>
-                                                    setRegisterForm((prev) => ({
-                                                        ...prev,
-                                                        mobile: e.target.value,
-                                                    }))
-                                                }
-                                                required
-                                            />
+                                            {t('auth.mobile')}
+                                            <div className="field-tel-wrap">
+                                                <span className="field-tel-prefix">+{activePhonePrefix}</span>
+                                                <input
+                                                    type="tel"
+                                                    inputMode="tel"
+                                                    value={registerForm.mobile}
+                                                    onChange={(e) =>
+                                                        setRegisterForm((prev) => ({
+                                                            ...prev,
+                                                            mobile: e.target.value,
+                                                        }))
+                                                    }
+                                                    required
+                                                />
+                                            </div>
                                         </label>
                                         <label className="field-label reg-grid-full">
-                                            Cargo / Nivel de Usuario
+                                            {t('auth.role')}
                                             <select
                                                 className="register-role-select"
                                                 value={registerForm.role}
@@ -3157,22 +3196,22 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                 required
                                             >
                                                 <option value="operator">
-                                                    Operador / Personal Tecnico
+                                                    {t('role.operator')}
                                                 </option>
                                                 <option value="supervisor">
-                                                    Supervisor / Jefe de Guardia
+                                                    {t('role.supervisor')}
                                                 </option>
                                                 <option value="manager">
-                                                    Gerente de Operaciones
+                                                    {t('role.manager')}
                                                 </option>
                                                 <option value="geologist">
-                                                    Ingeniero Geomecanico
+                                                    {t('role.geologist')}
                                                 </option>
                                                 <option value="safety">
-                                                    Prevencionista / SSOMA
+                                                    {t('role.safety')}
                                                 </option>
                                                 <option value="admin">
-                                                    Administrador del Sistema
+                                                    {t('role.admin')}
                                                 </option>
                                             </select>
                                         </label>
@@ -3180,10 +3219,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 )}
 
                                 <div className="auth-divider auth-divider--tight">
-                                    <span>Credenciales de Acceso</span>
+                                    <span>{t('auth.credentials')}</span>
                                 </div>
                                 <label className="field-label register-credentials-username">
-                                    Usuario de Sistema
+                                    {t('auth.systemUser')}
                                     <input
                                         type="text"
                                         value={registerForm.username}
@@ -3199,7 +3238,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 </label>
                                 <div className="register-password-row">
                                     <label className="field-label">
-                                        Contraseña
+                                        {t('auth.password')}
                                         <input
                                             type="password"
                                             value={registerForm.password}
@@ -3215,7 +3254,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         />
                                     </label>
                                     <label className="field-label">
-                                        Confirmar contraseña
+                                        {t('auth.confirmPassword')}
                                         <input
                                             type="password"
                                             value={registerForm.passwordConfirm}
@@ -3277,12 +3316,12 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         <Camera size={15} />
                                     )}
                                     {registerTab === 'company' && capturedImageBase64
-                                        ? ' Biometría Capturada'
-                                        : ' Registrar biometrica facial (Obligatorio)'}
+                                        ? t('auth.captureReady')
+                                        : t('auth.registerBiometric')}
                                 </button>
                                 {registerTab === 'company' && capturedImageBase64 && canRegister && isProcessing && (
                                     <p className="auth-company-register-pending" role="status">
-                                        Enviando registro e iniciando sesión…
+                                        {t('auth.sendingRegistration')}
                                     </p>
                                 )}
                             </form>
@@ -3301,6 +3340,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 )}
             </div>
             </div>
+            <DocumentScanCapture
+                isOpen={showDniScan}
+                onClose={() => setShowDniScan(false)}
+                onSuccess={handleDniScanSuccess}
+            />
         </div>
     )
 }
