@@ -21,6 +21,7 @@ build/
 backend/build/
 backend/build-vcpkg/
 frontend/test-results/
+.tmp-codex/
 __pycache__/
 *.pyc
 .pytest_cache/

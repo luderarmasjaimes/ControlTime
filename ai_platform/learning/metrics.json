@@ -1,0 +1,39 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-08-03T20:35:11.789215+00:00",
+  "agents": {
+    "backend_dev": {
+      "model": "claude",
+      "generations": 39,
+      "accepted": 19,
+      "acceptance_rate": 0.487
+    },
+    "frontend_dev": {
+      "model": "gpt-5",
+      "generations": 0,
+      "accepted": 0
+    },
+    "dba": {
+      "model": "deepseek",
+      "generations": 0,
+      "accepted": 0
+    },
+    "documenter": {
+      "model": "gemini",
+      "generations": 0,
+      "accepted": 0
+    },
+    "code_reviewer": {
+      "model": "gpt-5",
+      "reviews": 39,
+      "approved": 20,
+      "approval_rate": 0.513
+    }
+  },
+  "routing_preferences": {
+    "backend": "claude",
+    "frontend": "gpt-5",
+    "sql": "deepseek",
+    "documentation": "gemini"
+  }
+}

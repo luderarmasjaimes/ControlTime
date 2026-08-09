@@ -1,0 +1,3 @@
+# Los shell scripts se ejecutan en contenedores Linux: CRLF los rompe
+# ("/usr/bin/env: bash\r: No such file or directory") — forzar LF siempre.
+*.sh text eol=lf

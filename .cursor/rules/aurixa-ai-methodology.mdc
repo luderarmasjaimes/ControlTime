@@ -1,0 +1,15 @@
+---
+description: Metodología IA AURIXA — ADR, SPEC, Router, RAG
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Reglas IA AURIXA
+
+1. Leer `AGENTS.md` y `specs/CONSTITUTION.md` antes de codificar.
+2. Identificar **SPEC-NNN** y ADRs en `specs/REGISTRY.md`.
+3. Ejecutar mentalmente: `python -m ai_platform decide "..."`.
+4. Una feature por sesión; contexto vía RAG, no repo completo.
+5. PR debe citar SPEC + ADRs; paridad FE↔BE; multitenancy `tenant_id`.
+6. Routing: backend→claude, frontend→gpt, sql→deepseek, docs→gemini.

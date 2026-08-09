@@ -1,0 +1,64 @@
+# --------------------------------------------------------------------------
+# Stack ThingsBoard AISLADO para pruebas de integración locales del conector
+# backend/src/mining/thingsboard_sync.cpp — NO es parte del stack productivo
+# (../../docker-compose.yml). Red y volúmenes propios, sin tocar la BD real.
+#
+# Modo monolith (TB_SERVICE_TYPE default = monolith): un solo contenedor
+# thingsboard/tb-node, TB_QUEUE_TYPE=in-memory y JS_EVALUATOR=local, sin
+# Zookeeper/Kafka/js-executor — el setup más simple posible que sigue siendo
+# un ThingsBoard real (misma imagen que el cluster de producción del cliente,
+# API REST/WS idéntica).
+# --------------------------------------------------------------------------
+services:
+  tb-postgres:
+    image: postgres:15
+    container_name: tb-local-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: thingsboard
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - tb_local_pgdata:/var/lib/postgresql/data
+    networks:
+      - tb-local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  thingsboard:
+    image: thingsboard/tb-node:latest
+    container_name: tb-local-node
+    restart: unless-stopped
+    depends_on:
+      tb-postgres:
+        condition: service_healthy
+    environment:
+      TB_SERVICE_TYPE: monolith
+      TB_QUEUE_TYPE: in-memory
+      JS_EVALUATOR: local
+      DATABASE_TS_TYPE: sql
+      SPRING_DRIVER_CLASS_NAME: org.postgresql.Driver
+      SPRING_DATASOURCE_URL: jdbc:postgresql://tb-postgres:5432/thingsboard
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      HTTP_BIND_PORT: 8080
+    ports:
+      # Expuesto a localhost solamente — instancia de prueba, no productiva.
+      - "127.0.0.1:8091:8080"
+    volumes:
+      - tb_local_data:/data
+      - tb_local_logs:/var/log/thingsboard
+    networks:
+      - tb-local
+
+networks:
+  tb-local:
+    name: tb-local-net
+
+volumes:
+  tb_local_pgdata:
+  tb_local_data:
+  tb_local_logs:

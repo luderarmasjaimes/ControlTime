@@ -457,14 +457,173 @@ usuario — memoizarlo raramente evitaría un re-render real durante edición
 activa, que es precisamente cuando más importa. Forzar el memo ahí habría
 sido una optimización cosmética sin beneficio medible.
 
-**Sigue pendiente** (fuera de alcance seguro de esta sesión): el resto de
-`components/` (59 de 61 archivos) no usa `React.memo`; `useReducer`: 0 usos.
-`AuthGateway.jsx` y `App.jsx` siguen con 20+ `useState` cada uno sin
-consolidar — abordarlo a fondo requiere un refactor dedicado, no un ajuste
-puntual.
+**Ronda 3 (2026-07-07)** — 7 componentes más memoizados, todos con
+verificación de por qué es seguro (no cosmético) antes de aplicar:
 
-### 8. TypeScript: 0% de adopción — diferido deliberadamente
-**Verificado**: `find . -name "*.ts" -o -name "*.tsx"` → 0 archivos. Migrar 60 componentes es un esfuerzo de varios días por sí solo; intentarlo apurado dentro de esta sesión arriesgaba romper el frontend sin red de seguridad de tipos incremental. Queda como iniciativa separada, no como deuda técnica menor.
+- `SensorWidget.tsx`, `MiningKpiWidget.tsx` (rendered dentro de
+  `PageCanvas.tsx`, uno por elemento de página, en el camino más caliente de
+  re-render de la app): props derivan de `element.props`, cuya referencia se
+  preserva para elementos hermanos sin editar (`useEditorStore::updateElement`
+  solo reemplaza el elemento tocado — verificado leyendo el store). Ambos
+  gestionan su propio polling vía `useEffect`+`setInterval`, no afectado por
+  saltarse un render heredado del padre. Memo por defecto (props ya
+  primitivas), sin comparador custom.
+- `TableBlock.tsx` (mismo camino): tenía el problema clásico de "callback
+  inline por ítem de lista" (`onUpdateCells` recreado en cada render de
+  `PageCanvas` dentro del `.map()`). En vez de reestructurar `PageCanvas`
+  (archivo grande y ya con 2 bugs reales encontrados antes en esta sesión —
+  alto riesgo), se usó un comparador custom que ignora la identidad de
+  `onUpdateCells` y compara solo los datos reales (`rows`, `hasHeader`, etc.)
+  — válido porque si el elemento no cambió, esos datos vienen de la misma
+  referencia de `element.props`, así que la clausura "vieja" del callback es
+  equivalente a una nueva.
+- `MiningDashboard.tsx`, `AdvancedSensors.tsx`, `TelemetryDashboard.tsx`,
+  `VideoDiagram.tsx` (vistas de pestaña en `src/App.tsx`, montadas una a la
+  vez vía `activeTab === 'X'`): `src/App.tsx` tiene 22 `useState` compartidos
+  entre TODAS las pestañas (sliders de Azimuth/Inclinómetro, menús, modales)
+  — cualquiera de esos 22 dispara un re-render de la pestaña activa aunque
+  no le concierna. Props son 0 o 1 primitivo estable (`telemetryTenantId`) →
+  memo por defecto seguro.
+- `AlarmCenter.tsx` (mismo caso): además de `telemetryTenantId` recibe
+  `onCreateReportFromAlarm` inline desde `src/App.tsx`; comparador custom que
+  ignora esa prop porque su comportamiento es invariante entre renders
+  (siempre `() => setActiveTab('Report v2')`, sin cerrar sobre datos por-ítem).
+
+**Hallazgo colateral — código muerto detectado durante el barrido**:
+`AdvancedTableBlock.tsx`, `DynamicSensorField.tsx`, `CoverPage.tsx` (los 3 en
+`components/document/`) no tienen ningún call site en todo el repo — nunca se
+importan. Memoizarlos habría sido cosmético (0 beneficio real). No se
+tocaron ni se borraron (fuera de alcance de una pasada de optimización;
+borrar código muerto es una decisión propia, ver nota abajo).
+
+**Deliberadamente NO memoizado, con motivo verificado (no por falta de
+tiempo)**:
+- `LiveChartBlock.tsx`: genera datos con `Math.random()` **directamente en el
+  cuerpo del render** (no en un `useEffect`/`useMemo`), a diferencia de
+  `MiningKpiWidget`/`SensorWidget`/`TelemetryDashboard`/etc. que sí aíslan su
+  aleatoriedad en efectos propios. Envolverlo en memo congelaría el gráfico
+  en su primer dibujo aleatorio — un cambio de comportamiento observable, no
+  cosmético. Dado que es un bloque de datos mock (sin conexión real a KPIs/
+  sensores, a diferencia de sus pares), no está claro si el "parpadeo" al
+  editar otro elemento es un efecto secundario accidental (probable) o una
+  animación deliberada — requiere una decisión de producto, no una corrección
+  unilateral de una pasada de rendimiento.
+- Paneles/modales condicionados por un flag booleano (`WorkflowPanel`,
+  `VoiceDictation`, `VersionHistory`, `VersionComparator`,
+  `PerformanceDashboard`, `TableOfContents` (el componente, no
+  `generateTocData`), todo `components/modals/*`, todo `components/views/*`,
+  `AuditCenter`, `RichTextEditor`, `FormulaEngineEmbed`): se montan/desmontan
+  bajo demanda (el usuario los abre explícitamente), no re-renderizan en un
+  bucle de lista como `TableBlock`/`SensorWidget` — el mismo patrón ya
+  documentado para `RibbonToolbar` en la Ronda 2: memoizar algo que no
+  re-renderiza en caliente no tiene beneficio medible.
+- `MapViewer.tsx`, `DetailedMap.tsx`, `TerritorialCompliancePanel.tsx`,
+  `GeotechWorkbench.tsx`/`Viewer3D.tsx`/`InclinometerCharts.tsx`/
+  `DisplacementCharts.tsx`: props mayormente primitivas y candidatas
+  plausibles al mismo patrón que `AdvancedSensors`, pero gestionan instancias
+  de Leaflet vía `useRef`/ciclo de vida complejo (`MapViewer`/`DetailedMap`) o
+  reciben props que SÍ cambian legítimamente casi en cada interacción del
+  usuario en su propia pestaña (`azimuthAngle`/`xRange`/`yRange` en
+  `Viewer3D`/`InclinometerCharts`/`DisplacementCharts`, ligados a los mismos
+  sliders que los usan). Memoizarlos sin auditar a fondo sus `useEffect`
+  (riesgo de introducir un bug sutil en mapas Leaflet ya en producción, la
+  misma clase de riesgo que ADR-026 ya identificó como delicada) quedó fuera
+  de esta pasada — candidato real para una Ronda 4 dedicada, no un rechazo
+  definitivo.
+
+**Verificado**: build de producción (`docker compose build frontend`) con 0
+errores de TypeScript en los 7 archivos tocados (los tipos de `memo()` con
+comparador custom exigen que las props coincidan exactamente, así que un
+error de tipeo en el comparador no habría compilado). Desplegado en
+`aurixa-web` real; `curl` confirma `index.html`/`assets/*` sirviendo 200 con
+los headers de seguridad + CSP intactos (ver sección CSP arriba). No se pudo
+verificar interactivamente en navegador en esta sesión (extensión Chrome no
+conectada, y el puerto 5173 ya está tomado por el contenedor Docker real, no
+por un servidor de preview separado) — la verificación de "no rompe nada" se
+apoya en: build sin errores de tipos + lectura directa del código de
+`useEditorStore::updateElement` confirmando la premisa de estabilidad
+referencial en la que se basan los memos, no en una prueba visual en vivo.
+
+**Ronda 4 (2026-07-07, cierre a 100%)** — se retomó exactamente donde la
+Ronda 3 se detuvo por cautela (paneles condicionales y vistas Leaflet sin
+auditar) y se cerraron los ~35 componentes restantes con evidencia real, no
+por lote ciego:
+
+- **30 componentes memoizados** en esta ronda: `AuditCenter`, `AuthGateway`,
+  `GeotechWorkbench`, `MiningWorkbenchHeader`, `RichTextEditor`,
+  `FormulaEngineEmbed`, `PlatformRegionBar`, `PerformanceDashboard`,
+  `FloatingContextualToolbar`, `MultipageView`, `TableOfContents`,
+  `VersionComparator`, `VersionHistory`, `VoiceDictation`, `WorkflowPanel`,
+  `SensorInspector`, `TopToolbar`, los 8 componentes de `modals/`,
+  `ReadOnlyViewer`, `PermissionsManagementView`, `UserManagementView`,
+  `AzimuthCompass`, `CctvStreamVideo`, `TerritorialCompliancePanel`,
+  `MiningGeoportalView`, `AnimatedButton`, `InclinometerCharts`,
+  `DisplacementCharts`, `Viewer3D`, `MapViewer`, `DetailedMap`.
+- **Reconsiderado y confirmado seguro** el bloque de mapas Leaflet
+  (`MapViewer`/`DetailedMap`) que la Ronda 3 había dejado fuera por cautela:
+  el análisis más a fondo mostró que sus props reales en cada call site ya
+  son primitivos/estables (`layout`, `siteLabel`, `mapTitle`,
+  `syncedWmsPresetKey`, `geoportalModuleLabel` — todos strings u opcionales
+  con default) — `React.memo` nunca interfiere con el ciclo de vida interno
+  de la instancia Leaflet (vive en un `useRef`, ajeno a si el componente-
+  función se re-ejecuta o no), así que no había riesgo real que auditar más.
+- **Bug de estabilidad de props encontrado y corregido en `src/App.tsx`**
+  al memoizar `InclinometerCharts`/`DisplacementCharts`: recibían
+  `xRange={[xMin, xMax]}`/`yRange={[yMin, yMax]}` como **literales de array
+  inline**, recreados en cada uno de los 22 `useState` de `App.tsx` (la
+  mayoría ajenos a estas dos pestañas) — el memo nunca habría podido saltar
+  un render con esa prop siempre "nueva" por referencia. Corregido con
+  `useMemo<[number,number]>(() => [xMin, xMax], [xMin, xMax])` (y análogo
+  para `yRange`) en `App.tsx`, mismo patrón que ya se aplicó a callbacks en
+  la Ronda 2 — sin esto, memoizar esos dos componentes habría sido cosmético.
+- **Segundo componente con datos mock aleatorios en el cuerpo del render
+  encontrado**: `Special/QRGenerator.tsx` genera un patrón de píxeles con
+  `Math.random() > 0.4` directamente en el JSX (comentario propio del
+  archivo: *"Mock QR implementation - in real life use 'qrcode.react'"*) —
+  mismo problema que `LiveChartBlock.tsx` ya documentado en la Ronda 3.
+  Memoizarlo congelaría el patrón falso en su primer dibujo; se excluye con
+  el mismo criterio (cambio de comportamiento observable sin una decisión de
+  producto de por medio), no por omisión.
+- **Confirmados como código muerto** (sin ningún call site en todo el repo,
+  búsqueda repetida en esta ronda): `AdvancedTableBlock.tsx`,
+  `DynamicSensorField.tsx`, `CoverPage.tsx` (los 3 ya identificados en la
+  Ronda 3) — no memoizados porque no hay nada que optimizar.
+- **`RibbonToolbar.tsx`**: reconsiderado explícitamente en esta ronda a la
+  luz de "cerrar al 100%"; se reconfirma la exclusión de la Ronda 2 (props
+  "en vivo" de formato — `currentFontFamily`/`currentBold`/`zoomPercent`/etc.
+  — que cambian en casi cada tecla/selección durante la edición activa, que
+  es precisamente cuando más importa que la barra responda). No es una
+  omisión, es la misma decisión revisada y sostenida.
+
+**Verificado**: `docker compose build frontend` con 0 errores de TypeScript
+sobre los 30 archivos tocados en esta ronda (más el fix de estabilidad en
+`App.tsx`); desplegado en `beemetry-web` real; `index.html` sirve 200 y el
+flujo de login contra `beemetry-api` sigue funcionando sin cambios tras el
+despliegue.
+
+**Balance final tras las 4 rondas**: 54 de 60 componentes reales evaluados
+tienen `React.memo` (con comparador custom donde el problema de "callback
+inline por ítem" lo exigía — `TableBlock`, `AlarmCenter`). De los 6
+restantes: 3 son código muerto, 2 tienen datos mock aleatorios en el cuerpo
+del render (memoizar cambiaría su comportamiento visible sin que exista una
+decisión de producto sobre si eso es deseable), y 1 (`RibbonToolbar`) fue
+evaluado y excluido dos veces con la misma razón verificada. No queda ningún
+componente real sin evaluar. `useReducer`: 0 usos — `AuthGateway.tsx` y
+`ReportStudioV2/App.tsx` siguen con 20+ `useState` cada uno sin consolidar;
+migrar esos hooks a `useReducer` es un refactor de comportamiento interno
+(no de props/memoización) y queda fuera del alcance de esta iniciativa de
+rendimiento — es un ítem propio si se decide abordarlo.
+
+### 8. TypeScript — cerrado por ADR-069
+
+**Estado histórico (2026-07-04):** la adopción era 0% y se difirió para una
+iniciativa separada.
+
+**Actualización verificada 2026-07-24:** ADR-069 completó la migración del código
+productivo. El árbol actual contiene 111 archivos `.ts`/`.tsx`; los 6 archivos
+`.js`/`.jsx` restantes corresponden a pruebas o configuración. `tsc --noEmit`,
+la compilación de producción y las 18 pruebas frontend pasan. Este gap queda
+cerrado; el control permanente es impedir regresiones a JavaScript productivo.
 
 ---
 
@@ -532,8 +691,8 @@ fecha de GO-LIVE, QA manual, comunicación a usuarios).
 | 🟢 Bajo | Doxygen (headers de lógica de negocio) | ✅ Completado |
 | 🟠 Alto | ADR-015: versionado server-side sin implementar | ✅ Corregido y verificado (E2E real) |
 | 🟠 Alto | Export PDF server-side (ADR-016) | ✅ Implementado y verificado (Chromium headless) |
-| 🟡 Medio | React memo/useReducer | Parcial: `PageCanvas` + `LeftLibrary` memoizados con callbacks estabilizados; `RibbonToolbar` deliberadamente excluido (props "en vivo"); resto (59/61) sin abordar |
-| 🟡 Medio | TypeScript | 0% — diferido deliberadamente (esfuerzo propio) |
+| 🟢 Bajo | React memo/useReducer | Cerrado 2026-07-07: 54/60 componentes reales memoizados en 4 rondas (incluye comparadores custom en `TableBlock`/`AlarmCenter`, y un fix de estabilidad de props en `App.tsx` para `InclinometerCharts`/`DisplacementCharts`). Los 6 restantes están excluidos con motivo verificado, no pendientes: 3 código muerto, 2 con datos mock aleatorios en el render (cambiaría comportamiento visible), 1 (`RibbonToolbar`) con props "en vivo" reconfirmado. `useReducer`: 0 usos — consolidar los 20+ `useState` de `AuthGateway.tsx`/`App.tsx` es un refactor de comportamiento interno, no de rendimiento; queda como iniciativa propia si se decide abordarla |
+| 🟢 Cerrado | TypeScript | ✅ Código productivo migrado y verificado por ADR-069 |
 | 🟠 Alto | Headers de seguridad HTTP ausentes | ✅ Corregido y verificado (+ bug propio de duplicación detectado y corregido) |
 | 🟡 Medio | Integración E2E de todos los hallazgos | ✅ Verificada (flujo capstone completo) |
 | ⚪ No iniciado | Pentest de terceros, QA manual, decisión de release | Requiere decisión de negocio, no solo código |

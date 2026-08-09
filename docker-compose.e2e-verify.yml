@@ -1,0 +1,42 @@
+# docker-compose.e2e-verify.yml — Stack MÍNIMO para smoke-test end-to-end del
+# backend refactorizado. Solo TimescaleDB (esquema real completo) + el binario ya
+# compilado (imagen beemetry-backend-verify). Sin ai_engine/ollama/languagetool/
+# redpanda/frontend: no se tocan en el refactor y solo añaden peso.
+#
+# Uso:
+#   docker compose -f docker-compose.e2e-verify.yml -p beemetry_e2e up -d
+#   (smoke tests contra http://localhost:18081)
+#   docker compose -f docker-compose.e2e-verify.yml -p beemetry_e2e down -v
+services:
+  db_test:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_USER: sensors
+      POSTGRES_PASSWORD: sensors_pass
+      POSTGRES_DB: sensors_db
+    volumes:
+      # Init consolidado en el orden del compose real + 30_refactor (bind absoluto).
+      - "C:/Users/BEEMETRY/AppData/Local/Temp/claude/C--InformeCliente/87aa7573-ba87-408f-bac8-15b1000d6489/scratchpad/initdb_all.sql:/docker-entrypoint-initdb.d/00_all.sql:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  web_test:
+    image: beemetry-backend-verify:latest
+    command: ["/app/build-verify/beemetry_backend"]
+    environment:
+      BEEMETRY_DATABASE_URL: "host=db_test port=5432 dbname=sensors_db user=sensors password=sensors_pass"
+      BEEMETRY_MAPAS_PORT: "8081"
+      BEEMETRY_MAPAS_DATA_ROOT: "/tmp"
+      BEEMETRY_AUTH_ADMIN_USERS: "admin"
+      # Sin ingesta Kafka (no hay redpanda en este stack de prueba).
+      BEEMETRY_TELEMETRY_INGEST_ENABLE: "false"
+      BEEMETRY_TELEMETRY_INGEST_MODE: "direct"
+    ports:
+      - "18081:8081"
+    depends_on:
+      db_test:
+        condition: service_healthy

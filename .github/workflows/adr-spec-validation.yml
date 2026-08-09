@@ -1,0 +1,89 @@
+name: ADR-SPEC Validation
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+    paths:
+      - 'specs/**'
+      - 'docs/decisions/**'
+      - 'agents/**'
+      - 'ai_platform/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r ai_platform/requirements.txt
+
+      - name: Validate ADR files exist and numbered
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          historical = sorted(Path("specs/adr").glob("ADR-*.md"))
+          assert len(historical) >= 10, f"Expected >=10 historical ADRs, found {len(historical)}"
+
+          current = sorted(
+              p for p in Path("docs/decisions").glob("*.md")
+              if re.match(r"^\d{3}-", p.name)
+          )
+          numbers = [int(p.name[:3]) for p in current]
+          assert numbers == list(range(numbers[-1] + 1)), (
+              f"Current ADR log must be contiguous from 000: {numbers}"
+          )
+          for p in current:
+              text = p.read_text(encoding="utf-8")
+              assert "**Status**:" in text, f"{p.name} missing Status"
+              assert "**Ámbito**:" in text, f"{p.name} missing Ámbito"
+          print(f"OK: {len(historical)} historical + {len(current)} current ADR files validated")
+          PY
+
+      - name: Validate REGISTRY references
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path("specs/REGISTRY.md").read_text(encoding="utf-8")
+          assert "SPEC-001" in text and "ADR-001" in text
+          print("OK: REGISTRY.md structure")
+          PY
+
+      - name: Build RAG index
+        run: python -m ai_platform rag index
+
+      - name: Smoke test router
+        run: |
+          python -m ai_platform route "Implementar biometría facial SPEC-008" --files backend/src/auth/
+          python -m ai_platform rag query "tenant_id multitenancy"
+
+      - name: Unit tests ai_platform
+        run: python -m pytest ai_platform/tests -q
+
+      - name: PR body SPEC check (on PR)
+        if: github.event_name == 'pull_request'
+        run: |
+          python - <<'PY'
+          import os, re, sys
+          body = os.environ.get("PR_BODY", "")
+          pr = os.environ.get("PR_NUMBER", "")
+          # Fallback: no fail on empty for docs-only PRs
+          if not body.strip():
+              print("WARN: PR body empty — add SPEC-NNN reference")
+              sys.exit(0)
+          if not re.search(r"SPEC[-\s]?\d{3}", body, re.I):
+              print("WARN: PR should reference SPEC-NNN (ADR-007)")
+          else:
+              print("OK: SPEC referenced in PR")
+          PY
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
