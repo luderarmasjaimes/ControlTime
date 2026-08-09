@@ -1,9 +1,55 @@
-opencv-python-headless
-mediapipe>=0.10.9
+# Cotas superiores deliberadas: sin ellas, un rebuild sin cache trae la
+# ultima version major de cada libreria (visto en la practica: mediapipe
+# salto de 0.10.x a 1.0.0, opencv-python-headless de 4.x a 5.0.0,
+# insightface de 0.7.x a 1.0.1 -- todas con cambios de API/umbrales que
+# rompieron la deteccion/tracking facial en produccion sin ningun cambio
+# de codigo). Mantener en la misma linea major.minor que se probo al
+# escribir eye_analyzer.py / face_embedding_insight.py; subir de linea
+# es una decision explicita, no un efecto colateral de un rebuild.
+#
+# Evaluacion 2026-08-07 (ver PyPI/GitHub release notes de cada libreria),
+# migracion a NumPy 2.x aplicada el mismo dia:
+# - numpy>=2: onnxruntime>=1.16 y opencv-python-headless>=4.12 ya lo
+#   requieren. El bloqueador real era insightface 0.7.3 (abr-2023), que usa
+#   np.int (alias eliminado en NumPy 1.24+) en
+#   insightface/app/face_analysis.py:84 -- bug confirmado y ya corregido en
+#   la rama master del proyecto pero nunca publicado a PyPI
+#   (github.com/deepinsight/insightface/issues/2404). Se resuelve con un
+#   shim que restaura np.int/np.float/np.bool/np.object/np.str antes de
+#   importar insightface, ver face_embedding_insight.py.
+# - opencv-python-headless: >=4.14 fuerza la ultima release de la linea 4.x
+#   estable (4.14.0.94, jul-2026); <5 sigue vetando la 5.0.0 (jun-2026,
+#   primera version mayor desde 2018, demasiado nueva/sin probar con
+#   mediapipe/insightface pese a que su propia doc dice "casi sin cambios
+#   de API" para Python).
+# - onnxruntime: onnxruntime>=1.24 ya exige Python >=3.11 (este contenedor
+#   corre 3.10, ver Dockerfile.ai) -- 1.23.2 (oct-2025) es la ultima con
+#   wheel cp310, asi que <1.24 sigue siendo el tope aunque numpy ya no lo
+#   fuerce.
+# - mediapipe 1.0.0 (jul-2026, ~11 dias de antiguedad al evaluar) y
+#   insightface 1.0.x (may-2026) se mantienen sin tocar: ambos son
+#   releases mayores muy recientes con cambios de API/paquete documentados
+#   (namespacing en mediapipe Tasks API; extras opcionales en insightface)
+#   sin ciclo de prueba todavia -- la migracion a NumPy 2.x es ortogonal a
+#   esa decision.
+opencv-python-headless>=4.14,<5
+# opencv-contrib-python: dependencia transitiva (albumentations/insightface),
+# NO declarada aqui arriba. Comparte el paquete "cv2" con
+# opencv-python-headless -- quien se instale despues sobrescribe los
+# archivos del otro en site-packages. Sin este pin, trajo 5.0.0.93 y gano
+# la carrera, dejando cv2.__version__ en 5.0 pese al <5 de la linea de
+# arriba. Se fija al mismo tope para que, gane quien gane, quede en 4.x.
+opencv-contrib-python<5
+mediapipe>=0.10.9,<0.11
 flask
-numpy
+numpy>=2,<3
 requests
-onnxruntime>=1.16.0
+onnxruntime>=1.16.0,<1.24
 # Embeddings faciales (modelos ONNX descargados en INSIGHTFACE_ROOT)
-insightface>=0.7.3
-onnx>=1.15.0
+insightface>=0.7.3,<0.8
+onnx>=1.15.0,<1.17
+# Lectura de DNI por cámara (dni_scan.py) -- PDF417 (DNI antiguo) + MRZ
+# (todas las versiones). Requiere libzbar0/tesseract-ocr en Dockerfile.ai.
+pyzbar>=0.1.9
+pytesseract>=0.3.10
+mrz>=0.6.1

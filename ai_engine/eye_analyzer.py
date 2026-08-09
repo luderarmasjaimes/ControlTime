@@ -14,6 +14,7 @@ import threading
 import base64
 import json
 import os
+import time
 import requests
 from typing import Optional, Tuple
 from datetime import datetime, timezone
@@ -43,6 +44,7 @@ from glasses_fusion import (
     onnx_load_error,
     warmup_glasses_onnx,
 )
+from dni_scan import scan_dni_image
 
 # =============================================================================
 # TUNING — confianza del landmarker (más bajo = más tolerante a caras pequeñas/luz difícil)
@@ -117,7 +119,6 @@ if not FACE_OVAL_INDICES:
         172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
     ]
 
-mouth_closed_prev = True
 # Ventana corta = reacción más rápida al quitarse gafas (frame ya recortado al óvalo).
 def _glasses_hist_maxlen() -> int:
     try:
@@ -133,15 +134,66 @@ def _glasses_fusion_hist_maxlen() -> int:
         return 5
 
 
-glasses_score_hist = deque(maxlen=_glasses_hist_maxlen())
-glasses_state_prev = False
-# Fusión CV + ONNX (GLASSES_ONNX_PATH): histéresis sobre señal fusionada 0–100
-glasses_fusion_hist = deque(maxlen=_glasses_fusion_hist_maxlen())
-glasses_fusion_state_prev = False
-# Exclusión mutua + reset por petición: el backend llama /analyze_eyes en HTTP stateless
-# (un JPEG por request). Sin esto, el deque y la histéresis mezclan frames y queda
-# pegado en "lentes" — distinto de C:\\FACIAL (navegador, secuencia un solo flujo).
+# Estado por sesion de captura (X-Capture-Session-Id del backend C++, ver
+# authApi.ts/ai_engine_client.cpp). Antes esto eran variables GLOBALES de
+# modulo (una sola para todo el proceso Flask): con threaded=True, dos
+# capturas concurrentes -- dos pestañas del navegador, o incluso trafico de
+# pruebas/health-checks -- se mezclaban en el mismo deque/histeresis, dejando
+# "gafas"/"ojos cerrados" pegados aunque el frame real ya no los tuviera.
+class _SessionState:
+    __slots__ = (
+        "mouth_closed_prev",
+        "glasses_score_hist",
+        "glasses_state_prev",
+        "glasses_fusion_hist",
+        "glasses_fusion_state_prev",
+        "left_ear_hist",
+        "right_ear_hist",
+        "last_touched",
+    )
+
+    def __init__(self):
+        self.mouth_closed_prev = True
+        self.glasses_score_hist = deque(maxlen=_glasses_hist_maxlen())
+        self.glasses_state_prev = False
+        self.glasses_fusion_hist = deque(maxlen=_glasses_fusion_hist_maxlen())
+        self.glasses_fusion_state_prev = False
+        self.left_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
+        self.right_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
+        self.last_touched = time.monotonic()
+
+
+_SESSION_DEFAULT_KEY = "_no_session_id"
+_SESSION_TTL_SECONDS = 120.0
+_sessions_lock = threading.Lock()
+_sessions: dict = {}
+
+
+def _get_session_state(session_id):
+    key = session_id if session_id else _SESSION_DEFAULT_KEY
+    now = time.monotonic()
+    with _sessions_lock:
+        st = _sessions.get(key)
+        if st is None:
+            st = _SessionState()
+            _sessions[key] = st
+        st.last_touched = now
+        if len(_sessions) > 64:
+            stale = [
+                k
+                for k, v in _sessions.items()
+                if k != key and (now - v.last_touched) > _SESSION_TTL_SECONDS
+            ]
+            for k in stale:
+                _sessions.pop(k, None)
+        return st
+
+
+# El calculo del score de gafas (heuristica CV, muy compartida entre frames)
+# sigue serializado con un lock: no depende de estado por sesion, solo evita
+# que dos threads pisen buffers intermedios de OpenCV a la vez.
 _glasses_lock = threading.Lock()
+# Ultimo debug de CUALQUIER sesion, solo para /glasses_debug (diagnostico).
 last_glasses_debug = {}
 
 # Logs de prueba (JSONL, mismo esquema): con gafas vs sin gafas — activar solo uno por sesión de prueba.
@@ -213,9 +265,6 @@ def _append_sin_gafas_probe_record(record: dict) -> None:
                 f.write(line)
     except OSError as e:
         print(f"[EYE_AI] glasses_probe_sin_gafas log failed: {e}", flush=True)
-
-left_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
-right_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
 
 
 def calculate_ear(landmarks, eye_indices):
@@ -292,11 +341,10 @@ def mar_inner_ratio(points):
     return ver / (hor + 1e-6)
 
 
-def update_mouth_closed(bs, mar_ratio):
+def update_mouth_closed(bs, mar_ratio, st: _SessionState):
     """
     Boca cerrada: blendshapes + MAR + histéresis (menos parpadeo boca abierta/cerrada).
     """
-    global mouth_closed_prev
     jaw = bs_get(bs, "jawOpen", "JAW_OPEN")
     mclose = bs_get(bs, "mouthClose", "MOUTH_CLOSE")
     funnel = bs_get(bs, "mouthFunnel", "MOUTH_FUNNEL")
@@ -309,14 +357,14 @@ def update_mouth_closed(bs, mar_ratio):
     elif mar_ratio < 0.032:
         open_ix = min(open_ix, 0.12)
 
-    if mouth_closed_prev:
+    if st.mouth_closed_prev:
         if open_ix > 0.35 or jaw > 0.29 or mar_ratio > 0.056:
-            mouth_closed_prev = False
+            st.mouth_closed_prev = False
     else:
         if open_ix < 0.20 and jaw < 0.16 and (mclose > 0.12 or mar_ratio < 0.040):
-            mouth_closed_prev = True
+            st.mouth_closed_prev = True
 
-    return mouth_closed_prev
+    return st.mouth_closed_prev
 
 
 def preprocess_bgr_for_glasses(img_bgr):
@@ -327,20 +375,20 @@ def preprocess_bgr_for_glasses(img_bgr):
     return clahe.apply(gray)
 
 
-def glasses_from_frame(img_bgr, points):
+def glasses_from_frame(img_bgr, points, st: _SessionState):
     """
     ROI rectangular que encierra ambos ojos.
     Reflejo especular + montura (black-hat) + puente nasal.
 
-    Solo lock (sin resetear histéresis cada frame): si se pone a False en cada petición,
-    la decisión queda siempre en "sin lentes" y no reacciona al ponerse gafas.
-    El histórico corto sigue siendo global (como C:\\FACIAL); el lock evita condiciones de carrera.
+    El lock solo serializa el computo OpenCV entre threads concurrentes; la
+    histéresis (st.glasses_score_hist/st.glasses_state_prev) vive en el
+    _SessionState de esta captura, no en una variable global de proceso.
     """
     with _glasses_lock:
-        return _glasses_from_frame_impl(img_bgr, points)
+        return _glasses_from_frame_impl(img_bgr, points, st)
 
 
-def _glasses_from_frame_impl(img_bgr, points):
+def _glasses_from_frame_impl(img_bgr, points, st: _SessionState):
     """
     ROI rectangular que encierra ambos ojos.
     Reflejo especular + montura (black-hat) + puente nasal.
@@ -496,11 +544,10 @@ def _glasses_from_frame_impl(img_bgr, points):
             cap_applied = 48
     score_final = float(score)
 
-    glasses_score_hist.append(score)
-    stable = float(np.median(list(glasses_score_hist)))
+    st.glasses_score_hist.append(score)
+    stable = float(np.median(list(st.glasses_score_hist)))
 
-    global glasses_state_prev
-    prev_glasses_state = glasses_state_prev
+    prev_glasses_state = st.glasses_state_prev
     # Sin brillo medible (gafas mate/AR): montura+puente altos y stable>51 por cap 54; probe real: 451/451 con spec=0.
     matte_no_spec = spec_density < 0.0008 and comp_count == 0
     matte_frame_signal = (
@@ -525,7 +572,7 @@ def _glasses_from_frame_impl(img_bgr, points):
             and not medium_glare
         )
         or (
-            glasses_state_prev
+            st.glasses_state_prev
             and low_rim_bridge
             and score_final < 47.5
             and spec_density < 0.0010
@@ -535,11 +582,11 @@ def _glasses_from_frame_impl(img_bgr, points):
         )
     )
 
-    if not glasses_state_prev:
+    if not st.glasses_state_prev:
         # frame_presence + rim/bridge sin spec puede ser nariz: el cap deja stable~48, no pasa stable>51.
         # Con gafas suele haber spec débil (>=0.00045) o al menos un blob; glare relajado cubre el resto.
         # matte_frame_signal: entrada sin spec (calibrado con glasses_probe.jsonl con lentes puestos).
-        glasses_state_prev = (
+        st.glasses_state_prev = (
             (stable > 50.0 and strong_glare)
             or (stable > 54.0 and medium_glare)
             or (
@@ -550,7 +597,7 @@ def _glasses_from_frame_impl(img_bgr, points):
             or (stable > 51.0 and matte_frame_signal)
         )
     else:
-        glasses_state_prev = not exit_glasses
+        st.glasses_state_prev = not exit_glasses
 
     entry_strong = (stable > 50.0) and strong_glare
     entry_medium = (stable > 54.0) and medium_glare
@@ -562,7 +609,7 @@ def _glasses_from_frame_impl(img_bgr, points):
     entry_matte = (stable > 51.0) and matte_frame_signal
 
     glasses_likelihood = stable
-    if glasses_state_prev:
+    if st.glasses_state_prev:
         glasses_likelihood = max(60.0, stable)
     else:
         glasses_likelihood = min(40.0, stable)
@@ -585,7 +632,7 @@ def _glasses_from_frame_impl(img_bgr, points):
         "score_after_boost": float(score_after_boost),
         "score_final": float(score_final),
         "cap_applied": cap_applied,
-        "hist_len": len(glasses_score_hist),
+        "hist_len": len(st.glasses_score_hist),
         "strong_glare": bool(strong_glare),
         "medium_glare": bool(medium_glare),
         "bilateral_glare": bool(bilateral_glare),
@@ -596,7 +643,7 @@ def _glasses_from_frame_impl(img_bgr, points):
         "stable_score": float(stable),
         "glasses_likelihood": float(glasses_likelihood),
         "prev_glasses_state": bool(prev_glasses_state),
-        "glasses_state": bool(glasses_state_prev),
+        "glasses_state": bool(st.glasses_state_prev),
         "entry_strong": bool(entry_strong),
         "entry_medium": bool(entry_medium),
         "entry_frame_branch": bool(entry_frame_branch),
@@ -606,7 +653,7 @@ def _glasses_from_frame_impl(img_bgr, points):
         "glasses_spec_s_max": float(GLASSES_SPEC_S_MAX),
         "exit_glasses_condition": bool(exit_glasses),
     }
-    return float(glasses_likelihood), bool(glasses_state_prev), debug
+    return float(glasses_likelihood), bool(st.glasses_state_prev), debug
 
 
 def eye_open_hybrid(ear: float, blink_bs: float, ear_thresh: float) -> bool:
@@ -630,7 +677,11 @@ def estimate_confidence(left_ear, right_ear, blink_l, blink_r, detected: bool) -
 
 
 def apply_glasses_fusion_pipeline(
-    img_bgr: np.ndarray, cv_gscore: float, cv_glasses_hit: bool, gdebug: dict
+    img_bgr: np.ndarray,
+    cv_gscore: float,
+    cv_glasses_hit: bool,
+    gdebug: dict,
+    st: _SessionState,
 ):
     """
     Mezcla CV + ONNX sobre el mismo ROI que glasses_debug['roi'].
@@ -641,7 +692,6 @@ def apply_glasses_fusion_pipeline(
         (webcam, iluminación distinta al dataset de entrenamiento).
       - fuse: histéresis sobre mediana(fusion_hist) como antes (ONNX puede mandar el booleano).
     """
-    global glasses_fusion_state_prev
     crop = None
     roi = gdebug.get("roi")
     if roi and len(roi) == 4:
@@ -651,18 +701,18 @@ def apply_glasses_fusion_pipeline(
             crop = img_bgr[y : y + rh, x : x + rw]
     onnx_p = infer_glasses_prob_onnx(crop) if crop is not None else None
     fused, fusion_mode = fuse_scores(cv_gscore, onnx_p)
-    glasses_fusion_hist.append(fused)
-    sf = float(np.median(list(glasses_fusion_hist)))
+    st.glasses_fusion_hist.append(fused)
+    sf = float(np.median(list(st.glasses_fusion_hist)))
 
     decision_mode = os.environ.get("GLASSES_ONNX_DECISION_MODE", "cv_primary").strip().lower()
 
     if onnx_p is not None:
         if decision_mode == "fuse":
-            if not glasses_fusion_state_prev:
-                glasses_fusion_state_prev = sf > 56.0
+            if not st.glasses_fusion_state_prev:
+                st.glasses_fusion_state_prev = sf > 56.0
             else:
-                glasses_fusion_state_prev = not (sf < 44.0)
-            hit = glasses_fusion_state_prev
+                st.glasses_fusion_state_prev = not (sf < 44.0)
+            hit = st.glasses_fusion_state_prev
             mode_out = fusion_mode
         else:
             # cv_primary: booleano ICAO = CV; ONNX puede vetar FP (auriculares/reflejos sin brillo de cristal).
@@ -674,12 +724,23 @@ def apply_glasses_fusion_pipeline(
             )
             if veto_on and onnx_p is not None and hit:
                 try:
-                    p_max = float(os.environ.get("GLASSES_ONNX_VETO_MAX_PROB", "0.17"))
+                    # 0.45 en vez del 0.17 original: /glasses_debug capturado en
+                    # produccion (2026-08-08) mostro un caso real atascado en
+                    # "con lentes" con spec_density=0.0 (cero brillo, la senal
+                    # mas fuerte de "sin lentes") y onnx_prob=0.365 -- el propio
+                    # clasificador ya inclinaba a "sin lentes" (su frontera
+                    # natural de decision es 0.5) pero 0.17 exigia >83% de
+                    # confianza para vetar, mucho mas estricto de lo razonable.
+                    # El bloqueo real: la histeresis CV (rim/bridge de sombras
+                    # naturales del rostro, no del armazon) se queda en
+                    # cap_applied=54 y el veto es la unica salida disponible
+                    # cuando eso pasa.
+                    p_max = float(os.environ.get("GLASSES_ONNX_VETO_MAX_PROB", "0.45"))
                     sd_max = float(
                         os.environ.get("GLASSES_ONNX_VETO_MAX_SPEC_DENSITY", "0.0028")
                     )
                 except ValueError:
-                    p_max, sd_max = 0.17, 0.0028
+                    p_max, sd_max = 0.45, 0.0028
                 sd = float(gdebug.get("spec_density", 1.0))
                 if float(onnx_p) < p_max and sd < sd_max:
                     hit = False
@@ -692,12 +753,13 @@ def apply_glasses_fusion_pipeline(
 
 @app.route("/analyze_eyes", methods=["POST"])
 def analyze_eyes():
-    global mouth_closed_prev, glasses_state_prev, last_glasses_debug
-    global left_ear_hist, right_ear_hist
-    global glasses_fusion_state_prev
+    global last_glasses_debug
 
     if "image" not in request.files:
         return jsonify({"error": "No image provided"}), 400
+
+    session_id = request.form.get("session_id")
+    st = _get_session_state(session_id)
 
     file = request.files["image"]
     img_bytes = file.read()
@@ -728,12 +790,12 @@ def analyze_eyes():
     detection_result = detector.detect(mp_image)
 
     if not detection_result.face_landmarks:
-        mouth_closed_prev = True
-        glasses_state_prev = False
-        glasses_fusion_hist.clear()
-        glasses_fusion_state_prev = False
-        left_ear_hist.clear()
-        right_ear_hist.clear()
+        st.mouth_closed_prev = True
+        st.glasses_state_prev = False
+        st.glasses_fusion_hist.clear()
+        st.glasses_fusion_state_prev = False
+        st.left_ear_hist.clear()
+        st.right_ear_hist.clear()
         last_glasses_debug = {"reason": "no_face"}
         if _glasses_probe_sin_gafas_path():
             _append_sin_gafas_probe_record(
@@ -785,10 +847,10 @@ def analyze_eyes():
 
     left_ear_raw = calculate_ear(points, LEFT_EYE)
     right_ear_raw = calculate_ear(points, RIGHT_EYE)
-    left_ear_hist.append(left_ear_raw)
-    right_ear_hist.append(right_ear_raw)
-    left_ear = float(np.median(left_ear_hist))
-    right_ear = float(np.median(right_ear_hist))
+    st.left_ear_hist.append(left_ear_raw)
+    st.right_ear_hist.append(right_ear_raw)
+    left_ear = float(np.median(st.left_ear_hist))
+    right_ear = float(np.median(st.right_ear_hist))
 
     bs = blendshape_map(detection_result)
     blink_l = bs_get(bs, "eyeBlinkLeft", "EYE_BLINK_LEFT", "eyeblinkleft")
@@ -800,12 +862,12 @@ def analyze_eyes():
     jaw = bs_get(bs, "jawOpen", "JAW_OPEN")
     mar_ratio = mar_inner_ratio(points)
 
-    mouth_closed_bool = update_mouth_closed(bs, mar_ratio)
+    mouth_closed_bool = update_mouth_closed(bs, mar_ratio, st)
     mouth_open_bool = not mouth_closed_bool
 
-    cv_gscore, cv_hit, gdebug = glasses_from_frame(img, points)
+    cv_gscore, cv_hit, gdebug = glasses_from_frame(img, points, st)
     fused_score, glasses_hit, fusion_mode, onnx_p, stable_fusion, cv_only = (
-        apply_glasses_fusion_pipeline(img, float(cv_gscore), bool(cv_hit), gdebug)
+        apply_glasses_fusion_pipeline(img, float(cv_gscore), bool(cv_hit), gdebug, st)
     )
     no_glasses = not glasses_hit
     gdebug["glasses_fusion"] = {
@@ -1209,7 +1271,46 @@ def _bust_roi_matte_fallback(
     return roi, mask
 
 
-def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[str]:
+def _compose_avatar_canvas(
+    out: np.ndarray,
+    alpha_sm: np.ndarray,
+    matte_oval: bool,
+    canvas_w: int,
+    canvas_h: int,
+) -> np.ndarray:
+    """Compone el avatar sin reestilizarlo; sirve miniatura y maestro 4K."""
+    th, tw = out.shape[:2]
+    scale = min(canvas_w * 0.92 / tw, canvas_h * 0.92 / th)
+    nw = max(64, int(round(tw * scale)))
+    nh = max(64, int(round(th * scale)))
+    interpolation = cv2.INTER_LANCZOS4 if scale > 1.0 else cv2.INTER_AREA
+    up = cv2.resize(out, (nw, nh), interpolation=interpolation)
+    alpha_big = cv2.resize(alpha_sm, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    alpha_big = cv2.GaussianBlur(alpha_big, (3, 3), 0)
+    mup_f = alpha_big[..., None]
+
+    canvas = np.ones((canvas_h, canvas_w, 3), dtype=np.uint8) * 255
+    if np.any(alpha_big > 0.08):
+        ys, xs = np.where(alpha_big > 0.2)
+        pcx = float(np.mean(xs))
+        pcy = float(np.mean(ys))
+    else:
+        pcx, pcy = nw * 0.5, nh * 0.5
+    target_cx = canvas_w * 0.5
+    target_cy = canvas_h * (0.39 if not matte_oval else 0.42)
+    ox = int(round(target_cx - pcx))
+    oy = int(round(target_cy - pcy))
+    ox = max(0, min(ox, canvas_w - nw))
+    oy = max(0, min(oy, canvas_h - nh))
+
+    reg = canvas[oy : oy + nh, ox : ox + nw]
+    reg[:] = (
+        reg.astype(np.float32) * (1.0 - mup_f) + up.astype(np.float32) * mup_f
+    ).astype(np.uint8)
+    return canvas
+
+
+def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[Tuple[str, str]]:
     """
     Un único avatar PNG por imagen, 100 % local:
     segmentación selfie / GrabCut, fondo blanco, estilo con CLAHE + realce suave
@@ -1260,7 +1361,10 @@ def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[str]:
             blur0 = cv2.GaussianBlur(roi, (0, 0), sigmaX=1.0)
             roi = cv2.addWeighted(roi, 1.06, blur0, -0.06, 0)
         rh, rw = roi.shape[:2]
-        max_side = 920 if not matte_oval else 768
+        # El trabajo se conserva hasta 1600 px para no destruir detalle de la
+        # captura antes de componer el máster 4K. Sigue siendo una operación
+        # asíncrona de registro, no del render interactivo de la cabecera.
+        max_side = 1600 if not matte_oval else 1280
         sc = min(max_side / float(max(rh, rw)), 1.0)
         tw = max(96, int(round(rw * sc)))
         th = max(96, int(round(rh * sc)))
@@ -1337,39 +1441,22 @@ def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[str]:
                 + ink_strength * ink
             ).astype(np.uint8)
 
-        CANVAS_W, CANVAS_H = 768, 1024
-        scale2 = min(CANVAS_W * 0.92 / tw, CANVAS_H * 0.92 / th)
-        nw = max(64, int(round(tw * scale2)))
-        nh = max(64, int(round(th * scale2)))
-        up = cv2.resize(out, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
-        alpha_big = cv2.resize(alpha_sm, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        alpha_big = cv2.GaussianBlur(alpha_big, (3, 3), 0)
-        mup_f = alpha_big[..., None]
-
-        canvas = np.ones((CANVAS_H, CANVAS_W, 3), dtype=np.uint8) * 255
-        aflat = alpha_big.reshape(-1)
-        if np.any(aflat > 0.08):
-            ys, xs = np.where(alpha_big > 0.2)
-            pcx = float(np.mean(xs))
-            pcy = float(np.mean(ys))
-        else:
-            pcx, pcy = nw * 0.5, nh * 0.5
-        target_cx = CANVAS_W * 0.5
-        target_cy = CANVAS_H * (0.39 if not matte_oval else 0.42)
-        ox = int(round(target_cx - pcx))
-        oy = int(round(target_cy - pcy))
-        ox = max(0, min(ox, CANVAS_W - nw))
-        oy = max(0, min(oy, CANVAS_H - nh))
-
-        reg = canvas[oy : oy + nh, ox : ox + nw]
-        reg[:] = (
-            reg.astype(np.float32) * (1.0 - mup_f) + up.astype(np.float32) * mup_f
-        ).astype(np.uint8)
-
-        ok, buf = cv2.imencode(".png", canvas, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-        if not ok:
+        thumb = _compose_avatar_canvas(out, alpha_sm, matte_oval, 768, 1024)
+        # Maestro 4K vertical (3:4). Se persiste fuera de la sesión y se
+        # descarga únicamente al ampliar el avatar.
+        hd = _compose_avatar_canvas(out, alpha_sm, matte_oval, 2880, 3840)
+        ok_thumb, buf_thumb = cv2.imencode(
+            ".png", thumb, [cv2.IMWRITE_PNG_COMPRESSION, 3]
+        )
+        ok_hd, buf_hd = cv2.imencode(
+            ".png", hd, [cv2.IMWRITE_PNG_COMPRESSION, 5]
+        )
+        if not ok_thumb or not ok_hd:
             return None
-        return base64.b64encode(buf.tobytes()).decode("ascii")
+        return (
+            base64.b64encode(buf_thumb.tobytes()).decode("ascii"),
+            base64.b64encode(buf_hd.tobytes()).decode("ascii"),
+        )
     except Exception:
         return None
 
@@ -1386,10 +1473,23 @@ def cartoon_avatar():
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({"ok": False, "error": "invalid_image"}), 400
-    b64 = _cartoonify_face_bgr(img)
-    if not b64:
+    avatars = _cartoonify_face_bgr(img)
+    if not avatars:
         return jsonify({"ok": False, "error": "cartoonify_failed"}), 200
-    return jsonify({"ok": True, "image_base64": b64, "format": "png"})
+    thumb_b64, hd_b64 = avatars
+    return jsonify(
+        {
+            "ok": True,
+            "image_base64": thumb_b64,
+            "image_hd_base64": hd_b64,
+            "format": "png",
+            "width": 768,
+            "height": 1024,
+            "hd_width": 2880,
+            "hd_height": 3840,
+            "generator": "local_mediapipe_opencv",
+        }
+    )
 
 
 @app.route("/face_embedding", methods=["POST"])
@@ -1459,6 +1559,24 @@ def health():
             },
         }
     )
+
+
+@app.route("/scan_document", methods=["POST"])
+def scan_document():
+    """Lectura de DNI por cámara (PDF417 del DNI antiguo + MRZ de todas las
+    versiones) -- ver dni_scan.py. Nunca consulta RENIEC/SUNAT; solo
+    decodifica lo ya impreso en el documento."""
+    if "image" not in request.files:
+        return jsonify({"error": "No image provided"}), 400
+    file = request.files["image"]
+    img_bytes = file.read()
+    if len(img_bytes) == 0:
+        return jsonify({"error": "Empty image buffer"}), 400
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({"error": "Invalid image"}), 400
+    return jsonify(scan_dni_image(img))
 
 
 @app.route("/glasses_debug", methods=["GET"])
