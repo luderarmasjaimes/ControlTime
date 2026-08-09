@@ -18,6 +18,8 @@ data/glasses_dataset/**/*.bmp
 node_modules/
 dist/
 build/
+backend/build/
+backend/build-vcpkg/
 __pycache__/
 *.pyc
 .pytest_cache/
