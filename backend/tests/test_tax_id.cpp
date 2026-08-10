@@ -43,3 +43,50 @@ TEST_CASE("normalizeTaxId conserva solo digitos", "[tax_id]") {
     REQUIRE(auth::normalizeTaxId("  20500000016  ") == "20500000016");
     REQUIRE(auth::normalizeTaxId("abc") == "");
 }
+
+// ADR-102 — validacion de RUC Ecuador (sociedad privada/persona natural),
+// RUT Chile (modulo 11, incluye digito verificador 'K') y cedula juridica
+// Costa Rica (validacion estructural, sin checksum real). Ejemplos de
+// sociedad/persona verificados a mano contra la formula oficial del SRI
+// antes de escribir el codigo (ver ADR-102), no inventados.
+TEST_CASE("validateTaxIdChecksum acepta RUC Ecuador de sociedad privada valido", "[tax_id][ruc_ec]") {
+    REQUIRE(auth::validateTaxIdChecksum("1792146739001", "EC"));
+}
+
+TEST_CASE("validateTaxIdChecksum acepta RUC Ecuador de persona natural valido", "[tax_id][ruc_ec]") {
+    REQUIRE(auth::validateTaxIdChecksum("1710034065001", "EC"));
+}
+
+TEST_CASE("validateTaxIdChecksum rechaza RUC Ecuador con digito verificador incorrecto", "[tax_id][ruc_ec]") {
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("1792146730001", "EC"));
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("1710034060001", "EC"));
+}
+
+TEST_CASE("validateTaxIdChecksum rechaza RUC Ecuador con provincia o establecimiento invalido", "[tax_id][ruc_ec]") {
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("2592146739001", "EC")); // provincia 25 no existe
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("1792146739000", "EC")); // establecimiento 000
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("179214673900", "EC"));  // 12 digitos
+}
+
+TEST_CASE("validateTaxIdChecksum acepta RUT Chile valido, incluida K", "[tax_id][rut_cl]") {
+    REQUIRE(auth::validateTaxIdChecksum("760864285", "CL"));  // 76.086.428-5
+    REQUIRE(auth::normalizeTaxId("18.765.432-k") == "18765432K");
+}
+
+TEST_CASE("validateTaxIdChecksum rechaza RUT Chile con digito verificador incorrecto", "[tax_id][rut_cl]") {
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("760864284", "CL"));
+}
+
+TEST_CASE("validateTaxIdChecksum valida cedula juridica Costa Rica solo por forma", "[tax_id][cr]") {
+    REQUIRE(auth::validateTaxIdChecksum("3101123456", "CR"));
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("0101123456", "CR")); // cero inicial
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("310112345", "CR"));  // 9 digitos
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("1111111111", "CR")); // repetido
+}
+
+TEST_CASE("validateTaxIdChecksum aplica fallback estructural al resto del catalogo", "[tax_id][fallback]") {
+    REQUIRE(auth::validateTaxIdChecksum("123456789012", "MX"));
+    REQUIRE(auth::validateTaxIdChecksum("900123456", "CO"));
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("11111", "MX"));       // muy corto
+    REQUIRE_FALSE(auth::validateTaxIdChecksum("111111111", "MX"));   // repetido
+}

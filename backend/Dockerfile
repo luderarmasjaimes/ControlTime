@@ -77,6 +77,7 @@ RUN rm -rf /app/build \
     && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
         -DONNXRUNTIME_ROOT=/opt/onnxruntime \
         -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
+        -DVCPKG_OVERLAY_TRIPLETS=/app/vcpkg-triplets \
     && cmake --build build --config Release -j"${BACKEND_BUILD_JOBS}" \
     && ctest --test-dir build --output-on-failure \
     && (find build -type f -executable -exec strip --strip-all {} + || true)
