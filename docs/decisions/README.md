@@ -438,8 +438,9 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 095 | `usermaintenancemodal-css-autocontenida-marca` | ✅ implemented, verificado (2026-08-07) | Fix real de code-splitting: el modal se monta desde `App.tsx` fuera del chunk lazy de ReportStudioV2 y no cargaba su CSS; hoja propia autocontenida + marca corporativa `#F07E41`. |
 | 096 | `opencv-4-12-vcpkg-backend` | ✅ implemented, verificado (2026-08-08) | Backend C++ compila OpenCV 4.12.0 estático vía vcpkg manifest, reemplazando `libopencv-dev` 4.6.0 (apt/Ubuntu, congelado desde 2022). Runtime sin cambios (cascades Haar del pipeline legacy). |
 | 101 | `fix-bucle-reintento-registro` | ✅ implemented, verificado (2026-08-08) | El `useEffect` de auto-envío de registro reintentaba cada ~2.7s con los mismos datos tras cualquier error del servidor, borrando el mensaje casi al instante (`setError('')`) — se veía como pantalla parpadeando sin error visible. Un rechazo confirmado del servidor ya no rearma el auto-reintento. |
+| 102 | `validacion-fiscal-ecuador-chile-costa-rica-fallback` | ✅ implemented, verificado (2026-08-09) | RUC Ecuador (13 dígitos, algoritmo SRI real) y RUT Chile (módulo 11, incluida `K`) con dígito verificador real; cédula jurídica Costa Rica y el resto del catálogo (~24 países) con fallback estructural — antes rechazaban siempre el registro. Motivado por proyectos activos en Ecuador/Chile y un proveedor de Costa Rica que no podían registrarse. 625/625 aserciones passed. |
 
-**Ámbito `plataforma`: 37/39 implemented, 1 partial, 1 proposed** (recalculado 2026-08-08 tras agregar ADR-096/101 y cerrar ADR-093; ADR-033 sigue partial deliberadamente, ADR-035 sigue proposed a la espera de decisión de negocio — ver ADRs individuales).
+**Ámbito `plataforma`: 38/40 implemented, 1 partial, 1 proposed** (recalculado 2026-08-09 tras agregar ADR-102; ADR-033 sigue partial deliberadamente, ADR-035 sigue proposed a la espera de decisión de negocio — ver ADRs individuales).
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |
