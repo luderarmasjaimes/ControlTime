@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MessageCircle, X, Send, Phone, Clipboard, FileText, Sparkles, Lightbulb, Check, FileStack, SpellCheck, ArrowLeft, ArrowRight } from 'lucide-react';
+import { MessageCircle, X, Send, Phone, Clipboard, FileText, Sparkles, Lightbulb, Check, FileStack, SpellCheck, ArrowLeft, ArrowRight, Presentation, Smile } from 'lucide-react';
 import {
   fetchSupportChatConfig,
   streamSupportChatMessage,
@@ -13,6 +13,7 @@ import { getSession } from '../../../../auth/authStorage';
 import { resolveMiningUnitName } from '../../lib/sessionChrome';
 import { DOCUMENT_TEMPLATES, getTemplateSections, type TemplateSectionDef } from '../../lib/documentTemplates';
 import VoiceDictation from '../document/VoiceDictation';
+import EmojiPicker from './EmojiPicker';
 
 type ChatMessage = SupportChatMessage;
 
@@ -137,7 +138,18 @@ export default function SupportChatWidget() {
   const [escalateStatus, setEscalateStatus] = useState<string | null>(null);
   const [config, setConfig] = useState<{ ollama_url_set: boolean; whatsapp_configured: boolean } | null>(null);
   const [copiedFlash, setCopiedFlash] = useState(false);
+  // conversation_id que devuelve el backend en el primer turno -- se reenvía
+  // en los turnos siguientes de la MISMA conversación (mientras el widget no
+  // se reinicie / no se cierre y se vuelva a "Iniciar chat") para que el
+  // backend pueda agrupar el historial completo bajo un mismo id.
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Input real del mensaje en edición (ligado a `draft`/`setDraft`) -- se
+  // necesita la referencia al elemento para insertar el emoji elegido en la
+  // posición exacta del cursor (selectionStart/selectionEnd), no solo al
+  // final del texto.
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
   const addElement = useEditorStore((s) => s.addElement);
   const selectElement = useEditorStore((s) => s.selectElement);
   const applyDocumentTemplate = useEditorStore((s) => s.applyDocumentTemplate);
@@ -158,10 +170,12 @@ export default function SupportChatWidget() {
 
   const startChat = () => {
     setQualified(true);
+    setConversationId(null);
     setMessages([
       {
         role: 'assistant',
         content: `Hola ${qualifying.name.trim()}, soy el asistente de soporte de Beemetry. Recibí tu consulta sobre "${qualifying.topic}". ¿En qué puedo ayudarte?`,
+        isWelcome: true,
       },
     ]);
   };
@@ -209,7 +223,14 @@ export default function SupportChatWidget() {
           }
         },
         intent,
+        { conversationId: conversationId ?? undefined },
       );
+      // El backend devuelve `conversation_id` en el primer turno -- se guarda
+      // para reenviarlo en los siguientes turnos de esta misma conversación
+      // (mientras el widget siga abierto/no se reinicie el chat, ver startChat).
+      if (result.conversationId && result.conversationId !== conversationId) {
+        setConversationId(result.conversationId);
+      }
       if (!gotAnyChunk || result.error) {
         setMessages((prev) => [
           ...prev,
@@ -231,6 +252,30 @@ export default function SupportChatWidget() {
     if (!text) return;
     setDraft('');
     sendText(text);
+  };
+
+  /**
+   * Inserta el emoji elegido en la posición EXACTA del cursor del input de
+   * mensaje (no solo al final) usando selectionStart/selectionEnd, y devuelve
+   * el foco + cursor al input justo después del emoji insertado -- así se
+   * pueden encadenar varios emojis seguidos sin perder el punto de escritura.
+   * El picker NO se cierra al seleccionar (se cierra por click-outside o el
+   * botón X del propio picker) a propósito, por la misma razón.
+   */
+  const insertEmojiAtCursor = (emoji: string) => {
+    const el = chatInputRef.current;
+    const start = el?.selectionStart ?? draft.length;
+    const end = el?.selectionEnd ?? draft.length;
+    const next = draft.slice(0, start) + emoji + draft.slice(end);
+    setDraft(next);
+    const cursor = start + emoji.length;
+    // El value del input se actualiza en el próximo render (setDraft es
+    // asíncrono) -- se difiere el reposicionamiento del cursor un tick para
+    // que ya exista el texto nuevo cuando se llama a setSelectionRange.
+    window.setTimeout(() => {
+      el?.focus();
+      el?.setSelectionRange(cursor, cursor);
+    }, 0);
   };
 
   // Menú de acciones al final de cada respuesta del asistente (pedido
@@ -521,9 +566,11 @@ export default function SupportChatWidget() {
             <>
               <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {messages.map((m, i) => {
-                  // Los avisos locales (error de conexión) no llevan acciones:
-                  // no hay nada que copiar, resumir ni ampliar en ellos.
-                  const isLastAssistant = m.role === 'assistant' && !m.transient && i === messages.length - 1;
+                  // Los avisos locales (error de conexión) y el saludo inicial no llevan
+                  // acciones: no hay nada que copiar, resumir ni ampliar en ellos. Los chips
+                  // solo tienen sentido sobre respuestas reales del modelo a una consulta.
+                  const isLastAssistant =
+                    m.role === 'assistant' && !m.transient && !m.isWelcome && i === messages.length - 1;
                   return (
                     <div key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
                       <div
@@ -576,7 +623,23 @@ export default function SupportChatWidget() {
                 >
                   <FileStack size={13} /> Documento
                 </button>
+                <div style={{ position: 'relative', display: 'flex' }}>
+                  <button
+                    onClick={() => setEmojiPickerOpen((v) => !v)}
+                    title="Insertar emoji"
+                    style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, color: '#e2e8f0', padding: '6px 8px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                  >
+                    <Smile size={14} />
+                  </button>
+                  {emojiPickerOpen && (
+                    <EmojiPicker
+                      onSelect={insertEmojiAtCursor}
+                      onClose={() => setEmojiPickerOpen(false)}
+                    />
+                  )}
+                </div>
                 <input
+                  ref={chatInputRef}
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && send()}
@@ -659,16 +722,23 @@ function DocWizardPanel({
       {wizard.step === 'template' && (
         <>
           <p style={{ margin: 0, color: '#94a3b8', fontSize: 11 }}>¿Qué documento quieres generar?</p>
-          {DOCUMENT_TEMPLATES.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => onChooseTemplate(t.id)}
-              style={{ textAlign: 'left', background: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', color: '#e2e8f0', cursor: 'pointer' }}
-            >
-              <div style={{ fontWeight: 700, fontSize: 12 }}>{t.label}</div>
-              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{t.description}</div>
-            </button>
-          ))}
+          {DOCUMENT_TEMPLATES.map((t) => {
+            const isPresentation = t.docType === 'presentation';
+            return (
+              <button
+                key={t.id}
+                onClick={() => onChooseTemplate(t.id)}
+                style={{ textAlign: 'left', background: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', color: '#e2e8f0', cursor: 'pointer' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, fontWeight: 700, color: isPresentation ? '#f59e0b' : '#38bdf8', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 2 }}>
+                  {isPresentation ? <Presentation size={11} /> : <FileText size={11} />}
+                  {isPresentation ? 'PowerPoint' : 'Word'}
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 12 }}>{t.label}</div>
+                <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{t.description}</div>
+              </button>
+            );
+          })}
         </>
       )}
 

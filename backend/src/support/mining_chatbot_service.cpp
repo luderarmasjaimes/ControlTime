@@ -693,8 +693,12 @@ json::object handleEscalateToWhatsapp(const json::value &body) {
   if (toE164.empty()) {
     return json::object{{"error", "support_number_not_configured"}};
   }
+  const auto *line = AppConfig::instance().defaultWhatsappLine();
+  if (!line) {
+    return json::object{{"error", "whatsapp_not_configured"}};
+  }
   const auto result =
-      sendWhatsappTemplateMessage(toE164, gWhatsappTemplateName, gWhatsappTemplateLang, {});
+      sendWhatsappTemplateMessage(*line, toE164, gWhatsappTemplateName, gWhatsappTemplateLang, {});
   if (!result.ok) {
     return json::object{{"error", result.error.empty() ? "whatsapp_send_failed" : result.error}};
   }
