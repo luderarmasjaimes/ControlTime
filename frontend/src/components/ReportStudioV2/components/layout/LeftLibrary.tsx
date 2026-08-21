@@ -12,7 +12,6 @@ import {
   Video,
   Clapperboard,
   ClipboardList,
-  Activity,
   Pin,
   PinOff,
   ChevronRight,
@@ -27,6 +26,7 @@ import {
   Rows3,
   LineChart,
   Factory,
+  Radar,
 } from 'lucide-react';
 
 interface LibraryItem {
@@ -45,7 +45,14 @@ const items: LibraryItem[] = [
   { type: 'video', label: 'Grabación embebida', icon: <Video size={18} />, short: 'Video', tip: 'Grabar e insertar un video (cámara web o pantalla/ventana)' },
   { type: 'table', label: 'Filas y columnas', icon: <TableIcon size={18} />, short: 'Tabla', tip: 'Insertar una tabla de filas y columnas' },
   { type: 'map', label: 'Mapa detallado', icon: <MapIcon size={18} />, short: 'Mapa', tip: 'Insertar un mapa detallado de alta resolución' },
-  { type: 'sensor', label: 'Dato en tiempo real', icon: <Activity size={18} />, short: 'Sensor', tip: 'Insertar la lectura de un sensor en tiempo real' },
+  // El bloque 'sensor' (lectura única, sin selección de zona ni tipo de
+  // gráfico) queda retirado de la biblioteca de inserción — reemplazado por
+  // 'sensor_multi_chart' (pedido explícito del usuario tras confundir el
+  // ícono viejo con la funcionalidad nueva). El tipo 'sensor' sigue
+  // renderizándose (PageCanvas.tsx, ReadOnlyViewer.tsx, exportEngine.ts) por
+  // compatibilidad con informes ya guardados que lo contengan — solo se
+  // quita la opción de INSERTAR uno nuevo.
+  { type: 'sensor_multi_chart', label: 'Gráfico de sensores', icon: <Radar size={18} />, short: 'Sensor', tip: 'Insertar un gráfico de sensores en tiempo real: elija tipo, zona, unidad, tipo de gráfico (Apache ECharts) y rango de fecha' },
 ];
 
 interface LeftLibraryProps {

@@ -20,6 +20,10 @@ export interface DocumentTemplateMeta {
   group: 'principal' | 'otros';
   classification: string;
   docCodePrefix: string;
+  /** 'document' = lienzo A4 (Word); 'presentation' = lienzo 16:9 960x540 (PowerPoint,
+   * mismo layoutMode que consume el export PPTX real, ADR-083). Default 'document'
+   * si se omite -- solo las plantillas de diapositivas necesitan marcarlo. */
+  docType?: 'document' | 'presentation';
 }
 
 export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
@@ -31,6 +35,7 @@ export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
     group: 'principal',
     classification: 'CONFIDENCIAL',
     docCodePrefix: 'IT',
+    docType: 'document',
   },
   {
     id: 'propuesta-tecnica',
@@ -40,6 +45,7 @@ export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
     group: 'principal',
     classification: 'CONFIDENCIAL — USO COMERCIAL',
     docCodePrefix: 'PT',
+    docType: 'document',
   },
   {
     id: 'propuesta-tecnica-economica',
@@ -49,6 +55,7 @@ export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
     group: 'principal',
     classification: 'CONFIDENCIAL — USO COMERCIAL',
     docCodePrefix: 'PTE',
+    docType: 'document',
   },
   {
     id: 'informe-instalacion-reparacion',
@@ -58,6 +65,7 @@ export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
     group: 'principal',
     classification: 'USO INTERNO',
     docCodePrefix: 'IIR',
+    docType: 'document',
   },
   {
     id: 'informe-mantenimiento',
@@ -67,6 +75,7 @@ export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
     group: 'principal',
     classification: 'USO INTERNO',
     docCodePrefix: 'IM',
+    docType: 'document',
   },
   {
     id: 'acta-reunion',
@@ -76,6 +85,7 @@ export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
     group: 'otros',
     classification: 'USO INTERNO',
     docCodePrefix: 'ACT',
+    docType: 'document',
   },
   {
     id: 'informe-incidente',
@@ -85,6 +95,7 @@ export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
     group: 'otros',
     classification: 'CONFIDENCIAL',
     docCodePrefix: 'INC',
+    docType: 'document',
   },
   {
     id: 'ficha-inspeccion-campo',
@@ -94,6 +105,27 @@ export const DOCUMENT_TEMPLATES: DocumentTemplateMeta[] = [
     group: 'otros',
     classification: 'USO INTERNO',
     docCodePrefix: 'FIC',
+    docType: 'document',
+  },
+  {
+    id: 'presentacion-resultados',
+    label: 'Presentación de Resultados',
+    shortLabel: 'Present. Resultados',
+    description: 'Diapositivas 16:9 para exponer resultados de monitoreo: resumen, hallazgos clave y próximos pasos.',
+    group: 'otros',
+    classification: 'USO INTERNO',
+    docCodePrefix: 'PR',
+    docType: 'presentation',
+  },
+  {
+    id: 'presentacion-comercial',
+    label: 'Presentación Comercial',
+    shortLabel: 'Present. Comercial',
+    description: 'Diapositivas 16:9 para reuniones comerciales: propuesta de valor, diferenciadores y llamado a la acción.',
+    group: 'otros',
+    classification: 'CONFIDENCIAL — USO COMERCIAL',
+    docCodePrefix: 'PC',
+    docType: 'presentation',
   },
 ];
 
@@ -162,6 +194,16 @@ export const TEMPLATE_SECTIONS: Record<string, TemplateSectionDef[]> = {
     { id: 'condiciones-acceso', label: 'Condiciones de acceso y seguridad', kind: 'paragraph' },
     { id: 'hallazgos', label: 'Hallazgos prioritarios (un punto por línea)', kind: 'bullets' },
     { id: 'recomendaciones', label: 'Recomendaciones', kind: 'paragraph' },
+  ],
+  'presentacion-resultados': [
+    { id: 'resumen', label: 'Resumen ejecutivo del periodo', kind: 'paragraph' },
+    { id: 'hallazgos-clave', label: 'Hallazgos clave (un punto por línea)', kind: 'bullets' },
+    { id: 'proximos-pasos', label: 'Próximos pasos (un punto por línea)', kind: 'bullets' },
+  ],
+  'presentacion-comercial': [
+    { id: 'propuesta-valor', label: 'Propuesta de valor', kind: 'paragraph' },
+    { id: 'diferenciadores', label: 'Diferenciadores (un punto por línea)', kind: 'bullets' },
+    { id: 'llamado-accion', label: 'Llamado a la acción / siguiente paso', kind: 'paragraph' },
   ],
 };
 
@@ -801,6 +843,48 @@ function buildFichaInspeccionCampo(flow: Flow, ctx: PersonalizationContext, answ
   addParagraph(flow, `Inspector: ${ctx.userName}\nFecha: ${ctx.todayEs}`);
 }
 
+// Plantillas tipo presentación (docType 'presentation') -- una diapositiva
+// por bloque de contenido, a diferencia de los builders de documento (que
+// dejan que el flujo pagine solo cuando el texto desborda). `forceNewSlide`
+// fuerza el salto: en un lienzo 960x540 tres párrafos cortos entrarían en la
+// misma diapositiva si se dejara paginar por overflow, que no es la
+// convención esperada de una presentación (una idea por diapositiva).
+function forceNewSlide(flow: Flow): void {
+  const pageNumber = currentPage(flow).page_number + 1;
+  flow.pages.push({ page_number: pageNumber, elements: [] });
+  flow.y = flow.m.CONTENT_TOP;
+}
+
+function buildPresentacionResultados(flow: Flow, ctx: PersonalizationContext, answers: TemplateAnswers): void {
+  addHeading(flow, 'Resumen ejecutivo', 1);
+  addParagraph(flow, answerText(answers, 'resumen', `Resumen del periodo de monitoreo de ${ctx.unit}, ${ctx.company} — [completar con el resumen ejecutivo del periodo].`));
+
+  forceNewSlide(flow);
+  addHeading(flow, 'Hallazgos clave', 1);
+  addBullets(flow, answerBullets(answers, 'hallazgos-clave', ['[Hallazgo clave 1]', '[Hallazgo clave 2]', '[Hallazgo clave 3]']));
+
+  forceNewSlide(flow);
+  addHeading(flow, 'Próximos pasos', 1);
+  addBullets(flow, answerBullets(answers, 'proximos-pasos', ['[Próximo paso 1]', '[Próximo paso 2]']));
+  addSpacer(flow, 20);
+  addParagraph(flow, `Presentado por: ${ctx.userName} — ${ctx.todayEs}`, { italic: true });
+}
+
+function buildPresentacionComercial(flow: Flow, ctx: PersonalizationContext, answers: TemplateAnswers): void {
+  addHeading(flow, 'Propuesta de valor', 1);
+  addParagraph(flow, answerText(answers, 'propuesta-valor', `Propuesta de valor de Beemetry para ${ctx.company} — [completar con la propuesta de valor específica de esta reunión].`));
+
+  forceNewSlide(flow);
+  addHeading(flow, '¿Por qué Beemetry?', 1);
+  addBullets(flow, answerBullets(answers, 'diferenciadores', ['[Diferenciador 1]', '[Diferenciador 2]', '[Diferenciador 3]']));
+
+  forceNewSlide(flow);
+  addHeading(flow, 'Siguiente paso', 1);
+  addParagraph(flow, answerText(answers, 'llamado-accion', '[Llamado a la acción — p. ej. agendar una demo técnica, enviar cotización formal].'));
+  addSpacer(flow, 20);
+  addParagraph(flow, `Contacto: ${ctx.userName} — ${ctx.todayEs}`, { italic: true });
+}
+
 const TEMPLATE_BUILDERS: Record<string, (flow: Flow, ctx: PersonalizationContext, answers: TemplateAnswers) => void> = {
   'informe-tecnico': buildInformeTecnico,
   'propuesta-tecnica': buildPropuestaTecnica,
@@ -810,6 +894,8 @@ const TEMPLATE_BUILDERS: Record<string, (flow: Flow, ctx: PersonalizationContext
   'acta-reunion': buildActaReunion,
   'informe-incidente': buildInformeIncidente,
   'ficha-inspeccion-campo': buildFichaInspeccionCampo,
+  'presentacion-resultados': buildPresentacionResultados,
+  'presentacion-comercial': buildPresentacionComercial,
 };
 
 const COVER_TEMPLATE_BY_ID: Record<string, string> = {
@@ -821,6 +907,8 @@ const COVER_TEMPLATE_BY_ID: Record<string, string> = {
   'acta-reunion': 'normative',
   'informe-incidente': 'field',
   'ficha-inspeccion-campo': 'field',
+  'presentacion-resultados': 'corporate',
+  'presentacion-comercial': 'executive',
 };
 
 /**
@@ -841,22 +929,26 @@ export function buildDocumentTemplate(templateId: string, answers: TemplateAnswe
   const builder = TEMPLATE_BUILDERS[templateId];
   if (!meta || !builder) return null;
 
+  const isPresentation = meta.docType === 'presentation';
   const ctx = buildPersonalization(meta.docCodePrefix);
-  const m = getReportLayoutMetrics('document', 'A4', 'portrait');
+  // getReportLayoutMetrics ignora paperSize/orientation en modo 'presentation'
+  // (lienzo fijo 960x540, ADR-083) -- se pasan igual por uniformidad de firma.
+  const m = getReportLayoutMetrics(isPresentation ? 'presentation' : 'document', 'A4', 'portrait');
 
   const coverPage = buildCoverPage(1, m, meta.label, ctx, meta.classification, COVER_TEMPLATE_BY_ID[templateId] || 'corporate');
-  const tocPage = buildTocPage(2, m);
 
-  const flow = newFlow(m, 3);
+  // Una presentación corta no necesita índice -- solo los documentos largos
+  // (informes/propuestas) lo llevan, en la página 2.
+  const flow = newFlow(m, isPresentation ? 2 : 3);
   builder(flow, ctx, answers);
 
   return {
-    pages: [coverPage, tocPage, ...flow.pages],
+    pages: isPresentation ? [coverPage, ...flow.pages] : [coverPage, buildTocPage(2, m), ...flow.pages],
     meta: {
       author: ctx.userName,
       version: 1,
       updatedAt: new Date().toISOString(),
-      layoutMode: 'document',
+      layoutMode: isPresentation ? 'presentation' : 'document',
       paperSize: 'A4',
       orientation: 'portrait',
     },

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useEditorStore, defaultBorderByType, type ReportElement } from '../../store/useEditorStore';
 import { fetchMiningKpis } from '../../lib/api';
 import SensorInspector from './SensorInspector';
+import SensorMultiChartInspector from './SensorMultiChartInspector';
 import { readImageFileAsDataUrl, resolveReportImageSrc } from '../../lib/reportImageSrc';
 import { getSession } from '../../../../auth/authStorage';
 import { fetchTenantGallery, fetchTenantGalleryImageDataUrl, type TenantGalleryImage } from '../../lib/tenantGallery';
@@ -39,6 +40,8 @@ import {
   RefreshCw,
   LayoutTemplate,
   X,
+  FileText,
+  Presentation,
 } from 'lucide-react';
 
 const ELEMENT_TYPE_META: Record<string, { icon: React.ElementType; tip: string }> = {
@@ -49,6 +52,7 @@ const ELEMENT_TYPE_META: Record<string, { icon: React.ElementType; tip: string }
   table: { icon: TableIcon, tip: 'Tabla seleccionada' },
   map: { icon: MapIcon, tip: 'Mapa seleccionado' },
   sensor: { icon: Activity, tip: 'Sensor en tiempo real seleccionado' },
+  sensor_multi_chart: { icon: Activity, tip: 'Gráfico de sensores seleccionado' },
   header: { icon: Type, tip: 'Encabezado de página seleccionado' },
   footer: { icon: Type, tip: 'Pie de página seleccionado' },
 };
@@ -1133,6 +1137,30 @@ interface RightInspectorProps {
 }
 
 /* ───────── PLANTILLAS DE DOCUMENTO ───────── */
+// Ícono + etiqueta por tipo de plantilla -- distinción visual pedida
+// explícitamente entre plantillas tipo documento (Word, lienzo A4) y tipo
+// presentación (PowerPoint, lienzo 16:9 960x540, ADR-083).
+function TemplateTypeBadge({ docType }: { docType?: 'document' | 'presentation' }) {
+  const isPresentation = docType === 'presentation';
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        fontSize: 9,
+        fontWeight: 700,
+        color: isPresentation ? '#f59e0b' : '#38bdf8',
+        textTransform: 'uppercase',
+        letterSpacing: 0.3,
+      }}
+    >
+      {isPresentation ? <Presentation size={11} /> : <FileText size={11} />}
+      {isPresentation ? 'PowerPoint' : 'Word'}
+    </span>
+  );
+}
+
 function DocumentTemplatesPanel({ onClose }: { onClose?: () => void }) {
   const applyDocumentTemplate = useEditorStore((s) => s.applyDocumentTemplate);
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -1157,6 +1185,9 @@ function DocumentTemplatesPanel({ onClose }: { onClose?: () => void }) {
     return (
       <div className="inspector-form">
         <span className="inspector-section-label">Confirmar reemplazo del documento</span>
+        <div style={{ marginTop: 6 }}>
+          <TemplateTypeBadge docType={pending.docType} />
+        </div>
         <p style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.5, marginTop: 6 }}>
           Esto reemplazará <strong>todo el contenido actual del informe</strong> por la plantilla
           «{pending.label}», personalizada para <strong>{company}</strong> — <strong>{unit}</strong>.
@@ -1195,6 +1226,7 @@ function DocumentTemplatesPanel({ onClose }: { onClose?: () => void }) {
             onClick={() => setPendingId(t.id)}
             title={t.description}
           >
+            <TemplateTypeBadge docType={t.docType} />
             <span style={{ fontWeight: 700, fontSize: 12 }}>{t.label}</span>
             <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>{t.description}</span>
           </button>
@@ -1215,6 +1247,7 @@ function DocumentTemplatesPanel({ onClose }: { onClose?: () => void }) {
             onClick={() => setPendingId(t.id)}
             title={t.description}
           >
+            <TemplateTypeBadge docType={t.docType} />
             <span style={{ fontWeight: 700, fontSize: 12 }}>{t.label}</span>
             <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>{t.description}</span>
           </button>
@@ -1399,6 +1432,15 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
             </div>
           )}
 
+          {selected.type === 'sensor_multi_chart' && (
+            <div style={{ marginTop: 0 }}>
+              <SensorMultiChartInspector
+                element={selected}
+                onUpdate={handleUpdate}
+              />
+            </div>
+          )}
+
           {selected.type === 'image' && (
             <div style={{ marginTop: 0 }}>
               <ImageInspector
@@ -1419,10 +1461,10 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
             <>
               {/* Ajuste de texto PRIMERO — pedido explícito: quedaba "muy
                  oculto" varias secciones más abajo en el panel. */}
-              {['image', 'chart', 'table', 'kpi', 'sensor', 'map'].includes(selected.type) && (
+              {['image', 'chart', 'table', 'kpi', 'sensor', 'map', 'sensor_multi_chart'].includes(selected.type) && (
                 <div
                   className="inspector-form"
-                  style={{ marginTop: ['table', 'kpi', 'sensor', 'image', 'chart', 'map'].includes(selected.type) ? 18 : 0 }}
+                  style={{ marginTop: ['table', 'kpi', 'sensor', 'image', 'chart', 'map', 'sensor_multi_chart'].includes(selected.type) ? 18 : 0 }}
                 >
                   <WrapInspector element={selected} onUpdate={handleUpdate} />
                 </div>
@@ -1435,30 +1477,44 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
                 <BorderInspector element={selected} onUpdate={handleUpdate} />
               </div>
 
-              <div className="inspector-form" style={{ marginTop: 18 }}>
-                <span className="inspector-section-label" title="Posición, tamaño y bloqueo del bloque dentro de la página">Geometría y Bloqueo</span>
-                <div className="inspector-grid-2" style={{ marginTop: 8 }}>
-                   <div className="input-group" title="Distancia horizontal (px) desde el borde izquierdo de la página al bloque">
-                      <label>Posición X</label>
-                      <input className="input-premium" type="number" value={Math.round(selected.x)} onChange={(e) => updateElement(selectedPage, selected.id, { x: Number(e.target.value) })} />
-                   </div>
-                   <div className="input-group" title="Distancia vertical (px) desde el borde superior de la página al bloque">
-                      <label>Posición Y</label>
-                      <input className="input-premium" type="number" value={Math.round(selected.y)} onChange={(e) => updateElement(selectedPage, selected.id, { y: Number(e.target.value) })} />
-                   </div>
+              {/* El gráfico de sensores se ubica y se redimensiona
+                 arrastrándolo con el mouse (o con las flechas del teclado,
+                 Shift+flecha para saltos de grilla) directamente en el
+                 lienzo — igual que cualquier otro bloque (ver el Rect
+                 genérico draggable+Transformer y el handler de teclado en
+                 PageCanvas.tsx, ninguno de los dos distingue por tipo). Toda
+                 la sección "Geometría y Bloqueo" (título + Posición X/Y +
+                 Ancho/Alto) no aporta nada acá y generaba confusión —
+                 pedido explícito: se oculta completa solo para este bloque.
+                 Bloquear/Eliminar quedan como acciones sueltas, sin ese
+                 encabezado. */}
+              {selected.type !== 'sensor_multi_chart' && (
+                <div className="inspector-form" style={{ marginTop: 18 }}>
+                  <span className="inspector-section-label" title="Posición, tamaño y bloqueo del bloque dentro de la página">Geometría y Bloqueo</span>
+                  <div className="inspector-grid-2" style={{ marginTop: 8 }}>
+                     <div className="input-group" title="Distancia horizontal (px) desde el borde izquierdo de la página al bloque">
+                        <label>Posición X</label>
+                        <input className="input-premium" type="number" value={Math.round(selected.x)} onChange={(e) => updateElement(selectedPage, selected.id, { x: Number(e.target.value) })} />
+                     </div>
+                     <div className="input-group" title="Distancia vertical (px) desde el borde superior de la página al bloque">
+                        <label>Posición Y</label>
+                        <input className="input-premium" type="number" value={Math.round(selected.y)} onChange={(e) => updateElement(selectedPage, selected.id, { y: Number(e.target.value) })} />
+                     </div>
+                  </div>
+                  <div className="inspector-grid-2">
+                     <div className="input-group" title="Ancho del bloque en píxeles (mínimo 20)">
+                        <label>Ancho</label>
+                        <input className="input-premium" type="number" value={Math.round(selected.width)} onChange={(e) => updateElement(selectedPage, selected.id, { width: Math.max(20, Number(e.target.value)) })} />
+                     </div>
+                     <div className="input-group" title="Alto del bloque en píxeles (mínimo 20)">
+                        <label>Alto</label>
+                        <input className="input-premium" type="number" value={Math.round(selected.height)} onChange={(e) => updateElement(selectedPage, selected.id, { height: Math.max(20, Number(e.target.value)) })} />
+                     </div>
+                  </div>
                 </div>
-                <div className="inspector-grid-2">
-                   <div className="input-group" title="Ancho del bloque en píxeles (mínimo 20)">
-                      <label>Ancho</label>
-                      <input className="input-premium" type="number" value={Math.round(selected.width)} onChange={(e) => updateElement(selectedPage, selected.id, { width: Math.max(20, Number(e.target.value)) })} />
-                   </div>
-                   <div className="input-group" title="Alto del bloque en píxeles (mínimo 20)">
-                      <label>Alto</label>
-                      <input className="input-premium" type="number" value={Math.round(selected.height)} onChange={(e) => updateElement(selectedPage, selected.id, { height: Math.max(20, Number(e.target.value)) })} />
-                   </div>
-                </div>
+              )}
 
-                <div className="inspector-actions" style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div className="inspector-actions" style={{ marginTop: 18, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button
                     className="btn-premium-outline"
                     style={{ flex: 1 }}
@@ -1477,7 +1533,6 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
                     <Trash2 size={14} /> Eliminar
                   </button>
                 </div>
-              </div>
             </>
           )}
         </div>

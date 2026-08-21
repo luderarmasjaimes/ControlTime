@@ -108,6 +108,49 @@ export async function fetchSensorDashboardCatalog(params: { tenant_id?: string }
   return response.data ?? {};
 }
 
+/**
+ * Catálogo del wizard de gráfico multi-sensor (ReportStudioV2): tipos de
+ * sensor disponibles (paso 1), zonas geográficas (db_scripts/54) y, si se
+ * pasa `sensor_type`, los sensores de ese tipo agrupados por zona y por
+ * dispositivo físico (`device_key`) para el árbol zona→dispositivo→unidad.
+ */
+export async function fetchTelemetryWizardCatalog(params: {
+  sensor_type?: string;
+  tenant_id?: string;
+} = {}): Promise<any> {
+  const response = await api.get('/mining/telemetry/wizard/catalog', {
+    params: {
+      ...(params.sensor_type ? { sensor_type: params.sensor_type } : {}),
+      ...(params.tenant_id ? { tenant_id: params.tenant_id } : {}),
+    },
+  });
+  return response.data ?? {};
+}
+
+/**
+ * Series históricas de `telemetry_raw` para los sensores ya elegidos en el
+ * wizard, acotadas por `from`/`to` (ISO 8601). `agg` por defecto es
+ * 'hourly' (mismo criterio de downsampling que /mining/telemetry/summary).
+ */
+export async function fetchTelemetryWizardSeries(params: {
+  sensorIds: string[];
+  from: string;
+  to: string;
+  agg?: 'raw' | 'hourly' | 'daily';
+  tenant_id?: string;
+}): Promise<any> {
+  const response = await api.get('/mining/telemetry/wizard/query', {
+    params: {
+      sensor_ids: params.sensorIds.join(','),
+      from: params.from,
+      to: params.to,
+      ...(params.agg ? { agg: params.agg } : {}),
+      ...(params.tenant_id ? { tenant_id: params.tenant_id } : {}),
+    },
+  });
+  return response.data ?? {};
+}
+
 export async function fetchMiningKpis({ category }: { category?: string } = {}): Promise<any[]> {
   const response = await api.get('/mining/kpis', {
     params: category ? { category } : undefined,
@@ -150,13 +193,28 @@ export async function fetchSupportChatConfig(): Promise<any> {
   return response.data ?? { ollama_url_set: false, whatsapp_configured: false };
 }
 
+/**
+ * Canal de origen del chat de soporte -- el backend lo usa para decidir el
+ * flujo de escalamiento/plantillas por canal (ver ADR del chatbot de
+ * soporte). Este widget es el canal web del módulo Informe Técnico, así que
+ * siempre manda 'HomeMinero'; 'MovilMinero' queda reservado para el futuro
+ * cliente móvil, que reusará estas mismas funciones.
+ */
+export type SupportChatChannel = 'HomeMinero' | 'MovilMinero';
+
 /** Envía el historial de la conversación + datos de calificación al asistente minero (Ollama). */
 export async function sendSupportChatMessage(
   qualifying: Record<string, string>,
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
-): Promise<{ reply?: string; error?: string }> {
+  options: { channel?: SupportChatChannel; conversationId?: string } = {},
+): Promise<{ reply?: string; error?: string; conversation_id?: string }> {
+  const { channel = 'HomeMinero', conversationId } = options;
   try {
-    const response = await api.post('/support/chat/message', { qualifying, messages }, { timeout: 90000 });
+    const response = await api.post(
+      '/support/chat/message',
+      { qualifying, messages, channel, ...(conversationId ? { conversation_id: conversationId } : {}) },
+      { timeout: 90000 },
+    );
     return response.data ?? { error: 'empty_response' };
   } catch (error) {
     const { backendError, backendMessage } = backendErrorMessage(error);
@@ -182,6 +240,8 @@ export interface SupportChatMessage {
   content: string;
   promptContent?: string;
   transient?: boolean;
+  /** Saludo inicial del widget: no lleva chips de acciones (copiar/resumir/ampliar/ideas). */
+  isWelcome?: boolean;
 }
 
 /**
@@ -199,7 +259,9 @@ export async function streamSupportChatMessage(
   messages: SupportChatMessage[],
   onChunk: (fragment: string) => void,
   intent: SupportChatIntent = 'chat',
-): Promise<{ error?: string }> {
+  options: { channel?: SupportChatChannel; conversationId?: string } = {},
+): Promise<{ error?: string; conversationId?: string }> {
+  const { channel = 'HomeMinero', conversationId } = options;
   const wireMessages = messages
     .filter((m) => !m.transient)
     .map((m) => ({ role: m.role, content: m.promptContent ?? m.content }));
@@ -212,7 +274,13 @@ export async function streamSupportChatMessage(
         'Content-Type': 'application/json',
         ...authHeaders(),
       },
-      body: JSON.stringify({ qualifying, messages: wireMessages, intent }),
+      body: JSON.stringify({
+        qualifying,
+        messages: wireMessages,
+        intent,
+        channel,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+      }),
     });
   } catch {
     return { error: 'network_error' };
@@ -224,6 +292,11 @@ export async function streamSupportChatMessage(
   const decoder = new TextDecoder();
   let buf = '';
   let sawError: string | undefined;
+  // TODO(reconciliar con backend real): se asume que `conversation_id` puede
+  // llegar en cualquier evento SSE del turno (típicamente el primero o el de
+  // `done`) -- si el backend real lo manda solo en un evento específico,
+  // esta captura "el último que aparezca" sigue funcionando igual.
+  let sawConversationId: string | undefined;
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -240,13 +313,14 @@ export async function streamSupportChatMessage(
         const evt = JSON.parse(dataLine.slice(5).trim());
         if (evt.chunk) onChunk(String(evt.chunk));
         if (evt.error) sawError = String(evt.error);
-        if (evt.done) return { error: sawError };
+        if (typeof evt.conversation_id === 'string' && evt.conversation_id) sawConversationId = evt.conversation_id;
+        if (evt.done) return { error: sawError, conversationId: sawConversationId };
       } catch {
         // Evento malformado -- se ignora, el stream continúa.
       }
     }
   }
-  return { error: sawError };
+  return { error: sawError, conversationId: sawConversationId };
 }
 
 /** Escala la conversación a soporte humano por WhatsApp Business Cloud API (plantilla al número configurado). */
@@ -258,6 +332,269 @@ export async function escalateSupportChatToWhatsapp(): Promise<{ status?: string
     const { backendError, backendMessage } = backendErrorMessage(error);
     return { error: backendMessage || backendError || 'escalate_request_failed' };
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   PANEL ADMIN DE SOPORTE (búsqueda de tickets/conversaciones) -- consume dos
+   endpoints paginados en SERVIDOR (page/page_size van en el request, no se
+   trae todo para filtrar en cliente):
+     GET /api/support/admin/tickets        (soporte.view/soporte.manage o
+                                             usuario "department-scoped")
+     GET /api/support/admin/chat-messages  (solo soporte.view/soporte.manage)
+   RBAC real la aplica el backend (403 si no corresponde); aquí solo se arma
+   el request y se propaga el error/status para que la vista pueda mostrar un
+   mensaje acorde (sesión expirada / sin permiso / error genérico) -- mismo
+   patrón "no-throw, {error}" que el resto de este archivo (sendSupportChatMessage,
+   escalateSupportChatToWhatsapp, etc.).
+   ───────────────────────────────────────────────────────────────────────── */
+
+export interface SupportTicket {
+  id: string;
+  code: string;
+  channel: string;
+  category: string;
+  phone_e164: string;
+  contact_name: string;
+  tenant_id: string;
+  subject: string;
+  description: string;
+  status: string;
+  priority: string;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+}
+
+export interface SupportChatMessageAdminRow {
+  id: string;
+  conversation_id: string;
+  tenant_id: string;
+  user_id: string;
+  channel: string;
+  role: string;
+  content: string;
+  intent: string | null;
+  created_at: string;
+}
+
+export interface SupportAdminSearchResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  error?: string;
+  status?: number;
+}
+
+export interface SupportTicketFilters {
+  category?: string;
+  status?: string;
+  channel?: string;
+  priority?: string;
+  q?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export interface SupportChatMessageFilters {
+  conversationId?: string;
+  tenantId?: string;
+  q?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+function emptyAdminSearchResult<T>(page: number, pageSize: number, error: string, status?: number): SupportAdminSearchResult<T> {
+  return { items: [], total: 0, page, page_size: pageSize, pages: 0, error, status };
+}
+
+/** GET /api/support/admin/tickets -- 403 si el usuario no tiene soporte.view/soporte.manage/departamento propio.
+ * Si el usuario está "department-scoped", el backend fuerza `category` a su
+ * departamento server-side -- si el frontend manda una `category` distinta,
+ * responde 403 (no es un bug de este cliente, es la regla del contrato). */
+export async function searchSupportTickets(
+  filters: SupportTicketFilters,
+  page = 1,
+  pageSize = 20,
+): Promise<SupportAdminSearchResult<SupportTicket>> {
+  try {
+    const response = await api.get('/support/admin/tickets', {
+      params: {
+        page,
+        page_size: pageSize,
+        ...(filters.category && filters.category !== 'all' ? { category: filters.category } : {}),
+        ...(filters.status && filters.status !== 'all' ? { status: filters.status } : {}),
+        ...(filters.channel && filters.channel !== 'all' ? { channel: filters.channel } : {}),
+        ...(filters.priority && filters.priority !== 'all' ? { priority: filters.priority } : {}),
+        ...(filters.q ? { q: filters.q } : {}),
+        ...(filters.dateFrom ? { date_from: filters.dateFrom } : {}),
+        ...(filters.dateTo ? { date_to: filters.dateTo } : {}),
+      },
+    });
+    const data = response.data ?? {};
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+      total: Number(data.total) || 0,
+      page: Number(data.page) || page,
+      page_size: Number(data.page_size) || pageSize,
+      pages: Number(data.pages) || 0,
+    };
+  } catch (error) {
+    const { status, backendError, backendMessage } = backendErrorMessage(error);
+    return emptyAdminSearchResult(page, pageSize, backendMessage || backendError || 'tickets_search_failed', status);
+  }
+}
+
+/** GET /api/support/admin/chat-messages -- requiere soporte.view o soporte.manage
+ * (403 si el usuario solo tiene `department`, sin esos permisos). */
+export async function searchSupportChatMessages(
+  filters: SupportChatMessageFilters,
+  page = 1,
+  pageSize = 20,
+): Promise<SupportAdminSearchResult<SupportChatMessageAdminRow>> {
+  try {
+    const response = await api.get('/support/admin/chat-messages', {
+      params: {
+        page,
+        page_size: pageSize,
+        ...(filters.conversationId ? { conversation_id: filters.conversationId } : {}),
+        ...(filters.tenantId ? { tenant_id: filters.tenantId } : {}),
+        ...(filters.q ? { q: filters.q } : {}),
+        ...(filters.dateFrom ? { date_from: filters.dateFrom } : {}),
+        ...(filters.dateTo ? { date_to: filters.dateTo } : {}),
+      },
+    });
+    const data = response.data ?? {};
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+      total: Number(data.total) || 0,
+      page: Number(data.page) || page,
+      page_size: Number(data.page_size) || pageSize,
+      pages: Number(data.pages) || 0,
+    };
+  } catch (error) {
+    const { status, backendError, backendMessage } = backendErrorMessage(error);
+    return emptyAdminSearchResult(page, pageSize, backendMessage || backendError || 'chat_messages_search_failed', status);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   PANEL DE CANDIDATOS RRHH (ADR-122) -- postulaciones de CV recibidas por el
+   bot de WhatsApp, extraídas/puntuadas con IA local (Ollama). Mismo patrón de
+   paginación server-side que el panel admin de soporte de arriba.
+   GET /api/support/admin/candidates            (búsqueda paginada)
+   GET /api/support/admin/candidates/{id}        (detalle completo)
+   GET /api/support/admin/candidates/{id}/file   (descarga del CV original)
+   RBAC (backend): soporte.view/soporte.manage, o department === 'rrhh'.
+   ───────────────────────────────────────────────────────────────────────── */
+
+export interface CvCandidateSummary {
+  submission_id: string;
+  phone_e164: string;
+  original_filename: string;
+  mime_type: string;
+  status: string;
+  created_at: string;
+  nombres: string;
+  apellidos: string;
+  cargo_postulado: string;
+  score: number | null;
+  lugar_residencia: string;
+}
+
+export interface CvCandidateDetail {
+  submission_id: string;
+  phone_e164: string;
+  original_filename: string;
+  mime_type: string;
+  file_size_bytes: number;
+  status: string;
+  created_at: string;
+  raw_text: string;
+  nombres: string;
+  apellidos: string;
+  telefono_fijo: string;
+  celular: string;
+  whatsapp: string;
+  centro_estudios: string;
+  edad: number | null;
+  lugar_residencia: string;
+  pretensiones_economicas: string;
+  anios_experiencia: number | null;
+  cargo_postulado: string;
+  experiencia_laboral: Array<{ empresa?: string; funciones?: string }>;
+  cursos_capacitacion: string[];
+  ingles_lectura: string;
+  ingles_escritura: string;
+  ingles_conversacion: string;
+  otra_informacion: string;
+  extra_fields: Record<string, unknown>;
+  score: number | null;
+  score_rationale: string;
+  llm_model: string;
+  extraction_warnings: string[];
+}
+
+export interface CvCandidateFilters {
+  q?: string;
+  status?: string;
+  scoreMin?: number;
+  scoreMax?: number;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+/** GET /api/support/admin/candidates -- 403 si el usuario no tiene
+ * soporte.view/soporte.manage/department==='rrhh'. */
+export async function searchCvCandidates(
+  filters: CvCandidateFilters,
+  page = 1,
+  pageSize = 20,
+): Promise<SupportAdminSearchResult<CvCandidateSummary>> {
+  try {
+    const response = await api.get('/support/admin/candidates', {
+      params: {
+        page,
+        page_size: pageSize,
+        ...(filters.q ? { q: filters.q } : {}),
+        ...(filters.status && filters.status !== 'all' ? { status: filters.status } : {}),
+        ...(filters.scoreMin !== undefined ? { score_min: filters.scoreMin } : {}),
+        ...(filters.scoreMax !== undefined ? { score_max: filters.scoreMax } : {}),
+        ...(filters.dateFrom ? { date_from: filters.dateFrom } : {}),
+        ...(filters.dateTo ? { date_to: filters.dateTo } : {}),
+      },
+    });
+    const data = response.data ?? {};
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+      total: Number(data.total) || 0,
+      page: Number(data.page) || page,
+      page_size: Number(data.page_size) || pageSize,
+      pages: Number(data.pages) || 0,
+    };
+  } catch (error) {
+    const { status, backendError, backendMessage } = backendErrorMessage(error);
+    return emptyAdminSearchResult(page, pageSize, backendMessage || backendError || 'candidates_search_failed', status);
+  }
+}
+
+/** GET /api/support/admin/candidates/{id} -- detalle completo (sin el
+ * archivo -- ver cvCandidateFileUrl para el link de descarga). */
+export async function getCvCandidateDetail(submissionId: string): Promise<CvCandidateDetail | null> {
+  try {
+    const response = await api.get(`/support/admin/candidates/${encodeURIComponent(submissionId)}`);
+    return response.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** URL directa de descarga del CV original -- autenticada por la cookie
+ * HttpOnly de sesión (ADR-082), no necesita pasar por axios/el interceptor
+ * Bearer: un <a href> normal ya la envía. */
+export function cvCandidateFileUrl(submissionId: string): string {
+  return `${apiBaseUrl()}/support/admin/candidates/${encodeURIComponent(submissionId)}/file`;
 }
 
 export async function syncMiningKpisFromExternal(): Promise<any> {

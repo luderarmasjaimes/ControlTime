@@ -1,5 +1,6 @@
 import initSqlJs, { type Database } from 'sql.js';
 import { authFetch } from '../../../auth/authApi';
+import { getSession } from '../../../auth/authStorage';
 import { log } from '../../../lib/logger';
 import type { ReportDocument } from '../store/useEditorStore';
 
@@ -19,7 +20,7 @@ import type { ReportDocument } from '../store/useEditorStore';
    un blob".
    ───────────────────────────────────────────────────────────────────────── */
 
-const CACHE_NAME = 'beemetry-offline-sqlite-v1';
+const LEGACY_GLOBAL_CACHE_NAME = 'beemetry-offline-sqlite-v1';
 const CACHE_KEY = '/__offline/report_offline.sqlite';
 const TEMPLATE_ENDPOINT = '/api/reports/offline-template';
 const WASM_URL = '/sql-wasm.wasm';
@@ -27,10 +28,31 @@ const WASM_URL = '/sql-wasm.wasm';
 let dbPromise: Promise<Database> | null = null;
 let SQLModule: Awaited<ReturnType<typeof initSqlJs>> | null = null;
 
+/**
+ * Nombre de caché AISLADO por usuario+tenant. Antes era el string fijo
+ * `LEGACY_GLOBAL_CACHE_NAME` -- una única caché de TODO EL ORIGEN,
+ * compartida por cualquier usuario que usara el mismo navegador. La app
+ * está pensada explícitamente para tablet de campo compartida (ADR-022):
+ * sin esto, los borradores offline (contenido de informe técnico, datos de
+ * cliente) de un usuario quedaban legibles y mezclados con los del
+ * siguiente técnico que iniciara sesión en el mismo dispositivo, y
+ * sobrevivían indefinidamente al cierre de sesión. `userId`, no
+ * `username`: un mismo username puede repetirse entre tenants distintos.
+ * Sin sesión activa (no debería ocurrir -- este módulo solo se usa dentro
+ * de ReportStudioV2, montado detrás de autenticación) se preserva el
+ * nombre legado como fallback, igual de aislado que el comportamiento
+ * previo a este cambio.
+ */
+function resolveCacheName(): string {
+  const session = getSession();
+  if (!session?.userId) return LEGACY_GLOBAL_CACHE_NAME;
+  return `beemetry-offline-sqlite-v2__${session.userId}__${session.tenantId || 'default'}`;
+}
+
 async function loadCachedBytes(): Promise<Uint8Array | null> {
   if (typeof caches === 'undefined') return null;
   try {
-    const cache = await caches.open(CACHE_NAME);
+    const cache = await caches.open(resolveCacheName());
     const match = await cache.match(CACHE_KEY);
     if (!match) return null;
     return new Uint8Array(await match.arrayBuffer());
@@ -43,13 +65,43 @@ async function loadCachedBytes(): Promise<Uint8Array | null> {
 async function persistBytes(bytes: Uint8Array): Promise<void> {
   if (typeof caches === 'undefined') return;
   try {
-    const cache = await caches.open(CACHE_NAME);
+    const cache = await caches.open(resolveCacheName());
     // ArrayBuffer nuevo: sql.js reutiliza el buffer interno en llamadas
     // posteriores a export(), y Response no acepta un buffer "en vuelo".
     const copy = bytes.slice().buffer;
     await cache.put(CACHE_KEY, new Response(copy, { headers: { 'Content-Type': 'application/x-sqlite3' } }));
   } catch (err) {
     log.warn('[OFFLINE_SQLITE] No se pudo persistir la base local:', err);
+  }
+}
+
+/**
+ * Migración única desde la caché global heredada (ver `resolveCacheName`)
+ * hacia la caché aislada del usuario actual. Solo se ejecuta cuando la
+ * caché aislada está vacía (primer uso tras esta actualización) — evita
+ * que un borrador offline sin sincronizar, guardado ANTES de este cambio,
+ * quede huérfano e inaccesible. Atribución best-effort: si la caché legada
+ * tenía datos de un usuario distinto al que abre la app primero tras
+ * actualizar, se migran igual a ese primer usuario (no hay forma de
+ * recuperar el dueño real de datos que nunca estuvieron etiquetados) —
+ * preferible a descartarlos en silencio. Solo borra la caché legada
+ * DESPUÉS de confirmar que la escritura a la nueva tuvo éxito.
+ */
+async function migrateLegacyGlobalCache(): Promise<Uint8Array | null> {
+  if (typeof caches === 'undefined') return null;
+  if (resolveCacheName() === LEGACY_GLOBAL_CACHE_NAME) return null;
+  try {
+    const legacyCache = await caches.open(LEGACY_GLOBAL_CACHE_NAME);
+    const match = await legacyCache.match(CACHE_KEY);
+    if (!match) return null;
+    const bytes = new Uint8Array(await match.arrayBuffer());
+    await persistBytes(bytes);
+    await caches.delete(LEGACY_GLOBAL_CACHE_NAME);
+    log.warn('[OFFLINE_SQLITE] Caché offline heredada (global, sin aislar por usuario) migrada a la caché aislada del usuario actual.');
+    return bytes;
+  } catch (err) {
+    log.warn('[OFFLINE_SQLITE] No se pudo migrar la caché offline heredada:', err);
+    return null;
   }
 }
 
@@ -93,7 +145,7 @@ async function openDb(): Promise<Database> {
   if (!SQLModule) {
     SQLModule = await initSqlJs({ locateFile: () => WASM_URL });
   }
-  const cached = await loadCachedBytes();
+  const cached = (await loadCachedBytes()) ?? (await migrateLegacyGlobalCache());
   if (cached) {
     try {
       const db = new SQLModule.Database(cached);
@@ -244,4 +296,63 @@ export async function recordCameOnline(reportId: string, atIso: string): Promise
     [atIso, reportId],
   );
   await persistCurrentDb(db);
+}
+
+/**
+ * Llamar al hacer logout explícito (ver `App.tsx`, `onLogout`) — mismo
+ * patrón que `invalidatePermissionsCache()` (`usePermissions.ts`): sin
+ * resetear el singleton en memoria, la `Database` de sql.js ya abierta
+ * (`dbPromise`) seguiría apuntando a la caché del usuario SALIENTE durante
+ * el resto de la pestaña, aunque inicie sesión otro usuario después (SPA,
+ * sin recarga completa de página).
+ *
+ * Además PURGA del navegador la caché SQLite del usuario que se
+ * desconecta, pero SOLO si no quedan filas `dirty=1` (cambios offline sin
+ * sincronizar) — la regla dura de ADR-022 es 0% pérdida de datos; cerrar
+ * sesión nunca debe ser una forma de perder un borrador offline. Si hay
+ * cambios pendientes, la caché se preserva intacta (se recuperará al
+ * volver a iniciar sesión con el mismo usuario en este dispositivo) y solo
+ * se resetea el singleton en memoria. Sin esta purga condicional, un
+ * informe técnico con datos de cliente quedaría en texto plano en el
+ * almacenamiento del navegador indefinidamente después de cerrar sesión —
+ * relevante en el escenario real de este módulo (tablet de campo
+ * compartida entre técnicos).
+ *
+ * Devuelve `true` si se purgó, `false` si se preservó (había cambios
+ * pendientes, no había nada que purgar, o falló la verificación).
+ */
+export async function purgeOfflineCacheOnLogout(): Promise<boolean> {
+  const cacheName = resolveCacheName();
+  dbPromise = null;
+  if (typeof caches === 'undefined') return false;
+  try {
+    const cache = await caches.open(cacheName);
+    const match = await cache.match(CACHE_KEY);
+    if (!match) return false;
+    if (!SQLModule) {
+      SQLModule = await initSqlJs({ locateFile: () => WASM_URL });
+    }
+    const bytes = new Uint8Array(await match.arrayBuffer());
+    let hasDirty = true; // ante cualquier duda, NO purgar (fail-safe)
+    let db: Database | null = null;
+    try {
+      db = new SQLModule.Database(bytes);
+      const res = db.exec('SELECT COUNT(*) FROM offline_reports WHERE dirty = 1');
+      hasDirty = Number(res[0]?.values?.[0]?.[0] ?? 0) > 0;
+    } catch (err) {
+      log.warn('[OFFLINE_SQLITE] No se pudo verificar cambios pendientes antes de purgar (se preserva la caché por seguridad):', err);
+      return false;
+    } finally {
+      db?.close();
+    }
+    if (hasDirty) {
+      log.warn('[OFFLINE_SQLITE] Logout con cambios offline sin sincronizar — caché local preservada, no purgada.');
+      return false;
+    }
+    await caches.delete(cacheName);
+    return true;
+  } catch (err) {
+    log.warn('[OFFLINE_SQLITE] No se pudo purgar la caché local al cerrar sesión:', err);
+    return false;
+  }
 }

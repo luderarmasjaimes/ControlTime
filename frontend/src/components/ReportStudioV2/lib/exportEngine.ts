@@ -208,6 +208,33 @@ function exportDOCXClientFallback(doc: any, options: ExportOptions = {}): Export
               `[Video adjunto${durationLabel} — ${escapeHtml(sourceLabel)} — no reproducible en este formato de exportación]` +
             `</div>`,
           );
+        } else if (el.type === 'sensor_multi_chart') {
+          // A diferencia de kpi/sensor, este bloque no tiene snapshot
+          // congelado en el.props: consulta un rango histórico FIJO en vivo
+          // (ver SensorMultiChartWidget.tsx), así que los valores reales solo
+          // existen en el estado de React del navegador que está exportando
+          // — este fallback client-side solo tiene el JSON del documento, sin
+          // React ni red, así que no hay forma de reproducir el gráfico acá.
+          // Se deja un resumen honesto de la configuración en vez de omitir
+          // el bloque en silencio (mismo criterio que 'video' arriba). El PDF
+          // y la vista de solo lectura sí muestran el gráfico real (ver
+          // ReadOnlyViewer.tsx).
+          const chartTypeLabels: Record<string, string> = {
+            line: 'Líneas', bar: 'Barras', area: 'Área apilada', scatter: 'Dispersión', step: 'Escalón',
+          };
+          const selections: any[] = Array.isArray(el.props?.selections) ? el.props.selections : [];
+          const sensorNames = selections.map((s) => s.name || s.code).filter(Boolean).join(', ') || 'sin sensores configurados';
+          const chartTypeLabel = chartTypeLabels[el.props?.chartType] || el.props?.chartType || '—';
+          const fromLabel = el.props?.from ? new Date(el.props.from).toLocaleString('es-PE') : '—';
+          const toLabel = el.props?.to ? new Date(el.props.to).toLocaleString('es-PE') : '—';
+          htmlParts.push(
+            `<div style="border:1px dashed #94a3b8;border-radius:6px;padding:10pt;color:#334155;font-size:10pt">` +
+              `<strong>${escapeHtml(el.props?.title || 'Gráfico de sensores')}</strong><br>` +
+              `Tipo de gráfico: ${escapeHtml(chartTypeLabel)} · Sensores (${selections.length}): ${escapeHtml(sensorNames)}<br>` +
+              `Rango: ${escapeHtml(fromLabel)} — ${escapeHtml(toLabel)}<br>` +
+              `<em>[El gráfico con los datos reales se muestra en el editor y en la exportación a PDF — esta exportación a Word solo incluye un resumen de la configuración]</em>` +
+            `</div>`,
+          );
         } else if (el.type === 'header') {
           // ADR-046 (revisado): empresa/unidad/usuario ya no viven en props —
           // se calculan en vivo desde la sesión activa, igual que en

@@ -16,6 +16,7 @@ import { semanticStatusStyle } from '../../lib/semanticStatus';
 import { sanitizeRichHtml } from '../../lib/sanitizeHtml';
 import LiveChartBlock from '../dashboard/LiveChartBlock';
 import SeismicReportWidget from '../document/SeismicReportWidget';
+import SensorMultiChartWidget from '../document/SensorMultiChartWidget';
 import { fixRecordedVideoElement } from '../../lib/videoDurationFix';
 
 /** Misma tipografía/color "impactante" de plataforma que PageCanvas.tsx —
@@ -384,6 +385,27 @@ function ReadOnlyElement({ element, pageNumber, totalPages, hideOverlayText, res
           </div>
         )}
       </div>
+    );
+  }
+
+  if (element.type === 'sensor_multi_chart') {
+    // A diferencia de kpi/sensor (snapshot congelado al firmar), este bloque
+    // ya consulta un rango histórico FIJO (from/to elegidos en el wizard,
+    // ver SensorMultiChartInspector.tsx) contra telemetry_raw — es
+    // reproducible sin necesitar snapshot, la misma consulta siempre
+    // devuelve los mismos datos. Antes de este fix no tenía handler acá: el
+    // bloque se veía vacío en modo lectura y en el export PDF (que reusa
+    // este componente, ADR-016) aunque en el editor sí mostrara el gráfico.
+    return (
+      <SensorMultiChartWidget
+        title={props.title}
+        selections={props.selections}
+        chartType={props.chartType}
+        from={props.from}
+        to={props.to}
+        width="100%"
+        height="100%"
+      />
     );
   }
 

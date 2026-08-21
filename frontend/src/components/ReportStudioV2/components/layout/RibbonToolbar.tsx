@@ -5,11 +5,11 @@ import {
   Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, AlignJustify,
   Type, List, ListOrdered,
   Image as ImageIcon, Table as TableIcon, Map as MapIcon, BarChart3,
-  Target, Activity, Layers, FileDown, FileUp, Undo2, Redo2,
+  Target, Layers, FileDown, FileUp, Undo2, Redo2,
   Copy, Scissors, Clipboard, BookOpen, CheckSquare, Shield, Clock,
   PanelLeftClose, PanelRightClose, Maximize2, LayoutTemplate, FilePlus2,
   Hash, Minus, Camera, Mic, ArrowLeftRight, Gauge, Pin, PinOff, Highlighter,
-  Info, LayoutGrid, Captions, Rows3, LineChart, Waves, FileStack, Link2,
+  Info, LayoutGrid, Captions, Rows3, LineChart, Waves, FileStack, Link2, Radar,
 } from 'lucide-react';
 import ColorPalette from '../shared/ColorPalette';
 import { HEADING_STYLES, type HeadingStyleDef } from '../../lib/headingStyles';
@@ -471,7 +471,11 @@ export default function RibbonToolbar({
                 <RibbonBtn icon={BarChart3} label="Gráfico" onClick={() => onInsertElement?.('chart')} title="Insertar un gráfico de datos" />
                 <RibbonBtn icon={Target} label="KPI" onClick={() => onInsertElement?.('kpi')} title="Insertar un indicador KPI" />
                 <RibbonBtn icon={MapIcon} label="Mapa" onClick={() => onInsertElement?.('map')} title="Insertar un mapa detallado de la mina" />
-                <RibbonBtn icon={Activity} label="Sensor" onClick={() => onInsertElement?.('sensor')} title="Insertar la lectura de un sensor en tiempo real" />
+                {/* 'sensor' (lectura única) retirado — reemplazado por
+                   'sensor_multi_chart' (wizard con zona/unidad/tipo de
+                   gráfico Apache ECharts/rango de fecha), mismo criterio que
+                   LeftLibrary.tsx. */}
+                <RibbonBtn icon={Radar} label="Sensor" onClick={() => onInsertElement?.('sensor_multi_chart')} title="Insertar un gráfico de sensores en tiempo real: elija tipo, zona, unidad, tipo de gráfico (Apache ECharts) y rango de fecha" />
                 <RibbonBtn icon={Waves} label="Sismos" onClick={() => onInsertElement?.('seismic-report')} title="Insertar el reporte sísmico: sismos oficiales IGP/CENSIS y/o microsismicidad de la red propia, con rango de fechas seleccionable" />
               </RibbonGroup>
 

@@ -464,6 +464,21 @@ const defaultPropsByType = (type: string): ElementProps => {
     };
   }
 
+  if (type === 'sensor_multi_chart') {
+    return {
+      title: 'Gráfico de sensores',
+      // Paso 1 del wizard (gate obligatorio): sin sensorType, el resto del
+      // panel queda deshabilitado — ver SensorMultiChartInspector.tsx.
+      sensorType: null,
+      // Cada entrada es un sensor+unidad concreto ya elegido en el árbol
+      // zona→dispositivo→unidad: {sensorId, deviceKey, unit, zoneId}.
+      selections: [],
+      chartType: 'line',
+      from: null,
+      to: null,
+    };
+  }
+
   if (type === 'image') {
     return {
       alt: 'Figura o fotografía técnica',
@@ -819,7 +834,9 @@ const createElement = (
           ? Math.min(420, contentW)
           : type === 'sensor'
             ? Math.min(240, contentW)
-            : type === 'toc' || type === 'text' || type === 'seismic-report'
+            : type === 'sensor_multi_chart'
+              ? Math.min(480, contentW)
+              : type === 'toc' || type === 'text' || type === 'seismic-report'
               // Un bloque de texto nuevo ocupa todo el ancho de la columna de
               // contenido (como un párrafo de Word) — antes quedaba fijo en
               // 320px, un recuadro angosto sin relación con el ancho real de
@@ -832,6 +849,7 @@ const createElement = (
       type === 'kpi' ? 110
       : type === 'table' ? 200
       : type === 'sensor' ? 140
+      : type === 'sensor_multi_chart' ? 260
       : type === 'toc' ? 340
       : type === 'seismic-report' ? 320
       : 180,
@@ -839,7 +857,7 @@ const createElement = (
     locked: false,
     // Objetos gráficos (tabla, gráfico, KPI, sensor, mapa) ajustan el texto
     // alrededor por defecto, como en Word (ADR-049); texto/toc no aplican.
-    ...(type === 'table' || type === 'chart' || type === 'kpi' || type === 'sensor' || type === 'map'
+    ...(type === 'table' || type === 'chart' || type === 'kpi' || type === 'sensor' || type === 'map' || type === 'sensor_multi_chart'
       ? { wrapMode: 'square' as const }
       : {}),
     props: defaultPropsByType(type),

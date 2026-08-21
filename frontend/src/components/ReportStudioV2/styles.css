@@ -3931,6 +3931,17 @@ button:active {
   pointer-events: auto !important;
 }
 
+/* Video insertado (ADR-064/065): mismo problema que la tabla de arriba --
+   el <video> vive dentro del shield para heredar el manejador de
+   onContextMenu del bloque, pero eso también apaga sus controles nativos
+   (play, barra de progreso, pantalla completa), que dependen de
+   pointer-events porque viven en el shadow DOM del user-agent y heredan el
+   valor computado del propio <video>. El bloque sigue arrastrándose por el
+   marco/borde -- solo el reproductor en sí queda perforado. */
+.report-canvas-html-shield video {
+  pointer-events: auto !important;
+}
+
 /* Tabla en modo edición (doble clic): sin escudo; celdas contentEditable reciben puntero. */
 .report-canvas-table-edit-host {
   box-sizing: border-box;

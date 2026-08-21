@@ -139,7 +139,6 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
   useEffect(() => () => {
     stopStream();
     clearTimer();
-    if (recordedUrl) URL.revokeObjectURL(recordedUrl);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const beginRecording = useCallback(async (source: 'webcam' | 'screen') => {
@@ -174,14 +173,28 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
     };
     recorder.onstop = async () => {
       const blob = new Blob(chunksRef.current, { type: mimeType });
-      const url = URL.createObjectURL(blob);
-      setRecordedBlob(blob);
-      setRecordedUrl(url);
       stream.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       setPreviewStream(null);
       clearTimer();
       setIsRecording(false);
+      // Se convierte a data URL acá mismo (no recién al confirmar) para que
+      // la vista previa de revisión use exactamente el mismo `<video src>`
+      // (data:) que ya termina insertado en el lienzo -- un `blob:` de
+      // URL.createObjectURL usado solo para la vista previa se veía en
+      // negro con "0:00" pese a fixRecordedVideoElement, mientras el data:
+      // URL (ver ADR-064, Corrección 2026-08-17) ya está verificado
+      // funcionando de punta a punta.
+      setBusy(true);
+      try {
+        const dataUrl = await blobToDataUrl(blob);
+        setRecordedBlob(blob);
+        setRecordedUrl(dataUrl);
+      } catch (e) {
+        setError('No se pudo procesar la grabación.');
+      } finally {
+        setBusy(false);
+      }
     };
 
     startedAtRef.current = Date.now();
@@ -211,28 +224,19 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
   }, []);
 
   const discardAndRetry = useCallback(() => {
-    if (recordedUrl) URL.revokeObjectURL(recordedUrl);
     setRecordedUrl(null);
     setRecordedBlob(null);
     setElapsedSeconds(0);
-  }, [recordedUrl]);
+  }, []);
 
-  const handleConfirmInsert = useCallback(async () => {
-    if (!recordedBlob) return;
-    setBusy(true);
-    try {
-      const dataUrl = await blobToDataUrl(recordedBlob);
-      onComplete(dataUrl, {
-        source: tab,
-        durationSeconds: elapsedSeconds,
-        mimeType: recordedBlob.type || 'video/webm',
-      });
-    } catch (e) {
-      setError('No se pudo procesar el video grabado.');
-    } finally {
-      setBusy(false);
-    }
-  }, [recordedBlob, tab, elapsedSeconds, onComplete]);
+  const handleConfirmInsert = useCallback(() => {
+    if (!recordedUrl || !recordedBlob) return;
+    onComplete(recordedUrl, {
+      source: tab,
+      durationSeconds: elapsedSeconds,
+      mimeType: recordedBlob.type || 'video/webm',
+    });
+  }, [recordedUrl, recordedBlob, tab, elapsedSeconds, onComplete]);
 
   const switchTab = useCallback((next: 'webcam' | 'screen') => {
     if (isRecording) return;
@@ -313,18 +317,16 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
               <button
                 type="button"
                 onClick={discardAndRetry}
-                disabled={busy}
-                className="px-5 py-2.5 rounded-2xl font-bold text-sm text-slate-600 hover:bg-slate-200 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                className="px-5 py-2.5 rounded-2xl font-bold text-sm text-slate-600 hover:bg-slate-200 transition-colors flex items-center gap-1.5"
               >
                 <RefreshCw size={14} /> Descartar y grabar de nuevo
               </button>
               <button
                 type="button"
                 onClick={handleConfirmInsert}
-                disabled={busy}
-                className="bg-indigo-600 text-white px-6 py-2.5 rounded-2xl font-bold text-sm shadow-xl shadow-indigo-100 hover:bg-indigo-700 active:scale-95 transition-all flex items-center gap-1.5 disabled:opacity-60"
+                className="bg-indigo-600 text-white px-6 py-2.5 rounded-2xl font-bold text-sm shadow-xl shadow-indigo-100 hover:bg-indigo-700 active:scale-95 transition-all flex items-center gap-1.5"
               >
-                <Check size={14} /> {busy ? 'Insertando…' : 'Insertar en el informe'}
+                <Check size={14} /> Insertar en el informe
               </button>
             </>
           ) : isRecording ? (
@@ -334,6 +336,10 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
               className="bg-rose-600 text-white px-6 py-2.5 rounded-2xl font-bold text-sm shadow-xl shadow-rose-100 hover:bg-rose-700 active:scale-95 transition-all flex items-center gap-1.5"
             >
               <Square size={14} /> Detener grabación
+            </button>
+          ) : busy ? (
+            <button type="button" disabled className="px-6 py-2.5 rounded-2xl font-bold text-sm text-slate-400 flex items-center gap-1.5 cursor-not-allowed">
+              <RefreshCw size={14} className="animate-spin" /> Procesando grabación…
             </button>
           ) : (
             <button

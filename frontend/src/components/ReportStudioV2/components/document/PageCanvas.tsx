@@ -41,6 +41,7 @@ import { fixRecordedVideoElement } from '../../lib/videoDurationFix';
 import LiveChartBlock from '../dashboard/LiveChartBlock';
 import TableBlock from './TableBlock';
 import SensorWidget from './SensorWidget';
+import SensorMultiChartWidget from './SensorMultiChartWidget';
 import MiningKpiWidget from './MiningKpiWidget';
 import SeismicReportWidget from './SeismicReportWidget';
 import FloatingContextualToolbar from './FloatingContextualToolbar';
@@ -1640,7 +1641,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
           {page.elements
             .filter((element) => element.type === 'chart')
             .map((element) => (
-              <Html key={`${element.id}-chart`} groupProps={{ x: element.x + 4, y: element.y + 28, listening: false }}>
+              <Html key={`${element.id}-chart`} groupProps={{ x: element.x + 4, y: element.y + 28, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
                 <div
                   className="report-canvas-html-shield"
                   onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
@@ -1657,7 +1658,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
           {page.elements
             .filter((element) => element.type === 'kpi')
             .map((element) => (
-              <Html key={`${element.id}-kpi`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+              <Html key={`${element.id}-kpi`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
                 <div
                   className="report-canvas-html-shield"
                   onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
@@ -1678,7 +1679,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
           {page.elements
             .filter((element) => element.type === 'seismic-report')
             .map((element) => (
-              <Html key={`${element.id}-seismic-report`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+              <Html key={`${element.id}-seismic-report`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
                 <div
                   className="report-canvas-html-shield"
                   onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
@@ -1724,7 +1725,11 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               };
 
               return (
-                <Html key={`${element.id}-table`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}>
+                <Html
+                  key={`${element.id}-table`}
+                  groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}
+                  divProps={{ style: { pointerEvents: canvasTableEditId === element.id ? 'auto' : 'none' } }}
+                >
                   <div
                     className={
                       canvasTableEditId === element.id ? 'report-canvas-table-edit-host' : 'report-canvas-html-shield'
@@ -2095,7 +2100,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
           {page.elements
             .filter((element) => element.type === 'sensor')
             .map((element) => (
-              <Html key={`${element.id}-sensor`} groupProps={{ x: element.x, y: element.y, listening: false }}>
+              <Html key={`${element.id}-sensor`} groupProps={{ x: element.x, y: element.y, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
                 <div
                   className="report-canvas-html-shield"
                   onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
@@ -2106,6 +2111,28 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                     type={element.props?.sensorType}
                     title={element.props?.title || 'Telemetría Real-time'}
                     connected={element.props?.connected !== false}
+                    width={element.width}
+                    height={element.height}
+                  />
+                </div>
+              </Html>
+            ))}
+
+          {page.elements
+            .filter((element) => element.type === 'sensor_multi_chart')
+            .map((element) => (
+              <Html key={`${element.id}-sensor-multi-chart`} groupProps={{ x: element.x, y: element.y, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
+                <div
+                  className="report-canvas-html-shield"
+                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
+                  style={{ width: element.width, height: element.height }}
+                >
+                  <SensorMultiChartWidget
+                    title={element.props?.title || 'Gráfico de sensores'}
+                    selections={element.props?.selections}
+                    chartType={element.props?.chartType}
+                    from={element.props?.from}
+                    to={element.props?.to}
                     width={element.width}
                     height={element.height}
                   />
