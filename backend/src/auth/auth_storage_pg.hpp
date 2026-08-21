@@ -43,11 +43,17 @@ bool ensureAuthSchemaPg(PGconn *conn);
 std::string trimCompanyName(const std::string &s);
 
 #if HAS_LIBPQ
-/** @brief Inserta una fila en `auth_audit_logs` (best-effort: no propaga errores de escritura). */
+/** @brief Inserta una fila en `auth_audit_logs` (best-effort: no propaga errores de escritura).
+ * @param latitude,longitude,accuracyMeters Ubicación del dispositivo cliente (ADR-107, db_scripts/58)
+ * -- columnas dedicadas para poder filtrar/agregar por coordenadas, además del texto ya presente en
+ * `detail` para lectura humana. `nullopt` si no se capturó (no participa en la decisión de auditar). */
 void appendAuthAuditLogPg(PGconn *conn, const std::string &action,
                           const std::string &company,
                           const std::string &username, bool ok,
-                          const std::string &detail);
+                          const std::string &detail,
+                          std::optional<double> latitude = std::nullopt,
+                          std::optional<double> longitude = std::nullopt,
+                          std::optional<double> accuracyMeters = std::nullopt);
 
 /** @brief Verifica que exista un usuario de `companyName` cuyo RUC coincida (o cualquier usuario de la empresa si `ruc` viene vacío). @return true si existe al menos una fila. */
 bool validateCompanyPg(const std::string &databaseUrl,
@@ -111,7 +117,18 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &identityKey,
                                         const std::string &password,
                                         std::string &error,
-                                        std::string *errorCodeOut = nullptr);
+                                        std::string *errorCodeOut = nullptr,
+                                        /** Anexado tal cual al `detail` de la fila de
+                                         * auditoría del login EXITOSO (p. ej. ubicación
+                                         * del cliente — ADR-107); vacío por defecto. No
+                                         * participa en la decisión de autenticar. */
+                                        const std::string &auditDetailSuffix = "",
+                                        /** Ubicación del dispositivo cliente en columnas
+                                         * dedicadas (db_scripts/58) además del texto de
+                                         * auditDetailSuffix. */
+                                        std::optional<double> latitude = std::nullopt,
+                                        std::optional<double> longitude = std::nullopt,
+                                        std::optional<double> accuracyMeters = std::nullopt);
 
 /** @brief Autentica por biometría facial: resuelve la identidad, valida estado de cuenta, arma el "probe" (plantilla de cliente o imagen cruda) y compara similitud coseno contra la plantilla almacenada. Registra cada resultado en la auditoría. @return El `AuthUser` y el score de similitud si superó el umbral; `std::nullopt` en cualquier otro caso. */
 std::optional<std::pair<AuthUser, double>>
@@ -121,7 +138,16 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                     const std::optional<std::vector<unsigned char>> &rawImageBytes,
                     const std::optional<std::string> &base64ForLegacy,
                     double legacyThreshold, double embeddingThreshold,
-                    std::string &error, std::string *probeProviderOut = nullptr);
+                    std::string &error, std::string *probeProviderOut = nullptr,
+                    /** Anexado tal cual al `detail` de la fila de auditoría del
+                     * login EXITOSO (p. ej. ubicación del cliente); vacío por
+                     * defecto. No participa en la decisión de autenticar. */
+                    const std::string &auditDetailSuffix = "",
+                    /** Ubicación del dispositivo cliente en columnas dedicadas
+                     * (db_scripts/58) además del texto de auditDetailSuffix. */
+                    std::optional<double> latitude = std::nullopt,
+                    std::optional<double> longitude = std::nullopt,
+                    std::optional<double> accuracyMeters = std::nullopt);
 
 /** @brief Lista los usuarios de `company` (sin credenciales) para pantallas de mantenimiento. @return Array JSON, vacío si no hay conexión o no hay usuarios. */
 json::array listCompanyUsersPg(const std::string &databaseUrl,
@@ -207,6 +233,11 @@ struct AuthCompanyRecord {
   std::string updatedBy;
   std::string deactivatedAt;
   std::string deactivatedBy;
+  /** ADR-121: coordenadas de la mina, nullable -- std::nullopt == "sin
+   *  registrar todavía", nunca (0,0) como sentinela. */
+  std::optional<double> latitude;
+  std::optional<double> longitude;
+  std::optional<int> locationZoom;
 };
 
 #if HAS_LIBPQ
@@ -232,6 +263,9 @@ bool getCompanyByIdPg(const std::string &databaseUrl,
 bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
                      const std::string &ruc, const std::string &countryCode,
                      const std::string &domicilioFiscal,
+                     std::optional<double> latitude,
+                     std::optional<double> longitude,
+                     std::optional<int> locationZoom,
                      const std::string &actorUserId,
                      const std::string &actorRole, AuthCompanyRecord &out,
                      std::string &error);
@@ -241,6 +275,9 @@ bool updateCompanyPg(const std::string &databaseUrl,
                      const std::string &companyId, const std::string &ruc,
                      const std::string &countryCode,
                      const std::string &domicilioFiscal,
+                     std::optional<double> latitude,
+                     std::optional<double> longitude,
+                     std::optional<int> locationZoom,
                      const std::string &actorUserId, AuthCompanyRecord &out,
                      std::string &error);
 

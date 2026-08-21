@@ -1,6 +1,6 @@
 -- ---------------------------------------------------------------------------
--- 44_report_export_narration.sql
--- Narración por diapositiva para el export PPTX -> video (ADR pendiente:
+-- 65_report_export_narration.sql
+-- Narración por diapositiva para el export PPTX -> video (ADR-083/084:
 -- "Exportación a presentación PPTX + conversión a video narrado").
 --
 -- `report_export_job` ya existía (18_/19_...sql) con `export_format` listo

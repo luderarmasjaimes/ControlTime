@@ -4,6 +4,7 @@
 
 #include <exception>
 #include <iostream>
+#include <unordered_set>
 
 namespace router {
 
@@ -104,6 +105,12 @@ namespace {
 //     corporativo) rompería esa función para cualquier WMS privado no
 //     listado. Se restringe a HTTPS (bloquea downgrade a http) en vez de
 //     restringir por host.
+//   - media-src (2026-08-17): sin esto un <video>/<audio> cae al default-src
+//     'self', que no incluye data:/blob: -- bloqueaba en negro (con duración
+//     visible, tomada del timer de grabación, no del <video>) los videos que
+//     VideoInsertModal.tsx inserta como data URL base64. Ver la misma nota,
+//     más detallada, en frontend/nginx.conf (el CSP que realmente aplica el
+//     navegador sobre el HTML servido).
 //   - connect-src: 'self' + ws/wss (mismo origen; el WS de la app siempre
 //     pasa por el proxy de nginx, nunca a un host externo).
 static const char *kCspValue =
@@ -112,6 +119,7 @@ static const char *kCspValue =
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob:; "
     "connect-src 'self' ws: wss:; "
     "object-src 'none'; "
     "base-uri 'self'; "
@@ -174,9 +182,27 @@ http::response<http::string_body> Router::dispatch(
     // `Authorization: Bearer` (clientes de API, integraciones) no se ven
     // afectadas: ese header no lo pone el navegador solo.
     {
+        // Puntos de entrada de autenticación (login/registro) quedan exentos:
+        // no "usan" ninguna sesión existente -- autentican con credenciales
+        // frescas en el body. Sin esta excepción, una cookie access_token
+        // vieja (hasta 15 min tras cualquier login previo, en cualquier
+        // puerto del mismo host -- las cookies no distinguen puerto) hace que
+        // CUALQUIER intento de login nuevo, con credenciales correctas,
+        // vuelva 403 csrf_token_mismatch -- reproducido en vivo probando
+        // rp-test-harness.html vía IP de LAN 2026-08 (login a
+        // /api/auth/login/password bloqueado por una cookie de una sesión de
+        // prueba anterior en otro puerto del mismo host). refresh/logout NO
+        // se tocan -- esos sí dependen de la cookie de sesión existente y
+        // deben seguir exigiendo el token CSRF (ADR-082).
+        static const std::unordered_set<std::string> kCsrfExemptPaths = {
+            "/api/auth/login/password",
+            "/api/auth/login/face",
+            "/api/auth/login/check-identity",
+            "/api/auth/register",
+        };
         auth::AuthTokenSource tokenSource = auth::AuthTokenSource::None;
         (void)auth::extractAuthTokenFromRequest(req, query, &tokenSource);
-        if (auth::requiresCsrfRejection(req, tokenSource)) {
+        if (!kCsrfExemptPaths.count(pathOnly) && auth::requiresCsrfRejection(req, tokenSource)) {
             auto res = http_utils::makeJsonResponse(
                 http::status::forbidden,
                 json::object{{"error", "csrf_token_mismatch"},

@@ -1,5 +1,5 @@
 """
-Gestión de ramas feature con CONTEXT.md (Paso 6, ADR-009).
+Gestión de ramas feature con CONTEXT.md (Paso 6 de la metodología).
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _render_context(description: str, branch: str, files: list[str] | None = Non
     rr = route(description, files)
     tpl = TEMPLATE.read_text(encoding="utf-8") if TEMPLATE.exists() else ""
     cas_lines = "\n".join(f"- [ ] {ca}" for ca in decision.acceptance_criteria) or "- [ ] CA-1: (ver spec.md)"
-    adrs = "\n".join(f"- {a}" for a in decision.adrs) or "- ADR-007"
+    adrs = "\n".join(f"- {a}" for a in decision.adrs) or "- ADR-090"
     content = (
         tpl.replace("SPEC-NNN — título", f"{decision.spec_id or 'SPEC-???'} — {description[:80]}")
         .replace("feature/...", branch)
@@ -36,7 +36,7 @@ def _render_context(description: str, branch: str, files: list[str] | None = Non
         .replace("claude | gpt-5 | ...", rr.model)
     )
     content = content.replace(
-        "- ADR-001\n- ADR-007\n- (listar desde specs/REGISTRY.md)",
+        "- ADR-090\n- ADR-NNN\n- (listar desde specs/REGISTRY.md)",
         adrs,
     )
     content = content.replace("- [ ] CA-1: ...", cas_lines.split("\n")[0] if cas_lines else "- [ ] CA-1: ...")

@@ -1,5 +1,5 @@
 -- ==========================================================================
--- 29_telemetry_ingest_optimization.sql
+-- 64_telemetry_ingest_optimization.sql
 -- Optimización de telemetry_raw para ingesta de alta tasa (10K+ sensores).
 --   1. chunk_time_interval 7d -> 6h  (chunks manejables a ~1000 filas/s)
 --   2. Recorte de índices redundantes en el hot path de escritura

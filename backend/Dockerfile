@@ -1,13 +1,16 @@
 FROM ubuntu:24.04 AS builder
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ONNXRUNTIME_VERSION=1.19.2
+ARG BOOST_VERSION=1.91.0
+ARG BOOST_VERSION_UNDERSCORE=1_91_0
+ARG BOOST_SHA256=5734305f40a76c30f951c9abd409a45a2a19fb546efe4162119250bbe4d3a463
+ARG BACKEND_BUILD_JOBS=2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     ninja-build \
     pkg-config \
-    libboost-all-dev \
     libpq-dev \
     librdkafka-dev \
     libmosquitto-dev \
@@ -26,6 +29,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     nasm \
     && rm -rf /var/lib/apt/lists/*
+
+# Boost 1.91.0 estable, compilado dentro de Linux. Las bibliotecas generadas
+# en C:\boost_1_92_0 son binarios Windows y no son ABI-compatible con Linux.
+# El checksum oficial impide compilar una descarga corrupta o reemplazada.
+RUN wget -q -O /tmp/boost.tar.gz \
+      "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz" \
+    && echo "${BOOST_SHA256}  /tmp/boost.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/boost.tar.gz -C /tmp \
+    && cd "/tmp/boost_${BOOST_VERSION_UNDERSCORE}" \
+    && ./bootstrap.sh --prefix=/opt/boost --with-libraries=json \
+    && ./b2 -j"${BACKEND_BUILD_JOBS}" --layout=system variant=release link=shared \
+         threading=multi cxxstd=20 install \
+    && rm -rf /tmp/boost.tar.gz "/tmp/boost_${BOOST_VERSION_UNDERSCORE}"
 
 # OpenCV 4.12.0 via vcpkg (backend/vcpkg.json), en vez del libopencv-dev
 # 4.6.0 que trae Ubuntu 24.04 (congelado por la distro, 6 releases atras).
@@ -60,7 +76,6 @@ RUN mkdir -p /opt/cartoon-models \
 # se compila estático desde el tag oficial (mismo patrón que onnxruntime/duckdb:
 # dependencia pineada, sin tocar el runtime porque queda linkeada al binario).
 ARG OPEN62541_VERSION=1.3.10
-ARG BACKEND_BUILD_JOBS=2
 RUN wget -q -O /tmp/open62541.tar.gz \
       "https://github.com/open62541/open62541/archive/refs/tags/v${OPEN62541_VERSION}.tar.gz" \
     && tar -xzf /tmp/open62541.tar.gz -C /tmp \
@@ -71,20 +86,33 @@ RUN wget -q -O /tmp/open62541.tar.gz \
     && cmake --install /tmp/open62541-build \
     && rm -rf /tmp/open62541*
 
+# Instalar el manifiesto nativo ANTES de copiar el código. Así un cambio en
+# *.cpp no recompila OpenCV/FFmpeg/Protobuf ni vuelve a consumir varios GB.
 WORKDIR /app
+COPY vcpkg.json /app/vcpkg.json
+COPY vcpkg-triplets /app/vcpkg-triplets
+RUN /opt/vcpkg/vcpkg install --triplet x64-linux \
+        --overlay-triplets=/app/vcpkg-triplets \
+        --x-install-root=/app/vcpkg_installed
+
 COPY . /app
 RUN rm -rf /app/build \
     && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
         -DONNXRUNTIME_ROOT=/opt/onnxruntime \
         -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
         -DVCPKG_OVERLAY_TRIPLETS=/app/vcpkg-triplets \
+        -DVCPKG_INSTALLED_DIR=/app/vcpkg_installed \
+        -DBOOST_ROOT=/opt/boost \
+        -DBoost_ROOT=/opt/boost \
+        -DBoost_NO_SYSTEM_PATHS=ON \
+        -DCMAKE_PREFIX_PATH=/opt/boost \
     && cmake --build build --config Release -j"${BACKEND_BUILD_JOBS}" \
     && ctest --test-dir build --output-on-failure \
     && (find build -type f -executable -exec strip --strip-all {} + || true)
 
 # Runtime image must match builder distro/version so that
-# Boost and other shared libraries are compatible with the
-# compiled binary (Boost 1.83 on Ubuntu 24.04).
+# Runtime matches the builder distro and receives the exact Boost 1.91
+# shared libraries produced above.
 FROM ubuntu:24.04 AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -110,7 +138,6 @@ RUN apt-get update \
        librdkafka1 \
        libmosquitto1 \
        libmodbus5 \
-       libboost-all-dev \
        libopencv-dev \
        opencv-data \
     && rm -rf /var/lib/apt/lists/*
@@ -138,6 +165,7 @@ COPY --from=builder /app/scripts/surveillance_camera_snapshot.py /app/scripts/su
 COPY --from=builder /app/scripts/archive_telemetry_to_parquet.sh /app/scripts/archive_telemetry_to_parquet.sh
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /opt/onnxruntime/lib/ /usr/local/lib/
+COPY --from=builder /opt/boost/lib/ /usr/local/lib/
 COPY --from=builder /opt/cartoon-models /opt/cartoon-models
 RUN chmod +x /app/entrypoint.sh /app/scripts/archive_telemetry_to_parquet.sh \
     && mkdir -p /data /opt/dermalog || true \

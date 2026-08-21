@@ -66,7 +66,7 @@ class Orchestrator:
             "agents_registry": str(self.root / "agents" / "registry.yaml"),
             "task": asdict(task),
             "rules": [
-                "Cumplir SPEC, ADRs históricos aplicables y el log vigente docs/decisions",
+                "Cumplir SPEC y ADRs canónicos de docs/decisions; excluir specs/adr",
                 "Multitenant tenant_id obligatorio",
                 "Exponer /api/metrics en servicios nuevos",
                 "Paridad frontend ↔ backend",

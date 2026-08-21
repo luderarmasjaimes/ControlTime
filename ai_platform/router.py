@@ -189,7 +189,7 @@ def format_route_report(result: RouteResult, text: str) -> str:
         "",
         "## Contexto a cargar",
         "1. `specs/CONSTITUTION.md`",
-        "2. `specs/REGISTRY.md` + `spec.md` (ADRs históricos y vigentes del SPEC)",
+        "2. `specs/REGISTRY.md` + `spec.md` + ADRs canónicos en `docs/decisions/`",
         "3. RAG: `python -m ai_platform.rag query \"...\"`",
         "4. Prompt del agente en `prompts/agents/`",
     ])

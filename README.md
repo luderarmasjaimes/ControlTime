@@ -27,7 +27,8 @@ Solución base para baja latencia con:
 
 - Docker Desktop con backend Linux.
 - Para desarrollo local C++ con Visual Studio (CMake):
-  - Boost 1.90 en `C:\boost_1_90_0`
+  - Boost 1.92 (beta de desarrollo) en `C:\boost_1_92_0` para builds nativos Windows.
+  - Los contenedores Linux compilan Boost 1.91.0 estable dentro de Docker; no usan binarios de Windows.
   - OpenCV en `C:\opencv`
   - GDAL con soporte ECW (si aplica tu licencia/plugin)
 

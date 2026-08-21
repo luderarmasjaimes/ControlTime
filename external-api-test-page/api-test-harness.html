@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AURIXA / Beemetry — Harness completo QA (Registro + Login + Captura)</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --text: #e6e8ec; --muted: #8a90a0; --accent: #F07E41; --accent2: #ffab73;
+    --ok: #3ecf8e; --err: #ef5350; --warn: #f2c94c; --mono: 'Consolas','Cascadia Mono',monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:10; }
+  header h1 { font-size:16px; margin:0; color:var(--accent); font-weight:600; }
+  header .origin-badge { font-family:var(--mono); font-size:12px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color:var(--muted); }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:16px; padding:16px 24px 48px; max-width:1600px; margin:0 auto; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .full { grid-column: 1 / -1; }
+  section.panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  section.panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--accent2); margin:0 0 12px; display:flex; align-items:center; justify-content:space-between; }
+  section.panel h2 .badge { font-size:10px; text-transform:none; letter-spacing:0; padding:2px 6px; border-radius:4px; background:var(--panel2); color:var(--muted); font-weight:400; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width:100%; padding:8px 10px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; font-family:inherit;
+  }
+  textarea { font-family:var(--mono); font-size:11px; resize:vertical; }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; min-width:0; }
+  button { cursor:pointer; border:none; border-radius:6px; padding:8px 14px; font-size:13px; font-weight:600; background:var(--accent); color:#1b1200; margin-top:10px; margin-right:6px; }
+  button:hover { background:var(--accent2); }
+  button.secondary { background:var(--panel2); color:var(--text); border:1px solid var(--border); }
+  button.secondary:hover { background:#262b36; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .hint { font-size:11px; color:var(--muted); margin-top:6px; line-height:1.5; }
+  .hint code { background:var(--panel2); padding:1px 5px; border-radius:4px; font-family:var(--mono); }
+  video, canvas.preview { width:100%; max-width:340px; border-radius:8px; border:1px solid var(--border); background:#000; display:block; }
+  .cam-wrap { position:relative; display:inline-block; }
+  canvas.overlay { position:absolute; top:0; left:0; width:100%; max-width:340px; pointer-events:none; }
+  .icao-grid { display:grid; grid-template-columns: repeat(2,1fr); gap:6px; margin-top:10px; }
+  .icao-item { font-size:12px; padding:6px 8px; border-radius:6px; background:var(--panel2); display:flex; align-items:center; gap:6px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
+  .dot.on { background:var(--ok); } .dot.off { background:var(--err); }
+  .status-line { font-size:12px; color:var(--muted); margin-top:8px; }
+  .status-line b { color:var(--text); }
+  #log { font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px; height:360px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
+  .log-entry { border-bottom:1px dashed var(--border); padding:6px 0; }
+  .log-entry:last-child { border-bottom:none; }
+  .log-ok { color:var(--ok); } .log-err { color:var(--err); } .log-warn { color:var(--warn); }
+  .pill { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; margin-right:6px; }
+  .pill.get { background:#2a3a52; color:#8fc4ff; } .pill.post { background:#3a2a52; color:#c58fff; }
+  .result-box { margin-top:10px; font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:10px; max-height:220px; overflow:auto; white-space:pre-wrap; }
+  .thumbs { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  .thumbs img { width:56px; height:56px; object-fit:cover; border-radius:6px; border:1px solid var(--border); }
+  a { color:var(--accent2); }
+  footer { text-align:center; color:var(--muted); font-size:11px; padding:24px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AURIXA / Beemetry — Harness completo QA (registro, login, captura)</h1>
+  <span class="origin-badge" id="originBadge">origin: …</span>
+  <span class="origin-badge">session: <span id="sessionIdBadge">…</span></span>
+  <div style="flex:1"></div>
+  <button class="secondary" id="btnClearLog" type="button">Limpiar log</button>
+</header>
+
+<main>
+
+  <!-- CONFIG -->
+  <section class="panel full">
+    <h2>0. Configuración <span class="badge">requerido primero</span></h2>
+    <div class="row">
+      <div>
+        <label for="backendUrl">Backend base URL</label>
+        <input type="text" id="backendUrl" value="http://localhost:8082">
+      </div>
+      <div style="flex:0 0 auto; display:flex; align-items:flex-end;">
+        <button id="btnCheckConn" type="button">Probar conectividad + CORS</button>
+      </div>
+    </div>
+    <div class="hint">
+      Esta página se sirve intencionalmente en un <b>origen distinto</b> (puerto propio) al del backend, para simular
+      una aplicación externa real. Si el backend rechaza las peticiones, agregue el origen exacto de esta página
+      (protocolo+host+puerto, visible arriba en <code>origin</code>) a la variable de entorno
+      <code>BEEMETRY_CORS_ALLOWED_ORIGIN</code> del backend (lista separada por comas) y reinicie el contenedor.
+      Ver <code>docs/integration/EXTERNAL_API_TEST_PAGE.md</code>.
+    </div>
+    <div id="connResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- CATALOGS -->
+  <section class="panel">
+    <h2>1. Catálogos</h2>
+    <button id="btnLoadCountries" type="button">Cargar países</button>
+    <button id="btnLoadCompanies" type="button">Cargar empresas</button>
+    <label for="countrySelect">País (para validar RUC / registro)</label>
+    <select id="countrySelect"><option value="">— cargar países —</option></select>
+    <label for="companyInput">Empresa (texto exacto del catálogo o nueva)</label>
+    <input type="text" id="companyInput" list="companiesList" placeholder="ej. Beemetry">
+    <datalist id="companiesList"></datalist>
+    <div class="hint">El campo <code>company</code> del API es el nombre exacto de la empresa minera (texto libre que
+      idealmente coincide con el catálogo), no un ID.</div>
+  </section>
+
+  <!-- VALIDATE COMPANY -->
+  <section class="panel">
+    <h2>2. Validar identificador fiscal <span class="badge">GET /api/auth/validate-company</span></h2>
+    <label for="rucInput">RUC / RUT / CNPJ / EIN / cédula jurídica</label>
+    <input type="text" id="rucInput" placeholder="ej. 20100070970 (PE), 1792146739001 (EC), 76086428-5 (CL)">
+    <button id="btnValidateCompany" type="button">Validar</button>
+    <div id="validateResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- BIOMETRIC CAPTURE -->
+  <section class="panel full">
+    <h2>3. Captura biométrica <span class="badge">/api/process_frame + /api/status + /api/captured_images</span></h2>
+    <div class="row">
+      <div>
+        <div class="cam-wrap">
+          <video id="video" autoplay playsinline muted></video>
+          <canvas id="overlay" class="overlay"></canvas>
+        </div>
+        <div style="margin-top:8px;">
+          <button id="btnStartCam" type="button">Iniciar cámara</button>
+          <button id="btnLiveCapture" type="button" disabled>Iniciar captura en vivo</button>
+          <button id="btnStopCam" type="button" class="secondary" disabled>Detener cámara</button>
+        </div>
+        <label for="fileInput" style="margin-top:14px;">Alternativa sin cámara: subir imagen de rostro</label>
+        <input type="file" id="fileInput" accept="image/*">
+        <button id="btnSendFile" type="button">Enviar imagen (un solo frame)</button>
+        <label style="margin-top:14px; display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="checkbox" id="useSyntheticTemplate" style="width:auto;">
+          Usar <code>face_template</code> sintético (sin cámara ni imagen — prueba de contrato API)
+        </label>
+        <div class="hint">Genera un vector numérico determinístico de 512 posiciones. Sirve para probar el flujo
+          completo de registro/login sin depender de detección facial real — el backend acepta
+          <code>face_template: number[]</code> como alternativa a <code>face_image_base64</code>.</div>
+      </div>
+      <div>
+        <button id="btnRefreshStatus" type="button" class="secondary">Refrescar estado</button>
+        <button id="btnResetCapture" type="button" class="secondary">Reset captura</button>
+        <button id="btnFetchCapturedImages" type="button" class="secondary">Obtener imágenes capturadas</button>
+        <div class="status-line">Estado: <b id="stState">—</b> (<span id="stStateName">—</span>) · muestras:
+          <b id="stCount">0</b>/3 · liveness: <b id="stLiveness">0</b></div>
+        <div class="icao-grid">
+          <div class="icao-item"><span class="dot" id="dotEyes"></span> Ojos abiertos</div>
+          <div class="icao-item"><span class="dot" id="dotMouth"></span> Boca cerrada</div>
+          <div class="icao-item"><span class="dot" id="dotStraight"></span> Rostro frontal</div>
+          <div class="icao-item"><span class="dot" id="dotGlasses"></span> Sin lentes</div>
+        </div>
+        <div class="thumbs" id="capturedThumbs"></div>
+        <div class="hint">La captura usa el header <code>X-Capture-Session-Id</code> (uno por pestaña, generado al
+          cargar la página) para aislar su estado del de cualquier otra sesión concurrente en el backend.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- REGISTER -->
+  <section class="panel">
+    <h2>4. Registro <span class="badge">POST /api/auth/register</span></h2>
+    <div class="row">
+      <div><label>Empresa</label><input type="text" id="regCompany"></div>
+      <div><label>Rol (opcional)</label><input type="text" id="regRole" placeholder="operador / admin / …"></div>
+    </div>
+    <div class="row">
+      <div><label>Nombres</label><input type="text" id="regFirstName" value="Prueba"></div>
+      <div><label>Apellidos</label><input type="text" id="regLastName" value="Externa"></div>
+    </div>
+    <div class="row">
+      <div><label>DNI</label><input type="text" id="regDni"></div>
+      <div><label>RUC empresa (opcional)</label><input type="text" id="regRuc"></div>
+    </div>
+    <div class="row">
+      <div><label>Usuario</label><input type="text" id="regUsername"></div>
+      <div><label>Contraseña</label><input type="password" id="regPassword" value=""></div>
+    </div>
+    <div class="row">
+      <div><label>Teléfono (opcional)</label><input type="text" id="regPhone"></div>
+      <div><label>Email (opcional)</label><input type="text" id="regEmail"></div>
+    </div>
+    <button id="btnGenTestUser" type="button" class="secondary">Autogenerar datos de prueba</button>
+    <button id="btnRegister" type="button">Registrar</button>
+    <div class="hint">Usa la fuente biométrica de la sección 3 (última imagen válida capturada, o el
+      <code>face_template</code> sintético si el checkbox está activo).</div>
+    <div id="registerResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- LOGIN PASSWORD -->
+  <section class="panel">
+    <h2>5. Login por contraseña / PIN <span class="badge">POST /api/auth/login/password</span></h2>
+    <div class="row">
+      <div><label>Empresa</label><input type="text" id="loginPwCompany"></div>
+      <div><label>Usuario</label><input type="text" id="loginPwUsername"></div>
+    </div>
+    <label>Contraseña</label><input type="password" id="loginPwPassword">
+    <button id="btnLoginPassword" type="button">Iniciar sesión</button>
+    <div id="loginPwResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- LOGIN FACE -->
+  <section class="panel">
+    <h2>6. Login facial <span class="badge">POST /api/auth/login/face</span></h2>
+    <div class="row">
+      <div><label>Empresa</label><input type="text" id="loginFaceCompany"></div>
+      <div><label>Usuario / identidad</label><input type="text" id="loginFaceIdentity"></div>
+    </div>
+    <button id="btnLoginFace" type="button">Iniciar sesión con rostro</button>
+    <div class="hint">Usa la misma fuente biométrica que el registro (sección 3).</div>
+    <div id="loginFaceResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- SESSION -->
+  <section class="panel">
+    <h2>7. Sesión obtenida</h2>
+    <div class="hint">access_token (Bearer, ~15 min):</div>
+    <textarea id="accessTokenBox" rows="3" readonly placeholder="Aparece aquí tras registro o login exitoso"></textarea>
+    <button id="btnCallPermissions" type="button" class="secondary">GET /api/auth/permissions</button>
+    <button id="btnLogout" type="button" class="secondary">POST /api/auth/logout</button>
+    <div id="sessionResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- LOG -->
+  <section class="panel full">
+    <h2>8. Log de peticiones/respuestas</h2>
+    <div id="log"></div>
+  </section>
+
+</main>
+
+<footer>Herramienta de pruebas — no usar credenciales productivas reales. Ver documentación completa en
+  <code>docs/integration/EXTERNAL_API_TEST_PAGE.md</code>.</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+
+  // crypto.randomUUID() exige "secure context" (https:// o localhost) y NO
+  // existe en http://<ip-lan>:5190 -- exactamente el caso de otra PC de la
+  // red abriendo esta página por IP. Sin este fallback, la excepción al
+  // evaluar esta línea mataba todo el script en silencio (ningún botón
+  // funcionaba, sin error visible). No se necesita aleatoriedad
+  // criptográfica aquí, solo un id único por pestaña para X-Capture-Session-Id.
+  function generateSessionId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    if (window.crypto && crypto.getRandomValues) {
+      crypto.getRandomValues(bytes);
+    } else {
+      for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0'));
+    return `${hex.slice(0,4).join('')}-${hex.slice(4,6).join('')}-${hex.slice(6,8).join('')}-${hex.slice(8,10).join('')}-${hex.slice(10,16).join('')}`;
+  }
+  const sessionId = generateSessionId();
+  $('sessionIdBadge').textContent = sessionId.slice(0, 8) + '…';
+  $('originBadge').textContent = 'origin: ' + window.location.origin;
+
+  const state = {
+    accessToken: null,
+    lastValidFaceImageBase64: null,
+    capturedImages: [],
+    liveTimer: null,
+    stream: null,
+  };
+
+  const BACKEND_KEY = 'ext_test_backend_url';
+  const savedUrl = localStorage.getItem(BACKEND_KEY);
+  if (savedUrl) {
+    $('backendUrl').value = savedUrl;
+  } else {
+    // ADR-107 (nota operativa 2026-08-18): tanto serve_http.py (5190) como
+    // serve_https.py (5443) proxean /api/* hacia el backend por loopback
+    // (127.0.0.1:8082, ver _proxy_common.py) -- el destino correcto es
+    // SIEMPRE el propio origen de esta página, sin importar protocolo ni si
+    // se abrió por localhost o por la IP de LAN. Antes (por HTTP, desde otra
+    // PC) esto apuntaba al frontend nginx publicado en :5173, pero Docker
+    // Desktop en Windows (WSL2) no publica los puertos de sus contenedores
+    // hacia la IP de LAN del host -- ese destino nunca era alcanzable desde
+    // otra PC. Ver _proxy_common.py para el detalle completo.
+    $('backendUrl').value = location.origin;
+  }
+  $('backendUrl').addEventListener('change', () => {
+    localStorage.setItem(BACKEND_KEY, $('backendUrl').value.trim());
+  });
+
+  function backendUrl() {
+    return $('backendUrl').value.trim().replace(/\/+$/, '');
+  }
+
+  // ---- logging -----------------------------------------------------------
+  function redact(obj) {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'string') {
+      return obj.length > 180 ? `<string len=${obj.length}>` : obj;
+    }
+    if (Array.isArray(obj)) {
+      if (obj.length > 20 && obj.every(v => typeof v === 'number')) {
+        return `<number[] len=${obj.length}>`;
+      }
+      return obj.map(redact);
+    }
+    if (typeof obj === 'object') {
+      const out = {};
+      for (const k of Object.keys(obj)) out[k] = redact(obj[k]);
+      return out;
+    }
+    return obj;
+  }
+
+  function log(method, path, status, ms, body, isError) {
+    const el = document.createElement('div');
+    el.className = 'log-entry';
+    const cls = isError ? 'log-err' : (status >= 200 && status < 300 ? 'log-ok' : 'log-warn');
+    const pillCls = method === 'GET' ? 'pill get' : 'pill post';
+    const time = new Date().toLocaleTimeString();
+    let bodyStr = '';
+    try { bodyStr = JSON.stringify(redact(body), null, 2); } catch (e) { bodyStr = String(body); }
+    el.innerHTML = `<span class="${pillCls}">${method}</span><span class="${cls}">[${time}] ${status} · ${ms}ms · ${path}</span>\n${bodyStr ? bodyStr : ''}`;
+    $('log').prepend(el);
+  }
+
+  $('btnClearLog').addEventListener('click', () => { $('log').innerHTML = ''; });
+
+  async function apiFetch(path, options = {}) {
+    const url = backendUrl() + path;
+    const method = (options.method || 'GET').toUpperCase();
+    const headers = Object.assign({}, options.headers || {});
+    if (state.accessToken && !headers['Authorization']) {
+      headers['Authorization'] = 'Bearer ' + state.accessToken;
+    }
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url, Object.assign({}, options, {
+        method, headers, credentials: 'include',
+      }));
+      const ms = Math.round(performance.now() - t0);
+      let body = null;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        body = await res.json().catch(() => null);
+      } else {
+        body = await res.text().catch(() => '');
+      }
+      log(method, path, res.status, ms, body, false);
+      return { ok: res.ok, status: res.status, body };
+    } catch (err) {
+      const ms = Math.round(performance.now() - t0);
+      log(method, path, 0, ms, { network_or_cors_error: String(err) }, true);
+      return { ok: false, status: 0, body: { network_or_cors_error: String(err) } };
+    }
+  }
+
+  function showBox(id, data) {
+    const box = $(id);
+    box.style.display = 'block';
+    box.textContent = typeof data === 'string' ? data : JSON.stringify(redact(data), null, 2);
+  }
+
+  // ---- 0. connectivity ----------------------------------------------------
+  $('btnCheckConn').addEventListener('click', async () => {
+    const r = await apiFetch('/api/platform/countries');
+    showBox('connResult', r.ok
+      ? { ok: true, note: 'CORS y conectividad correctas.', countries_sample: (r.body && r.body.countries || []).slice(0, 3) }
+      : { ok: false, note: r.status === 0
+            ? 'Fallo de red o CORS (el navegador bloqueó la respuesta antes de exponerla a JS). Revise BEEMETRY_CORS_ALLOWED_ORIGIN.'
+            : `HTTP ${r.status}`, detail: r.body });
+  });
+
+  // ---- 1. catalogs ---------------------------------------------------------
+  $('btnLoadCountries').addEventListener('click', async () => {
+    const r = await apiFetch('/api/platform/countries');
+    if (!r.ok) return;
+    const sel = $('countrySelect');
+    sel.innerHTML = '<option value="">— seleccionar —</option>';
+    (r.body.countries || []).forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.iso2; opt.textContent = `${c.label} (${c.iso2})`;
+      sel.appendChild(opt);
+    });
+  });
+
+  $('btnLoadCompanies').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/companies');
+    if (!r.ok) return;
+    const dl = $('companiesList');
+    dl.innerHTML = '';
+    (r.body.companies || []).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      dl.appendChild(opt);
+    });
+  });
+
+  // ---- 2. validate company -------------------------------------------------
+  $('btnValidateCompany').addEventListener('click', async () => {
+    const country = $('countrySelect').value || 'PE';
+    const ruc = $('rucInput').value.trim();
+    const company = $('companyInput').value.trim();
+    const qs = new URLSearchParams({ ruc, country, company });
+    const r = await apiFetch('/api/auth/validate-company?' + qs.toString());
+    showBox('validateResult', r.body);
+  });
+
+  // ---- 3. biometric capture -------------------------------------------------
+  const video = $('video');
+  const overlay = $('overlay');
+  const octx = overlay.getContext('2d');
+
+  $('btnStartCam').addEventListener('click', async () => {
+    // getUserMedia exige "secure context" (https:// o localhost) y los
+    // navegadores ni siquiera exponen navigator.mediaDevices en
+    // http://<ip-lan>:5190 -- el caso real de otra PC abriendo esta página
+    // por IP. No hay fallback posible (a diferencia de crypto.randomUUID):
+    // sin HTTPS, la cámara real solo funciona abriendo la página como
+    // http://localhost:5190 en la MISMA máquina que la sirve. Use "subir
+    // imagen" o el face_template sintético desde otra PC.
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('La cámara no está disponible en este origen: navigator.mediaDevices no existe.\n\n' +
+        'Los navegadores solo permiten getUserMedia en "contextos seguros" (https:// o http://localhost).\n' +
+        'Esto es normal si abrió esta página por IP de LAN (' + location.origin + ') desde otra PC.\n\n' +
+        'Use "subir imagen" o el checkbox de face_template sintético más abajo.');
+      return;
+    }
+    try {
+      // Misma resolucion que index.html/AuthGateway.tsx -- 480x360 daba muy
+      // poca precision de pixeles para el ratio de apertura de boca (ver
+      // docs/integration/EXTERNAL_API_TEST_PAGE.md).
+      state.stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640, min: 320 },
+          height: { ideal: 480, min: 240 },
+          aspectRatio: { ideal: 4 / 3 },
+        },
+      });
+      video.srcObject = state.stream;
+      await video.play();
+      overlay.width = video.videoWidth || 480;
+      overlay.height = video.videoHeight || 360;
+      $('btnLiveCapture').disabled = false;
+      $('btnStopCam').disabled = false;
+      $('btnStartCam').disabled = true;
+    } catch (err) {
+      alert('No se pudo acceder a la cámara: ' + err.message + '\nUse la alternativa de "subir imagen" más abajo.');
+    }
+  });
+
+  $('btnStopCam').addEventListener('click', () => {
+    stopLiveCapture();
+    if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+    state.stream = null;
+    video.srcObject = null;
+    $('btnLiveCapture').disabled = true;
+    $('btnStopCam').disabled = true;
+    $('btnStartCam').disabled = false;
+  });
+
+  function captureCanvasFromVideo() {
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth || 480;
+    c.height = video.videoHeight || 360;
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  async function sendFrameBlob(blob) {
+    const buf = await blob.arrayBuffer();
+    const r = await apiFetch('/api/process_frame', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Capture-Session-Id': sessionId },
+      body: buf,
+    });
+    await refreshStatus();
+    return r;
+  }
+
+  $('btnLiveCapture').addEventListener('click', () => {
+    if (state.liveTimer) { stopLiveCapture(); return; }
+    $('btnLiveCapture').textContent = 'Detener captura en vivo';
+    state.liveTimer = setInterval(async () => {
+      const canvas = captureCanvasFromVideo();
+      canvas.toBlob(async (blob) => {
+        if (blob) await sendFrameBlob(blob);
+      }, 'image/jpeg', 0.85);
+    }, 700);
+  });
+
+  function stopLiveCapture() {
+    if (state.liveTimer) { clearInterval(state.liveTimer); state.liveTimer = null; }
+    $('btnLiveCapture').textContent = 'Iniciar captura en vivo';
+  }
+
+  $('fileInput').addEventListener('change', () => {
+    const f = $('fileInput').files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        overlay.width = img.width; overlay.height = img.height;
+        octx.clearRect(0, 0, overlay.width, overlay.height);
+        octx.drawImage(img, 0, 0);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(f);
+  });
+
+  $('btnSendFile').addEventListener('click', async () => {
+    const f = $('fileInput').files[0];
+    if (!f) { alert('Seleccione una imagen primero.'); return; }
+    await sendFrameBlob(f);
+  });
+
+  async function refreshStatus() {
+    const r = await apiFetch('/api/status', {
+      headers: { 'X-Capture-Session-Id': sessionId },
+    });
+    if (!r.ok) return;
+    const s = r.body;
+    $('stState').textContent = s.state;
+    $('stStateName').textContent = s.state_name;
+    $('stCount').textContent = s.capture_count;
+    $('stLiveness').textContent = s.liveness_score;
+    const icao = s.icao || {};
+    setDot('dotEyes', icao.eyes_open);
+    setDot('dotMouth', icao.mouth_closed);
+    setDot('dotStraight', icao.face_straight);
+    setDot('dotGlasses', icao.no_glasses);
+
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    if (state.stream) octx.drawImage(video, 0, 0, overlay.width, overlay.height);
+    if (s.face_oval) {
+      const e = s.face_oval;
+      octx.save();
+      octx.translate(e.cx, e.cy);
+      octx.rotate((e.angle_deg || 0) * Math.PI / 180);
+      octx.strokeStyle = (icao.eyes_open && icao.mouth_closed && icao.face_straight && icao.no_glasses) ? '#3ecf8e' : '#F07E41';
+      octx.lineWidth = 3;
+      octx.beginPath();
+      octx.ellipse(0, 0, e.w / 2, e.h / 2, 0, 0, Math.PI * 2);
+      octx.stroke();
+      octx.restore();
+    }
+    if (s.capture_count >= 3) {
+      stopLiveCapture();
+      await fetchCapturedImages();
+    }
+  }
+
+  function setDot(id, on) {
+    const d = $(id);
+    d.className = 'dot ' + (on ? 'on' : 'off');
+  }
+
+  $('btnRefreshStatus').addEventListener('click', refreshStatus);
+
+  $('btnResetCapture').addEventListener('click', async () => {
+    await apiFetch('/api/reset_capture', { headers: { 'X-Capture-Session-Id': sessionId } });
+    state.capturedImages = [];
+    state.lastValidFaceImageBase64 = null;
+    $('capturedThumbs').innerHTML = '';
+    await refreshStatus();
+  });
+
+  async function fetchCapturedImages() {
+    const r = await apiFetch('/api/captured_images', { headers: { 'X-Capture-Session-Id': sessionId } });
+    if (!r.ok || !Array.isArray(r.body)) return;
+    state.capturedImages = r.body;
+    if (r.body.length > 0) {
+      state.lastValidFaceImageBase64 = r.body[r.body.length - 1];
+    }
+    const wrap = $('capturedThumbs');
+    wrap.innerHTML = '';
+    r.body.forEach(dataUrl => {
+      const img = document.createElement('img');
+      img.src = dataUrl;
+      wrap.appendChild(img);
+    });
+  }
+  $('btnFetchCapturedImages').addEventListener('click', fetchCapturedImages);
+
+  // synthetic face_template: deterministic per page load, 512 floats in [-1,1]
+  function syntheticFaceTemplate() {
+    const arr = [];
+    let seed = 42;
+    for (let i = 0; i < 512; i++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      arr.push(((seed % 2000) / 1000) - 1);
+    }
+    return arr;
+  }
+
+  function currentBiometricPayload() {
+    if ($('useSyntheticTemplate').checked) {
+      return { face_template: syntheticFaceTemplate() };
+    }
+    if (state.lastValidFaceImageBase64) {
+      return { face_image_base64: state.lastValidFaceImageBase64 };
+    }
+    return null;
+  }
+
+  // ---- 4. register -----------------------------------------------------------
+  $('btnGenTestUser').addEventListener('click', () => {
+    const n = Date.now().toString().slice(-8);
+    $('regUsername').value = 'ext_test_' + n;
+    $('regPassword').value = 'Pruebas' + n + '!';
+    $('regDni').value = '7' + n.padStart(7, '0');
+    if (!$('regCompany').value) $('regCompany').value = $('companyInput').value || 'Beemetry';
+    $('useSyntheticTemplate').checked = true;
+  });
+
+  $('btnRegister').addEventListener('click', async () => {
+    const bio = currentBiometricPayload();
+    if (!bio) {
+      alert('No hay fuente biométrica: capture 3 muestras válidas, suba una imagen, o marque "face_template sintético".');
+      return;
+    }
+    const payload = Object.assign({
+      company: $('regCompany').value.trim(),
+      first_name: $('regFirstName').value.trim(),
+      last_name: $('regLastName').value.trim(),
+      dni: $('regDni').value.trim(),
+      username: $('regUsername').value.trim(),
+      password: $('regPassword').value,
+    }, bio);
+    if ($('regRole').value.trim()) payload.role = $('regRole').value.trim();
+    if ($('regRuc').value.trim()) payload.ruc = $('regRuc').value.trim();
+    if ($('regPhone').value.trim()) payload.phone = $('regPhone').value.trim();
+    if ($('regEmail').value.trim()) payload.email = $('regEmail').value.trim();
+
+    const r = await apiFetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    showBox('registerResult', r.body);
+    if (r.ok && r.body && r.body.user && r.body.user.access_token) {
+      setAccessToken(r.body.user.access_token);
+      $('loginPwCompany').value = payload.company;
+      $('loginPwUsername').value = payload.username;
+      $('loginFaceCompany').value = payload.company;
+      $('loginFaceIdentity').value = payload.username;
+    }
+  });
+
+  // ---- 5. login password -------------------------------------------------
+  $('btnLoginPassword').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/login/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        company: $('loginPwCompany').value.trim(),
+        username: $('loginPwUsername').value.trim(),
+        password: $('loginPwPassword').value,
+      }),
+    });
+    showBox('loginPwResult', r.body);
+    if (r.ok && r.body && r.body.user && r.body.user.access_token) {
+      setAccessToken(r.body.user.access_token);
+    }
+  });
+
+  // ---- 6. login face -------------------------------------------------------
+  $('btnLoginFace').addEventListener('click', async () => {
+    const bio = currentBiometricPayload();
+    if (!bio) {
+      alert('No hay fuente biométrica: capture 3 muestras válidas, suba una imagen, o marque "face_template sintético".');
+      return;
+    }
+    const payload = Object.assign({
+      company: $('loginFaceCompany').value.trim(),
+      identity_login: $('loginFaceIdentity').value.trim(),
+    }, bio);
+    const r = await apiFetch('/api/auth/login/face', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    showBox('loginFaceResult', r.body);
+    if (r.ok && r.body && r.body.user && r.body.user.access_token) {
+      setAccessToken(r.body.user.access_token);
+    }
+  });
+
+  // ---- 7. session ------------------------------------------------------------
+  function setAccessToken(tok) {
+    state.accessToken = tok;
+    $('accessTokenBox').value = tok;
+  }
+
+  $('btnCallPermissions').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/permissions');
+    showBox('sessionResult', r.body);
+  });
+
+  $('btnLogout').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/logout', { method: 'POST' });
+    showBox('sessionResult', r.body);
+    state.accessToken = null;
+    $('accessTokenBox').value = '';
+  });
+
+})();
+</script>
+</body>
+</html>

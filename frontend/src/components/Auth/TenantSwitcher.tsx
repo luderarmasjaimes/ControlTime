@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useState, useCallback } from 'react';
 import { Building2, ChevronDown, Check } from 'lucide-react';
-import { getSession, updateSessionTokens, authHeaders as sharedAuthHeaders } from '../../auth/authStorage';
+import { getSession, updateSessionTokens, updateSessionTenant, authHeaders as sharedAuthHeaders } from '../../auth/authStorage';
 import { log } from '../../lib/logger';
 import { useI18n } from '../../i18n/I18nProvider';
 
@@ -67,6 +67,13 @@ const TenantSwitcher = () => {
             // viaja en el body -- va en la cookie HttpOnly que el backend
             // adjunta a esta misma respuesta (fetch same-origin la guarda solo).
             updateSessionTokens(data.access_token, data.expires_in);
+            // El backend ya valida la membresía y devuelve el tenant_id/role
+            // reales del switch (data.tenant_id/data.role) — se usan para
+            // mantener getSession() consistente con el JWT nuevo, en vez de
+            // dejar tenantId/company/role apuntando al tenant anterior hasta
+            // el próximo logout/login (ver updateSessionTenant).
+            const target = tenants.find((t) => t.tenant_id === tenantId);
+            updateSessionTenant(data.tenant_id || tenantId, target?.tenant_name || '', data.role);
             // Recarga completa: todo el estado de la app (mapas, informes,
             // permisos cacheados en memoria) queda scopeado al tenant viejo;
             // más simple y confiable que intentar re-hidratar cada módulo.

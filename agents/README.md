@@ -2,7 +2,7 @@
 
 | ID | Nombre | Función | Modelo preferido | Paths |
 |----|--------|---------|------------------|-------|
-| architect | Arquitecto IA | Define arquitectura, propone ADR | gpt-5 / claude-opus | docs/decisions/ (vigente), specs/adr/ (histórico) |
+| architect | Arquitecto IA | Define arquitectura, propone ADR | gpt-5 / claude-opus | docs/decisions/ (único log vigente) |
 | functional_analyst | Analista Funcional | Requerimientos → SPEC | gemini | specs/, docs/00_SOW/ |
 | planner | Planificador | Historias → tasks técnicas | gpt-5 | specs/*/tasks.md |
 | backend_dev | Desarrollador Backend | C++ Boost.Asio, OpenCV, APIs | claude | backend/ |

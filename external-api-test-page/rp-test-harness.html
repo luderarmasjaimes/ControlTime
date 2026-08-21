@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AURIXA / Beemetry — Harness API RP (TimeTelemetry/Odoo)</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --text: #e6e8ec; --muted: #8a90a0; --accent: #F07E41; --accent2: #ffab73;
+    --ok: #3ecf8e; --err: #ef5350; --warn: #f2c94c; --mono: 'Consolas','Cascadia Mono',monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:10; }
+  header h1 { font-size:16px; margin:0; color:var(--accent); font-weight:600; }
+  header .origin-badge { font-family:var(--mono); font-size:12px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color:var(--muted); }
+  header .origin-badge.ws-on { color:var(--ok); border-color:var(--ok); }
+  header .origin-badge.ws-off { color:var(--err); border-color:var(--err); }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:16px; padding:16px 24px 48px; max-width:1600px; margin:0 auto; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .full { grid-column: 1 / -1; }
+  section.panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  section.panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--accent2); margin:0 0 12px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; }
+  section.panel h2 .badge { font-size:10px; text-transform:none; letter-spacing:0; padding:2px 6px; border-radius:4px; background:var(--panel2); color:var(--muted); font-weight:400; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width:100%; padding:8px 10px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; font-family:inherit;
+  }
+  textarea { font-family:var(--mono); font-size:11px; resize:vertical; }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; min-width:0; }
+  button { cursor:pointer; border:none; border-radius:6px; padding:8px 14px; font-size:13px; font-weight:600; background:var(--accent); color:#1b1200; margin-top:10px; margin-right:6px; }
+  button:hover { background:var(--accent2); }
+  button.secondary { background:var(--panel2); color:var(--text); border:1px solid var(--border); }
+  button.secondary:hover { background:#262b36; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .hint { font-size:11px; color:var(--muted); margin-top:6px; line-height:1.5; }
+  .hint code { background:var(--panel2); padding:1px 5px; border-radius:4px; font-family:var(--mono); }
+  #log, #wsLog { font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px; height:280px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
+  #wsLog { height:160px; }
+  .log-entry { border-bottom:1px dashed var(--border); padding:6px 0; }
+  .log-entry:last-child { border-bottom:none; }
+  .log-ok { color:var(--ok); } .log-err { color:var(--err); } .log-warn { color:var(--warn); }
+  .pill { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; margin-right:6px; }
+  .pill.get { background:#2a3a52; color:#8fc4ff; } .pill.post { background:#3a2a52; color:#c58fff; } .pill.put { background:#523a2a; color:#ffb98f; }
+  .result-box { margin-top:10px; font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:10px; max-height:260px; overflow:auto; white-space:pre-wrap; }
+  .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:6px; }
+  .status-dot.synced { background:var(--ok); } .status-dot.pending_push { background:var(--warn); } .status-dot.push_failed { background:var(--err); }
+  a { color:var(--accent2); }
+  footer { text-align:center; color:var(--muted); font-size:11px; padding:24px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AURIXA / Beemetry — Harness API RP (TimeTelemetry/Odoo, ADR-103)</h1>
+  <span class="origin-badge" id="originBadge">origin: …</span>
+  <span class="origin-badge" id="wsBadge">ws: desconectado</span>
+  <div style="flex:1"></div>
+  <button class="secondary" id="btnClearLog" type="button">Limpiar log</button>
+</header>
+
+<main>
+
+  <!-- CONFIG -->
+  <section class="panel full">
+    <h2>0. Configuración <span class="badge">requerido primero</span></h2>
+    <div class="row">
+      <div>
+        <label for="backendUrl">Backend base URL</label>
+        <input type="text" id="backendUrl" value="http://localhost:8082">
+      </div>
+      <div style="flex:0 0 auto; display:flex; align-items:flex-end;">
+        <button id="btnCheckConn" type="button">Probar conectividad + CORS</button>
+      </div>
+    </div>
+    <div class="hint">
+      Esta página se sirve intencionalmente en un <b>origen distinto</b> al del backend, simulando
+      una aplicación externa real. Si el backend rechaza las peticiones, agregue el origen exacto
+      de esta página (visible arriba en <code>origin</code>) a
+      <code>BEEMETRY_CORS_ALLOWED_ORIGIN</code> del backend. Ver
+      <code>docs/integration/RP_TIMETELEMETRY_API_GUIDE.md</code> para el contrato completo de
+      esta API, y <code>docs/integration/EXTERNAL_API_TEST_PAGE.md</code> para cómo servir esta
+      página.
+    </div>
+    <div id="connResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- LOGIN -->
+  <section class="panel">
+    <h2>1. Sesión <span class="badge">POST /api/auth/login/password</span></h2>
+    <div class="row">
+      <div><label>Empresa (tenant)</label><input type="text" id="loginCompany"></div>
+      <div><label>Usuario</label><input type="text" id="loginUsername"></div>
+    </div>
+    <label>Contraseña</label><input type="password" id="loginPassword">
+    <button id="btnLogin" type="button">Iniciar sesión</button>
+    <div class="hint">El usuario necesita el permiso <code>rp.equipment.view</code> (lectura) y/o
+      <code>rp.equipment.edit</code> (escritura) en su tenant — ver
+      <code>RP_TIMETELEMETRY_API_GUIDE.md</code> §4.</div>
+    <label style="margin-top:14px;">access_token (Bearer, ~15 min)</label>
+    <textarea id="accessTokenBox" rows="2" readonly placeholder="Aparece aquí tras login exitoso"></textarea>
+    <div id="loginResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- WEBSOCKET -->
+  <section class="panel">
+    <h2>2. Tiempo real <span class="badge">WS /ws?auth_token=…</span></h2>
+    <button id="btnWsConnect" type="button">Conectar</button>
+    <button id="btnWsDisconnect" type="button" class="secondary" disabled>Desconectar</button>
+    <div class="hint">Requiere sesión activa (sección 1). Recibe <code>{"channel":"rp","type":"rp_equipment_updated",
+      "equipment_id":"…"}</code> cada vez que un equipo de <b>su tenant</b> se sincroniza (alta,
+      edición, o cambio traído desde TimeTelemetry).</div>
+    <div id="wsLog" style="margin-top:10px;"></div>
+  </section>
+
+  <!-- LIST -->
+  <section class="panel">
+    <h2>3. Lista de equipos <span class="badge">GET /api/rp/equipment</span></h2>
+    <div class="row">
+      <div><label>Filtro código (exacto, opcional)</label><input type="text" id="listCodigo"></div>
+      <div><label>Filtro estado (exacto, opcional)</label><input type="text" id="listState"></div>
+    </div>
+    <div class="row">
+      <div><label>limit</label><input type="number" id="listLimit" value="20"></div>
+      <div><label>offset</label><input type="number" id="listOffset" value="0"></div>
+    </div>
+    <button id="btnList" type="button">Listar</button>
+    <div class="hint">Lee de la <b>réplica</b> local — no depende de que TimeTelemetry esté
+      disponible en el momento de la consulta.</div>
+    <div id="listResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- DETAIL / SYNC STATUS -->
+  <section class="panel">
+    <h2>4. Detalle y estado de sync <span class="badge">GET /api/rp/equipment/{id}[/sync-status]</span></h2>
+    <label>equipment_id (uuid local — copie uno de la lista, sección 3)</label>
+    <input type="text" id="detailId" placeholder="ej. d3a770eb-2a37-446c-afc4-01663296f964">
+    <button id="btnDetail" type="button">Ver detalle completo</button>
+    <button id="btnSyncStatus" type="button" class="secondary">Solo sync-status</button>
+    <div id="detailResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- CREATE -->
+  <section class="panel">
+    <h2>5. Crear equipo <span class="badge">POST /api/rp/equipment</span></h2>
+    <div class="row">
+      <div><label>Nombre</label><input type="text" id="createName" placeholder="ej. Sensor de prueba"></div>
+      <div><label>Código</label><input type="text" id="createCodigo" placeholder="ej. INT-TEST-001"></div>
+    </div>
+    <div class="row">
+      <div><label>category_id (numérico Odoo, opcional)</label><input type="number" id="createCategoryId"></div>
+      <div><label>project_id (numérico Odoo, opcional)</label><input type="number" id="createProjectId"></div>
+    </div>
+    <div class="row">
+      <div><label>Estado (opcional)</label><input type="text" id="createState"></div>
+      <div><label>N° de serie (opcional)</label><input type="text" id="createSerialNo"></div>
+    </div>
+    <button id="btnCreate" type="button">Crear</button>
+    <div class="hint">Respuesta <code>202</code> = aceptado <b>localmente</b>, aún no confirmado en
+      TimeTelemetry — use la sección 4 (sync-status) o la sección 2 (WebSocket) para saber cuándo
+      queda <code>synced</code>. El <code>equipment_id</code> devuelto se copia automáticamente al
+      campo de la sección 4.</div>
+    <div id="createResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- UPDATE -->
+  <section class="panel">
+    <h2>6. Actualizar equipo <span class="badge">PUT /api/rp/equipment/{id}</span></h2>
+    <label>equipment_id (debe estar <code>synced</code> — ver sección 4)</label>
+    <input type="text" id="updateId">
+    <div class="row">
+      <div><label>Nuevo estado (opcional)</label><input type="text" id="updateState" placeholder="ej. maintenance"></div>
+      <div><label>Nueva ubicación (opcional)</label><input type="text" id="updateLocation"></div>
+    </div>
+    <button id="btnUpdate" type="button">Actualizar</button>
+    <div class="hint"><code>409 not_yet_synced</code> es la respuesta esperada si intenta editar un
+      equipo recién creado que todavía no tiene <code>external_id</code> real de Odoo.</div>
+    <div id="updateResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- LOG -->
+  <section class="panel full">
+    <h2>7. Log de peticiones/respuestas REST</h2>
+    <div id="log"></div>
+  </section>
+
+</main>
+
+<footer>Herramienta de pruebas — no usar credenciales productivas reales. Contrato completo en
+  <code>docs/integration/RP_TIMETELEMETRY_API_GUIDE.md</code>.</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  $('originBadge').textContent = 'origin: ' + window.location.origin;
+
+  const state = { accessToken: null, ws: null };
+
+  const BACKEND_KEY = 'ext_test_backend_url';
+  const savedUrl = localStorage.getItem(BACKEND_KEY);
+  if (savedUrl) {
+    $('backendUrl').value = savedUrl;
+  } else {
+    // ADR-107 (nota operativa 2026-08-18): serve_http.py/serve_https.py
+    // proxean /api/* por loopback (127.0.0.1:8082, ver _proxy_common.py) --
+    // el destino correcto es siempre el propio origen de esta página (mismo
+    // criterio que api-test-harness.html/index.html). Antes, por HTTP desde
+    // otra PC, se apuntaba al frontend nginx en :5173 -- Docker Desktop en
+    // Windows (WSL2) no publica ese puerto hacia la IP de LAN del host, así
+    // que nunca era alcanzable desde otra PC.
+    $('backendUrl').value = location.origin;
+  }
+  $('backendUrl').addEventListener('change', () => {
+    localStorage.setItem(BACKEND_KEY, $('backendUrl').value.trim());
+  });
+
+  function backendUrl() {
+    return $('backendUrl').value.trim().replace(/\/+$/, '');
+  }
+
+  function wsUrl() {
+    const u = new URL(backendUrl());
+    const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${u.host}/ws?auth_token=${encodeURIComponent(state.accessToken || '')}`;
+  }
+
+  // ---- logging (mismo patrón que api-test-harness.html) ------------------
+  function redact(obj) {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'string') return obj.length > 300 ? `<string len=${obj.length}>` : obj;
+    if (Array.isArray(obj)) return obj.map(redact);
+    if (typeof obj === 'object') {
+      const out = {};
+      for (const k of Object.keys(obj)) out[k] = redact(obj[k]);
+      return out;
+    }
+    return obj;
+  }
+
+  function log(method, path, status, ms, body, isError) {
+    const el = document.createElement('div');
+    el.className = 'log-entry';
+    const cls = isError ? 'log-err' : (status >= 200 && status < 300 ? 'log-ok' : 'log-warn');
+    const pillCls = method === 'GET' ? 'pill get' : (method === 'PUT' ? 'pill put' : 'pill post');
+    const time = new Date().toLocaleTimeString();
+    let bodyStr = '';
+    try { bodyStr = JSON.stringify(redact(body), null, 2); } catch (e) { bodyStr = String(body); }
+    el.innerHTML = `<span class="${pillCls}">${method}</span><span class="${cls}">[${time}] ${status} · ${ms}ms · ${path}</span>\n${bodyStr}`;
+    $('log').prepend(el);
+  }
+
+  $('btnClearLog').addEventListener('click', () => { $('log').innerHTML = ''; $('wsLog').innerHTML = ''; });
+
+  async function apiFetch(path, options = {}) {
+    const url = backendUrl() + path;
+    const method = (options.method || 'GET').toUpperCase();
+    const headers = Object.assign({}, options.headers || {});
+    if (state.accessToken && !headers['Authorization']) {
+      headers['Authorization'] = 'Bearer ' + state.accessToken;
+    }
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url, Object.assign({}, options, { method, headers, credentials: 'include' }));
+      const ms = Math.round(performance.now() - t0);
+      let body = null;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) body = await res.json().catch(() => null);
+      else body = await res.text().catch(() => '');
+      log(method, path, res.status, ms, body, false);
+      return { ok: res.ok, status: res.status, body };
+    } catch (err) {
+      const ms = Math.round(performance.now() - t0);
+      log(method, path, 0, ms, { network_or_cors_error: String(err) }, true);
+      return { ok: false, status: 0, body: { network_or_cors_error: String(err) } };
+    }
+  }
+
+  function showBox(id, data) {
+    const box = $(id);
+    box.style.display = 'block';
+    box.textContent = typeof data === 'string' ? data : JSON.stringify(redact(data), null, 2);
+  }
+
+  // ---- 0. connectivity ------------------------------------------------------
+  $('btnCheckConn').addEventListener('click', async () => {
+    const r = await apiFetch('/api/rp/equipment');
+    showBox('connResult', r.status === 401
+      ? { ok: true, note: 'CORS y conectividad correctas (401 esperado: aún no inició sesión, ver sección 1).' }
+      : r.ok
+        ? { ok: true, note: 'CORS y conectividad correctas — sesión ya activa.' }
+        : { ok: false, note: r.status === 0
+              ? 'Fallo de red o CORS (el navegador bloqueó la respuesta antes de exponerla a JS). Revise BEEMETRY_CORS_ALLOWED_ORIGIN.'
+              : `HTTP ${r.status}`, detail: r.body });
+  });
+
+  // ---- 1. login ---------------------------------------------------------------
+  $('btnLogin').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/login/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        company: $('loginCompany').value.trim(),
+        username: $('loginUsername').value.trim(),
+        password: $('loginPassword').value,
+      }),
+    });
+    showBox('loginResult', r.body);
+    if (r.ok && r.body && r.body.user && r.body.user.access_token) {
+      state.accessToken = r.body.user.access_token;
+      $('accessTokenBox').value = state.accessToken;
+    }
+  });
+
+  // ---- 2. websocket -------------------------------------------------------------
+  function wsLog(text, cls) {
+    const el = document.createElement('div');
+    el.className = 'log-entry' + (cls ? ' ' + cls : '');
+    el.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+    $('wsLog').prepend(el);
+  }
+
+  $('btnWsConnect').addEventListener('click', () => {
+    if (!state.accessToken) { alert('Inicie sesión primero (sección 1).'); return; }
+    if (state.ws) return;
+    const url = wsUrl();
+    wsLog('conectando a ' + url.replace(/auth_token=[^&]+/, 'auth_token=<redactado>'));
+    const ws = new WebSocket(url);
+    state.ws = ws;
+    ws.onopen = () => {
+      $('wsBadge').textContent = 'ws: conectado';
+      $('wsBadge').className = 'origin-badge ws-on';
+      $('btnWsConnect').disabled = true;
+      $('btnWsDisconnect').disabled = false;
+      wsLog('conectado', 'log-ok');
+    };
+    ws.onmessage = (ev) => {
+      let parsed = null;
+      try { parsed = JSON.parse(ev.data); } catch (e) { /* frame no-JSON, ignorar */ }
+      if (parsed && parsed.channel === 'rp') {
+        wsLog('rp_equipment_updated · equipment_id=' + parsed.equipment_id, 'log-ok');
+      } else {
+        wsLog('frame (otro canal, ignorado por esta página): ' + ev.data.slice(0, 200));
+      }
+    };
+    ws.onerror = () => wsLog('error de conexión', 'log-err');
+    ws.onclose = () => {
+      $('wsBadge').textContent = 'ws: desconectado';
+      $('wsBadge').className = 'origin-badge ws-off';
+      $('btnWsConnect').disabled = false;
+      $('btnWsDisconnect').disabled = true;
+      state.ws = null;
+      wsLog('desconectado');
+    };
+  });
+
+  $('btnWsDisconnect').addEventListener('click', () => {
+    if (state.ws) state.ws.close();
+  });
+
+  // ---- 3. list ------------------------------------------------------------------
+  $('btnList').addEventListener('click', async () => {
+    const qs = new URLSearchParams();
+    if ($('listCodigo').value.trim()) qs.set('codigo', $('listCodigo').value.trim());
+    if ($('listState').value.trim()) qs.set('state', $('listState').value.trim());
+    qs.set('limit', $('listLimit').value || '20');
+    qs.set('offset', $('listOffset').value || '0');
+    const r = await apiFetch('/api/rp/equipment?' + qs.toString());
+    showBox('listResult', r.body);
+    if (r.ok && r.body && Array.isArray(r.body.items) && r.body.items.length > 0) {
+      $('detailId').value = r.body.items[0].equipment_id;
+    }
+  });
+
+  // ---- 4. detail / sync-status --------------------------------------------------
+  $('btnDetail').addEventListener('click', async () => {
+    const id = $('detailId').value.trim();
+    if (!id) { alert('Ingrese un equipment_id (copie uno de la lista, sección 3).'); return; }
+    const r = await apiFetch('/api/rp/equipment/' + encodeURIComponent(id));
+    showBox('detailResult', r.body);
+  });
+
+  $('btnSyncStatus').addEventListener('click', async () => {
+    const id = $('detailId').value.trim();
+    if (!id) { alert('Ingrese un equipment_id.'); return; }
+    const r = await apiFetch('/api/rp/equipment/' + encodeURIComponent(id) + '/sync-status');
+    showBox('detailResult', r.body);
+  });
+
+  // ---- 5. create ------------------------------------------------------------------
+  $('btnCreate').addEventListener('click', async () => {
+    const payload = {};
+    if ($('createName').value.trim()) payload.name = $('createName').value.trim();
+    if ($('createCodigo').value.trim()) payload.codigo = $('createCodigo').value.trim();
+    if ($('createCategoryId').value) payload.category_id = parseInt($('createCategoryId').value, 10);
+    if ($('createProjectId').value) payload.project_id = parseInt($('createProjectId').value, 10);
+    if ($('createState').value.trim()) payload.state = $('createState').value.trim();
+    if ($('createSerialNo').value.trim()) payload.serial_no = $('createSerialNo').value.trim();
+    if (!payload.name && !payload.codigo) { alert('Ingrese al menos nombre o código.'); return; }
+    const r = await apiFetch('/api/rp/equipment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    showBox('createResult', r.body);
+    if (r.ok && r.body && r.body.equipment_id) {
+      $('detailId').value = r.body.equipment_id;
+      $('updateId').value = r.body.equipment_id;
+    }
+  });
+
+  // ---- 6. update ------------------------------------------------------------------
+  $('btnUpdate').addEventListener('click', async () => {
+    const id = $('updateId').value.trim();
+    if (!id) { alert('Ingrese un equipment_id.'); return; }
+    const payload = {};
+    if ($('updateState').value.trim()) payload.state = $('updateState').value.trim();
+    if ($('updateLocation').value.trim()) payload.location = $('updateLocation').value.trim();
+    if (Object.keys(payload).length === 0) { alert('Ingrese al menos un campo a cambiar.'); return; }
+    const r = await apiFetch('/api/rp/equipment/' + encodeURIComponent(id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    showBox('updateResult', r.body);
+  });
+
+})();
+</script>
+</body>
+</html>

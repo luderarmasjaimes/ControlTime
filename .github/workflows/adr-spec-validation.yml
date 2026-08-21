@@ -31,9 +31,6 @@ jobs:
           from pathlib import Path
           import re
 
-          historical = sorted(Path("specs/adr").glob("ADR-*.md"))
-          assert len(historical) >= 10, f"Expected >=10 historical ADRs, found {len(historical)}"
-
           current = sorted(
               p for p in Path("docs/decisions").glob("*.md")
               if re.match(r"^\d{3}-", p.name)
@@ -44,9 +41,11 @@ jobs:
           )
           for p in current:
               text = p.read_text(encoding="utf-8")
-              assert "**Status**:" in text, f"{p.name} missing Status"
-              assert "**Ámbito**:" in text, f"{p.name} missing Ámbito"
-          print(f"OK: {len(historical)} historical + {len(current)} current ADR files validated")
+              has_status = "**Status**:" in text or "**Estado**" in text
+              has_scope = "**Ámbito**:" in text or "**Ámbito**" in text
+              assert has_status, f"{p.name} missing Status/Estado"
+              assert has_scope, f"{p.name} missing Ámbito"
+          print(f"OK: {len(current)} canonical ADR files validated; historical log excluded")
           PY
 
       - name: Validate REGISTRY references
@@ -81,7 +80,7 @@ jobs:
               print("WARN: PR body empty — add SPEC-NNN reference")
               sys.exit(0)
           if not re.search(r"SPEC[-\s]?\d{3}", body, re.I):
-              print("WARN: PR should reference SPEC-NNN (ADR-007)")
+              print("WARN: PR should reference SPEC-NNN (Constitución / ADR-090)")
           else:
               print("OK: SPEC referenced in PR")
           PY

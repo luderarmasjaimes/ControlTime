@@ -8,7 +8,10 @@
 namespace config {
 
 enum class AuthStorageMode { Postgres, File };
-enum class BiometricProvider { Legacy, DermalogCli };
+// DeepFaceSilent (DeepFace/Facenet512 + Silent-Face-Anti-Spoofing) es el
+// proveedor local por defecto; SeetaFace6 queda en el enum por compatibilidad
+// / rollback pero ya no es el default (ver ADR de supersesión en docs/decisions/).
+enum class BiometricProvider { Legacy, DermalogCli, SeetaFace6, DeepFaceSilent };
 
 const std::vector<std::string> kMiningCompanies = {
     "Activos Mineros",
@@ -57,6 +60,18 @@ const std::vector<std::string> kMiningCompanies = {
     "Summa Gold",
     "Yanacocha"};
 
+// Una linea de WhatsApp conectada (ADR-113): un phone_number_id + access
+// token de la WhatsApp Business Platform, identificada internamente por un
+// id corto (p.ej. "soporte"). Vive en config/ (no en support/) porque es
+// dato de configuracion puro, sin dependencias de red/DB -- support/whatsapp_client.hpp
+// la consume para saber por cual numero enviar.
+struct WhatsappLine {
+    std::string id;            // "default", "soporte", "comercial", ...
+    std::string phoneNumberId;
+    std::string accessToken;
+    std::string label;         // nombre humano, solo para logs/auditoria
+};
+
 struct AppConfig {
     static constexpr char kMiningTelemetryDemoTenantId[] =
         "a0000001-0000-4000-8000-000000000001";
@@ -81,6 +96,18 @@ struct AppConfig {
     BiometricProvider gBiometricProvider = BiometricProvider::Legacy;
     std::string gDermalogCliPath;
     bool gDermalogRequired = false;
+    bool gSeetaFace6Required = true;
+    int gSeetaFace6TimeoutMs = 20000;
+    // DeepFace (Facenet512) + Silent-Face-Anti-Spoofing (MiniFASNet) --
+    // proveedor local por defecto. Fail-closed por defecto (mismo principio
+    // que SeetaFace6/ADR-104): indisponibilidad rechaza, no degrada.
+    bool gDeepFaceSilentRequired = true;
+    // Cold-start de TensorFlow/PyTorch es más lento que el CLI de SeetaFace6.
+    int gDeepFaceSilentTimeoutMs = 25000;
+    // Cascada a Dermalog solo cuando gDeepFaceSilentRequired=false Y el fallo
+    // fue de infraestructura (ai_engine caído/timeout), nunca ante un rechazo
+    // de seguridad (spoof/no-match) -- ver analyzeFaceImage en face_analysis.cpp.
+    bool gDeepFaceSilentDermalogFallback = false;
     bool gBiometricDnnEnabled = false;
     std::string gBiometricDnnModelPath;
     std::string gBiometricDnnLabelsCsv;
@@ -111,11 +138,49 @@ struct AppConfig {
     // Numero (E.164, sin '+') del equipo de soporte humano que recibe la
     // notificacion de escalamiento.
     std::string gWhatsappSupportToE164;
+    // Numero (E.164, sin '+') del equipo comercial/ventas -- destino del
+    // escalamiento del menu del bot cuando el usuario elige "Area comercial".
+    std::string gWhatsappComercialToE164;
+    // Numero (E.164, sin '+') de Recursos Humanos -- destino del
+    // escalamiento del menu del bot cuando el usuario elige "Recursos
+    // Humanos" (ADR-115).
+    std::string gWhatsappRrhhToE164;
     // hello_world/en_US es la unica plantilla preaprobada por defecto en
     // cualquier WABA de prueba nueva -- no requiere aprobacion de Meta.
     std::string gWhatsappTemplateName = "hello_world";
     std::string gWhatsappTemplateLang = "en_US";
     int gWhatsappTimeoutMs = 8000;
+    // Multi-linea (ADR-113): varios numeros de WhatsApp (areas distintas --
+    // soporte, comercial, etc.) bajo la misma WABA/App de Meta, cada uno con
+    // su propio phone_number_id/access token pero compartiendo API base/app
+    // secret/webhook (una sola App de Meta puede tener varios numeros). La
+    // linea "default" se arma sola a partir de PHONE_NUMBER_ID/ACCESS_TOKEN
+    // de arriba (compatibilidad con el despliegue de una sola linea de
+    // ADR-112); lineas adicionales se declaran en BEEMETRY_WHATSAPP_EXTRA_LINES.
+    std::vector<WhatsappLine> gWhatsappLines;
+    /** @brief Resuelve la linea por el `phone_number_id` que llega en
+     * `value.metadata.phone_number_id` del webhook de Meta -- asi el motor
+     * del bot sabe por cual numero responder. nullptr si ninguna coincide. */
+    const WhatsappLine *whatsappLineByPhoneNumberId(const std::string &phoneNumberId) const;
+    /** @brief Resuelve la linea por su id corto interno (el que se persiste
+     * en `whatsapp_conversation.line_id`). nullptr si no existe. */
+    const WhatsappLine *whatsappLineById(const std::string &lineId) const;
+    /** @brief Primera linea configurada, o nullptr si no hay ninguna
+     * (compatibilidad: comportamiento de una sola linea de ADR-112). */
+    const WhatsappLine *defaultWhatsappLine() const;
+    // Numeros (E.164 sin '+') autorizados para usar la opcion oculta
+    // "Administracion" del bot de WhatsApp (ADR-114): cambiar los numeros de
+    // escalamiento (soporte/comercial) sin pasar por un redeploy. No hay
+    // login en WhatsApp -- esta lista ES el mecanismo de autorizacion.
+    std::vector<std::string> gWhatsappAdminPhones;
+    bool isWhatsappAdminPhone(const std::string &phoneE164) const;
+    // Webhook de entrada (bot conversacional, ver whatsapp_webhook_routes):
+    // token que Meta debe repetir en el handshake GET de verificacion, y el
+    // "app secret" con el que Meta firma cada POST (X-Hub-Signature-256,
+    // HMAC-SHA256 sobre el body crudo) -- rechazado sin procesar si no
+    // coincide. Ambos vacios = webhook deshabilitado (responde 404).
+    std::string gWhatsappWebhookVerifyToken;
+    std::string gWhatsappAppSecret;
     // Chatbot minero: reutiliza el mismo Ollama que ya usa text_spell_service
     // (BEEMETRY_OLLAMA_URL), con un modelo propio. Corrección 2026-07-29:
     // estaba en qwen2.5:7b -- el mismo benchmark de esfuerzo continuo de
@@ -129,10 +194,42 @@ struct AppConfig {
     std::string gAiEngineUrl;
     int gAiEngineTimeoutMs = 500;
     int gAiEngineCartoonTimeoutMs = 8000;
+    // ADR-122: extracción de texto de CVs (Word/PDF) en /extract_cv_text --
+    // mucho más lenta que analyze_eyes (500ms) o incluso cartoon_avatar
+    // (8s): un PDF de varias páginas con pdfplumber puede tardar varios
+    // segundos, así que necesita su propio timeout generoso, no el de
+    // gAiEngineTimeoutMs (pensado para frames de cámara en vivo).
+    int gAiEngineCvExtractTimeoutMs = 30000;
+    // Tope de tamaño del CV descargado de WhatsApp (ver whatsapp_media_client.cpp
+    // y whatsapp_bot_engine.cpp) -- aplicado en tres capas: antes de
+    // descargar (file_size reportado por la Graph API), sobre los bytes ya
+    // descargados, y de nuevo en ai_engine (defensa en profundidad, ver
+    // ADR-122). 10MB es generoso para un CV escaneado de varias páginas sin
+    // permitir archivos desproporcionados en un adjunto de correo.
+    std::size_t gWhatsappCvMaxBytes = 10 * 1024 * 1024;
+    // Destino de la notificación por correo de cada postulación de CV
+    // (ADR-122) -- CV adjunto + resumen extraído + score. Vacío = no se
+    // envía correo (solo queda la notificación WhatsApp a RRHH, si el
+    // número está configurado).
+    std::string gHrCvEmailTo;
     std::size_t gAiEngineMaxImageBytes = 450000;
     std::string gCartoonOnnxModelPath;
     static constexpr std::size_t kFaceEmbeddingVectorDim = 512;
     double gFaceEmbeddingCosineThreshold = 0.45;
+    // SeetaFace6 general ResNet-50 entrega 1024 componentes. El umbral es
+    // operativo y debe calibrarse con la población/cámara del despliegue.
+    double gFaceSeetaCosineThreshold = 0.80;
+    // Facenet512: el doc técnico de referencia especifica "distancia coseno
+    // < 0.30" para considerar la misma identidad. cosineSimilarity() en este
+    // código devuelve similitud (dot/|a||b|), no distancia, así que el umbral
+    // equivalente es 1 - 0.30 = 0.70 (similitud alta = misma persona).
+    double gFaceDeepfaceCosineThreshold = 0.70;
+    // Silent-Face: clase 1 (piel viva real) con confianza > 60%, igual que el
+    // script de referencia. La decisión de liveness ocurre 100% en Python
+    // (ai_engine); este valor solo se expone en /api/auth/biometric/status
+    // para observabilidad -- ajustarlo de verdad requiere cambiar
+    // SILENTFACE_LIVENESS_THRESHOLD en el propio ai_engine.
+    double gSilentFaceLivenessThreshold = 0.60;
     double gFaceLegacyCosineThreshold = 0.82;
     float gBiometricIcaoEyeConfidenceMin = 70.0f;
     float gBiometricIcaoIlluminationMin = 40.0f;

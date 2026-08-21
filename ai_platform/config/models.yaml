@@ -1,4 +1,5 @@
-# Modelos IA preferidos por especialidad (ADR-004, ADR-010)
+# Modelos IA preferidos por especialidad (ADR-004; selección operativa
+# gobernada por agents/registry.yaml)
 # Override con variables de entorno: AURIXA_MODEL_BACKEND=claude-opus
 
 defaults:

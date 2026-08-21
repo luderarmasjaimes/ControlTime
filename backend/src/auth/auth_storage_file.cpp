@@ -1,5 +1,6 @@
 #include "auth_storage_file.hpp"
 #include "auth_session.hpp"
+#include "permissions.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
 
@@ -72,6 +73,13 @@ json::object authUserSessionJson(const AuthUser &u,
                   {"tenant_id", tid}};
   if (!u.avatarCartoonBase64.empty()) {
     jo["avatar_cartoon_base64"] = u.avatarCartoonBase64;
+  }
+  // Departamento de soporte (auth_user_tenant.department, ADR-115) -- gatea
+  // en el frontend el panel admin de tickets/conversaciones segmentado por
+  // departamento. No es una credencial ni un dato sensible: nullopt = sin
+  // restricción, se omite el campo (el frontend lo trata como "sin dept").
+  if (auto dept = effectiveDepartment(u.id, tid)) {
+    jo["department"] = *dept;
   }
   return jo;
 }

@@ -392,8 +392,15 @@ template <class Body>
 void applyCorsHeaders(http::response<Body> &res) {
     const auto &origin = corsAllowedOrigin();
     res.set(http::field::access_control_allow_origin, origin);
+    // x-capture-session-id: aisla el estado de captura biometrica por pestana
+    // (ADR-098, biometric_routes.cpp). El frontend propio nunca lo notó
+    // porque en dev pasa por el proxy de Vite (mismo origen) y en prod queda
+    // detras de nginx (mismo origen tambien) -- pero una app realmente
+    // cross-origin (ver docs/integration/EXTERNAL_API_TEST_PAGE.md) sí
+    // dispara preflight real, y sin este header en la allowlist el navegador
+    // bloquea la petición antes de que llegue al backend.
     res.set(http::field::access_control_allow_headers,
-            "content-type,authorization,x-csrf-token");
+            "content-type,authorization,x-csrf-token,x-capture-session-id");
     res.set(http::field::access_control_allow_methods,
             "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     // Sin esto, fetch/axios en el navegador NO puede leer estos headers de

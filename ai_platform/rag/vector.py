@@ -1,5 +1,5 @@
 """
-Índice vectorial TF-IDF — capa semántica sobre FTS (ADR-011).
+Índice vectorial TF-IDF — capa semántica sobre FTS canónico.
 """
 from __future__ import annotations
 

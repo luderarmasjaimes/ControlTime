@@ -38,6 +38,24 @@ std::string effectiveRole(const std::string& userId, const std::string& tenantId
     return globalRole;
 }
 
+std::optional<std::string> effectiveDepartment(const std::string& userId,
+                                               const std::string& tenantId) {
+#if HAS_LIBPQ
+    if (userId.empty() || tenantId.empty()) return std::nullopt;
+    auto lease = storage::PgPool::instance().acquire(AppConfig::instance().gDatabaseUrl);
+    PGconn* conn = lease.get();
+    if (PQstatus(conn) != CONNECTION_OK) return std::nullopt;
+    const char* p[2] = {userId.c_str(), tenantId.c_str()};
+    storage::PgResult res{PQexecParams(conn,
+        "SELECT department FROM auth_user_tenant "
+        "WHERE user_id = $1::uuid AND tenant_id = $2::uuid AND department IS NOT NULL",
+        2, nullptr, p, nullptr, nullptr, 0)};
+    if (res.okTuples() && PQntuples(res.get()) == 1)
+        return std::string(PQgetvalue(res.get(), 0, 0));
+#endif
+    return std::nullopt;
+}
+
 std::set<std::string> permissionsForRole(const std::string& tenantId,
                                          const std::string& role) {
     std::set<std::string> perms;

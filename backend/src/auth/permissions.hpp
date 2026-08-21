@@ -13,6 +13,7 @@
 // --------------------------------------------------------------------------
 #pragma once
 
+#include <optional>
 #include <set>
 #include <string>
 
@@ -21,6 +22,13 @@ namespace auth {
 /** @brief Rol efectivo del usuario en el tenant (auth_user_tenant.role o el global). */
 std::string effectiveRole(const std::string& userId, const std::string& tenantId,
                           const std::string& globalRole);
+
+/** @brief Departamento de soporte del usuario en el tenant (auth_user_tenant.department,
+ * ver db_scripts/62 y ADR-115) -- `std::nullopt` si no tiene uno asignado (sin
+ * restricción de departamento; sigue dependiendo de soporte.view/soporte.manage).
+ * Mismo criterio sin caché que `effectiveRole`. */
+std::optional<std::string> effectiveDepartment(const std::string& userId,
+                                               const std::string& tenantId);
 
 /** @brief Conjunto de códigos de permiso para un rol en un tenant (con override). */
 std::set<std::string> permissionsForRole(const std::string& tenantId,

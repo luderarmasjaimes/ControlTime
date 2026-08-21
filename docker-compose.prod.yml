@@ -12,7 +12,10 @@ services:
   web:
     image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-yourorg}/informe-backend:latest
     environment:
-      - BEEMETRY_DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
+      # connect_timeout=5: ver mismo comentario en docker-compose.yml -- sin
+      # esto, "db" caído/reiniciando cuelga cada PQconnectdb sosteniendo
+      # gAuthMutex (auth_storage_pg.cpp) para TODOS los logins a la vez.
+      - BEEMETRY_DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)} connect_timeout=5
       - BEEMETRY_JWT_SECRET=${BEEMETRY_JWT_SECRET:?Definir BEEMETRY_JWT_SECRET en .env}
       - BEEMETRY_AUTH_COOKIE_SECURE=true
       # ADR-081: admite lista separada por comas si hay más de un frontend

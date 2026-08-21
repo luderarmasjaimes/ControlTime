@@ -12,6 +12,7 @@ import { useI18n } from '../../../../i18n/I18nProvider';
 import { requestConfirmation } from '../../../UI/ConfirmActionDialog';
 import { DocumentScanCapture } from '../../../UI/DocumentScanCapture';
 import type { DniScanResult } from '../../../../auth/authApi';
+import { FACIAL_ICAO } from '../../../../config/facialIcaoConfig';
 import './accessAdministration.css';
 // Modal movido internamente para evitar errores de resolucion dinamica en tiempo de ejecucion
 
@@ -357,7 +358,13 @@ function UserManagementView() {
             setBioError('');
             const { resetBiometricCapture } = await import('../../../../auth/authApi');
             await resetBiometricCapture();
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+            const stream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                width: { ideal: FACIAL_ICAO.CAMERA.width.ideal, min: 320 },
+                height: { ideal: FACIAL_ICAO.CAMERA.height.ideal, min: 240 },
+                frameRate: FACIAL_ICAO.CAMERA.frameRate,
+              },
+            }).catch(() => navigator.mediaDevices.getUserMedia({ video: true }));
             streamRef.current = stream;
             if (videoRef.current) videoRef.current.srcObject = stream;
             setCameraActive(true);
@@ -372,7 +379,7 @@ function UserManagementView() {
                 }
 
                 const canvas = document.createElement('canvas');
-                canvas.width = 640; canvas.height = 480;
+                canvas.width = FACIAL_ICAO.CAMERA.width.ideal; canvas.height = FACIAL_ICAO.CAMERA.height.ideal;
                 canvas.getContext('2d')!.drawImage(videoRef.current, 0, 0);
                 const base64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
                 const { processBiometricFrame, fetchBiometricStatus } = await import('../../../../auth/authApi');
@@ -387,7 +394,7 @@ function UserManagementView() {
                   noGlasses: !!status.icao?.no_glasses,
                   qualityReady: !!status.icao?.is_ready
                 });
-                if ((status.capture_count || 0) >= 3 && !isVerifyingRef.current) {
+                if ((status.capture_count || 0) >= FACIAL_ICAO.REQUIRED_VALID_FRAMES && !isVerifyingRef.current) {
                   isVerifyingRef.current = true;
                   verifyAction();
                 }
@@ -431,7 +438,7 @@ function UserManagementView() {
         setBioLoading(true);
         const { buildFullFrameJpegBase64FromVideo, frameToTemplate } = await import('../../../../auth/biometricOvalFrame');
         const { loginWithFace } = await import('../../../../auth/authApi');
-        const img = buildFullFrameJpegBase64FromVideo(videoRef.current!, 640, 480, 0.9);
+        const img = buildFullFrameJpegBase64FromVideo(videoRef.current!, FACIAL_ICAO.CAMERA.width.ideal, FACIAL_ICAO.CAMERA.height.ideal, 0.9);
         const tmp = frameToTemplate(videoRef.current!, null);
         const res = await loginWithFace({ company, username: operatorUsername, imageBase64: img, template: tmp });
         if (res.status === 'authenticated' || res.ok || res.success) onSuccess(res);
@@ -447,7 +454,7 @@ function UserManagementView() {
 
     return (
       <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/95 backdrop-blur-md">
-        <div className="bg-slate-900 border border-white/10 w-full max-w-xl rounded-[2rem] overflow-hidden flex flex-col p-5 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
+        <div className="bg-[var(--a11y-bg-form)] border border-[var(--a11y-border-form)] w-full max-w-xl rounded-[2rem] overflow-hidden flex flex-col p-5 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
           <div className="flex justify-between items-center mb-4">
              <div className="flex items-center gap-3">
                <div className="relative w-10 h-10 flex items-center justify-center">
@@ -496,7 +503,7 @@ function UserManagementView() {
              } as React.CSSProperties} />
 
              <div className="absolute top-4 left-4 flex flex-col gap-1">
-                <div className="bg-slate-900/80 backdrop-blur px-3 py-1.5 rounded-xl border border-white/10 flex items-center gap-2">
+                <div className="bg-[var(--a11y-bg-form)]/80 backdrop-blur px-3 py-1.5 rounded-xl border border-[var(--a11y-border-form)] flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-[9px] font-black text-white uppercase tracking-wider">{faceSamples}/3 Muestras</span>
                 </div>
@@ -623,13 +630,13 @@ function UserManagementView() {
                 value={createForm.username} onChange={e => setCreateForm({ ...createForm, username: e.target.value })} />
             </div>
             <div>
-              <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Contraseña Temporal</label>
-              <input type="text" placeholder="Mínimo 8 caracteres" className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-emerald-400 outline-none focus:border-indigo-500/50"
+              <label className="form-label">Contraseña Temporal</label>
+              <input type="text" placeholder="Mínimo 8 caracteres" className="form-input-base"
                 value={createForm.password} onChange={e => setCreateForm({ ...createForm, password: e.target.value })} />
             </div>
             <div>
-              <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Email (opcional)</label>
-              <input type="email" className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
+              <label className="form-label">Email (opcional)</label>
+              <input type="email" className="form-input-base"
                 value={createForm.email} onChange={e => setCreateForm({ ...createForm, email: e.target.value })} />
             </div>
             <div className="flex items-end">
@@ -790,7 +797,7 @@ function UserManagementView() {
                       </div>
                     )}
                     <div className="flex items-center gap-1.5 pt-1">
-                      <select className="flex-1 bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[9px] text-white outline-none"
+                      <select className="flex-1 form-select-base"
                         value={assignRole} onChange={e => setAssignRole(e.target.value)}>
                         {ROLE_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                       </select>
@@ -862,24 +869,24 @@ function UserManagementView() {
 
                       {activeAction === 'reset_password' && (
                         <div>
-                          <label className="text-[8px] font-black text-slate-500 uppercase mb-0.5 block">Nueva Contraseña Temporal</label>
-                          <input type="text" placeholder="Mínimo 8 caracteres..." className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] font-mono text-emerald-400"
+                          <label className="form-label text-[8px]">Nueva Contraseña Temporal</label>
+                          <input type="text" placeholder="Mínimo 8 caracteres..." className="form-input-base"
                             value={formData.newPassword} onChange={e => setFormData({...formData, newPassword: e.target.value})} />
                         </div>
                       )}
 
                       {activeAction && (
                         <div>
-                          <label className="text-[8px] font-black text-slate-500 uppercase mb-0.5 block">Justificación / Motivo del Cambio <span className="text-rose-500">*</span></label>
-                          <textarea rows={2} className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] text-slate-200" placeholder="Escriba aquí la justificación obligatoria..."
+                          <label className="form-label text-[8px]">Justificación / Motivo del Cambio <span className="text-rose-500">*</span></label>
+                          <textarea rows={2} className="form-textarea" placeholder="Escriba aquí la justificación obligatoria..."
                             value={formData.reason} onChange={e => setFormData({...formData, reason: e.target.value})} />
                         </div>
                       )}
 
                       {activeAction === 'change_profile' && (
                         <div>
-                          <label className="text-[8px] font-black text-slate-500 uppercase mb-0.5 block">Nuevo Perfil de Acceso</label>
-                          <select className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] text-white"
+                          <label className="form-label text-[8px]">Nuevo Perfil de Acceso</label>
+                          <select className="form-select-base"
                             value={formData.newRole} onChange={e => setFormData({...formData, newRole: e.target.value})}>
                             {ROLE_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                           </select>
@@ -906,7 +913,7 @@ function UserManagementView() {
                         </div>
 
                        {formData.securityMethod === 'password' ? (
-                          <input type="password" placeholder="Su contraseña de administrador..." className="w-full bg-slate-900 border border-indigo-500/30 rounded-lg px-2 py-1.5 text-[10px] text-white"
+                          <input type="password" placeholder="Su contraseña de administrador..." className="form-input-base"
                             value={formData.securityPassword} onChange={e => setFormData({...formData, securityPassword: e.target.value})} />
                         ) : (
                           <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex flex-col items-center gap-2">

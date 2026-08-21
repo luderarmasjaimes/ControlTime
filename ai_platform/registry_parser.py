@@ -1,10 +1,10 @@
 """
 Resuelve ADRs por SPEC-ID.
 
-Combina la matriz histórica de ``specs/REGISTRY.md`` con la sección
-``Decisiones vigentes complementarias`` del ``spec.md`` correspondiente. La
-separación evita renumerar los ADR históricos y, a la vez, impide que el
-Router/RAG ignoren decisiones actuales de ``docs/decisions``.
+Combina la matriz canónica de ``specs/REGISTRY.md`` con la sección
+``Decisiones vigentes complementarias`` del ``spec.md`` correspondiente.
+Desde ADR-090, las decisiones históricas de ``specs/adr`` no se usan para
+routing ni RAG porque sus números colisionan con el log canónico.
 """
 from __future__ import annotations
 
@@ -13,11 +13,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / "specs" / "REGISTRY.md"
-ADR_DIR = ROOT / "specs" / "adr"
 CURRENT_ADR_DIR = ROOT / "docs" / "decisions"
 
-# ADRs transversales (todos los SPECs)
-UNIVERSAL_ADRS = ["ADR-007", "ADR-009", "ADR-010", "ADR-011", "ADR-012"]
+# ADR transversal que fija la fuente de verdad arquitectónica.
+UNIVERSAL_ADRS = ["ADR-090"]
+
+
+def _parse_adr_tokens(raw: str) -> list[str]:
+    """Expande ``029``, ``ADR-029`` y rangos inclusivos ``076-078``."""
+    result: list[str] = []
+    for first, second in re.findall(
+        r"(?:ADR-)?(\d{3})(?:\s*[-–]\s*(?:ADR-)?(\d{3}))?",
+        raw,
+        re.IGNORECASE,
+    ):
+        start = int(first)
+        end = int(second) if second else start
+        if end < start or end - start > 200:
+            continue
+        result.extend(f"ADR-{number:03d}" for number in range(start, end + 1))
+    return result
 
 
 def _load_spec_adr_map() -> dict[str, list[str]]:
@@ -29,15 +44,7 @@ def _load_spec_adr_map() -> dict[str, list[str]]:
     ):
         spec_id = f"SPEC-{m.group(1)}"
         raw = m.group(2)
-        adrs: list[str] = []
-        for part in re.split(r",\s*", raw):
-            part = part.strip()
-            if re.match(r"ADR-\d{3}", part, re.I):
-                adrs.append(part.upper().replace(" ", ""))
-            elif re.match(r"\d{3}", part):
-                adrs.append(f"ADR-{part}")
-            elif re.match(r"\d{1,2}$", part):
-                adrs.append(f"ADR-{part.zfill(3)}")
+        adrs = _parse_adr_tokens(raw)
         mapping[spec_id] = sorted(set(adrs + UNIVERSAL_ADRS))
     return mapping
 
@@ -79,9 +86,7 @@ def adr_file_paths(spec_id: str | None = None, adr_ids: list[str] | None = None)
     paths: list[Path] = []
     for adr_id in ids:
         num = adr_id.replace("ADR-", "").split("-")[0]
-        matches = sorted(ADR_DIR.glob(f"ADR-{num}-*.md"))
-        if not matches:
-            matches = sorted(CURRENT_ADR_DIR.glob(f"{num}-*.md"))
+        matches = sorted(CURRENT_ADR_DIR.glob(f"{num}-*.md"))
         if matches:
             paths.append(matches[0])
     return paths
@@ -90,7 +95,11 @@ def adr_file_paths(spec_id: str | None = None, adr_ids: list[str] | None = None)
 def spec_folder(spec_id: str) -> Path | None:
     num = spec_id.replace("SPEC-", "").strip()
     folders = list((ROOT / "specs").glob(f"{num}-*"))
-    return folders[0] if folders else None
+    if not folders:
+        return None
+    # Los aliases históricos 004/005 carecen del set canónico completo.
+    complete = [p for p in folders if (p / "tasks.md").exists()]
+    return sorted(complete or folders)[0]
 
 
 def load_spec_acceptance_criteria(spec_id: str) -> list[str]:

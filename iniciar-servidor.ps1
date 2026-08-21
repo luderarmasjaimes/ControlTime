@@ -50,21 +50,41 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-Write-Host "============================================"
-Write-Host " Iniciando servidor de desarrollo (Vite)"
-Write-Host " Carpeta: $FrontendDir"
-Write-Host "============================================"
+# Detectar IP LAN activa
+$lanIp = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { 
+    $_.InterfaceAlias -notlike "*Loopback*" -and 
+    $_.IPAddress -notlike "169.254.*" -and 
+    $_.IPAddress -notlike "172.*" -and 
+    $_.IPAddress -notlike "10.0.*"
+} | Select-Object -First 1).IPAddress
+
+# Verificar regla de firewall
+$fwRule = Get-NetFirewallRule -DisplayName "*AURIXA-Beemetry LAN*" -ErrorAction SilentlyContinue
+
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host " Servidor Web Beemetry (Acceso Local y LAN)" -ForegroundColor Cyan
+Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Cuando arranque, busca la linea 'Network:' en la consola"
-Write-Host "(puerto fijo 5180) y usa esa URL desde la otra laptop."
-Write-Host "La IP puede cambiar si cambia la red Wi-Fi; usa siempre"
-Write-Host "la que muestre la consola en ese momento."
+if ($lanIp) {
+    Write-Host "-> URL para ingresar desde esta PC:     http://localhost:5180" -ForegroundColor Green
+    Write-Host "-> URL para ingresar desde OTRA PC:     http://$($lanIp):5180" -ForegroundColor Yellow
+} else {
+    Write-Host "-> URL para ingresar:                   http://localhost:5180" -ForegroundColor Green
+}
 Write-Host ""
-Write-Host "IMPORTANTE: no hagas clic con el mouse dentro de esta"
-Write-Host "ventana mientras alguien este probando desde otra laptop"
-Write-Host "(ya deberia estar corregido, pero si la ventana se queda"
-Write-Host "'congelada', presiona Enter aqui para liberarla)."
+
+if (-not $fwRule) {
+    Write-Host "[AVISO] No se detecto la regla del Firewall de Windows para la red LAN." -ForegroundColor Yellow
+    Write-Host "Si otra PC no puede conectarse, ejecuta como Administrador el archivo:" -ForegroundColor Yellow
+    Write-Host "   Habilitar-Acceso-LAN-Firewall.bat" -ForegroundColor White
+    Write-Host ""
+}
+
+Write-Host "IMPORTANTE: no hagas clic con el mouse dentro de esta ventana" -ForegroundColor Gray
+Write-Host "mientras alguien este probando desde otra laptop (si la ventana" -ForegroundColor Gray
+Write-Host "se queda 'congelada', presiona Enter aqui para liberarla)." -ForegroundColor Gray
 Write-Host ""
+
 
 Push-Location $FrontendDir
 try {

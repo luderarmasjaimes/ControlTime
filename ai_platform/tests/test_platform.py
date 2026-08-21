@@ -15,9 +15,9 @@ os.environ["AURIXA_LLM_REVIEW"] = "0"
 def test_registry_adrs_for_spec_014():
     from ai_platform.registry_parser import adrs_for_spec
     adrs = adrs_for_spec("SPEC-014")
-    assert "ADR-003" in adrs
-    assert "ADR-007" in adrs
-    assert "ADR-010" in adrs
+    assert "ADR-022" in adrs
+    assert "ADR-045" in adrs
+    assert "ADR-090" in adrs
     assert len(adrs) >= 5
 
 
@@ -26,7 +26,7 @@ def test_registry_merges_current_adrs_from_spec():
 
     auth_adrs = adrs_for_spec("SPEC-006")
     assert "ADR-029" in auth_adrs
-    assert "ADR-075" in auth_adrs
+    assert "ADR-085" in auth_adrs
     assert "ADR-076" in auth_adrs
     assert "ADR-077" in auth_adrs
     assert "ADR-078" in auth_adrs
@@ -34,8 +34,8 @@ def test_registry_merges_current_adrs_from_spec():
     assert any(path.name.startswith("076-") for path in paths)
 
     biometric_adrs = adrs_for_spec("SPEC-008")
-    assert "ADR-074" in biometric_adrs
-    assert "ADR-075" in biometric_adrs
+    assert "ADR-089" in biometric_adrs
+    assert "ADR-105" in biometric_adrs
 
 
 def test_decision_engine_spec_014():
@@ -51,8 +51,8 @@ def test_router_merges_registry_adrs():
     from ai_platform.router import route
     r = route("Login biométrico SPEC-008", ["backend/src/auth/"])
     assert r.spec_hint == "SPEC-008"
-    assert "ADR-005" in r.adrs
-    assert "ADR-007" in r.adrs
+    assert "ADR-089" in r.adrs
+    assert "ADR-090" in r.adrs
 
 
 def test_router_infers_auth_spec_from_files():
@@ -77,6 +77,11 @@ def test_orchestrator_context_bundle():
 
 def test_rag_search():
     from ai_platform.rag import build_index, search
+    from ai_platform.rag.indexer import _collect_files
+    rel = [str(path.relative_to(ROOT)).replace("\\", "/") for path in _collect_files()]
+    assert not any(path.startswith("specs/adr/") for path in rel)
+    assert not any(path.startswith("specs/004-replica-alta-disponibilidad/") for path in rel)
+    assert not any(path.startswith("specs/005-push-tiempo-real-sse/") for path in rel)
     build_index(force=True)
     hits = search("multitenant tenant_id", limit=3)
     assert len(hits) >= 1
@@ -90,7 +95,7 @@ def test_reviewer_requires_spec():
 
 def test_reviewer_approves_with_spec():
     from ai_platform.reviewer import review_pr
-    body = "SPEC-008 biometria ADR-005 ADR-007"
+    body = "SPEC-008 biometria ADR-089 ADR-090 ADR-105"
     report = review_pr(body, "// code", ["backend/x.cpp"])
     assert report.verdict == "APPROVE"
     assert report.spec_id == "SPEC-008"

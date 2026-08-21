@@ -10,6 +10,7 @@ import {
   fetchCompaniesAdmin, createCompany, updateCompany, setCompanyActive,
   validateCompanyDetailed, type CompanyRecord,
 } from '../../../../auth/authApi';
+import CompanyLocationPicker from '../../../Special/CompanyLocationPicker';
 import { log } from '../../../../lib/logger';
 import './accessAdministration.css';
 
@@ -45,10 +46,16 @@ function CompanyManagementView() {
 
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [createForm, setCreateForm] = useState({ name: '', ruc: '', country: 'PE', domicilio_fiscal: '' });
+  const [createForm, setCreateForm] = useState<{
+    name: string; ruc: string; country: string; domicilio_fiscal: string;
+    latitude: number | null; longitude: number | null; location_zoom: number | null;
+  }>({ name: '', ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null });
   const [createRegistry, setCreateRegistry] = useState<RegistryState>('idle');
 
-  const [editForm, setEditForm] = useState({ ruc: '', country: 'PE', domicilio_fiscal: '' });
+  const [editForm, setEditForm] = useState<{
+    ruc: string; country: string; domicilio_fiscal: string;
+    latitude: number | null; longitude: number | null; location_zoom: number | null;
+  }>({ ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null });
   const [saving, setSaving] = useState(false);
   const [togglingActive, setTogglingActive] = useState(false);
 
@@ -85,6 +92,9 @@ function CompanyManagementView() {
         ruc: selectedCompany.ruc || '',
         country: selectedCompany.country_code || 'PE',
         domicilio_fiscal: selectedCompany.domicilio_fiscal || '',
+        latitude: selectedCompany.latitude ?? null,
+        longitude: selectedCompany.longitude ?? null,
+        location_zoom: selectedCompany.location_zoom ?? null,
       });
     }
   }, [selectedCompany]);
@@ -120,10 +130,17 @@ function CompanyManagementView() {
         ruc: createForm.ruc.replace(/\D/g, '') || undefined,
         country: createForm.country,
         domicilio_fiscal: createForm.domicilio_fiscal.trim() || undefined,
+        ...(createForm.latitude != null && createForm.longitude != null
+          ? {
+              latitude: createForm.latitude,
+              longitude: createForm.longitude,
+              ...(createForm.location_zoom != null ? { location_zoom: createForm.location_zoom } : {}),
+            }
+          : {}),
       });
       setStatusMsg({ type: 'success', text: `Empresa "${name}" creada correctamente.` });
       setShowCreateForm(false);
-      setCreateForm({ name: '', ruc: '', country: 'PE', domicilio_fiscal: '' });
+      setCreateForm({ name: '', ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null });
       setCreateRegistry('idle');
       loadData();
     } catch (err) {
@@ -142,6 +159,13 @@ function CompanyManagementView() {
         ruc: editForm.ruc.replace(/\D/g, ''),
         country: editForm.country,
         domicilio_fiscal: editForm.domicilio_fiscal.trim(),
+        ...(editForm.latitude != null && editForm.longitude != null
+          ? {
+              latitude: editForm.latitude,
+              longitude: editForm.longitude,
+              ...(editForm.location_zoom != null ? { location_zoom: editForm.location_zoom } : {}),
+            }
+          : {}),
       });
       setStatusMsg({ type: 'success', text: `Datos de "${selectedCompany.name}" actualizados.` });
       loadData();
@@ -263,8 +287,8 @@ function CompanyManagementView() {
               </select>
             </div>
             <div>
-              <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">RUC (opcional)</label>
-              <input type="text" placeholder="11 dígitos" className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-indigo-300 outline-none focus:border-indigo-500/50"
+              <label className="form-label">RUC (opcional)</label>
+              <input type="text" placeholder="11 dígitos" className="form-input-base"
                 value={createForm.ruc}
                 onChange={e => setCreateForm({ ...createForm, ruc: e.target.value })}
                 onBlur={() => checkRegistry(createForm.ruc, createForm.country, 'create')} />
@@ -275,13 +299,21 @@ function CompanyManagementView() {
               <input type="text" className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
                 value={createForm.domicilio_fiscal} onChange={e => setCreateForm({ ...createForm, domicilio_fiscal: e.target.value })} />
             </div>
-            <div className="flex items-end">
-              <button type="button" disabled={creating} onClick={submitCreate}
-                className="w-full py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[10px] font-black uppercase tracking-widest transition-all shadow-lg flex items-center justify-center gap-2">
-                {creating ? <RotateCcw size={12} className="animate-spin" /> : <Save size={12} />}
-                {creating ? 'Creando...' : 'Crear Empresa'}
-              </button>
-            </div>
+          </div>
+          <div className="mt-3">
+            <CompanyLocationPicker
+              latitude={createForm.latitude}
+              longitude={createForm.longitude}
+              zoom={createForm.location_zoom}
+              onChange={(lat, lng, zoom) => setCreateForm({ ...createForm, latitude: lat, longitude: lng, location_zoom: zoom })}
+            />
+          </div>
+          <div className="flex items-end mt-3">
+            <button type="button" disabled={creating} onClick={submitCreate}
+              className="w-full py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[10px] font-black uppercase tracking-widest transition-all shadow-lg flex items-center justify-center gap-2">
+              {creating ? <RotateCcw size={12} className="animate-spin" /> : <Save size={12} />}
+              {creating ? 'Creando...' : 'Crear Empresa'}
+            </button>
           </div>
           <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-2 opacity-60">
             Se provisiona un tenant real automáticamente. El nombre no podrá editarse luego de creada (ADR-085).
@@ -369,6 +401,18 @@ function CompanyManagementView() {
                           value={editForm.domicilio_fiscal} onChange={e => setEditForm({ ...editForm, domicilio_fiscal: e.target.value })} />
                       </div>
                     </div>
+                    {canManage && (
+                      // key=company_id: fuerza remount del mapa (y su centro
+                      // inicial) al cambiar de empresa seleccionada -- el
+                      // picker solo posiciona el mapa una vez al montar.
+                      <CompanyLocationPicker
+                        key={selectedCompany.company_id}
+                        latitude={editForm.latitude}
+                        longitude={editForm.longitude}
+                        zoom={editForm.location_zoom}
+                        onChange={(lat, lng, zoom) => setEditForm({ ...editForm, latitude: lat, longitude: lng, location_zoom: zoom })}
+                      />
+                    )}
                     {canManage && (
                       <button type="button" disabled={saving} onClick={submitEdit}
                         className="w-full py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[10px] font-black uppercase tracking-widest transition-all shadow-lg flex items-center justify-center gap-2">

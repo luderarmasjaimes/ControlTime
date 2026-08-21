@@ -14,10 +14,13 @@
 #include <vector>
 
 #include "../biometric/face_analysis.hpp"
+#include "../biometric/ai_engine_client.hpp"
 #include "storage/pg_pool.hpp"
 #include "storage/pg_result.hpp"
 
 using biometric::buildFaceLoginProbe;
+using biometric::verifyFaceDermalogCli;
+using biometric::fetchDeepFaceSilentAnalysisFromAiEngine;
 
 #if HAS_LIBPQ
 
@@ -116,6 +119,11 @@ ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS updated_by TEXT;
 ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
 ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS deactivated_by TEXT;
 ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS demo_data BOOLEAN NOT NULL DEFAULT FALSE;
+-- ADR-121 (db_scripts/68): coordenadas de la mina, nullable -- mismo espejo
+-- obligatorio que el resto de columnas de auth_companies de esta sección.
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
+ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS location_zoom INTEGER;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_company_id ON auth_companies (company_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_name_norm ON auth_companies (lower(btrim(name)));
 CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_ruc ON auth_companies (ruc) WHERE ruc <> '';
@@ -199,14 +207,29 @@ std::string trimCompanyName(const std::string &s) {
 void appendAuthAuditLogPg(PGconn *conn, const std::string &action,
                           const std::string &company,
                           const std::string &username, bool ok,
-                          const std::string &detail) {
-  const char *params[5] = {action.c_str(), company.c_str(), username.c_str(),
-                           ok ? "true" : "false", detail.c_str()};
+                          const std::string &detail,
+                          std::optional<double> latitude,
+                          std::optional<double> longitude,
+                          std::optional<double> accuracyMeters) {
+  // Formatear a std::string ANTES de armar el arreglo de params: PQexecParams
+  // guarda punteros crudos, así que el buffer detrás de cada puntero debe
+  // seguir vivo hasta la llamada -- si se formateara dentro del inicializador
+  // del arreglo, el std::string temporal moriría antes de PQexecParams.
+  const std::string latStr = latitude ? std::to_string(*latitude) : "";
+  const std::string lonStr = longitude ? std::to_string(*longitude) : "";
+  const std::string accStr = accuracyMeters ? std::to_string(*accuracyMeters) : "";
+  const char *params[8] = {action.c_str(), company.c_str(), username.c_str(),
+                           ok ? "true" : "false", detail.c_str(),
+                           latitude ? latStr.c_str() : nullptr,
+                           longitude ? lonStr.c_str() : nullptr,
+                           accuracyMeters ? accStr.c_str() : nullptr};
   storage::PgResult r{PQexecParams(
       conn,
       "INSERT INTO auth_audit_logs(event_action, company_name, username, "
-      "success, detail) VALUES($1, $2, $3, $4::boolean, $5)",
-      5, nullptr, params, nullptr, nullptr, 0)};
+      "success, detail, latitude, longitude, accuracy_m) "
+      "VALUES($1, $2, $3, $4::boolean, $5, $6::double precision, "
+      "$7::double precision, $8::double precision)",
+      8, nullptr, params, nullptr, nullptr, 0)};
 }
 
 bool validateCompanyPg(const std::string &databaseUrl, const std::string &companyName, const std::string &ruc, std::string &error) {
@@ -264,10 +287,39 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
     return false;
   }
 
-  // INSERT parametrizado de 14 columnas: face_template castea a jsonb;
+  // Corrección 2026-08-13: sin este chequeo, un choque en la constraint
+  // UNIQUE(company_name, username) caía directo al INSERT y devolvía el
+  // mensaje generico "failed to insert user" -- sin decir POR QUE fallo,
+  // a diferencia de la ruta de archivos (loadAuthUsers/saveAuthUsers en
+  // main.cpp) que ya distinguía "username already exists in this company"
+  // desde antes. Reproducido en vivo 2026-08-13 registrando dos cuentas
+  // con el mismo username en la misma empresa.
+  const char *companyUserParams[2] = {user.company.c_str(),
+                                      user.username.c_str()};
+  storage::PgResult usernameCheckRes{PQexecParams(
+      conn,
+      "SELECT 1 FROM auth_users WHERE company_name = $1 AND username = $2 LIMIT 1",
+      2, nullptr, companyUserParams, nullptr, nullptr, 0)};
+  if (!usernameCheckRes.okTuples()) {
+    error = "failed to validate username";
+    return false;
+  }
+  if (PQntuples(usernameCheckRes.get()) > 0) {
+    error = "username already exists in this company";
+    appendAuthAuditLogPg(conn, "register", user.company, user.username, false,
+                         "username_exists");
+    return false;
+  }
+
+  // INSERT parametrizado de 15 columnas: face_template castea a jsonb;
   // avatar nullable → nullptr = SQL NULL. tplStr vive hasta el exec.
+  // face_template_provider (db_scripts/53) registra explícitamente qué
+  // motor generó el template en ESTE registro -- login/face lo usa para
+  // decidir cómo comparar (nunca se vuelve a inferir por tamaño).
   const std::string tplStr = tpl.str();
-  const char *insParams[14] = {
+  const std::string providerStr =
+      user.faceTemplateProvider.empty() ? "unknown" : user.faceTemplateProvider;
+  const char *insParams[15] = {
       user.id.c_str(),
       user.company.c_str(),
       user.firstName.c_str(),
@@ -282,13 +334,14 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
       user.mobile.c_str(),
       user.email.c_str(),
       user.avatarCartoonBase64.empty() ? nullptr
-                                       : user.avatarCartoonBase64.c_str()};
+                                       : user.avatarCartoonBase64.c_str(),
+      providerStr.c_str()};
   static const char *kInsertUserSql =
       "INSERT INTO auth_users(id,company_name,first_name,last_name,dni,"
       "username,role,password_hash,face_template,ruc,phone,mobile,email,"
-      "avatar_cartoon_base64) "
-      "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)";
-  storage::PgResult insRes{PQexecParams(conn, kInsertUserSql, 14, nullptr, insParams,
+      "avatar_cartoon_base64,face_template_provider) "
+      "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15)";
+  storage::PgResult insRes{PQexecParams(conn, kInsertUserSql, 15, nullptr, insParams,
                                         nullptr, nullptr, 0)};
   const bool insOk = insRes.okCommand();
   if (!insOk) {
@@ -495,6 +548,25 @@ std::string findOrCreateTenantForCompanyPg(const std::string &databaseUrl,
     return "";
   }
 
+  // ADR-121 (bug real, QA 2026-08-20): esta función resuelve/crea el tenant y
+  // vincula al usuario, pero nunca enlazaba auth_companies.tenant_id -- el
+  // catálogo administrativo (CompanyManagementView, GET /api/map/company-location)
+  // quedaba con tenant_id NULL para TODA empresa que se diera de alta por
+  // autoregistro (no por el CRUD de administración, que sí lo hace en
+  // createCompanyPg). Efecto observable: Mapas nunca encontraba la ubicación
+  // de la empresa recién registrada aunque el login resolviera el tenant
+  // correcto -- confirmado en vivo con "Alpayana" y "El Brocal". Solo toca
+  // filas con tenant_id IS NULL: nunca pisa un enlace ya correcto.
+  {
+    const char *backfillP[2] = {tenantId.c_str(), companyName.c_str()};
+    storage::PgResult backfill{PQexecParams(
+        conn,
+        "UPDATE auth_companies SET tenant_id = $1::uuid "
+        "WHERE lower(btrim(name)) = lower(btrim($2)) AND tenant_id IS NULL",
+        2, nullptr, backfillP, nullptr, nullptr, 0)};
+    (void)backfill;
+  }
+
   const char *linkP[3] = {userId.c_str(), tenantId.c_str(), role.c_str()};
   storage::PgResult link{PQexecParams(
       conn,
@@ -544,7 +616,11 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &identityKey,
                                         const std::string &password,
                                         std::string &error,
-                                        std::string *errorCodeOut) {
+                                        std::string *errorCodeOut,
+                                        const std::string &auditDetailSuffix,
+                                        std::optional<double> latitude,
+                                        std::optional<double> longitude,
+                                        std::optional<double> accuracyMeters) {
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
   if (PQstatus(conn) != CONNECTION_OK) {
@@ -651,7 +727,8 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
   }
 
   u.tenantId = resolveTelemetryTenantIdPg(static_cast<void *>(conn), u.id, u.company);
-  appendAuthAuditLogPg(conn, "login_password", company, u.username, true, "ok");
+  appendAuthAuditLogPg(conn, "login_password", company, u.username, true,
+                       "ok" + auditDetailSuffix, latitude, longitude, accuracyMeters);
   return u;
 }
 
@@ -681,7 +758,11 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                     const std::optional<std::vector<unsigned char>> &rawImageBytes,
                     const std::optional<std::string> &base64ForLegacy,
                     double legacyThreshold, double embeddingThreshold,
-                    std::string &error, std::string *probeProviderOut) {
+                    std::string &error, std::string *probeProviderOut,
+                    const std::string &auditDetailSuffix,
+                    std::optional<double> latitude,
+                    std::optional<double> longitude,
+                    std::optional<double> accuracyMeters) {
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
   if (PQstatus(conn) != CONNECTION_OK) {
@@ -693,7 +774,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
   const std::string sql =
       "SELECT id, company_name, first_name, last_name, dni, username, role, "
       "password_hash, face_template::text, created_at::text, ruc, phone, mobile, email, "
-      "avatar_cartoon_base64, account_status, suspension_until::text "
+      "avatar_cartoon_base64, account_status, suspension_until::text, face_template_provider "
       "FROM auth_users WHERE company_name=$1 AND " +
       pgSqlAuthIdentityMatch(identityKey, 2) + " LIMIT 4";
   const char *params[2] = {company.c_str(), identityKey.c_str()};
@@ -751,6 +832,9 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
   if (!PQgetisnull(res.get(), 0, 14)) {
     u.avatarCartoonBase64 = PQgetvalue(res.get(), 0, 14);
   }
+  u.faceTemplateProvider = PQgetisnull(res.get(), 0, 17)
+                               ? "unknown"
+                               : PQgetvalue(res.get(), 0, 17);
 
   std::vector<double> tpl;
   try {
@@ -785,34 +869,145 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
     return std::nullopt;
   }
 
-  std::vector<double> probe;
+  // Hallazgo de seguridad 2026-08-10: antes de esto, CUALQUIER
+  // face_template guardado se comparaba con similitud coseno genérica sin
+  // mirar qué motor lo generó. Con la miniatura 24x24 del fallback legacy
+  // (no es un embedding biométrico real, ver extractLegacyTemplateFromMat)
+  // eso daba falsos positivos sistemáticos entre personas distintas
+  // (medido en producción: 0.86-0.98 de "similitud" entre cuentas
+  // diferentes, muy por encima del umbral 0.80-0.82). Ahora el despacho
+  // depende de qué motor generó el template guardado (db_scripts/53), no
+  // de su tamaño ni de lo que mande el cliente.
+  double bestScore = 0.0;
   std::string probeProvider;
-  double useThreshold = legacyThreshold;
-  if (!buildFaceLoginProbe(clientProbeTemplate, rawImageBytes, base64ForLegacy,
-                             tpl, probe, probeProvider, useThreshold,
-                             legacyThreshold, embeddingThreshold, error)) {
+  if (u.faceTemplateProvider == "insightface_onnx") {
+    double useThreshold = legacyThreshold;
+    std::vector<double> probe;
+    if (!buildFaceLoginProbe(clientProbeTemplate, rawImageBytes, base64ForLegacy,
+                               tpl, probe, probeProvider, useThreshold,
+                               legacyThreshold, embeddingThreshold, error)) {
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "probe_build_failed");
+      return std::nullopt;
+    }
+    bestScore = cosineSimilarity(probe, tpl);
+    if (bestScore < useThreshold) {
+      std::cout << "[AUTH_FACE] no_match_pg company=" << company
+                << " user=" << u.username << " provider=insightface_onnx"
+                << " score=" << bestScore << " threshold=" << useThreshold
+                << std::endl;
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "no_match score=" + std::to_string(bestScore));
+      error = "La biometría facial no coincide con el usuario indicado. "
+              "Verifique su identidad y vuelva a intentar.";
+      return std::nullopt;
+    }
+  } else if (u.faceTemplateProvider == "deepface_silentface") {
+    // Proveedor biométrico local por defecto (DeepFace/Facenet512 +
+    // Silent-Face-Anti-Spoofing). Igual que dermalog_cli, exige imagen real
+    // de cámara -- nunca un face_template mandado por el cliente, porque el
+    // liveness (MiniFASNet) debe reevaluarse en cada login, no solo en el
+    // registro. Ver hallazgo de seguridad 2026-08-10 (arriba) y la ausencia
+    // de rama para seetaface6_local que este proveedor reemplaza.
+    if (!rawImageBytes.has_value() || rawImageBytes->empty()) {
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "deepface_silentface_requires_image");
+      error = "Esta cuenta requiere una imagen de cámara real para la "
+              "verificación facial.";
+      return std::nullopt;
+    }
+    probeProvider = "deepface_silentface";
+    auto probeFace = fetchDeepFaceSilentAnalysisFromAiEngine(*rawImageBytes, "verify");
+    if (!probeFace.ok || probeFace.faceTemplate.size() != tpl.size()) {
+      std::cout << "[AUTH_FACE] deepface_silentface_verify_failed company=" << company
+                << " user=" << u.username
+                << " issue=" << (probeFace.issues.empty() ? "unknown" : probeFace.issues.front())
+                << std::endl;
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "deepface_silentface_verify_failed: " +
+                               (probeFace.issues.empty() ? "unknown" : probeFace.issues.front()));
+      error = "No se pudo validar el rostro. Intente de nuevo con mejor "
+              "iluminación y encuadre.";
+      return std::nullopt;
+    }
+    bestScore = cosineSimilarity(probeFace.faceTemplate, tpl);
+    const double useThreshold = config::AppConfig::instance().gFaceDeepfaceCosineThreshold;
+    if (bestScore < useThreshold) {
+      std::cout << "[AUTH_FACE] no_match_pg company=" << company
+                << " user=" << u.username << " provider=deepface_silentface"
+                << " score=" << bestScore << " threshold=" << useThreshold
+                << std::endl;
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "no_match score=" + std::to_string(bestScore));
+      error = "La biometría facial no coincide con el usuario indicado. "
+              "Verifique su identidad y vuelva a intentar.";
+      return std::nullopt;
+    }
+  } else if (u.faceTemplateProvider == "dermalog_cli") {
+    // El comparador nativo de Dermalog exige una imagen real de la cámara
+    // -- nunca un face_template mandado directo por el cliente (ese es
+    // justo el otro hallazgo de seguridad: un arreglo arbitrario sin
+    // ningún análisis facial real detrás).
+    if (!rawImageBytes.has_value() || rawImageBytes->empty()) {
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "dermalog_requires_image");
+      error = "Esta cuenta requiere una imagen de cámara real para la "
+              "verificación facial.";
+      return std::nullopt;
+    }
+    probeProvider = "dermalog_cli";
+    std::string dermalogError;
+    if (!verifyFaceDermalogCli(*rawImageBytes, tpl, bestScore, dermalogError)) {
+      std::cout << "[AUTH_FACE] dermalog_verify_failed company=" << company
+                << " user=" << u.username << " reason=" << dermalogError
+                << std::endl;
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "dermalog_verify_failed: " + dermalogError);
+      error = dermalogError == "no_license"
+                  ? "La verificación biométrica de alta seguridad no está "
+                    "disponible temporalmente (licencia pendiente). "
+                    "Contacte a soporte."
+                  : "No se pudo validar el rostro. Intente de nuevo con "
+                    "mejor iluminación y encuadre.";
+      return std::nullopt;
+    }
+    // Escala Dermalog: 0-100 (ver manual del SDK, umbral recomendado 75
+    // para FMR 1/1000) -- gFaceEmbeddingCosineThreshold/gFaceLegacyCosineThreshold
+    // son escalas 0-1 de otros motores, no aplican aquí.
+    constexpr double kDermalogThreshold = 75.0;
+    if (bestScore < kDermalogThreshold) {
+      std::cout << "[AUTH_FACE] no_match_pg company=" << company
+                << " user=" << u.username << " provider=dermalog_cli"
+                << " score=" << bestScore << " threshold=" << kDermalogThreshold
+                << std::endl;
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "no_match score=" + std::to_string(bestScore));
+      error = "La biometría facial no coincide con el usuario indicado. "
+              "Verifique su identidad y vuelva a intentar.";
+      return std::nullopt;
+    }
+  } else {
+    // legacy / unknown_client_supplied / none / cualquier valor no
+    // reconocido: se rechaza explícitamente en vez de caer a una
+    // comparación que no discrimina identidad de verdad. La cuenta debe
+    // reinscribir su biometría con un motor fuerte (InsightFace o
+    // Dermalog) -- login por contraseña sigue disponible mientras tanto.
+    std::cout << "[AUTH_FACE] rejected_weak_provider company=" << company
+              << " user=" << u.username
+              << " provider=" << u.faceTemplateProvider << std::endl;
     appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                         "probe_build_failed");
-    return std::nullopt;
-  }
-
-  const double bestScore = cosineSimilarity(probe, tpl);
-  if (bestScore < useThreshold) {
-    std::cout << "[AUTH_FACE] no_match_pg company=" << company
-              << " user=" << u.username << " stored_dim=" << tpl.size()
-              << " probe_dim=" << probe.size() << " score=" << bestScore
-              << " threshold=" << useThreshold << " probe_provider=" << probeProvider
-              << std::endl;
-    appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                         "no_match score=" + std::to_string(bestScore));
-    error = "La biometría facial no coincide con el usuario indicado. "
-            "Verifique su identidad y vuelva a intentar.";
+                         "rejected_weak_provider:" + u.faceTemplateProvider);
+    error = "Esta cuenta tiene una biometría facial registrada con un método "
+            "que ya no se considera seguro. Vuelva a registrar su rostro "
+            "para reactivar el login facial, o use su contraseña mientras "
+            "tanto.";
     return std::nullopt;
   }
 
   appendAuthAuditLogPg(conn, "login_face", company, u.username, true,
                        "ok score=" + std::to_string(bestScore) + " probe=" +
-                           probeProvider);
+                           probeProvider + auditDetailSuffix,
+                       latitude, longitude, accuracyMeters);
   if (probeProviderOut != nullptr) {
     *probeProviderOut = probeProvider;
   }
@@ -1303,7 +1498,7 @@ PasswordMigrationResult migrateLegacyPasswordHashesPg(const std::string &databas
 
 namespace {
 
-/** Arma un AuthCompanyRecord desde una fila de la SELECT canónica (14 columnas, ver kCompanySelectCols). */
+/** Arma un AuthCompanyRecord desde una fila de la SELECT canónica (16 columnas, ver kCompanySelectCols). */
 AuthCompanyRecord companyRecordFromRow(PGresult *res, int row, bool maskRuc) {
   AuthCompanyRecord c;
   c.companyId = PQgetvalue(res, row, 0);
@@ -1319,6 +1514,11 @@ AuthCompanyRecord companyRecordFromRow(PGresult *res, int row, bool maskRuc) {
   c.updatedBy = PQgetvalue(res, row, 10);
   c.deactivatedAt = PQgetvalue(res, row, 11);
   c.deactivatedBy = PQgetvalue(res, row, 12);
+  // ADR-121: sin COALESCE en kCompanySelectCols -- PQgetisnull refleja el
+  // NULL real de la columna ("sin coordenadas todavía" vs. 0,0).
+  if (!PQgetisnull(res, row, 13)) c.latitude = std::stod(PQgetvalue(res, row, 13));
+  if (!PQgetisnull(res, row, 14)) c.longitude = std::stod(PQgetvalue(res, row, 14));
+  if (!PQgetisnull(res, row, 15)) c.locationZoom = std::stoi(PQgetvalue(res, row, 15));
   return c;
 }
 
@@ -1326,7 +1526,8 @@ const char kCompanySelectCols[] =
     "company_id::text, name, ruc, country_code, COALESCE(domicilio_fiscal,''), "
     "COALESCE(tenant_id::text,''), active, demo_data, created_at::text, "
     "COALESCE(updated_at::text,''), COALESCE(updated_by,''), "
-    "COALESCE(deactivated_at::text,''), COALESCE(deactivated_by,'')";
+    "COALESCE(deactivated_at::text,''), COALESCE(deactivated_by,''), "
+    "latitude, longitude, location_zoom";
 
 json::object companyRecordToJson(const AuthCompanyRecord &c) {
   return json::object{
@@ -1337,7 +1538,10 @@ json::object companyRecordToJson(const AuthCompanyRecord &c) {
       {"demo_data", c.demoData},     {"created_at", c.createdAt},
       {"updated_at", c.updatedAt},   {"updated_by", c.updatedBy},
       {"deactivated_at", c.deactivatedAt},
-      {"deactivated_by", c.deactivatedBy}};
+      {"deactivated_by", c.deactivatedBy},
+      {"latitude", c.latitude ? json::value(*c.latitude) : json::value(nullptr)},
+      {"longitude", c.longitude ? json::value(*c.longitude) : json::value(nullptr)},
+      {"location_zoom", c.locationZoom ? json::value(*c.locationZoom) : json::value(nullptr)}};
 }
 
 } // namespace
@@ -1387,6 +1591,9 @@ bool getCompanyByIdPg(const std::string &databaseUrl,
 bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
                      const std::string &ruc, const std::string &countryCode,
                      const std::string &domicilioFiscal,
+                     std::optional<double> latitude,
+                     std::optional<double> longitude,
+                     std::optional<int> locationZoom,
                      const std::string &actorUserId,
                      const std::string &actorRole, AuthCompanyRecord &out,
                      std::string &error) {
@@ -1401,14 +1608,26 @@ bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
   // condición de carrera que tenía el POST original (SELECT + INSERT sin
   // índice único de respaldo): ON CONFLICT DO NOTHING sin fila devuelta ==
   // ya existía, sin ninguna ventana entre el chequeo y el insert.
+  //
+  // Formatear a std::string ANTES de armar el arreglo de params (mismo
+  // motivo que appendAuthAuditLogPg): PQexecParams guarda punteros crudos.
+  const std::string latStr = latitude ? std::to_string(*latitude) : "";
+  const std::string lonStr = longitude ? std::to_string(*longitude) : "";
+  const std::string zoomStr = locationZoom ? std::to_string(*locationZoom) : "";
   const std::string insSql = std::string(
       "INSERT INTO auth_companies(name, ruc, country_code, domicilio_fiscal, "
-      "active, updated_at, updated_by) VALUES($1,$2,$3,$4,true,NOW(),$5) "
+      "active, updated_at, updated_by, latitude, longitude, location_zoom) "
+      "VALUES($1,$2,$3,$4,true,NOW(),$5,$6::double precision,"
+      "$7::double precision,$8::int) "
       "ON CONFLICT (lower(btrim(name))) DO NOTHING "
       "RETURNING ") + kCompanySelectCols;
-  const char *insParams[5] = {name.c_str(), ruc.c_str(), countryCode.c_str(),
-                              domicilioFiscal.c_str(), actorUserId.c_str()};
-  storage::PgResult ins{PQexecParams(conn, insSql.c_str(), 5, nullptr,
+  const char *insParams[8] = {
+      name.c_str(), ruc.c_str(), countryCode.c_str(), domicilioFiscal.c_str(),
+      actorUserId.c_str(),
+      latitude ? latStr.c_str() : nullptr,
+      longitude ? lonStr.c_str() : nullptr,
+      locationZoom ? zoomStr.c_str() : nullptr};
+  storage::PgResult ins{PQexecParams(conn, insSql.c_str(), 8, nullptr,
                                      insParams, nullptr, nullptr, 0)};
   if (!ins.okTuples()) {
     const std::string pgError = PQresultErrorMessage(ins.get());
@@ -1451,6 +1670,9 @@ bool updateCompanyPg(const std::string &databaseUrl,
                      const std::string &companyId, const std::string &ruc,
                      const std::string &countryCode,
                      const std::string &domicilioFiscal,
+                     std::optional<double> latitude,
+                     std::optional<double> longitude,
+                     std::optional<int> locationZoom,
                      const std::string &actorUserId, AuthCompanyRecord &out,
                      std::string &error) {
   auto lease = storage::PgPool::instance().acquire(databaseUrl);
@@ -1460,14 +1682,23 @@ bool updateCompanyPg(const std::string &databaseUrl,
     return false;
   }
   // `name` nunca se toca aquí a propósito — ver comentario en el header.
+  const std::string latStr = latitude ? std::to_string(*latitude) : "";
+  const std::string lonStr = longitude ? std::to_string(*longitude) : "";
+  const std::string zoomStr = locationZoom ? std::to_string(*locationZoom) : "";
   const std::string sql = std::string(
       "UPDATE auth_companies SET ruc=$2, country_code=$3, "
-      "domicilio_fiscal=$4, updated_at=NOW(), updated_by=$5 "
+      "domicilio_fiscal=$4, latitude=$6::double precision, "
+      "longitude=$7::double precision, location_zoom=$8::int, "
+      "updated_at=NOW(), updated_by=$5 "
       "WHERE company_id=$1::uuid RETURNING ") + kCompanySelectCols;
-  const char *p[5] = {companyId.c_str(), ruc.c_str(), countryCode.c_str(),
-                      domicilioFiscal.c_str(), actorUserId.c_str()};
+  const char *p[8] = {
+      companyId.c_str(), ruc.c_str(), countryCode.c_str(), domicilioFiscal.c_str(),
+      actorUserId.c_str(),
+      latitude ? latStr.c_str() : nullptr,
+      longitude ? lonStr.c_str() : nullptr,
+      locationZoom ? zoomStr.c_str() : nullptr};
   storage::PgResult res{
-      PQexecParams(conn, sql.c_str(), 5, nullptr, p, nullptr, nullptr, 0)};
+      PQexecParams(conn, sql.c_str(), 8, nullptr, p, nullptr, nullptr, 0)};
   if (!res.okTuples()) {
     error = "company_update_failed: " +
             std::string(PQresultErrorMessage(res.get()));

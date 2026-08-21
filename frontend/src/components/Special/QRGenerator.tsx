@@ -17,7 +17,7 @@ const QRGenerator = ({ reportId, onClose }: QRGeneratorProps) => {
             <motion.div
                 initial={{ scale: 0.9, y: 20 }}
                 animate={{ scale: 1, y: 0 }}
-                className="glass max-w-sm w-full p-8 flex flex-col items-center bg-slate-900 border-white/10"
+                className="glass max-w-sm w-full p-8 flex flex-col items-center bg-[var(--a11y-bg-form)] border-[var(--a11y-border-form)]"
             >
                 <div className="w-full flex justify-end mb-2">
                     <button onClick={onClose} className="p-1 hover:bg-white/10 rounded-full transition-colors">

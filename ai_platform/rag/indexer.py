@@ -14,8 +14,8 @@ INDEX_DB = INDEX_DIR / "knowledge.db"
 GLOB_PATTERNS = [
     # Log arquitectónico vigente y único (ADR-000 en adelante).
     "docs/decisions/*.md",
-    # Log SDD temprano: se conserva e indexa solo como historia.
-    "specs/adr/*.md",
+    # ``specs/adr`` es histórico y se excluye: sus números colisionan con el
+    # log vigente (ADR-090) y contaminaban respuestas/Routing.
     "specs/CONSTITUTION.md",
     "specs/REGISTRY.md",
     "specs/BACKLOG.md",
@@ -27,12 +27,22 @@ GLOB_PATTERNS = [
     "backend/src/**/*.cpp",
 ]
 
+EXCLUDED_PREFIXES = (
+    "specs/adr/",
+    "specs/004-replica-alta-disponibilidad/",
+    "specs/005-push-tiempo-real-sse/",
+)
+
 
 def _collect_files() -> list[Path]:
     files: list[Path] = []
     for pattern in GLOB_PATTERNS:
         files.extend(ROOT.glob(pattern))
-    return sorted(set(f for f in files if f.is_file()))
+    unique = set(f for f in files if f.is_file())
+    return sorted(
+        f for f in unique
+        if not str(f.relative_to(ROOT)).replace("\\", "/").startswith(EXCLUDED_PREFIXES)
+    )
 
 
 def _chunk(text: str, size: int = 1200, overlap: int = 150) -> list[str]:

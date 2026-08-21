@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
+import './a11y-form-base.css'  // ADR-106: Accesibilidad WCAG 2.1 AA
 import { applyHtmlLang, getPlatformPrefs } from './auth/platformPrefs'
 import { initMiningLocations } from './config/miningLocations'
 import { log } from './lib/logger'

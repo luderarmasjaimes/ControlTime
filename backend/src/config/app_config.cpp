@@ -3,6 +3,7 @@
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <iomanip>
@@ -50,6 +51,37 @@ static std::string toLowerCopy(std::string value) {
     return value;
 }
 
+/** @brief Separa una lista por comas, recortando espacios y descartando
+ * elementos vacios (p.ej. "soporte, ,comercial" -> ["soporte","comercial"]). */
+static std::vector<std::string> splitCommaList(const std::string &value) {
+    std::vector<std::string> out;
+    std::string current;
+    auto flush = [&]() {
+        const auto a = current.find_first_not_of(" \t");
+        const auto b = current.find_last_not_of(" \t");
+        if (a != std::string::npos) out.push_back(current.substr(a, b - a + 1));
+        current.clear();
+    };
+    for (const char c : value) {
+        if (c == ',') { flush(); } else { current += c; }
+    }
+    flush();
+    return out;
+}
+
+/** @brief Convierte un id de linea ("soporte") a la forma que usan las
+ * variables de entorno ("SOPORTE") -- mayusculas, no-alfanumericos a '_'. */
+static std::string toEnvKey(const std::string &lineId) {
+    std::string out;
+    out.reserve(lineId.size());
+    for (const char c : lineId) {
+        out += std::isalnum(static_cast<unsigned char>(c))
+                   ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+                   : '_';
+    }
+    return out;
+}
+
 AppConfig& AppConfig::instance() {
     static AppConfig cfg;
     return cfg;
@@ -84,10 +116,14 @@ void AppConfig::loadFromEnv() {
                   << std::endl;
     }
     try {
+        // Default subido de 15 a 60 min (2026-08-19): el frontend ya hace
+        // refresh silencioso transparente (authApi.ts), pero un TTL tan corto
+        // multiplicaba las renovaciones y la percepcion de sesion fragil --
+        // ver addendum "Actualizacion 2026-08-19" en el ADR de JWT/sesion.
         gJwtAccessTtlMinutes = std::clamp(
-            std::stoi(getenvOr("BEEMETRY_JWT_ACCESS_TTL_MINUTES", "15")), 1, 120);
+            std::stoi(getenvOr("BEEMETRY_JWT_ACCESS_TTL_MINUTES", "60")), 1, 120);
     } catch (...) {
-        gJwtAccessTtlMinutes = 15;
+        gJwtAccessTtlMinutes = 60;
     }
     try {
         gJwtRefreshTtlDays = std::clamp(
@@ -99,12 +135,52 @@ void AppConfig::loadFromEnv() {
         toLowerCopy(getenvOr("BEEMETRY_AUTH_COOKIE_SECURE", "true")) == "true";
 
     const auto provider = toLowerCopy(getenvOr("BEEMETRY_BIOMETRIC_PROVIDER", "legacy"));
-    gBiometricProvider =
-        provider == "dermalog_cli" ? BiometricProvider::DermalogCli
-                                   : BiometricProvider::Legacy;
+    if (provider == "dermalog_cli") {
+        gBiometricProvider = BiometricProvider::DermalogCli;
+    } else if (provider == "seetaface6" || provider == "seetaface6_local") {
+        gBiometricProvider = BiometricProvider::SeetaFace6;
+    } else if (provider == "deepface_silentface" || provider == "deepface") {
+        gBiometricProvider = BiometricProvider::DeepFaceSilent;
+    } else {
+        gBiometricProvider = BiometricProvider::Legacy;
+    }
     gDermalogCliPath = getenvOr("BEEMETRY_DERMALOG_CLI_PATH", "");
     gDermalogRequired =
         toLowerCopy(getenvOr("BEEMETRY_DERMALOG_REQUIRED", "false")) == "true";
+    gSeetaFace6Required =
+        toLowerCopy(getenvOr("BEEMETRY_SEETAFACE6_REQUIRED", "true")) == "true";
+    try {
+        gSeetaFace6TimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_SEETAFACE6_TIMEOUT_MS", "20000")), 1000,
+            120000);
+    } catch (...) {
+        gSeetaFace6TimeoutMs = 20000;
+    }
+    gDeepFaceSilentRequired = toLowerCopy(getenvOr(
+        "BEEMETRY_DEEPFACE_SILENTFACE_REQUIRED", "true")) == "true";
+    gDeepFaceSilentDermalogFallback = toLowerCopy(getenvOr(
+        "BEEMETRY_DEEPFACE_SILENTFACE_DERMALOG_FALLBACK", "false")) == "true";
+    try {
+        gDeepFaceSilentTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_DEEPFACE_SILENTFACE_TIMEOUT_MS", "25000")),
+            1000, 120000);
+    } catch (...) {
+        gDeepFaceSilentTimeoutMs = 25000;
+    }
+    try {
+        gFaceDeepfaceCosineThreshold = std::clamp(
+            std::stod(getenvOr("BEEMETRY_FACE_DEEPFACE_COSINE_THRESHOLD", "0.70")),
+            0.20, 0.99);
+    } catch (...) {
+        gFaceDeepfaceCosineThreshold = 0.70;
+    }
+    try {
+        gSilentFaceLivenessThreshold = std::clamp(
+            std::stod(getenvOr("BEEMETRY_SILENTFACE_LIVENESS_THRESHOLD", "0.60")),
+            0.10, 0.99);
+    } catch (...) {
+        gSilentFaceLivenessThreshold = 0.60;
+    }
     gBiometricDnnModelPath = getenvOr("BEEMETRY_BIOMETRIC_DNN_MODEL", "");
     gBiometricDnnLabelsCsv = getenvOr(
         "BEEMETRY_BIOMETRIC_DNN_LABELS",
@@ -158,6 +234,8 @@ void AppConfig::loadFromEnv() {
     gWhatsappAccessToken = getenvOr("BEEMETRY_WHATSAPP_ACCESS_TOKEN", "");
     gWhatsappBusinessAccountId = getenvOr("BEEMETRY_WHATSAPP_BUSINESS_ACCOUNT_ID", "");
     gWhatsappSupportToE164 = getenvOr("BEEMETRY_WHATSAPP_SUPPORT_TO_E164", "");
+    gWhatsappComercialToE164 = getenvOr("BEEMETRY_WHATSAPP_COMERCIAL_TO_E164", "");
+    gWhatsappRrhhToE164 = getenvOr("BEEMETRY_WHATSAPP_RRHH_TO_E164", "");
     gWhatsappTemplateName = getenvOr("BEEMETRY_WHATSAPP_TEMPLATE_NAME", "hello_world");
     gWhatsappTemplateLang = getenvOr("BEEMETRY_WHATSAPP_TEMPLATE_LANG", "en_US");
     try {
@@ -166,9 +244,45 @@ void AppConfig::loadFromEnv() {
     } catch (...) {
         gWhatsappTimeoutMs = 8000;
     }
+    gWhatsappWebhookVerifyToken = getenvOr("BEEMETRY_WHATSAPP_WEBHOOK_VERIFY_TOKEN", "");
+    gWhatsappAppSecret = getenvOr("BEEMETRY_WHATSAPP_APP_SECRET", "");
+
+    // Multi-linea (ADR-113): la linea "default" se arma con las variables de
+    // arriba (compatibilidad con el despliegue de una sola linea de
+    // ADR-112); lineas adicionales se declaran por id en BEEMETRY_WHATSAPP_EXTRA_LINES.
+    gWhatsappLines.clear();
+    if (!gWhatsappPhoneNumberId.empty() && !gWhatsappAccessToken.empty()) {
+        gWhatsappLines.push_back(
+            WhatsappLine{"default", gWhatsappPhoneNumberId, gWhatsappAccessToken, "General"});
+    }
+    for (const auto &lineId : splitCommaList(getenvOr("BEEMETRY_WHATSAPP_EXTRA_LINES", ""))) {
+        const std::string envKey = toEnvKey(lineId);
+        WhatsappLine line;
+        line.id = lineId;
+        line.phoneNumberId =
+            getenvOr(("BEEMETRY_WHATSAPP_LINE_" + envKey + "_PHONE_NUMBER_ID").c_str(), "");
+        line.accessToken =
+            getenvOr(("BEEMETRY_WHATSAPP_LINE_" + envKey + "_ACCESS_TOKEN").c_str(), "");
+        line.label = getenvOr(("BEEMETRY_WHATSAPP_LINE_" + envKey + "_LABEL").c_str(), lineId);
+        if (line.phoneNumberId.empty() || line.accessToken.empty()) {
+            std::cerr << "[WHATSAPP] linea '" << lineId
+                      << "' listada en BEEMETRY_WHATSAPP_EXTRA_LINES pero le falta "
+                         "PHONE_NUMBER_ID o ACCESS_TOKEN -- se omite."
+                      << std::endl;
+            continue;
+        }
+        gWhatsappLines.push_back(std::move(line));
+    }
+    gWhatsappAdminPhones = splitCommaList(getenvOr("BEEMETRY_WHATSAPP_ADMIN_TO_E164", ""));
+
     if (gWhatsappAccessToken.empty()) {
         std::cerr << "[WHATSAPP] BEEMETRY_WHATSAPP_ACCESS_TOKEN vacio -- el escalamiento a "
                      "soporte humano por WhatsApp respondera whatsapp_not_configured."
+                  << std::endl;
+    }
+    if (gWhatsappWebhookVerifyToken.empty() || gWhatsappAppSecret.empty()) {
+        std::cerr << "[WHATSAPP] webhook de entrada deshabilitado (falta "
+                     "BEEMETRY_WHATSAPP_WEBHOOK_VERIFY_TOKEN y/o BEEMETRY_WHATSAPP_APP_SECRET)."
                   << std::endl;
     }
     gOllamaChatbotModel = getenvOr("BEEMETRY_OLLAMA_CHATBOT_MODEL", "gemma2:2b");
@@ -188,6 +302,21 @@ void AppConfig::loadFromEnv() {
         gAiEngineCartoonTimeoutMs = 8000;
     }
     try {
+        gAiEngineCvExtractTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_AI_ENGINE_CV_EXTRACT_TIMEOUT_MS", "30000")), 2000,
+            120000);
+    } catch (...) {
+        gAiEngineCvExtractTimeoutMs = 30000;
+    }
+    try {
+        gWhatsappCvMaxBytes = static_cast<std::size_t>(std::clamp(
+            std::stoll(getenvOr("BEEMETRY_WHATSAPP_CV_MAX_BYTES", "10485760")), 100000LL,
+            26214400LL));
+    } catch (...) {
+        gWhatsappCvMaxBytes = 10 * 1024 * 1024;
+    }
+    gHrCvEmailTo = getenvOr("BEEMETRY_HR_CV_EMAIL_TO", "");
+    try {
         gAiEngineMaxImageBytes = static_cast<std::size_t>(std::clamp(
             std::stoi(getenvOr("BEEMETRY_AI_ENGINE_MAX_IMAGE_BYTES", "450000")), 100000,
             6000000));
@@ -200,6 +329,13 @@ void AppConfig::loadFromEnv() {
             0.99);
     } catch (...) {
         gFaceEmbeddingCosineThreshold = 0.45;
+    }
+    try {
+        gFaceSeetaCosineThreshold = std::clamp(
+            std::stod(getenvOr("BEEMETRY_FACE_SEETAFACE6_COSINE_THRESHOLD", "0.80")),
+            0.40, 0.99);
+    } catch (...) {
+        gFaceSeetaCosineThreshold = 0.80;
     }
     try {
         gFaceLegacyCosineThreshold = std::clamp(
@@ -249,6 +385,29 @@ void AppConfig::loadFromEnv() {
     } else {
         gAuthStorageMode = AuthStorageMode::File;
     }
+}
+
+const WhatsappLine *AppConfig::whatsappLineByPhoneNumberId(const std::string &phoneNumberId) const {
+    for (const auto &line : gWhatsappLines) {
+        if (line.phoneNumberId == phoneNumberId) return &line;
+    }
+    return nullptr;
+}
+
+const WhatsappLine *AppConfig::whatsappLineById(const std::string &lineId) const {
+    for (const auto &line : gWhatsappLines) {
+        if (line.id == lineId) return &line;
+    }
+    return nullptr;
+}
+
+const WhatsappLine *AppConfig::defaultWhatsappLine() const {
+    return gWhatsappLines.empty() ? nullptr : &gWhatsappLines.front();
+}
+
+bool AppConfig::isWhatsappAdminPhone(const std::string &phoneE164) const {
+    return std::find(gWhatsappAdminPhones.begin(), gWhatsappAdminPhones.end(), phoneE164) !=
+           gWhatsappAdminPhones.end();
 }
 
 } // namespace config

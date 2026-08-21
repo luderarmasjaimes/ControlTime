@@ -22,6 +22,12 @@ struct AuthUser {
   std::string role = "operator";
   std::string passwordHash;
   std::vector<double> faceTemplate;
+  // Motor que generó faceTemplate (db_scripts/53) -- determina cómo se
+  // compara en login/face: insightface_onnx/legacy usan similitud coseno
+  // sobre este vector; dermalog_cli requiere el comparador nativo del SDK
+  // (blob opaco, coseno no es válido); unknown_client_supplied/none se
+  // rechazan explícitamente. Ver buildFaceLoginProbe.
+  std::string faceTemplateProvider = "unknown";
   std::string createdAt;
   std::string ruc;
   std::string phone;

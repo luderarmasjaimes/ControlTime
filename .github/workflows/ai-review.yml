@@ -50,10 +50,10 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let body = '## Revisión IA AURIXA (ADR + SPEC)\n\n';
+            let body = '## Revisión IA Beemetry (ADR + SPEC)\n\n';
             try { body += fs.readFileSync('review_report.md', 'utf8'); }
             catch (e) { body += '_Informe no generado._'; }
-            body += '\n\n---\n_Automático — ADR-012_';
+            body += '\n\n---\n_Automático — registro canónico ADR-090_';
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,

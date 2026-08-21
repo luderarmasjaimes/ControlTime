@@ -1,6 +1,6 @@
 # Registro de agentes — fuente de verdad para el Router IA
 
-version: "1.0"
+version: "1.1"
 project: Beemetry
 orchestrator: ai_platform.orchestrator.Orchestrator
 
@@ -38,7 +38,7 @@ agents:
     fallback: claude-sonnet
     paths: ["backend/"]
     extensions: [".cpp", ".hpp", ".h"]
-    adrs: [ADR-001, ADR-004, ADR-006]
+    adrs: [ADR-002, ADR-003, ADR-034, ADR-090]
     prompt: prompts/agents/backend_dev.md
 
   frontend_dev:
@@ -48,7 +48,7 @@ agents:
     fallback: cursor
     paths: ["frontend/"]
     extensions: [".tsx", ".ts", ".jsx", ".js", ".css"]
-    adrs: [ADR-007, ADR-009]
+    adrs: [ADR-040, ADR-069, ADR-090]
     prompt: prompts/agents/frontend_dev.md
 
   dba:
@@ -58,7 +58,7 @@ agents:
     fallback: gpt-5
     paths: ["db_scripts/", "formula_engine/"]
     extensions: [".sql"]
-    adrs: [ADR-002, ADR-003, ADR-006]
+    adrs: [ADR-005, ADR-006, ADR-032, ADR-090]
     prompt: prompts/agents/dba.md
 
   ai_specialist:
@@ -66,7 +66,7 @@ agents:
     role: Modelos ONNX, RAG, embeddings, evaluación
     model: claude
     paths: ["ai_engine/", "ai_platform/"]
-    adrs: [ADR-004, ADR-005, ADR-011]
+    adrs: [ADR-004, ADR-024, ADR-068, ADR-090, ADR-105]
     prompt: prompts/agents/ai_specialist.md
 
   code_reviewer:
@@ -98,6 +98,12 @@ agents:
     prompt: prompts/agents/documenter.md
 
 routing_rules:
+  - match: { path_prefix: ".github/" }
+    agent: devops
+  - match: { path_prefix: "scripts/" }
+    agent: devops
+  - match: { path_prefix: "docker-compose.yml" }
+    agent: devops
   - match: { path_prefix: "backend/" }
     agent: backend_dev
   - match: { path_prefix: "frontend/" }

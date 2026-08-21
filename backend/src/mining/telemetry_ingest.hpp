@@ -1,5 +1,5 @@
 // --------------------------------------------------------------------------
-// telemetry_ingest.hpp — Ingesta de telemetría de alta tasa (10K+ sensores)
+// telemetry_ingest.hpp — Ingesta durable de telemetría de alta tasa (25K/s)
 // --------------------------------------------------------------------------
 // Diseño:
 //   - Caché en memoria sensor_code -> (sensor_id, tenant_id): evita lookup por
@@ -51,6 +51,10 @@ struct TelemetryRow {
     // SÍ necesita preservar la fecha real del dato histórico — usar este
     // campo en vez de dejarlo en 0 para esos casos.
     std::int64_t captured_at_epoch_ms{0};
+    // Identidad durable asignada por Kafka. Una reentrega tras COPY exitoso
+    // y commit fallido debe ser idempotente en TimescaleDB.
+    std::int32_t kafka_partition{-1};
+    std::int64_t kafka_offset{-1};
 };
 
 class TelemetryIngestor {
@@ -69,9 +73,18 @@ public:
         std::uint64_t batch_max{0};
         // Kafka
         std::uint64_t produced{0};      // mensajes producidos a Kafka
+        std::uint64_t delivered{0};     // confirmados por el broker
         std::uint64_t produce_errors{0};
+        std::uint64_t delivery_errors{0};
         std::uint64_t consumed{0};      // mensajes consumidos de Kafka
         std::uint64_t commits{0};       // commits de offset (lotes durables)
+        std::uint64_t commit_errors{0};
+        std::uint64_t copy_retries{0};
+        std::uint64_t malformed{0};
+        std::uint64_t deduplicated{0};
+        std::size_t   consumer_workers{0};
+        std::size_t   stalled_workers{0};
+        std::size_t   producer_outq{0};
         const char*   mode{"direct"};
     };
 
@@ -79,7 +92,9 @@ public:
 
     // Configura el modo de ingesta (llamar ANTES de start()).
     void configureKafka(const std::string& brokers, const std::string& topic,
-                        const std::string& group);
+                        const std::string& group,
+                        std::size_t consumer_workers = 3,
+                        int copy_retry_ms = 100);
 
     // Carga caché de sensores y arranca el pipeline (flusher o consumidor).
     void start(const std::string& db_url,
@@ -111,22 +126,27 @@ private:
 
     void flushLoop();
     void loadSensorCache();
-    bool ensureConn();           // conecta/reconecta la conexión del flusher
-    bool copyBatch(const std::vector<TelemetryRow>& batch);
+    bool ensureConn(void*& conn);  // una conexión persistente por worker
+    bool copyBatch(const std::vector<TelemetryRow>& batch, void*& conn);
 
     // Kafka / Redpanda
     bool kafkaInitProducer();
-    bool kafkaInitConsumer();
-    void produceRow(const TelemetryRow& row);
-    void consumerLoop();         // poll Kafka -> COPY -> commit (durable)
+    void* kafkaCreateConsumer(std::size_t worker_index);
+    bool produceRow(TelemetryRow& row);
+    void consumerLoop(std::size_t worker_index);
 
     Mode mode_{Mode::Direct};
     std::string kafka_brokers_;
     std::string kafka_topic_;
     std::string kafka_group_;
     void* producer_{nullptr};    // RdKafka::Producer*
-    void* consumer_{nullptr};    // RdKafka::KafkaConsumer*
-    std::thread consumer_thread_;
+    void* delivery_cb_{nullptr}; // RdKafka::DeliveryReportCb*
+    std::size_t consumer_worker_count_{3};
+    int copy_retry_ms_{100};
+    std::vector<void*> consumers_;      // un KafkaConsumer por worker
+    std::vector<void*> kafka_conns_;    // un PGconn por worker
+    std::vector<std::thread> consumer_threads_;
+    std::thread producer_poll_thread_;
 
     std::string db_url_;
     std::size_t batch_size_{1000};
@@ -154,9 +174,16 @@ private:
     std::atomic<std::uint64_t> m_flush_errors_{0};
     std::atomic<std::uint64_t> m_batch_max_{0};
     std::atomic<std::uint64_t> m_produced_{0};
+    std::atomic<std::uint64_t> m_delivered_{0};
     std::atomic<std::uint64_t> m_produce_errors_{0};
+    std::atomic<std::uint64_t> m_delivery_errors_{0};
     std::atomic<std::uint64_t> m_consumed_{0};
     std::atomic<std::uint64_t> m_commits_{0};
+    std::atomic<std::uint64_t> m_commit_errors_{0};
+    std::atomic<std::uint64_t> m_copy_retries_{0};
+    std::atomic<std::uint64_t> m_malformed_{0};
+    std::atomic<std::uint64_t> m_deduplicated_{0};
+    std::atomic<std::size_t> m_stalled_workers_{0};
 };
 
 } // namespace mining

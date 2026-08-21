@@ -453,7 +453,7 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                     // try Authorization header first
                     auto it = req.find(http::field::authorization);
                     if(it != req.end()){
-                        std::string authh = it->value().to_string();
+                        std::string authh(it->value().data(), it->value().size());
                         const std::string bearer = "Bearer ";
                         if(authh.rfind(bearer, 0) == 0) token = authh.substr(bearer.size());
                         else token = authh;

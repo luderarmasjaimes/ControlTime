@@ -1,5 +1,5 @@
 """
-Revisor automático PR — cumplimiento ADR, SPEC, Constitución (ADR-012).
+Revisor automático PR — cumplimiento ADR canónico, SPEC y Constitución.
 Incluye reglas + revisión LLM opcional (segundo modelo).
 """
 from __future__ import annotations
@@ -112,7 +112,7 @@ def review_pr(
     if not spec_id:
         findings.append(ReviewFinding(
             severity="error",
-            rule="ADR-007 / ADR-012",
+            rule="Constitución / ADR-090",
             message="PR debe referenciar SPEC-NNN en descripción o CONTEXT.md",
         ))
 

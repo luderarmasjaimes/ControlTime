@@ -23,11 +23,15 @@ import {
     Radio,
     Maximize2,
     X,
+    MessageCircle,
+    LifeBuoy,
+    UserSearch,
 } from 'lucide-react'
 import { log } from './lib/logger';
     // Hubspot is removed as it is not available in lucide-react
 import { motion, AnimatePresence } from 'framer-motion'
 import AnimatedButton from './components/UI/AnimatedButton'
+import ViewErrorBoundary from './components/ViewErrorBoundary'
 import AzimuthCompass from './components/Special/AzimuthCompass'
 import AuthGateway from './components/Auth/AuthGateway'
 import TenantSwitcher from './components/Auth/TenantSwitcher'
@@ -71,6 +75,9 @@ const UserManagementView = React.lazy(() => import('./components/ReportStudioV2/
 const CompanyManagementView = React.lazy(() => import('./components/ReportStudioV2/components/views/CompanyManagementView'))
 const PermissionsManagementView = React.lazy(() => import('./components/ReportStudioV2/components/views/PermissionsManagementView'))
 const AlarmConfigView = React.lazy(() => import('./components/ReportStudioV2/components/views/AlarmConfigView'))
+const WhatsappConfigView = React.lazy(() => import('./components/ReportStudioV2/components/views/WhatsappConfigView'))
+const SupportAdminView = React.lazy(() => import('./components/ReportStudioV2/components/views/SupportAdminView'))
+const CandidatesRrhhView = React.lazy(() => import('./components/ReportStudioV2/components/views/CandidatesRrhhView'))
 
 /**
  * Fallback mientras se descarga el chunk de una vista diferida. Ocupa el alto
@@ -89,6 +96,7 @@ const ViewLoader = ({ label }: { label: string }) => (
 )
 import { PlatformBrandDashboardBlock } from './brand/PlatformBrandMark'
 import { ensureCompanyUsers } from './components/ReportStudioV2/lib/userBootstrap'
+import { purgeOfflineCacheOnLogout } from './components/ReportStudioV2/lib/offlineSqlite'
 import { getSession, createSession, type Session } from './auth/authStorage'
 import { fetchMyAvatarHd, logout as logoutApi } from './auth/authApi'
 import { usePermissions, invalidatePermissionsCache } from './auth/usePermissions'
@@ -303,6 +311,21 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
     // alarmas.manage) debe ver el catálogo de empresas sin heredar acceso a
     // las otras pantallas administrativas.
     const canViewCompanies = isAdmin || hasPermission('empresas.view')
+    // ADR-114: mismo criterio que canViewCompanies -- flag propio, no dentro
+    // de canMaintain, para que solo quien tenga soporte.manage (no cualquier
+    // manager de usuarios/permisos/alarmas) vea/edite los números de
+    // escalamiento del bot de WhatsApp.
+    const canManageSupport = isAdmin || hasPermission('soporte.manage')
+    // Panel admin de búsqueda de tickets/conversaciones de soporte: además de
+    // soporte.view/soporte.manage, un usuario "department-scoped" (tiene
+    // `session.department` pero no esos permisos) también debe verlo -- el
+    // backend le fuerza `category` a su departamento server-side en
+    // GET /api/support/admin/tickets (403 en chat-messages, que exige
+    // soporte.view/soporte.manage sin excepción de departamento). Flag propio,
+    // no dentro de canManageSupport/canMaintain, mismo criterio que
+    // canViewCompanies/canManageSupport (ADR-085/086, ADR-114).
+    const canViewSupportAdmin =
+        isAdmin || hasPermission('soporte.view') || hasPermission('soporte.manage') || Boolean(session?.department)
     const currentDateLabel = useMemo(() =>
         new Intl.DateTimeFormat(`${language}-${countryIso2}`, {
             dateStyle: 'medium',
@@ -606,6 +629,30 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
             icon: BellRing,
             glyph: 'ALM',
             tip: t('nav.openModule', { name: t('nav.thresholds') })
+        },
+        {
+            name: 'WhatsappConfig',
+            label: t('nav.whatsapp'),
+            icon: MessageCircle,
+            glyph: 'WA',
+            tip: t('nav.openModule', { name: t('nav.whatsapp') })
+        },
+        {
+            name: 'SupportAdmin',
+            label: t('nav.supportAdmin'),
+            icon: LifeBuoy,
+            glyph: 'SUP',
+            tip: t('nav.openModule', { name: t('nav.supportAdmin') })
+        },
+        {
+            // ADR-122: mismo grupo/gate que SupportAdmin (canViewSupportAdmin)
+            // -- un agente RRHH department-scoped ya cae en ese flag sin
+            // necesitar un permiso nuevo.
+            name: 'CandidatesRrhh',
+            label: t('nav.candidatesRrhh'),
+            icon: UserSearch,
+            glyph: 'RRH',
+            tip: t('nav.openModule', { name: t('nav.candidatesRrhh') })
         }
     ]
 
@@ -617,6 +664,34 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
             tip: t('nav.openModule', { name: t('nav.manage') }),
             items: ['UserManagement', 'Permissions', 'AlarmConfig'],
             navTag: 'ADM',
+        },
+        {
+            // ADR-114: mismo criterio que 'empresas' -- grupo propio gateado
+            // solo por canManageSupport, para que un manager de
+            // usuarios/permisos/alarmas sin soporte.manage no vea (ni pueda
+            // abrir) la configuración de números de WhatsApp.
+            id: 'whatsapp_config',
+            title: t('nav.whatsapp'),
+            icon: MessageCircle,
+            tip: t('nav.openModule', { name: t('nav.whatsapp') }),
+            items: ['WhatsappConfig'],
+            navTag: 'WA',
+        },
+        {
+            // Grupo propio gateado SOLO por canViewSupportAdmin -- a propósito
+            // no vive dentro de 'mantenimiento' ni 'whatsapp_config': un
+            // usuario "department-scoped" (solo session.department, sin
+            // soporte.manage) debe ver este panel sin heredar acceso a
+            // Usuarios/Permisos/Alarmas/config de números de WhatsApp.
+            id: 'soporte_admin',
+            title: t('nav.supportAdmin'),
+            icon: LifeBuoy,
+            tip: t('nav.openModule', { name: t('nav.supportAdmin') }),
+            // ADR-122: 'CandidatesRrhh' vive en el mismo grupo/gate que
+            // 'SupportAdmin' (canViewSupportAdmin) -- un agente RRHH
+            // department-scoped ya cae en ese flag, sin permiso nuevo.
+            items: ['SupportAdmin', 'CandidatesRrhh'],
+            navTag: 'SUP',
         },
         {
             // ADR-085/086: grupo propio (no dentro de 'mantenimiento') para que
@@ -683,9 +758,11 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
     const visibleEnterpriseGroups = useMemo(
         () => enterpriseGroups.filter((group) =>
             (group.id !== 'mantenimiento' || canMaintain) &&
-            (group.id !== 'empresas' || canViewCompanies)
+            (group.id !== 'empresas' || canViewCompanies) &&
+            (group.id !== 'whatsapp_config' || canManageSupport) &&
+            (group.id !== 'soporte_admin' || canViewSupportAdmin)
         ),
-        [canMaintain, canViewCompanies, language]
+        [canMaintain, canViewCompanies, canManageSupport, canViewSupportAdmin, language]
     )
     const activeGroup = visibleEnterpriseGroups.find((group) => group.id === activeMainMenu) || visibleEnterpriseGroups[0]
     const visibleTabs = tabs.filter((tab) => activeGroup.items.includes(tab.name))
@@ -991,7 +1068,13 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
                         <div className="viz-route-host">
                             {/* Una sola frontera Suspense para todo el host de vistas: solo
                                 hay una vista montada a la vez (todas las ramas de abajo son
-                                excluyentes por activeTab), así que no hace falta una por vista. */}
+                                excluyentes por activeTab), así que no hace falta una por vista.
+                                ViewErrorBoundary envuelve todo lo de abajo: si una vista lanza
+                                una excepción durante el render (p.ej. una capa de mapa mal
+                                configurada), el error queda contenido aquí en vez de tumbar
+                                toda la plataforma -- resetKey=activeTab hace que cambiar de
+                                pestaña limpie el estado de error automáticamente. */}
+                            <ViewErrorBoundary resetKey={activeTab}>
                             <React.Suspense fallback={<ViewLoader label={t('common.loading')} />}>
                             {activeTab === 'Inclinometer' && (
                                 <GeotechWorkbench tabKey="Inclinometer">
@@ -1062,6 +1145,15 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
                             {activeTab === 'AlarmConfig' && canMaintain && (
                                 <AlarmConfigView />
                             )}
+                            {activeTab === 'WhatsappConfig' && canManageSupport && (
+                                <WhatsappConfigView />
+                            )}
+                            {activeTab === 'SupportAdmin' && canViewSupportAdmin && (
+                                <SupportAdminView />
+                            )}
+                            {activeTab === 'CandidatesRrhh' && canViewSupportAdmin && (
+                                <CandidatesRrhhView />
+                            )}
                             {activeTab === "Report v2" && (
                                 <ReportStudioV2
                                     platformCompanyName={session?.platformCompany || session?.ownerCompany}
@@ -1075,6 +1167,7 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
                                 />
                             )}
                             </React.Suspense>
+                            </ViewErrorBoundary>
                         </div>
                     </div>
 
@@ -1324,6 +1417,19 @@ const App = () => {
         <DashboardApp
             session={session}
             onLogout={() => {
+                // Debe leer la sesión SALIENTE (getSession() todavía no
+                // limpiada -- clearSession() corre recién dentro del
+                // .finally() de logoutApi(), tras el round-trip de red) para
+                // saber qué caché offline aislar/purgar. Mismo motivo que
+                // invalidatePermissionsCache() de abajo: sin esto, el
+                // informe técnico offline de este usuario (datos de
+                // cliente) quedaría accesible en texto plano en el
+                // navegador para el siguiente que inicie sesión en el mismo
+                // dispositivo (ADR-022 asume tablet de campo compartida).
+                // Solo purga si no hay cambios offline sin sincronizar
+                // (dirty=1) -- nunca convierte un logout en pérdida de
+                // datos.
+                void purgeOfflineCacheOnLogout()
                 // ADR-029 (revisado): logout revoca la sesión en el servidor
                 // (best-effort) antes/junto con limpiar el estado local.
                 void logoutApi()

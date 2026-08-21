@@ -14,10 +14,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(WIN32)
   # User-requested local Windows paths for deterministic development builds.
   if(NOT DEFINED BOOST_ROOT)
-    set(BOOST_ROOT "C:/boost_1_90_0" CACHE PATH "Boost root path")
+    set(BOOST_ROOT "C:/boost_1_92_0" CACHE PATH "Boost root path")
   endif()
   if(NOT DEFINED Boost_ROOT)
-    set(Boost_ROOT "C:/boost_1_90_0" CACHE PATH "Boost root path")
+    set(Boost_ROOT "C:/boost_1_92_0" CACHE PATH "Boost root path")
   endif()
   if(NOT DEFINED OpenCV_DIR)
     set(OpenCV_DIR "C:/opencv/build" CACHE PATH "OpenCV config path")
@@ -56,8 +56,19 @@ if(_use_boost_header_only)
   else()
     message(FATAL_ERROR "Boost headers not found in Boost_ROOT/BOOST_ROOT for header-only mode")
   endif()
+  file(STRINGS "${Boost_INCLUDE_DIRS}/boost/version.hpp" _boost_version_line
+       REGEX "^#define BOOST_VERSION [0-9]+$")
+  string(REGEX MATCH "[0-9]+" _boost_version_number "${_boost_version_line}")
+  if(_boost_version_number LESS 109100)
+    message(FATAL_ERROR "Boost 1.91 or newer is required; found numeric version ${_boost_version_number}")
+  endif()
+  message(STATUS "Boost header-only fallback: ${Boost_INCLUDE_DIRS} (${_boost_version_number})")
 else()
-  find_package(Boost REQUIRED COMPONENTS system json)
+  # 1.91.0 is the production baseline. A newer development tree (currently
+  # C:/boost_1_92_0 on Windows) is accepted as long as it provides the same
+  # components. Linux images pin and verify 1.91.0 in their Dockerfiles.
+  find_package(Boost 1.91 REQUIRED COMPONENTS json)
+  message(STATUS "Boost compiled libraries: ${Boost_VERSION_STRING} (${Boost_INCLUDE_DIRS})")
 endif()
 find_package(OpenCV REQUIRED)
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -94,6 +105,7 @@ set(INFRA_MODULES
   src/config/app_config.cpp
   src/http/http_utils.cpp
   src/http/router.cpp
+  src/http/http_client.cpp
   src/ws_broadcast.cpp
 )
 
@@ -121,6 +133,7 @@ set(BIOMETRIC_MODULES
 set(MINING_MODULES
   src/mining/kpi_service.cpp
   src/mining/sensor_service.cpp
+  src/mining/sensor_telemetry_wizard.cpp
   src/mining/igp_seismic_client.cpp
   src/mining/surveillance_service.cpp
   src/mining/mining_gateway.cpp
@@ -132,6 +145,8 @@ set(MINING_MODULES
   src/mining/thingsboard_sync.cpp
   src/mining/alarm_notifier.cpp
   src/mining/notification_routes.cpp
+  src/mining/rp_odoo_sync.cpp
+  src/mining/rp_gateway_routes.cpp
 )
 
 # Módulos de reportes y fórmulas
@@ -153,12 +168,23 @@ set(PLATFORM_MODULES
   src/map/map_routes.cpp
   src/map/wms_proxy.cpp
   src/map/wms_proxy_security.cpp
+  src/map/geocode_proxy.cpp
+  src/map/geocode_proxy_security.cpp
   src/gdal/conversion_service.cpp
   src/gdal/gdal_routes.cpp
   src/text/text_routes.cpp
   src/support/whatsapp_client.cpp
   src/support/mining_chatbot_service.cpp
   src/support/support_routes.cpp
+  src/support/support_storage_pg.cpp
+  src/support/whatsapp_menu.cpp
+  src/support/whatsapp_bot_engine.cpp
+  src/support/whatsapp_webhook_routes.cpp
+  src/support/whatsapp_signature.cpp
+  src/support/whatsapp_media_client.cpp
+  src/support/cv_storage_pg.cpp
+  src/support/cv_extraction_client.cpp
+  src/support/cv_routes.cpp
 )
 
 add_executable(beemetry_backend
@@ -300,11 +326,18 @@ if(Catch2_FOUND)
   add_executable(beemetry_backend_tests
     tests/test_http_utils.cpp
     tests/test_wms_proxy_security.cpp
+    tests/test_geocode_proxy_security.cpp
     tests/test_tax_id.cpp
+    tests/test_whatsapp_bot_menu.cpp
+    tests/test_whatsapp_webhook_signature.cpp
     src/http/http_utils.cpp
     src/config/app_config.cpp
     src/map/wms_proxy_security.cpp
+    src/map/geocode_proxy_security.cpp
     src/auth/tax_id.cpp
+    src/auth/jwt.cpp
+    src/support/whatsapp_menu.cpp
+    src/support/whatsapp_signature.cpp
   )
   target_include_directories(beemetry_backend_tests PRIVATE
     ${Boost_INCLUDE_DIRS}

@@ -60,7 +60,13 @@ describe('authApi', () => {
         expect(fetchMock.mock.calls[0][1].credentials).toBe('include')
     })
 
-    it('sends registration payload with biometric template', async () => {
+    // Corrección de seguridad 2026-08-13 (ver comentario en authApi.ts junto a
+    // registerUser): un face_template calculado en el cliente nunca pasó por
+    // análisis facial real -- el backend lo marca "unknown_client_supplied" y
+    // rechaza cualquier login facial posterior con esa cuenta. registerUser()
+    // deja de enviarlo deliberadamente, aunque la firma lo siga aceptando por
+    // compatibilidad con otros llamadores (p.ej. el óvalo en pantalla).
+    it('nunca envía face_template, aunque se provea una plantilla clásica', async () => {
         const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
             ok: true,
             json: async () => ({ status: 'registered', user: { id: 'u1' } }),
@@ -88,11 +94,11 @@ describe('authApi', () => {
             username: 'luder',
             password: 'secret123',
         })
-        expect(payload.face_template).toEqual([0.11, 0.22, 0.33])
+        expect(payload.face_template).toBeUndefined()
         expect(payload.face_image_base64).toBeUndefined()
     })
 
-    it('sends both face_template and face_image_base64 when both provided', async () => {
+    it('envía solo face_image_base64 cuando se proveen plantilla clásica e imagen juntas', async () => {
         const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
             ok: true,
             json: async () => ({ status: 'registered', user: { id: 'u1' } }),
@@ -111,7 +117,7 @@ describe('authApi', () => {
 
         const [, options] = fetchMock.mock.calls[0]
         const payload = JSON.parse(options.body)
-        expect(payload.face_template).toEqual([0.11, 0.22, 0.33])
+        expect(payload.face_template).toBeUndefined()
         expect(payload.face_image_base64).toBe('BASE64JPEG==')
     })
 
@@ -262,26 +268,25 @@ describe('authApi', () => {
         })
     })
 
-    it('sends face login request with template', async () => {
-        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-            ok: true,
-            json: async () => ({ status: 'authenticated', method: 'face', score: 0.94 }),
-        })
+    // Corrección de seguridad 2026-08-13 (ver comentario en authApi.ts junto a
+    // loginWithFace): la plantilla "clásica" del cliente tiene otra dimensión
+    // que el embedding InsightFace real guardado en el registro -- con
+    // BEEMETRY_BIOMETRIC_PROVIDER=legacy, mandarla SIEMPRE hacía fallar el
+    // login con "La plantilla enviada no coincide con el tipo biométrico
+    // registrado" (reproducido en vivo). loginWithFace() ahora exige imagen y
+    // rechaza explícitamente un login solo-con-plantilla antes de llamar a la red.
+    it('rechaza un login facial que solo trae plantilla clásica, sin imagen', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch')
 
-        await loginWithFace({
-            company: 'Minera Raura',
-            identityLogin: 'jdoe',
-            template: [0.1, 0.2],
-        })
+        await expect(
+            loginWithFace({
+                company: 'Minera Raura',
+                identityLogin: 'jdoe',
+                template: [0.1, 0.2],
+            })
+        ).rejects.toThrow('No se capturó imagen facial para validar.')
 
-        const [url, options] = fetchMock.mock.calls[0]
-        expect(String(url)).toContain('/api/auth/login/face')
-        expect(JSON.parse(options.body)).toEqual({
-            company: 'Minera Raura',
-            face_template: [0.1, 0.2],
-            identity_login: 'jdoe',
-            username: 'jdoe',
-        })
+        expect(fetchMock).not.toHaveBeenCalled()
     })
 
     it('sends face login image payload when provided', async () => {

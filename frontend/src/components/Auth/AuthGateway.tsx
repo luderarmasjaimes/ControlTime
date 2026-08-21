@@ -17,6 +17,7 @@ import {
     ShieldCheck,
     AlertTriangle,
     ScanLine,
+    CheckCircle2,
 } from 'lucide-react'
 import { DocumentScanCapture } from '../UI/DocumentScanCapture'
 import type { DniScanResult } from '../../auth/authApi'
@@ -36,6 +37,7 @@ import {
     resetBiometricCapture,
     validateCompany,
 } from '../../auth/authApi'
+import { getBestEffortLocation, type GeoLocationSample } from '../../auth/geolocation'
 import { FACIAL_ICAO } from '../../config/facialIcaoConfig'
 import {
     formatIcaoCell,
@@ -59,6 +61,20 @@ import {
     FACIAL_STRICT_OVAL_W_PCT,
     FACIAL_STRICT_OVAL_H_PCT,
 } from '../../auth/biometricOvalFrame'
+import { classifyCameraError } from '../../auth/cameraErrorPolicy'
+import {
+    createInitialChallengeState,
+    currentChallenge,
+    isChallengeSequenceComplete,
+    pickReplacementChallenge,
+    yawSatisfiesChallenge,
+    challengeInstructionKey,
+    CHALLENGE_TIMEOUT_MS,
+    CHALLENGE_MAX_ATTEMPTS,
+    ACTIVE_CHALLENGE_ENABLED,
+    type LivenessChallengeState,
+    type LivenessChallengeType,
+} from '../../auth/livenessChallenge'
 import { PlatformBrandPanelHeader } from '../../brand/PlatformBrandMark'
 import PlatformRegionBar from '../Platform/PlatformRegionBar'
 import { useI18n } from '../../i18n/I18nProvider'
@@ -329,6 +345,122 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     })
     const livenessBlinkRef = useRef(0)
     const livenessMouthEventsRef = useRef(0)
+    /** Liveness ACTIVA (challenge-response, ver ../../auth/livenessChallenge.ts):
+     * a diferencia de livenessBlinkRef/livenessMouthEventsRef (pasivo -- cuentan
+     * cualquier parpadeo/apertura de boca que ocurra en algún momento), esto exige
+     * cumplir 2 desafíos sorteados al azar (parpadear/boca/girar cabeza) dentro de
+     * una ventana de tiempo corta cada uno. El ref es la fuente de verdad (leído en
+     * el loop de detección, no dispara render); challengeUiState es su espejo para
+     * pintar el overlay de instrucciones.
+     */
+    const livenessChallengeRef = useRef<LivenessChallengeState>(createInitialChallengeState())
+    const [challengeUiState, setChallengeUiState] = useState<LivenessChallengeState>(
+        livenessChallengeRef.current
+    )
+    const challengesPassedRef = useRef(false)
+
+    const advanceOrCompleteChallenge = () => {
+        const st = livenessChallengeRef.current
+        const nextIndex = st.index + 1
+        const isLast = nextIndex >= st.queue.length
+        // Confirmación visual breve (ver overlay) antes de pasar al siguiente
+        // desafío o de cerrar la secuencia -- sin esto el cambio de
+        // instrucción se sentía abrupto en pruebas.
+        livenessChallengeRef.current = { ...st, status: 'success', deadlineAt: null }
+        setChallengeUiState(livenessChallengeRef.current)
+        if (isLast) {
+            challengesPassedRef.current = true
+            livenessChallengeRef.current = { ...st, index: nextIndex, status: 'success', deadlineAt: null }
+            setChallengeUiState(livenessChallengeRef.current)
+            return
+        }
+        window.setTimeout(() => {
+            const cur = livenessChallengeRef.current
+            if (cur.index === st.index && cur.status === 'success') {
+                livenessChallengeRef.current = {
+                    ...cur,
+                    index: nextIndex,
+                    status: 'pending',
+                    deadlineAt: performance.now() + CHALLENGE_TIMEOUT_MS,
+                    attempt: 1,
+                }
+                setChallengeUiState(livenessChallengeRef.current)
+            }
+        }, 700)
+    }
+
+    /** Llamado desde los bordes de detección de parpadeo/boca ya existentes
+     * (no agrega un detector nuevo -- reutiliza el mismo evento que ya
+     * alimenta livenessBlinkRef/livenessMouthEventsRef). */
+    const trySatisfyGestureChallenge = (type: 'blink' | 'mouth') => {
+        const st = livenessChallengeRef.current
+        if (challengesPassedRef.current || st.status !== 'pending') {
+            return
+        }
+        if (currentChallenge(st) !== type) {
+            return
+        }
+        advanceOrCompleteChallenge()
+    }
+
+    /** Chequeo continuo (no de borde): el giro de cabeza se sostiene mientras
+     * dura el desafío, no es un evento puntual como el parpadeo. */
+    const trySatisfyYawChallenge = (headYawRatio: number) => {
+        const st = livenessChallengeRef.current
+        if (challengesPassedRef.current || st.status !== 'pending') {
+            return
+        }
+        const cur = currentChallenge(st)
+        if (cur !== 'turn_left' && cur !== 'turn_right') {
+            return
+        }
+        if (yawSatisfiesChallenge(cur, headYawRatio)) {
+            advanceOrCompleteChallenge()
+        }
+    }
+
+    /** Vencimiento del desafío actual: reintenta el mismo tipo hasta
+     * CHALLENGE_MAX_ATTEMPTS veces (evita que un gesto que le cuesta al
+     * usuario trabe la sesión), luego sortea un reemplazo para ese puesto. */
+    const checkChallengeTimeout = (now: number) => {
+        const st = livenessChallengeRef.current
+        if (challengesPassedRef.current || st.status !== 'pending' || st.deadlineAt == null) {
+            return
+        }
+        if (now < st.deadlineAt) {
+            return
+        }
+        if (st.attempt < CHALLENGE_MAX_ATTEMPTS) {
+            const attemptAfterTimeout = st.attempt + 1
+            livenessChallengeRef.current = { ...st, status: 'timeout', deadlineAt: null }
+            setChallengeUiState(livenessChallengeRef.current)
+            window.setTimeout(() => {
+                const cur = livenessChallengeRef.current
+                if (cur.index === st.index && cur.status === 'timeout') {
+                    livenessChallengeRef.current = {
+                        ...cur,
+                        status: 'pending',
+                        deadlineAt: performance.now() + CHALLENGE_TIMEOUT_MS,
+                        attempt: attemptAfterTimeout,
+                    }
+                    setChallengeUiState(livenessChallengeRef.current)
+                }
+            }, 1200)
+        } else {
+            const replacement = pickReplacementChallenge(st.queue)
+            const newQueue = [...st.queue]
+            newQueue[st.index] = replacement
+            livenessChallengeRef.current = {
+                ...st,
+                queue: newQueue,
+                status: 'pending',
+                deadlineAt: performance.now() + CHALLENGE_TIMEOUT_MS,
+                attempt: 1,
+            }
+            setChallengeUiState(livenessChallengeRef.current)
+        }
+    }
+
     const prevEyesOpenLandmarkRef = useRef<boolean | null>(null)
     const blinkCloseStartedAtRef = useRef<number | null>(null)
     const mouthWasOpenPhaseRef = useRef(false)
@@ -359,6 +491,17 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const identityAnchorRef = useRef('')
     const endLoginFaceSessionRef = useRef((_o?: { errorMessage?: string }) => {})
     const bestLoginProbeRef = useRef<LoginProbe | null>(null)
+    /** Ubicación de la PC cliente, pedida al abrir la sesión facial (junto con
+     * la cámara) para que ya esté resuelta cuando el usuario confirme el
+     * login -- ver ../../auth/geolocation.ts. Best-effort: nunca bloquea ni
+     * condiciona el resultado de la autenticación facial. */
+    const pendingLocationRef = useRef<Promise<GeoLocationSample | null> | null>(null)
+    /** Igual que pendingLocationRef pero para el login por contraseña/PIN
+     * (ADR-107): se pide apenas se muestra ese formulario (ver useEffect más
+     * abajo) para que ya esté resuelta cuando el usuario confirme el login,
+     * sin agregar latencia perceptible al submit. Best-effort: nunca bloquea
+     * ni condiciona el resultado de la autenticación. */
+    const pendingPasswordLocationRef = useRef<Promise<GeoLocationSample | null> | null>(null)
     const loginSubmitTriggeredRef = useRef(false)
     /** Evita spam en consola cuando el gate de login facial está cerrado con 3/3 muestras. */
     const authFaceAutoDiagAtRef = useRef(0)
@@ -749,8 +892,13 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     stream = await navigator.mediaDevices.getUserMedia({
                         video: {
                             facingMode: 'user',
-                            width: { ideal: 640, min: 320 },
-                            height: { ideal: 480, min: 240 },
+                            // 960x720 (no 640x480): más píxeles reales para MediaPipe en
+                            // el mismo encuadre físico -- a distancia media/lejana, el EAR
+                            // medido a 640x480 se degrada y el blink blendshape se eleva
+                            // por falta de resolución en la región del ojo, no porque los
+                            // ojos estén cerrados (confirmado con datos reales, 2026-08-19).
+                            width: { ideal: FACIAL_ICAO.CAMERA.width.ideal, min: 320 },
+                            height: { ideal: FACIAL_ICAO.CAMERA.height.ideal, min: 240 },
                             aspectRatio: { ideal: 4 / 3 },
                             frameRate: FACIAL_ICAO.CAMERA.frameRate,
                         },
@@ -796,16 +944,18 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     }
                 }
             } catch (err: any) {
-                const name = err?.name || ''
-                if (name === 'NotReadableError' || name === 'TrackStartError') {
-                    setError(t('error.cameraBusy'))
-                } else if (name === 'NotAllowedError') {
-                    setError(t('error.cameraPermission'))
-                } else {
-                    setError(t('error.cameraOpen'))
-                }
                 setCameraReady(false)
-                if (!cancelled && !cameraRetryTimerRef.current) {
+                const { messageKey, shouldRetry } = classifyCameraError(err?.name || '')
+                setError(t(messageKey))
+                // shouldRetry es false para un permiso denegado (ver
+                // classifyCameraError): antes este catch reintentaba SIEMPRE
+                // con el mismo timer, generando un bucle infinito de llamadas
+                // a getUserMedia() sin ningún efecto visible -- Chrome no
+                // vuelve a mostrar el diálogo tras un rechazo, solo rechaza
+                // de inmediato cada vez. El listener de navigator.permissions
+                // (más abajo) retoma solo si el usuario cambia el permiso a
+                // "granted" desde el navegador.
+                if (shouldRetry && !cancelled && !cameraRetryTimerRef.current) {
                     cameraRetryTimerRef.current = setTimeout(() => {
                         cameraRetryTimerRef.current = null
                         startCamera()
@@ -826,10 +976,67 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             }
         }
 
+        // Nueva sesión de cámara -> nuevos desafíos de liveness sorteados
+        // (evita que un intento previo fallido/cancelado deje el mismo
+        // desafío ya "adivinado" para el siguiente intento).
+        // ACTIVE_CHALLENGE_ENABLED=false (ver livenessChallenge.ts): no
+        // bloquear el envío -- challengesPassedRef arranca en true, el resto
+        // del código de desafíos queda intacto pero inerte.
+        livenessChallengeRef.current = createInitialChallengeState()
+        challengesPassedRef.current = !ACTIVE_CHALLENGE_ENABLED
+        setChallengeUiState(livenessChallengeRef.current)
+
+        // Si el permiso ya está "granted" (concedido en una visita anterior,
+        // o por política empresarial VideoCaptureAllowedUrls en equipos
+        // administrados), getUserMedia() de arriba abre la cámara al toque,
+        // SIN mostrar ningún diálogo -- eso ya es el comportamiento nativo
+        // del navegador, no algo que este código deba forzar. Lo que sí
+        // vigilamos acá es el caso en que el usuario cambia el permiso desde
+        // el candado de la barra de direcciones DESPUÉS de que ya fallamos
+        // (denegado -> concedido): sin este listener, la cámara se quedaría
+        // apagada hasta un F5 manual.
+        let permissionStatus: PermissionStatus | null = null
+        const handlePermissionChange = () => {
+            if (cancelled || !permissionStatus) {
+                return
+            }
+            if (permissionStatus.state === 'granted') {
+                startCamera()
+            } else if (permissionStatus.state === 'denied') {
+                if (cameraRetryTimerRef.current) {
+                    clearTimeout(cameraRetryTimerRef.current)
+                    cameraRetryTimerRef.current = null
+                }
+                stopCurrentStream()
+                setCameraReady(false)
+                setError(t('error.cameraPermission'))
+            }
+        }
+
         startCamera()
+
+        // Permissions API para 'camera' no existe en todos los navegadores
+        // (Firefox/Safari no la implementan) -- degrada con gracia: sin el
+        // listener, getUserMedia() sigue funcionando igual, solo se pierde el
+        // auto-retoque cuando el permiso cambia sin recargar la página.
+        if (navigator.permissions?.query) {
+            navigator.permissions
+                .query({ name: 'camera' })
+                .then((status) => {
+                    if (cancelled) {
+                        return
+                    }
+                    permissionStatus = status
+                    status.onchange = handlePermissionChange
+                })
+                .catch(() => {})
+        }
 
         return () => {
             cancelled = true
+            if (permissionStatus) {
+                permissionStatus.onchange = null
+            }
             if (cameraRetryTimerRef.current) {
                 clearTimeout(cameraRetryTimerRef.current)
                 cameraRetryTimerRef.current = null
@@ -879,6 +1086,17 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             })
         }
     }, [loginForm.company, loginForm.username, mode, loginBiometricSession, endLoginFaceSession])
+
+    // ADR-107: prefetch de ubicación del cliente para el login por
+    // contraseña/PIN -- se dispara al entrar a esa pantalla (no en el
+    // submit) por el mismo motivo que el flujo facial de arriba: que la
+    // resolución del permiso del navegador no agregue latencia al momento
+    // de confirmar el login.
+    useEffect(() => {
+        if (mode === 'login' && !loginBiometricSession) {
+            pendingPasswordLocationRef.current = getBestEffortLocation()
+        }
+    }, [mode, loginBiometricSession])
 
     useEffect(() => {
         if (mode === 'login' && loginBiometricSession) {
@@ -1361,6 +1579,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             const dtBlink = now - blinkCloseStartedAtRef.current
                             if (dtBlink > 80 && dtBlink < 700) {
                                 livenessBlinkRef.current += 1
+                                trySatisfyGestureChallenge('blink')
                             }
                             blinkCloseStartedAtRef.current = null
                         }
@@ -1379,10 +1598,13 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                         }
                         if (mouthWasOpenPhaseRef.current && mouthClosed) {
                             livenessMouthEventsRef.current += 1
+                            trySatisfyGestureChallenge('mouth')
                             mouthWasOpenPhaseRef.current = false
                         }
                         prevMouthClosedLandmarkRef.current = mouthClosed
                     }
+
+                    checkChallengeTimeout(now)
 
                     const lvPts =
                         livenessBlinkRef.current * FACIAL_ICAO.LIVENESS_POINTS_PER_BLINK +
@@ -1439,6 +1661,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         four.noGlasses
                                 )
                                 lastIcaoFourRef.current = four
+                                const headYawRatio = Number(status?.head_yaw_ratio ?? 0)
+                                if (Number.isFinite(headYawRatio)) {
+                                    trySatisfyYawChallenge(headYawRatio)
+                                }
                                 if (hasLandmarks) {
                                     if (!lastVerifyOkRef.current) {
                                         livenessFallbackRef.current = 0
@@ -1604,11 +1830,15 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 })
             }
         }
+        const sinceLastAutoTrigger = performance.now() - lastAutoTriggerRef.current
+        const cooldownOk = sinceLastAutoTrigger >= FACIAL_ICAO.LOGIN_FACE_RETRY_COOLDOWN_MS
         if (
             gateOk &&
             shouldAutoFaceLogin &&
             hasRequiredBiometricSamples &&
-            !loginSubmitTriggeredRef.current
+            challengesPassedRef.current &&
+            !loginSubmitTriggeredRef.current &&
+            cooldownOk
         ) {
             log.info('[AUTH_FACE_AUTO] disparando login facial', {
                 qualityReady: Boolean(faceGuide.qualityReady),
@@ -1634,6 +1864,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         faceGuide.lastServerOk,
         registerTab,
         registerUserBiometricStep,
+        challengeUiState,
     ])
 
     useEffect(() => {
@@ -1650,6 +1881,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         }
         if (samples < FACIAL_ICAO.REQUIRED_VALID_FRAMES) {
             registerAutoSubmitTriggeredRef.current = false
+            return
+        }
+        if (!challengesPassedRef.current) {
             return
         }
         if (isProcessing || registrationApiInFlightRef.current) {
@@ -1675,6 +1909,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         faceGuide.qualityReady,
         faceGuide.lastServerOk,
         isProcessing,
+        challengeUiState,
     ])
 
     const startLoginFaceSession = async () => {
@@ -1727,6 +1962,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             setCapturedPortraitOvalBase64('')
             setCapturedBustRectBase64('')
             bestLoginProbeRef.current = null
+            // Se dispara junto con la cámara (no en el submit) para que la
+            // resolución del permiso del navegador no agregue latencia al
+            // momento de confirmar el login.
+            pendingLocationRef.current = getBestEffortLocation()
             loginSubmitTriggeredRef.current = false
             authFaceAutoDiagAtRef.current = 0
             validFramesRef.current = 0
@@ -1795,11 +2034,15 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 quality_ready: Boolean(faceGuide.qualityReady),
                 capture_count: Number(faceGuide.captureCount || 0),
             })
+            const location = pendingLocationRef.current
+                ? await pendingLocationRef.current.catch(() => null)
+                : null
             const result = await loginWithFace({
                 company: loginForm.company,
                 identityLogin: id,
                 template,
                 imageBase64,
+                location,
             })
             const user = result.user
             const score = result.score || 0
@@ -1840,7 +2083,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 setError(t('error.passwordRequired'))
                 return
             }
-            const result = await loginWithPassword(loginForm)
+            const location = pendingPasswordLocationRef.current
+                ? await pendingPasswordLocationRef.current.catch(() => null)
+                : null
+            const result = await loginWithPassword({ ...loginForm, location })
             const session = createSession(result.user, loginTab)
             setMessage(t('message.passwordAuthorized'))
             onAuthenticated(session)
@@ -2436,15 +2682,86 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 </div>
                             )}
 
+                            {ACTIVE_CHALLENGE_ENABLED &&
+                                cameraReady &&
+                                !isChallengeSequenceComplete(challengeUiState) &&
+                                (() => {
+                                    const chType = currentChallenge(challengeUiState)
+                                    if (!chType) {
+                                        return null
+                                    }
+                                    const isSuccess = challengeUiState.status === 'success'
+                                    const isTimeout = challengeUiState.status === 'timeout'
+                                    const secondsLeft =
+                                        challengeUiState.deadlineAt != null
+                                            ? Math.max(
+                                                  0,
+                                                  Math.ceil(
+                                                      (challengeUiState.deadlineAt - performance.now()) / 1000
+                                                  )
+                                              )
+                                            : 0
+                                    return (
+                                        <div
+                                            className="absolute left-1/2 top-3 -translate-x-1/2 flex flex-col items-center gap-1 px-4 py-2 rounded-xl text-center"
+                                            style={{
+                                                zIndex: 25,
+                                                background: isSuccess
+                                                    ? 'rgba(22, 101, 52, 0.92)'
+                                                    : isTimeout
+                                                      ? 'rgba(127, 29, 29, 0.92)'
+                                                      : 'rgba(15, 23, 42, 0.88)',
+                                                border: `1px solid ${
+                                                    isSuccess
+                                                        ? '#22c55e'
+                                                        : isTimeout
+                                                          ? '#ef4444'
+                                                          : '#38bdf8'
+                                                }`,
+                                                minWidth: 220,
+                                            }}
+                                        >
+                                            <span className="text-[10px] tracking-wider uppercase text-sky-300">
+                                                {t('liveness.challenge.progress', {
+                                                    current: String(challengeUiState.index + 1),
+                                                    total: String(challengeUiState.queue.length),
+                                                })}
+                                            </span>
+                                            <span className="text-white text-sm font-bold flex items-center gap-2">
+                                                {isSuccess ? (
+                                                    <CheckCircle2 size={18} className="text-green-400" />
+                                                ) : (
+                                                    <ScanFace size={18} className="animate-pulse text-sky-300" />
+                                                )}
+                                                {isSuccess
+                                                    ? t('liveness.challenge.success')
+                                                    : isTimeout
+                                                      ? t('liveness.challenge.retry')
+                                                      : t(challengeInstructionKey(chType))}
+                                            </span>
+                                            {challengeUiState.status === 'pending' && (
+                                                <span className="text-[11px] text-amber-200 font-mono">
+                                                    {secondsLeft}s
+                                                </span>
+                                            )}
+                                        </div>
+                                    )
+                                })()}
+
                             {!cameraReady && (
                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 text-white gap-3 px-4 text-center" style={{ zIndex: 20 }}>
                                     <ScanFace size={48} className="animate-pulse opacity-50" />
                                     {mode === 'login' && !loginBiometricSession ? (
-                                        <span className="text-sm font-medium max-w-xs">
-                                            {t('auth.cameraStartHelp', {
-                                                seconds: Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000),
-                                            })}
-                                        </span>
+                                        <>
+                                            <span className="text-sm font-medium max-w-xs">
+                                                {t('auth.cameraStartHelp', {
+                                                    seconds: Math.round(FACIAL_ICAO.LOGIN_FACE_SESSION_MS / 1000),
+                                                })}
+                                            </span>
+                                            <span className="text-xs opacity-70 max-w-xs">
+                                                {t('auth.locationNotice')}
+                                            </span>
+                                        </>
                                     ) : (
                                         <span className="text-sm font-medium">{t('auth.startingBiometric')}</span>
                                     )}
@@ -2464,7 +2781,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         {t('auth.samples')}
                                     </div>
                                     <div className="text-lg font-bold leading-tight text-center">
-                                        {Math.min(3, Number(faceGuide.captureCount || 0))}/3
+                                        {Math.min(FACIAL_ICAO.REQUIRED_VALID_FRAMES, Number(faceGuide.captureCount || 0))}/{FACIAL_ICAO.REQUIRED_VALID_FRAMES}
                                     </div>
                                 </div>
                             )}
@@ -2738,16 +3055,18 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 disabled={
                                     isProcessing ||
                                     (loginBiometricSession &&
-                                        (!cameraReady || !loginBiometricGate))
+                                        (!cameraReady || !loginBiometricGate || !challengesPassedRef.current))
                                 }
                                 onClick={async () => {
                                     if (!loginBiometricSession) {
                                         await startLoginFaceSession()
                                         return
                                     }
-                                    if (cameraReady && loginBiometricGate && !isProcessing) {
+                                    if (cameraReady && loginBiometricGate && challengesPassedRef.current && !isProcessing) {
                                         loginSubmitTriggeredRef.current = true
                                         handleFaceLogin(bestLoginProbeRef.current)
+                                    } else if (!challengesPassedRef.current) {
+                                        setError(t('liveness.challenge.retry'))
                                     } else {
                                         setError(
                                             t('error.biometricWait')

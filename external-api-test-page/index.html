@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AURIXA / Beemetry — Login (contraseña / biometría) multitenant</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --text: #e6e8ec; --muted: #8a90a0; --accent: #F07E41; --accent2: #ffab73;
+    --ok: #3ecf8e; --err: #ef5350; --warn: #f2c94c; --mono: 'Consolas','Cascadia Mono',monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:10; }
+  header h1 { font-size:15px; margin:0; color:var(--accent); font-weight:600; }
+  header .origin-badge { font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:3px 7px; color:var(--muted); }
+  main { max-width:640px; margin:0 auto; padding:20px 20px 48px; display:flex; flex-direction:column; gap:16px; }
+  section.panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px; }
+  section.panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--accent2); margin:0 0 14px; display:flex; align-items:center; justify-content:space-between; }
+  section.panel h2 .badge { font-size:10px; text-transform:none; letter-spacing:0; padding:2px 6px; border-radius:4px; background:var(--panel2); color:var(--muted); font-weight:400; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  label:first-child { margin-top:0; }
+  input[type=text], input[type=password], select {
+    width:100%; padding:10px 12px; background:var(--panel2); border:1px solid var(--border); border-radius:7px; color:var(--text); font-size:14px; font-family:inherit;
+  }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; min-width:0; }
+  button { cursor:pointer; border:none; border-radius:7px; padding:11px 16px; font-size:14px; font-weight:600; background:var(--accent); color:#1b1200; width:100%; }
+  button:hover { background:var(--accent2); }
+  button.secondary { background:var(--panel2); color:var(--text); border:1px solid var(--border); font-weight:500; }
+  button.secondary:hover { background:#262b36; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.small { width:auto; padding:7px 12px; font-size:12px; }
+  .hint { font-size:11px; color:var(--muted); margin-top:8px; line-height:1.5; }
+  .hint code { background:var(--panel2); padding:1px 5px; border-radius:4px; font-family:var(--mono); }
+  .tabs { display:flex; gap:8px; margin-bottom:16px; }
+  .tabs button { flex:1; background:var(--panel2); color:var(--muted); border:1px solid var(--border); }
+  .tabs button.active { background:var(--accent); color:#1b1200; border-color:var(--accent); }
+  video, canvas.preview { width:100%; max-width:420px; border-radius:8px; border:1px solid var(--border); background:#000; display:block; margin:0 auto; }
+  .cam-wrap { position:relative; display:inline-block; width:100%; text-align:center; }
+  canvas.overlay { position:absolute; top:0; left:50%; transform:translateX(-50%); width:100%; max-width:420px; pointer-events:none; }
+  .icao-grid { display:grid; grid-template-columns: repeat(2,1fr); gap:6px; margin-top:12px; }
+  .icao-item { font-size:11px; padding:6px 8px; border-radius:6px; background:var(--panel2); display:flex; align-items:center; gap:6px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
+  .dot.on { background:var(--ok); } .dot.off { background:var(--err); }
+  .status-line { font-size:11px; color:var(--muted); margin-top:8px; text-align:center; }
+  .status-line b { color:var(--text); }
+  .cam-buttons { display:flex; gap:8px; margin-top:10px; }
+  .cam-buttons button { width:auto; flex:1; }
+  #log { font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px; max-height:260px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
+  .log-entry { border-bottom:1px dashed var(--border); padding:6px 0; }
+  .log-entry:last-child { border-bottom:none; }
+  .log-ok { color:var(--ok); } .log-err { color:var(--err); } .log-warn { color:var(--warn); }
+  .pill { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; margin-right:6px; }
+  .pill.get { background:#2a3a52; color:#8fc4ff; } .pill.post { background:#3a2a52; color:#c58fff; }
+  .result-box { margin-top:12px; font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:10px; max-height:220px; overflow:auto; white-space:pre-wrap; }
+  .session-card { background:var(--panel2); border:1px solid var(--ok); border-radius:8px; padding:14px; }
+  .session-card .row1 { font-size:15px; font-weight:600; }
+  .session-card .row2 { font-size:12px; color:var(--muted); margin-top:4px; }
+  footer { text-align:center; color:var(--muted); font-size:11px; padding:20px; }
+  a { color:var(--accent2); }
+  details summary { cursor:pointer; font-size:12px; color:var(--muted); }
+  .empty-note { font-size:12px; color:var(--warn); margin-top:6px; }
+
+  /* error banner */
+  #errorBanner { display:none; max-width:640px; margin:0 auto 12px; padding:12px 16px; border-radius:8px;
+    background:rgba(239,83,80,.12); border:1px solid var(--err); color:#ffb4b1; font-size:13px; line-height:1.5;
+    position:relative; }
+  #errorBanner b { color:#fff; }
+  #errorBanner .close { position:absolute; top:8px; right:10px; cursor:pointer; background:none; border:none;
+    color:#ffb4b1; font-size:16px; width:auto; padding:2px 6px; }
+  #errorBanner .close:hover { color:#fff; background:none; }
+
+  /* success modal */
+  #successOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:100;
+    align-items:center; justify-content:center; }
+  #successOverlay.show { display:flex; }
+  .success-modal { background:var(--panel); border:1px solid var(--ok); border-radius:14px; padding:32px 28px;
+    max-width:340px; text-align:center; box-shadow:0 10px 40px rgba(0,0,0,.5); }
+  .success-modal .check { width:56px; height:56px; border-radius:50%; background:rgba(62,207,142,.15);
+    border:2px solid var(--ok); display:flex; align-items:center; justify-content:center; margin:0 auto 16px;
+    font-size:28px; color:var(--ok); }
+  .success-modal h3 { margin:0 0 8px; font-size:17px; color:var(--text); }
+  .success-modal p { margin:0 0 20px; font-size:13px; color:var(--muted); line-height:1.5; }
+  .success-modal button { background:var(--ok); color:#062018; }
+  .success-modal button:hover { background:#59dba3; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Login multitenant — contraseña / PIN o verificación facial</h1>
+  <span class="origin-badge" id="originBadge">origin: …</span>
+</header>
+
+<main>
+
+  <div id="errorBanner" role="alert">
+    <button class="close" id="btnCloseError" type="button" aria-label="Cerrar">×</button>
+    <b>Error:</b> <span id="errorBannerText"></span>
+  </div>
+
+  <!-- CONFIG -->
+  <section class="panel">
+    <h2>Configuración <span class="badge" id="sessionIdBadge"></span></h2>
+    <label for="backendUrl">Backend base URL</label>
+    <input type="text" id="backendUrl" value="http://localhost:8082">
+    <div class="cam-buttons" style="margin-top:10px;">
+      <button class="secondary small" id="btnCheckConn" type="button">Probar conectividad</button>
+    </div>
+    <div id="connResult" class="result-box" style="display:none;"></div>
+    <div class="hint">Si esta página se abrió desde otra PC de la red (no <code>localhost</code>), el
+      origen del backend se autodetecta. El equipo de la plataforma debe haber agregado el origen
+      exacto de esta página a <code>BEEMETRY_CORS_ALLOWED_ORIGIN</code>.</div>
+  </section>
+
+  <!-- PAIS + EMPRESA -->
+  <section class="panel">
+    <h2>País y empresa <span class="badge">multitenant / multiregión</span></h2>
+    <label for="countrySelect">País</label>
+    <select id="countrySelect"><option value="">Cargando países…</option></select>
+    <label for="companySelect">Empresa (tenant)</label>
+    <select id="companySelect" disabled><option value="">Seleccione un país primero</option></select>
+    <div id="companyEmptyNote" class="empty-note" style="display:none;"></div>
+    <div class="hint">Catálogo real desde la base de datos (<code>GET /api/platform/countries</code> +
+      <code>GET /api/auth/companies?country=XX</code>). La empresa seleccionada determina el tenant
+      de la sesión.</div>
+  </section>
+
+  <!-- MODO DE LOGIN -->
+  <section class="panel">
+    <h2>Iniciar sesión <span class="badge" id="geoBadge">ubicación: sin solicitar</span></h2>
+    <div class="tabs">
+      <button type="button" id="tabPassword" class="active">Contraseña / PIN</button>
+      <button type="button" id="tabFace">Verificación facial</button>
+    </div>
+
+    <!-- PASSWORD MODE -->
+    <div id="panelPassword">
+      <label for="pwUsername">Usuario</label>
+      <input type="text" id="pwUsername">
+      <label for="pwPassword">Contraseña / PIN</label>
+      <input type="password" id="pwPassword">
+      <button id="btnLoginPassword" type="button" style="margin-top:14px;">Iniciar sesión</button>
+    </div>
+
+    <!-- FACE MODE -->
+    <div id="panelFace" style="display:none;">
+      <label for="faceUsername">Usuario / DNI / RUC</label>
+      <input type="text" id="faceUsername">
+
+      <div class="cam-wrap" style="margin-top:14px;">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay" class="overlay"></canvas>
+      </div>
+      <div class="cam-buttons">
+        <button class="secondary" id="btnStartCam" type="button">Iniciar cámara</button>
+        <button class="secondary" id="btnStopCam" type="button" disabled>Detener</button>
+      </div>
+      <div class="cam-buttons">
+        <button class="secondary" id="btnLiveCapture" type="button" disabled>Captura en vivo</button>
+      </div>
+      <div class="status-line">Estado: <b id="stStateName">—</b> · muestras: <b id="stCount">0</b>/3</div>
+      <div class="icao-grid">
+        <div class="icao-item"><span class="dot" id="dotEyes"></span> Ojos abiertos</div>
+        <div class="icao-item"><span class="dot" id="dotMouth"></span> Boca cerrada</div>
+        <div class="icao-item"><span class="dot" id="dotStraight"></span> Rostro frontal</div>
+        <div class="icao-item"><span class="dot" id="dotGlasses"></span> Sin lentes</div>
+      </div>
+
+      <details style="margin-top:14px;">
+        <summary>Alternativas sin cámara (subir imagen / dato sintético)</summary>
+        <label for="fileInput" style="margin-top:10px;">Subir imagen de rostro</label>
+        <input type="file" id="fileInput" accept="image/*">
+        <button class="secondary small" id="btnSendFile" type="button" style="margin-top:8px;">Enviar imagen</button>
+        <label style="margin-top:14px; display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="checkbox" id="useSyntheticTemplate" style="width:auto;">
+          Usar <code>face_template</code> sintético (prueba de contrato API, sin rostro real)
+        </label>
+      </details>
+
+      <button id="btnLoginFace" type="button" style="margin-top:14px;">Iniciar sesión con rostro</button>
+      <div class="hint">La cámara real requiere HTTPS o <code>localhost</code> (restricción del
+        navegador). Desde otra PC por HTTP use la imagen subida o el dato sintético.</div>
+    </div>
+
+    <div id="loginResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- SESION -->
+  <section class="panel" id="sessionSection" style="display:none;">
+    <h2>Sesión activa</h2>
+    <div class="session-card">
+      <div class="row1" id="sessFullName">—</div>
+      <div class="row2" id="sessMeta">—</div>
+    </div>
+    <button class="secondary" id="btnLogout" type="button" style="margin-top:12px;">Cerrar sesión</button>
+  </section>
+
+  <!-- LOG -->
+  <section class="panel">
+    <h2>Log de peticiones/respuestas <span class="badge">para depuración</span></h2>
+    <div id="log"></div>
+  </section>
+
+</main>
+
+<footer>Herramienta de login de referencia — no usar credenciales productivas reales. Ver
+  <code>docs/integration/BIOMETRIC_PASSWORD_AUTH_API_GUIDE.md</code>.</footer>
+
+<div id="successOverlay">
+  <div class="success-modal">
+    <div class="check">✓</div>
+    <h3>Validación completada</h3>
+    <p>Se capturaron 3 muestras faciales válidas consecutivas. Ya puede iniciar sesión con
+      verificación facial.</p>
+    <button id="btnSuccessOk" type="button">Continuar</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+
+  // ---- error banner + modal de éxito ----------------------------------------
+  function showError(message) {
+    $('errorBannerText').textContent = message;
+    $('errorBanner').style.display = 'block';
+    $('errorBanner').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  function clearError() {
+    $('errorBanner').style.display = 'none';
+  }
+  $('btnCloseError').addEventListener('click', clearError);
+
+  function showSuccessModal() {
+    $('successOverlay').classList.add('show');
+  }
+  function hideSuccessModal() {
+    $('successOverlay').classList.remove('show');
+  }
+  $('btnSuccessOk').addEventListener('click', hideSuccessModal);
+  $('successOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'successOverlay') hideSuccessModal();
+  });
+
+  // crypto.randomUUID() exige "secure context" (https:// o localhost) y NO
+  // existe en http://<ip-lan>:5190 -- el caso real de otra PC abriendo esta
+  // página por IP. Fallback a crypto.getRandomValues (sí disponible sin
+  // HTTPS) o Math.random como último recurso; no se necesita aleatoriedad
+  // criptográfica, solo un id único por pestaña para X-Capture-Session-Id.
+  function generateSessionId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    if (window.crypto && crypto.getRandomValues) {
+      crypto.getRandomValues(bytes);
+    } else {
+      for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0'));
+    return `${hex.slice(0,4).join('')}-${hex.slice(4,6).join('')}-${hex.slice(6,8).join('')}-${hex.slice(8,10).join('')}-${hex.slice(10,16).join('')}`;
+  }
+  const sessionId = generateSessionId();
+  $('sessionIdBadge').textContent = 'sesión: ' + sessionId.slice(0, 8) + '…';
+  $('originBadge').textContent = 'origin: ' + window.location.origin;
+
+  const state = {
+    accessToken: null,
+    lastValidFaceImageBase64: null,
+    liveTimer: null,
+    stream: null,
+    mode: 'password',
+    syncing: false,
+    captureCompletedNotified: false,
+  };
+
+  const BACKEND_KEY = 'login_test_backend_url';
+  const savedUrl = localStorage.getItem(BACKEND_KEY);
+  if (savedUrl) {
+    $('backendUrl').value = savedUrl;
+  } else {
+    // ADR-107 (nota operativa 2026-08-18): tanto serve_http.py (5190) como
+    // serve_https.py (5443) proxean /api/* hacia el backend real conectando
+    // por loopback (127.0.0.1:8082) -- ver _proxy_common.py. El destino
+    // correcto para el navegador SIEMPRE es el propio origen de esta página,
+    // sin importar protocolo ni si se abrió por localhost o por la IP de
+    // LAN. Antes (por HTTP, desde otra PC) esto apuntaba en cambio al
+    // frontend nginx publicado en :5173 -- se abandonó esa estrategia porque
+    // Docker Desktop en Windows (WSL2) NO publica los puertos de sus
+    // contenedores hacia la IP de LAN del host (solo hacia localhost de esta
+    // misma máquina), así que ese destino nunca era alcanzable desde otra PC
+    // y fallaba con el mismo "TypeError: Failed to fetch" genérico. Ver el
+    // docstring de _proxy_common.py para el detalle completo.
+    $('backendUrl').value = location.origin;
+  }
+  $('backendUrl').addEventListener('change', () => {
+    localStorage.setItem(BACKEND_KEY, $('backendUrl').value.trim());
+  });
+
+  function backendUrl() {
+    return $('backendUrl').value.trim().replace(/\/+$/, '');
+  }
+
+  // ---- logging -----------------------------------------------------------
+  function redact(obj) {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'string') {
+      return obj.length > 180 ? `<string len=${obj.length}>` : obj;
+    }
+    if (Array.isArray(obj)) {
+      if (obj.length > 20 && obj.every(v => typeof v === 'number')) {
+        return `<number[] len=${obj.length}>`;
+      }
+      return obj.map(redact);
+    }
+    if (typeof obj === 'object') {
+      const out = {};
+      for (const k of Object.keys(obj)) out[k] = redact(obj[k]);
+      return out;
+    }
+    return obj;
+  }
+
+  function log(method, path, status, ms, body, isError) {
+    const el = document.createElement('div');
+    el.className = 'log-entry';
+    const cls = isError ? 'log-err' : (status >= 200 && status < 300 ? 'log-ok' : 'log-warn');
+    const pillCls = method === 'GET' ? 'pill get' : 'pill post';
+    const time = new Date().toLocaleTimeString();
+    let bodyStr = '';
+    try { bodyStr = JSON.stringify(redact(body), null, 2); } catch (e) { bodyStr = String(body); }
+    el.innerHTML = `<span class="${pillCls}">${method}</span><span class="${cls}">[${time}] ${status} · ${ms}ms · ${path}</span>\n${bodyStr ? bodyStr : ''}`;
+    $('log').prepend(el);
+  }
+
+  async function apiFetch(path, options = {}) {
+    const url = backendUrl() + path;
+    const method = (options.method || 'GET').toUpperCase();
+    const headers = Object.assign({}, options.headers || {});
+    if (state.accessToken && !headers['Authorization']) {
+      headers['Authorization'] = 'Bearer ' + state.accessToken;
+    }
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url, Object.assign({}, options, { method, headers, credentials: 'include' }));
+      const ms = Math.round(performance.now() - t0);
+      let body = null;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        body = await res.json().catch(() => null);
+      } else {
+        body = await res.text().catch(() => '');
+      }
+      log(method, path, res.status, ms, body, false);
+      return { ok: res.ok, status: res.status, body };
+    } catch (err) {
+      const ms = Math.round(performance.now() - t0);
+      log(method, path, 0, ms, { network_or_cors_error: String(err) }, true);
+      return { ok: false, status: 0, body: { network_or_cors_error: String(err) } };
+    }
+  }
+
+  function showBox(id, data) {
+    const box = $(id);
+    box.style.display = 'block';
+    box.textContent = typeof data === 'string' ? data : JSON.stringify(redact(data), null, 2);
+  }
+
+  // ---- ubicación de la PC/dispositivo cliente (ADR-107) ---------------------
+  // Best-effort, nunca bloquea el login: si el usuario niega el permiso, el
+  // dispositivo no tiene servicio de ubicación, o se agota el tiempo, el login
+  // sigue igual sin ubicación. Mismo contrato que
+  // frontend/src/auth/geolocation.ts (GeoLocationSample), reimplementado acá
+  // porque esta página es JS plano sin build step -- nunca se lee del
+  // servidor ni se infiere por IP, solo de navigator.geolocation en ESTE
+  // navegador.
+  let pendingLocation = null;
+
+  function getBestEffortLocation(timeoutMs = 4000) {
+    if (!navigator.geolocation) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => { if (settled) return; settled = true; resolve(value); };
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      navigator.geolocation.getCurrentPosition(
+        ({ coords, timestamp }) => {
+          clearTimeout(timer);
+          finish({
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            accuracy: coords.accuracy,
+            capturedAt: new Date(timestamp).toISOString(),
+          });
+        },
+        () => { clearTimeout(timer); finish(null); },
+        { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 5 * 60 * 1000 }
+      );
+    });
+  }
+
+  function requestLocation() {
+    $('geoBadge').textContent = 'ubicación: solicitando…';
+    pendingLocation = getBestEffortLocation().then((loc) => {
+      $('geoBadge').textContent = loc
+        ? `ubicación: ${loc.latitude.toFixed(5)}, ${loc.longitude.toFixed(5)} (±${Math.round(loc.accuracy)}m)`
+        : 'ubicación: no disponible';
+      return loc;
+    });
+    return pendingLocation;
+  }
+
+  // Se pide una sola vez, al cargar la página (no en cada submit) -- mismo
+  // motivo que AuthGateway.tsx (frontend real): que la resolución del
+  // permiso del navegador no agregue latencia al momento de confirmar el
+  // login. El botón permite reintentar si el usuario negó el permiso por
+  // error y luego lo concede desde el candado del navegador.
+  requestLocation();
+  $('geoBadge').style.cursor = 'pointer';
+  $('geoBadge').title = 'Click para reintentar la solicitud de ubicación';
+  $('geoBadge').addEventListener('click', requestLocation);
+
+  async function resolvedLocation() {
+    if (!pendingLocation) return null;
+    return pendingLocation.catch(() => null);
+  }
+
+  function locationBody(loc) {
+    if (!loc || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude)) return {};
+    return {
+      location: {
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        accuracy: loc.accuracy,
+        captured_at: loc.capturedAt,
+      },
+    };
+  }
+
+  // ---- conectividad --------------------------------------------------------
+  $('btnCheckConn').addEventListener('click', async () => {
+    const r = await apiFetch('/api/platform/countries');
+    showBox('connResult', r.ok
+      ? { ok: true, note: 'CORS y conectividad correctas.' }
+      : { ok: false, note: r.status === 0
+            ? 'Fallo de red o CORS (el navegador bloqueó la respuesta). Revise BEEMETRY_CORS_ALLOWED_ORIGIN.'
+            : `HTTP ${r.status}`, detail: r.body });
+  });
+
+  // ---- país + empresa -------------------------------------------------------
+  async function loadCountries() {
+    const r = await apiFetch('/api/platform/countries');
+    const sel = $('countrySelect');
+    sel.innerHTML = '<option value="">Seleccione un país…</option>';
+    if (!r.ok) return;
+    (r.body.countries || []).forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.iso2; opt.textContent = `${c.label} (${c.iso2})`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function loadCompaniesForCountry(iso2) {
+    const sel = $('companySelect');
+    const note = $('companyEmptyNote');
+    note.style.display = 'none';
+    if (!iso2) {
+      sel.innerHTML = '<option value="">Seleccione un país primero</option>';
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = true;
+    sel.innerHTML = '<option value="">Cargando…</option>';
+    const r = await apiFetch('/api/auth/companies?country=' + encodeURIComponent(iso2));
+    const companies = (r.ok && r.body.companies) || [];
+    if (companies.length === 0) {
+      sel.innerHTML = '<option value="">— sin empresas para este país —</option>';
+      sel.disabled = true;
+      note.style.display = 'block';
+      note.textContent = 'El catálogo no tiene empresas registradas con country_code=' + iso2 +
+        ' todavía. Esto es un estado real de los datos, no un error de esta página.';
+      return;
+    }
+    sel.innerHTML = '';
+    companies.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    sel.disabled = false;
+  }
+
+  $('countrySelect').addEventListener('change', (e) => loadCompaniesForCountry(e.target.value));
+  loadCountries();
+
+  function selectedCompany() {
+    return $('companySelect').value;
+  }
+
+  // ---- tabs -----------------------------------------------------------------
+  $('tabPassword').addEventListener('click', () => setMode('password'));
+  $('tabFace').addEventListener('click', () => setMode('face'));
+  function setMode(mode) {
+    state.mode = mode;
+    $('tabPassword').classList.toggle('active', mode === 'password');
+    $('tabFace').classList.toggle('active', mode === 'face');
+    $('panelPassword').style.display = mode === 'password' ? 'block' : 'none';
+    $('panelFace').style.display = mode === 'face' ? 'block' : 'none';
+  }
+
+  // ---- captura biométrica (para el modo facial) ------------------------------
+  const video = $('video');
+  const overlay = $('overlay');
+  const octx = overlay.getContext('2d');
+
+  $('btnStartCam').addEventListener('click', async () => {
+    // getUserMedia exige "secure context" y ni siquiera existe
+    // navigator.mediaDevices en http://<ip-lan>:5190 -- no hay fallback
+    // posible (a diferencia de crypto.randomUUID arriba). Solo funciona en
+    // https:// o abriendo la página como http://localhost desde la MISMA
+    // máquina que la sirve.
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showError('La cámara no está disponible en este origen (' + location.origin + '). ' +
+        'Los navegadores solo permiten cámara en contextos seguros (https:// o localhost). ' +
+        'Use "subir imagen" o el face_template sintético más abajo.');
+      return;
+    }
+    clearError();
+    try {
+      // Mismo pedido de resolución que AuthGateway.tsx (frontend real): a
+      // 480x360 el rostro típico queda con muy pocos píxeles entre ojos
+      // (IED~70-75px medido en pruebas reales), y con eso el punto interno
+      // del labio (13/14) se mueve solo 1-2px entre boca cerrada y abierta
+      // -- ruido de cuantización, no señal real. 640x480 le da al detector
+      // más resolución física para que ese movimiento sea medible.
+      state.stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640, min: 320 },
+          height: { ideal: 480, min: 240 },
+          aspectRatio: { ideal: 4 / 3 },
+        },
+      });
+      video.srcObject = state.stream;
+      await video.play();
+      overlay.width = video.videoWidth || 480;
+      overlay.height = video.videoHeight || 360;
+      $('btnLiveCapture').disabled = false;
+      $('btnStopCam').disabled = false;
+      $('btnStartCam').disabled = true;
+      // La cámara sola no analiza nada -- sin esto, el usuario ve el video
+      // pero ningún punto ICAO ni el óvalo se actualiza jamás, porque
+      // refreshStatus() solo corre dentro del bucle de captura en vivo
+      // (antes exigía un segundo clic separado en "Captura en vivo", nada
+      // obvio para una pantalla de login real). Arranca solo al activar la
+      // cámara; el botón queda como pausa/reanuda si el usuario lo necesita.
+      startLiveCapture();
+    } catch (err) {
+      showError('No se pudo acceder a la cámara: ' + err.message);
+    }
+  });
+
+  $('btnStopCam').addEventListener('click', () => {
+    stopLiveCapture();
+    if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+    state.stream = null;
+    video.srcObject = null;
+    state.captureCompletedNotified = false;
+    $('btnLiveCapture').disabled = true;
+    $('btnStopCam').disabled = true;
+    $('btnStartCam').disabled = false;
+  });
+
+  function captureCanvasFromVideo() {
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth || 480;
+    c.height = video.videoHeight || 360;
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  async function sendFrameBlob(blob) {
+    const buf = await blob.arrayBuffer();
+    await apiFetch('/api/process_frame', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Capture-Session-Id': sessionId },
+      body: buf,
+    });
+    await refreshStatus();
+  }
+
+  $('btnLiveCapture').addEventListener('click', () => {
+    if (state.liveTimer) { stopLiveCapture(); } else { startLiveCapture(); }
+  });
+
+  function startLiveCapture() {
+    if (state.liveTimer) return;
+    $('btnLiveCapture').textContent = 'Pausar captura en vivo';
+    // Guard "en vuelo" (mismo patrón que syncingRef en AuthGateway.tsx, el
+    // frontend real): sin esto, un setInterval de frecuencia fija dispara un
+    // POST /api/process_frame nuevo aunque el anterior todavía no haya
+    // respondido. Si el backend/ai_engine tarda más que el intervalo (caso
+    // real observado: análisis MediaPipe+glasses+embedding puede tomar más
+    // de 700ms), las respuestas empiezan a llegar DESORDENADAS -- una
+    // respuesta de un frame viejo puede sobreescribir en pantalla el
+    // resultado de un frame más nuevo, y la histéresis de boca/lentes del
+    // backend (por sesión) recibe señales fuera de orden y nunca logra
+    // asentarse en un estado consistente. Efecto observable: el checklist
+    // ICAO parece "pegado" sin reaccionar a cambios reales, y todo se siente
+    // más lento (CPU del backend/ai_engine gastada en peticiones solapadas
+    // en vez de una por vez).
+    state.liveTimer = setInterval(() => {
+      if (state.syncing) return;
+      state.syncing = true;
+      const canvas = captureCanvasFromVideo();
+      canvas.toBlob((blob) => {
+        if (!blob) { state.syncing = false; return; }
+        sendFrameBlob(blob).finally(() => { state.syncing = false; });
+      }, 'image/jpeg', 0.85);
+    }, 200);
+  }
+
+  function stopLiveCapture() {
+    if (state.liveTimer) { clearInterval(state.liveTimer); state.liveTimer = null; }
+    $('btnLiveCapture').textContent = 'Captura en vivo';
+  }
+
+  $('fileInput').addEventListener('change', () => {
+    const f = $('fileInput').files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        overlay.width = img.width; overlay.height = img.height;
+        octx.clearRect(0, 0, overlay.width, overlay.height);
+        octx.drawImage(img, 0, 0);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(f);
+  });
+
+  $('btnSendFile').addEventListener('click', async () => {
+    const f = $('fileInput').files[0];
+    if (!f) { showError('Seleccione una imagen primero.'); return; }
+    clearError();
+    await sendFrameBlob(f);
+  });
+
+  async function refreshStatus() {
+    const r = await apiFetch('/api/status', { headers: { 'X-Capture-Session-Id': sessionId } });
+    if (!r.ok) return;
+    const s = r.body;
+    $('stStateName').textContent = s.state_name;
+    $('stCount').textContent = s.capture_count;
+    const icao = s.icao || {};
+    setDot('dotEyes', icao.eyes_open);
+    setDot('dotMouth', icao.mouth_closed);
+    setDot('dotStraight', icao.face_straight);
+    setDot('dotGlasses', icao.no_glasses);
+
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    if (state.stream) octx.drawImage(video, 0, 0, overlay.width, overlay.height);
+    if (s.face_oval) {
+      const e = s.face_oval;
+      octx.save();
+      octx.translate(e.cx, e.cy);
+      octx.rotate((e.angle_deg || 0) * Math.PI / 180);
+      octx.strokeStyle = (icao.eyes_open && icao.mouth_closed && icao.face_straight && icao.no_glasses) ? '#3ecf8e' : '#F07E41';
+      octx.lineWidth = 3;
+      octx.beginPath();
+      octx.ellipse(0, 0, e.w / 2, e.h / 2, 0, 0, Math.PI * 2);
+      octx.stroke();
+      octx.restore();
+    }
+    if (s.capture_count >= 3) {
+      stopLiveCapture();
+      await fetchCapturedImages();
+      // Solo una vez por sesión de captura -- refreshStatus sigue corriendo
+      // en cada frame mientras la cámara esté activa, y capture_count se
+      // queda en 3 hasta que se reinicia; sin esta bandera el popup
+      // reaparecería en cada refresco.
+      if (!state.captureCompletedNotified) {
+        state.captureCompletedNotified = true;
+        showSuccessModal();
+      }
+    }
+  }
+
+  function setDot(id, on) {
+    $(id).className = 'dot ' + (on ? 'on' : 'off');
+  }
+
+  async function fetchCapturedImages() {
+    const r = await apiFetch('/api/captured_images', { headers: { 'X-Capture-Session-Id': sessionId } });
+    if (!r.ok || !Array.isArray(r.body) || r.body.length === 0) return;
+    state.lastValidFaceImageBase64 = r.body[r.body.length - 1];
+  }
+
+  function syntheticFaceTemplate() {
+    const arr = [];
+    let seed = 42;
+    for (let i = 0; i < 512; i++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      arr.push(((seed % 2000) / 1000) - 1);
+    }
+    return arr;
+  }
+
+  function currentBiometricPayload() {
+    if ($('useSyntheticTemplate').checked) return { face_template: syntheticFaceTemplate() };
+    if (state.lastValidFaceImageBase64) return { face_image_base64: state.lastValidFaceImageBase64 };
+    return null;
+  }
+
+  // Un solo lugar para interpretar la respuesta de login: siempre deja el
+  // JSON crudo en el result-box (para quien esté depurando), y además
+  // muestra/limpia el banner de error con un mensaje legible -- antes los
+  // errores de login solo quedaban en ese JSON, fácil de pasar por alto.
+  function handleLoginResponse(r, method) {
+    showBox('loginResult', r.body);
+    if (r.ok && r.body && r.body.user) {
+      clearError();
+      onLoginSuccess(r.body.user, method);
+      return;
+    }
+    const body = r.body || {};
+    const message =
+      body.network_or_cors_error ||
+      body.detail ||
+      body.error ||
+      (r.status === 0 ? 'Fallo de red o CORS.' : `Error HTTP ${r.status}.`);
+    showError(message);
+  }
+
+  // ---- login por contraseña / PIN --------------------------------------------
+  $('btnLoginPassword').addEventListener('click', async () => {
+    const company = selectedCompany();
+    if (!company) { showError('Seleccione país y empresa primero.'); return; }
+    const loc = await resolvedLocation();
+    const r = await apiFetch('/api/auth/login/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({
+        company,
+        username: $('pwUsername').value.trim(),
+        password: $('pwPassword').value,
+      }, locationBody(loc))),
+    });
+    handleLoginResponse(r, 'password');
+  });
+
+  // ---- login facial -----------------------------------------------------------
+  $('btnLoginFace').addEventListener('click', async () => {
+    const company = selectedCompany();
+    if (!company) { showError('Seleccione país y empresa primero.'); return; }
+    const bio = currentBiometricPayload();
+    if (!bio) {
+      showError('No hay fuente biométrica: capture con cámara, suba una imagen, o marque "face_template sintético".');
+      return;
+    }
+    const loc = await resolvedLocation();
+    const r = await apiFetch('/api/auth/login/face', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({
+        company,
+        identity_login: $('faceUsername').value.trim(),
+      }, bio, locationBody(loc))),
+    });
+    handleLoginResponse(r, 'face');
+  });
+
+  // ---- sesión -----------------------------------------------------------------
+  function onLoginSuccess(user, method) {
+    state.accessToken = user.access_token;
+    $('sessFullName').textContent = user.full_name || user.username;
+    $('sessMeta').textContent =
+      `${user.company} · ${user.role} · tenant ${user.tenant_id} · vía ${method === 'face' ? 'biometría' : 'contraseña/PIN'}`;
+    $('sessionSection').style.display = 'block';
+  }
+
+  $('btnLogout').addEventListener('click', async () => {
+    await apiFetch('/api/auth/logout', { method: 'POST' });
+    state.accessToken = null;
+    $('sessionSection').style.display = 'none';
+  });
+
+})();
+</script>
+</body>
+</html>

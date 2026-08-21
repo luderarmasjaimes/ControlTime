@@ -65,7 +65,15 @@ static http::response<http::string_body> buildAuthLoginCheckIdentityResponse(
 
   AuthLoginIdentityLookupResult lu;
   {
-    std::scoped_lock lk(gAuthMutex);
+    // Solo File-mode necesita serializarse contra gAuthMutex (ver mismo
+    // comentario en main.cpp/handleRegister). Este lookup es de solo lectura,
+    // se llama en cada paso de "verificar identidad" del login (alta
+    // frecuencia) -- en Postgres no hay nada que proteger aquí, solo se
+    // sumaba a la cola detrás de cualquier registro/login lento en curso.
+    std::unique_lock<std::mutex> lk(gAuthMutex, std::defer_lock);
+    if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+      lk.lock();
+    }
     if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
       lu = authLookupIdentityForCompanyPg(cfg.gDatabaseUrl, company, identity);
@@ -716,6 +724,16 @@ static http::response<http::string_body> handleMyAvatarHd(
 // id inválido simplemente no matchea el ::uuid cast en SQL y la función de
 // storage devuelve "company_not_found" — la ruta de error queda igual de
 // clara sin duplicar la validación.
+// ADR-121: mismo motivo que jsonToDoubleSafe en device_alarm_routes.cpp -- un
+// número JSON sin parte decimal (p.ej. "latitude": -17) llega como
+// is_int64(), no is_double(); json::value_to<double> directo lanzaría.
+static bool jsonToDoubleSafe(const json::value &v, double &out) {
+  if (v.is_double()) { out = v.as_double(); return true; }
+  if (v.is_int64()) { out = static_cast<double>(v.as_int64()); return true; }
+  if (v.is_uint64()) { out = static_cast<double>(v.as_uint64()); return true; }
+  return false;
+}
+
 std::string companyIdFromPath(const std::string &target) {
   static const std::string kPrefix = "/api/auth/companies/";
   if (target.rfind(kPrefix, 0) != 0) return "";
@@ -736,34 +754,57 @@ json::object companyRecordToJsonValue(const AuthCompanyRecord &c) {
                       {"demo_data", c.demoData},
                       {"created_at", c.createdAt},
                       {"updated_at", c.updatedAt},
-                      {"updated_by", c.updatedBy}};
+                      {"updated_by", c.updatedBy},
+                      {"latitude", c.latitude ? json::value(*c.latitude) : json::value(nullptr)},
+                      {"longitude", c.longitude ? json::value(*c.longitude) : json::value(nullptr)},
+                      {"location_zoom", c.locationZoom ? json::value(*c.locationZoom) : json::value(nullptr)}};
 }
 
 void registerRoutes(router::Router &r) {
   auto &cfg = AppConfig::instance();
 
-  // GET /api/auth/companies
+  // GET /api/auth/companies[?country=EC] — el filtro por país es opcional y
+  // aditivo: sin el query param el comportamiento es idéntico al de antes
+  // (todas las empresas activas), para no romper el frontend actual que ya
+  // consume este endpoint. Con el filtro, soporta el selector país+empresa
+  // multitenant/multiregión (ver docs/integration/BIOMETRIC_PASSWORD_AUTH_API_GUIDE.md).
   r.get("/api/auth/companies",
         [&cfg](const http::request<http::string_body> &,
-               const std::unordered_map<std::string, std::string> &) {
+               const std::unordered_map<std::string, std::string> &query) {
           json::array companies;
           bool loadedFromDb = false;
+          std::string countryFilter;
+          if (query.count("country")) {
+            countryFilter = trimAuthParam(query.at("country"));
+            std::transform(countryFilter.begin(), countryFilter.end(),
+                           countryFilter.begin(), ::toupper);
+          }
           if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
             auto __pg_lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
             PGconn *conn = __pg_lease.get();
             if (PQstatus(conn) == CONNECTION_OK) {
               (void)ensureAuthSchemaPg(conn);
-              PGresult *res = PQexec(
-                  conn,
-                  "SELECT name FROM auth_companies WHERE active=true "
-                  "ORDER BY name ASC");
+              PGresult *res = nullptr;
+              if (!countryFilter.empty()) {
+                const char *p[1] = {countryFilter.c_str()};
+                res = PQexecParams(
+                    conn,
+                    "SELECT name FROM auth_companies "
+                    "WHERE active=true AND country_code=$1 ORDER BY name ASC",
+                    1, nullptr, p, nullptr, nullptr, 0);
+              } else {
+                res = PQexec(
+                    conn,
+                    "SELECT name FROM auth_companies WHERE active=true "
+                    "ORDER BY name ASC");
+              }
               if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
                 for (int i = 0; i < PQntuples(res); ++i) {
                   companies.push_back(
                       json::value(std::string(PQgetvalue(res, i, 0))));
                 }
-                loadedFromDb = PQntuples(res) > 0;
+                loadedFromDb = PQntuples(res) > 0 || !countryFilter.empty();
               }
               if (res) PQclear(res);
             }
@@ -840,10 +881,42 @@ void registerRoutes(router::Router &r) {
              if (const auto *v = obj.if_contains("domicilio_fiscal"))
                if (v->is_string()) domicilioFiscal = json::value_to<std::string>(*v);
 
+             // ADR-121: latitude/longitude viajan juntas o ninguna -- no tiene
+             // sentido persistir solo una mitad de una coordenada.
+             std::optional<double> latitude, longitude;
+             std::optional<int> locationZoom;
+             {
+               double latVal = 0, lonVal = 0;
+               const bool hasLat = obj.if_contains("latitude") &&
+                                   jsonToDoubleSafe(*obj.if_contains("latitude"), latVal);
+               const bool hasLon = obj.if_contains("longitude") &&
+                                   jsonToDoubleSafe(*obj.if_contains("longitude"), lonVal);
+               if (obj.if_contains("latitude") || obj.if_contains("longitude")) {
+                 if (!hasLat || !hasLon) {
+                   return makeJsonResponse(
+                       http::status::bad_request,
+                       json::object{{"error", "latitude_longitude_pair_required"}});
+                 }
+                 if (latVal < -90 || latVal > 90 || lonVal < -180 || lonVal > 180) {
+                   return makeJsonResponse(
+                       http::status::bad_request,
+                       json::object{{"error", "coordinates_out_of_range"}});
+                 }
+                 latitude = latVal;
+                 longitude = lonVal;
+                 if (const auto *v = obj.if_contains("location_zoom")) {
+                   double z = 0;
+                   if (jsonToDoubleSafe(*v, z) && z >= 0 && z <= 22)
+                     locationZoom = static_cast<int>(z);
+                 }
+               }
+             }
+
              AuthCompanyRecord created;
              std::string createError;
              if (!createCompanyPg(cfg.gDatabaseUrl, name, ruc, country,
-                                  domicilioFiscal, session->userId,
+                                  domicilioFiscal, latitude, longitude,
+                                  locationZoom, session->userId,
                                   session->role, created, createError)) {
                if (createError == "company_already_exists" ||
                    createError == "ruc_already_exists") {
@@ -967,10 +1040,41 @@ void registerRoutes(router::Router &r) {
             if (const auto *v = obj.if_contains("domicilio_fiscal"))
               if (v->is_string()) domicilioFiscal = json::value_to<std::string>(*v);
 
+            // ADR-121: si no vienen en el body, se preserva el valor actual
+            // (mismo criterio que ruc/country/domicilio_fiscal arriba).
+            std::optional<double> latitude = current.latitude;
+            std::optional<double> longitude = current.longitude;
+            std::optional<int> locationZoom = current.locationZoom;
+            if (obj.if_contains("latitude") || obj.if_contains("longitude")) {
+              double latVal = 0, lonVal = 0;
+              const bool hasLat = obj.if_contains("latitude") &&
+                                  jsonToDoubleSafe(*obj.if_contains("latitude"), latVal);
+              const bool hasLon = obj.if_contains("longitude") &&
+                                  jsonToDoubleSafe(*obj.if_contains("longitude"), lonVal);
+              if (!hasLat || !hasLon) {
+                return makeJsonResponse(
+                    http::status::bad_request,
+                    json::object{{"error", "latitude_longitude_pair_required"}});
+              }
+              if (latVal < -90 || latVal > 90 || lonVal < -180 || lonVal > 180) {
+                return makeJsonResponse(
+                    http::status::bad_request,
+                    json::object{{"error", "coordinates_out_of_range"}});
+              }
+              latitude = latVal;
+              longitude = lonVal;
+              if (const auto *v = obj.if_contains("location_zoom")) {
+                double z = 0;
+                if (jsonToDoubleSafe(*v, z) && z >= 0 && z <= 22)
+                  locationZoom = static_cast<int>(z);
+              }
+            }
+
             AuthCompanyRecord updated;
             std::string updateError;
             if (!updateCompanyPg(cfg.gDatabaseUrl, companyId, ruc, country,
-                                 domicilioFiscal, session->userId, updated,
+                                 domicilioFiscal, latitude, longitude,
+                                 locationZoom, session->userId, updated,
                                  updateError)) {
               return makeJsonResponse(
                   updateError == "company_not_found" ? http::status::not_found

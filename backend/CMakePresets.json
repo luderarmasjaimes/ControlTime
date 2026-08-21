@@ -13,7 +13,7 @@
       "binaryDir": "${sourceDir}/out/build/windows-vs",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "Boost_ROOT": "C:/boost_1_90_0",
+        "Boost_ROOT": "C:/boost_1_92_0",
         "OpenCV_DIR": "C:/opencv/build"
       }
     },

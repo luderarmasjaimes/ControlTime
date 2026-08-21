@@ -1,12 +1,12 @@
 {
   "version": "1.0",
-  "updated_at": "2026-08-03T20:35:11.789215+00:00",
+  "updated_at": "2026-08-19T22:41:39.863781+00:00",
   "agents": {
     "backend_dev": {
       "model": "claude",
-      "generations": 39,
-      "accepted": 19,
-      "acceptance_rate": 0.487
+      "generations": 55,
+      "accepted": 27,
+      "acceptance_rate": 0.491
     },
     "frontend_dev": {
       "model": "gpt-5",
@@ -25,9 +25,9 @@
     },
     "code_reviewer": {
       "model": "gpt-5",
-      "reviews": 39,
-      "approved": 20,
-      "approval_rate": 0.513
+      "reviews": 55,
+      "approved": 28,
+      "approval_rate": 0.509
     }
   },
   "routing_preferences": {

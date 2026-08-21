@@ -20,6 +20,30 @@
     --font-size-title-md: clamp(1.05rem, 0.95rem + 0.45vw, 1.35rem);
     --font-color-primary: #e2e8f0;
     --font-color-secondary: #94a3b8;
+
+    /* ═════════════════════════════════════════════════════════════════ */
+    /* ACCESIBILIDAD (A11Y): Variables de contraste WCAG 2.1 AA          */
+    /* Aplicadas a: Formularios, selectores, listbox, inputs            */
+    /* Referencia: ADR-106 — Accesibilidad y Contraste en Formularios   */
+    /* ═════════════════════════════════════════════════════════════════ */
+    
+    /* Texto principal y secundario (4.5:1+ compliance) */
+    --a11y-text-primary: #f8fafc;      /* Blanco casi puro (11:1+) */
+    --a11y-text-secondary: #cbd5e1;    /* Gris claro (7.2:1) */
+    --a11y-text-tertiary: #e2e8f0;     /* Aún más claro (8.5:1) */
+    
+    /* Fondos para formularios (con contraste verificado) */
+    --a11y-bg-form: #1e293b;           /* Azul-gris oscuro (más claro que slate-900) */
+    --a11y-bg-form-alt: #334155;       /* Alternativa más clara (para hover) */
+    --a11y-bg-hover: #475569;          /* Hover state (4.5:1+) */
+    
+    /* Bordes con mejor visibilidad */
+    --a11y-border-form: rgba(255, 255, 255, 0.2);  /* 20% (mejor que 10%) */
+    --a11y-border-focus: #3b82f6;      /* Azul brillante para focus */
+    
+    /* Estados deshabilitados */
+    --a11y-disabled-text: #9ca3af;     /* Gris perceptible */
+    --a11y-disabled-bg: #0f172a;       /* Muy oscuro para claridad */
 }
 
 @keyframes pulse-glow {

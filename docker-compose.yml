@@ -8,8 +8,8 @@ services:
     command:
       - redpanda
       - start
-      - --smp=1
-      - --memory=1G
+      - --smp=2
+      - --memory=2G
       - --reserve-memory=0M
       - --overprovisioned
       - --node-id=0
@@ -28,11 +28,37 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2'
-          memory: 1536M
+          cpus: '4'
+          memory: 3072M
         reservations:
-          cpus: '0.5'
-          memory: 512M
+          cpus: '1'
+          memory: 1024M
+
+  # SPEC-020: configuración idempotente del topic crítico. retention.bytes es
+  # por partición: 1,5 GiB × 6 = 9 GiB máximos para el topic. retention.ms
+  # impone además un tope de dos horas.
+  redpanda_init:
+    image: redpandadata/redpanda:latest
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        rpk topic create telemetry --if-not-exists --partitions 6 --replicas 1
+        --topic-config retention.bytes=1610612736
+        --topic-config retention.ms=7200000
+        -X brokers=redpanda:9092
+        && rpk topic alter-config telemetry
+        --set retention.bytes=1610612736
+        --set retention.ms=7200000
+        --no-confirm -X brokers=redpanda:9092
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
 
   # Notificaciones de alarma por email (ADR-034 ampliado): relay SMTP de
   # desarrollo con bandeja web (http://localhost:8025). En producción se
@@ -176,7 +202,9 @@ services:
       - ./db_scripts/26_mining_runtime_kpis.sql:/docker-entrypoint-initdb.d/26_mining_runtime_kpis.sql:ro
       - ./db_scripts/27_mining_sensor_zones.sql:/docker-entrypoint-initdb.d/27_mining_sensor_zones.sql:ro
       - ./db_scripts/28_mining_telemetry_uuid_tenant.sql:/docker-entrypoint-initdb.d/28_mining_telemetry_uuid_tenant.sql:ro
-      - ./db_scripts/29_telemetry_ingest_optimization.sql:/docker-entrypoint-initdb.d/29_telemetry_ingest_optimization.sql:ro
+      - ./db_scripts/64_telemetry_ingest_optimization.sql:/docker-entrypoint-initdb.d/64_telemetry_ingest_optimization.sql:ro
+      - ./db_scripts/67_telemetry_25k_hardening.sql:/docker-entrypoint-initdb.d/67_telemetry_25k_hardening.sql:ro
+      - ./db_scripts/69_cv_postulaciones_rrhh.sql:/docker-entrypoint-initdb.d/69_cv_postulaciones_rrhh.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
       interval: 10s
@@ -358,10 +386,23 @@ services:
       # Backend → PgBouncer → Postgres (transaction pooling). El backend abre y
       # cierra conexiones por request (PQconnectdb), pgbouncer reutiliza las
       # backend connections reales → 10K clientes / ~200 conexiones server.
-      - BEEMETRY_DATABASE_URL=host=pgbouncer port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
+      # connect_timeout=5: sin esto, PQconnectdb no tiene límite propio y, si
+      # pgbouncer no puede alcanzar a "db" (caído/reiniciando), el cliente
+      # se queda esperando hasta el client_login_timeout de pgbouncer
+      # (~60s por defecto) sosteniendo gAuthMutex todo ese tiempo -- login
+      # por contraseña, facial y registro quedan todos congelados a la vez
+      # para TODOS los usuarios, no solo el que disparó la conexión colgada
+      # (ver auth_storage_pg.cpp, gAuthMutex compartido). Con esto, una BD
+      # inalcanzable falla en ~5s con un error claro en vez de un cuelgue
+      # silencioso que el frontend corta a los 30-45s igual, pero ya con el
+      # backend entero bloqueado para todos.
+      - BEEMETRY_DATABASE_URL=host=pgbouncer port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)} connect_timeout=5
       # Hilos del mining_gateway TLS (ingesta 10K sensores). 6 = casi todo el cap
       # de CPU (8), deja 2 para HTTP y resto.
-      - BEEMETRY_MINING_GATEWAY_THREADS=6
+      - BEEMETRY_MINING_GATEWAY_THREADS=8
+      # Procesa/ACKea en una sola escritura las líneas que ya llegaron juntas
+      # en el mismo buffer TLS. Conserva un OK/ERR por mensaje y su orden.
+      - BEEMETRY_MINING_GATEWAY_MAX_LINES_PER_READ=256
       # OpenCV no se come la CPU del I/O: 4 hilos para imdecode/resize/etc.
       - BEEMETRY_OPENCV_THREADS=4
       # BLAS/OpenMP de OpenCV: idem
@@ -391,9 +432,28 @@ services:
       - BEEMETRY_MAPAS_DATA_ROOT=/data
       # Proxy WMS same-origin: allowlist exacta y límites anti-SSRF/DoS.
       - BEEMETRY_WMS_ALLOWED_HOSTS=${BEEMETRY_WMS_ALLOWED_HOSTS:-geocatmin.ingemmet.gob.pe,geoportal.minem.gob.pe,www.idep.gob.pe,idesep.senamhi.gob.pe,basemap.nationalmap.gov}
-      - BEEMETRY_WMS_PROXY_TIMEOUT_MS=${BEEMETRY_WMS_PROXY_TIMEOUT_MS:-12000}
+      # 8s (antes 12s, 2026-08-21): medido en vivo, fuentes sanas del
+      # allowlist responden en 200ms-2s -- corta antes cuando una fuente
+      # externa está caída/lenta en vez de hacer esperar al usuario. Ver
+      # comentario junto a envSize(...) en wms_proxy.cpp.
+      - BEEMETRY_WMS_PROXY_TIMEOUT_MS=${BEEMETRY_WMS_PROXY_TIMEOUT_MS:-8000}
       - BEEMETRY_WMS_PROXY_MAX_BYTES=${BEEMETRY_WMS_PROXY_MAX_BYTES:-8388608}
-      - BEEMETRY_BIOMETRIC_PROVIDER=dermalog_cli
+      # DeepFace (Facenet512) + Silent-Face-Anti-Spoofing (MiniFASNet) es el
+      # proveedor local por defecto (reemplaza a SeetaFace6, ADR de
+      # supersesión en docs/decisions/). Dermalog queda como secundario
+      # explícito (BEEMETRY_DEEPFACE_SILENTFACE_DERMALOG_FALLBACK), nunca
+      # como bypass de un rechazo de seguridad -- ver face_analysis.cpp. En un
+      # contrato que exija evidencia de laboratorio/certificación, sobreescribir
+      # con dermalog_cli y aportar el certificado del producto ofertado.
+      - BEEMETRY_BIOMETRIC_PROVIDER=${BEEMETRY_BIOMETRIC_PROVIDER:-deepface_silentface}
+      - BEEMETRY_DEEPFACE_SILENTFACE_REQUIRED=${BEEMETRY_DEEPFACE_SILENTFACE_REQUIRED:-true}
+      - BEEMETRY_DEEPFACE_SILENTFACE_TIMEOUT_MS=${BEEMETRY_DEEPFACE_SILENTFACE_TIMEOUT_MS:-25000}
+      - BEEMETRY_DEEPFACE_SILENTFACE_DERMALOG_FALLBACK=${BEEMETRY_DEEPFACE_SILENTFACE_DERMALOG_FALLBACK:-false}
+      - BEEMETRY_FACE_DEEPFACE_COSINE_THRESHOLD=${BEEMETRY_FACE_DEEPFACE_COSINE_THRESHOLD:-0.70}
+      - BEEMETRY_SILENTFACE_LIVENESS_THRESHOLD=${BEEMETRY_SILENTFACE_LIVENESS_THRESHOLD:-0.60}
+      - BEEMETRY_SEETAFACE6_REQUIRED=${BEEMETRY_SEETAFACE6_REQUIRED:-true}
+      - BEEMETRY_SEETAFACE6_TIMEOUT_MS=${BEEMETRY_SEETAFACE6_TIMEOUT_MS:-20000}
+      - BEEMETRY_FACE_SEETAFACE6_COSINE_THRESHOLD=${BEEMETRY_FACE_SEETAFACE6_COSINE_THRESHOLD:-0.80}
       - BEEMETRY_DERMALOG_REQUIRED=false
       - BEEMETRY_DERMALOG_CLI_PATH=/opt/dermalog/bin/dermalog-face-cli
       - BEEMETRY_DERMALOG_SDK_DIR=/opt/dermalog
@@ -445,6 +505,36 @@ services:
       - BEEMETRY_WHATSAPP_BUSINESS_ACCOUNT_ID=${BEEMETRY_WHATSAPP_BUSINESS_ACCOUNT_ID:-}
       - BEEMETRY_WHATSAPP_ACCESS_TOKEN=${BEEMETRY_WHATSAPP_ACCESS_TOKEN:-}
       - BEEMETRY_WHATSAPP_SUPPORT_TO_E164=${BEEMETRY_WHATSAPP_SUPPORT_TO_E164:-}
+      # ADR-112: bot conversacional (menú, reclamos) -- número comercial y
+      # credenciales del webhook de entrada, mismo criterio (solo vía .env).
+      - BEEMETRY_WHATSAPP_COMERCIAL_TO_E164=${BEEMETRY_WHATSAPP_COMERCIAL_TO_E164:-}
+      # ADR-115: RRHH como quinto departamento (mismo patrón que soporte/comercial).
+      - BEEMETRY_WHATSAPP_RRHH_TO_E164=${BEEMETRY_WHATSAPP_RRHH_TO_E164:-}
+      # ADR-122: postulaciones de CV por WhatsApp (categoría rrhh) -- extracción
+      # y scoring con IA local, correo con el CV adjunto a RRHH.
+      - BEEMETRY_HR_CV_EMAIL_TO=${BEEMETRY_HR_CV_EMAIL_TO:-}
+      - BEEMETRY_WHATSAPP_CV_MAX_BYTES=${BEEMETRY_WHATSAPP_CV_MAX_BYTES:-10485760}
+      - BEEMETRY_OLLAMA_CV_MODEL=${BEEMETRY_OLLAMA_CV_MODEL:-qwen2.5:7b}
+      - BEEMETRY_OLLAMA_CV_TIMEOUT_MS=${BEEMETRY_OLLAMA_CV_TIMEOUT_MS:-120000}
+      - BEEMETRY_OLLAMA_CV_NUM_CTX=${BEEMETRY_OLLAMA_CV_NUM_CTX:-8192}
+      - BEEMETRY_AI_ENGINE_CV_EXTRACT_TIMEOUT_MS=${BEEMETRY_AI_ENGINE_CV_EXTRACT_TIMEOUT_MS:-30000}
+      - BEEMETRY_WHATSAPP_WEBHOOK_VERIFY_TOKEN=${BEEMETRY_WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}
+      - BEEMETRY_WHATSAPP_APP_SECRET=${BEEMETRY_WHATSAPP_APP_SECRET:-}
+      # ADR-114: numeros autorizados para el menu oculto "Administracion" del bot.
+      - BEEMETRY_WHATSAPP_ADMIN_TO_E164=${BEEMETRY_WHATSAPP_ADMIN_TO_E164:-}
+      # ADR-113: lineas adicionales (numeros de otras areas bajo la misma
+      # WABA/App de Meta -- ver .env.example). BEEMETRY_WHATSAPP_EXTRA_LINES
+      # trae la lista de ids; cada id necesita su propio bloque
+      # BEEMETRY_WHATSAPP_LINE_<ID>_* -- estos dos de ejemplo cubren los ids
+      # "soporte"/"comercial" ya usados en el menu del bot. Si se agregan
+      # lineas con otros ids hay que sumar aqui su propio bloque de 3 vars.
+      - BEEMETRY_WHATSAPP_EXTRA_LINES=${BEEMETRY_WHATSAPP_EXTRA_LINES:-}
+      - BEEMETRY_WHATSAPP_LINE_SOPORTE_PHONE_NUMBER_ID=${BEEMETRY_WHATSAPP_LINE_SOPORTE_PHONE_NUMBER_ID:-}
+      - BEEMETRY_WHATSAPP_LINE_SOPORTE_ACCESS_TOKEN=${BEEMETRY_WHATSAPP_LINE_SOPORTE_ACCESS_TOKEN:-}
+      - BEEMETRY_WHATSAPP_LINE_SOPORTE_LABEL=${BEEMETRY_WHATSAPP_LINE_SOPORTE_LABEL:-Soporte técnico}
+      - BEEMETRY_WHATSAPP_LINE_COMERCIAL_PHONE_NUMBER_ID=${BEEMETRY_WHATSAPP_LINE_COMERCIAL_PHONE_NUMBER_ID:-}
+      - BEEMETRY_WHATSAPP_LINE_COMERCIAL_ACCESS_TOKEN=${BEEMETRY_WHATSAPP_LINE_COMERCIAL_ACCESS_TOKEN:-}
+      - BEEMETRY_WHATSAPP_LINE_COMERCIAL_LABEL=${BEEMETRY_WHATSAPP_LINE_COMERCIAL_LABEL:-Área comercial}
       - BEEMETRY_OLLAMA_CHATBOT_MODEL=${BEEMETRY_OLLAMA_CHATBOT_MODEL:-qwen2.5:7b}
       # Ventana de contexto del chatbot (options.num_ctx). Debe coincidir con
       # OLLAMA_CONTEXT_LENGTH del servicio `ollama` -- ver el comentario allí.
@@ -466,7 +556,12 @@ services:
       # ver advertencia en app_config.cpp si se omite). Rotar cambiando este
       # valor invalida todas las sesiones activas de inmediato.
       - BEEMETRY_JWT_SECRET=${BEEMETRY_JWT_SECRET:?Definir BEEMETRY_JWT_SECRET en .env (ver .env.example) — rotar invalida todas las sesiones activas}
-      - BEEMETRY_JWT_ACCESS_TTL_MINUTES=15
+      # 2026-08-19: estaba hardcodeado a 15 acá (ignoraba tanto el .env como el
+      # default de app_config.cpp) -- causa raíz real de "la sesión se cierra
+      # cada 15 minutos" reportado por el usuario final. Ahora respeta el .env,
+      # con el mismo default 60 que el binario.
+      - BEEMETRY_JWT_ACCESS_TTL_MINUTES=${BEEMETRY_JWT_ACCESS_TTL_MINUTES:-60}
+      - BEEMETRY_AUTH_SESSION_TTL_MINUTES=${BEEMETRY_AUTH_SESSION_TTL_MINUTES:-480}
       - BEEMETRY_JWT_REFRESH_TTL_DAYS=7
       # ADR-029, "Actualización 2026-07-19": el refresh token vive en cookie
       # `Secure` — este compose sirve por HTTP plano en el puerto expuesto del
@@ -508,8 +603,9 @@ services:
       - BEEMETRY_TLS_KEY_PATH=/etc/mining-gateway/certs/server.key
       # Ingesta de telemetría de alta tasa (sensores -> gateway TLS -> COPY batch -> telemetry_raw)
       - BEEMETRY_TELEMETRY_INGEST_ENABLE=true
-      - BEEMETRY_TELEMETRY_BATCH_SIZE=1000
-      - BEEMETRY_TELEMETRY_FLUSH_MS=200
+      - BEEMETRY_TELEMETRY_BATCH_SIZE=5000
+      - BEEMETRY_TELEMETRY_FLUSH_MS=100
+      - BEEMETRY_TELEMETRY_COPY_RETRY_MS=100
       # Ingestor con conexión persistente para COPY → directo a db (evita pgbouncer)
       - BEEMETRY_TELEMETRY_DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
       # Ingesta durable vía Redpanda (Kafka). Modo: kafka | direct (cola in-process)
@@ -517,12 +613,33 @@ services:
       - BEEMETRY_KAFKA_BROKERS=redpanda:9092
       - BEEMETRY_KAFKA_TOPIC=telemetry
       - BEEMETRY_KAFKA_CONSUMER_GROUP=telemetry-writers
+      # Tres miembros para seis particiones; cada uno mantiene su propia
+      # conexión COPY y conserva/reintenta el lote ante caída de Timescale.
+      - BEEMETRY_KAFKA_CONSUMER_WORKERS=3
       # Sync ThingsBoard (AWS legacy) → plataforma propia (ver thingsboard_sync.hpp).
       # Deshabilitado por defecto: integración con sistema externo del cliente,
       # opt-in explícito por tenant vía fila en etl_sync_peer.
       - BEEMETRY_THINGSBOARD_SYNC_ENABLED=${BEEMETRY_THINGSBOARD_SYNC_ENABLED:-false}
       - BEEMETRY_TB_BACKFILL_INTERVAL_MS=${BEEMETRY_TB_BACKFILL_INTERVAL_MS:-60000}
       - BEEMETRY_TB_INITIAL_LOOKBACK_DAYS=${BEEMETRY_TB_INITIAL_LOOKBACK_DAYS:-7}
+      # ADR-103: sync RP (TimeTelemetry/Odoo) → réplica propia + escritura
+      # XML-RPC (ver rp_odoo_sync.hpp). Deshabilitado por defecto -- opt-in
+      # explícito por tenant vía fila en etl_sync_peer (auth_config->>'kind'
+      # ='timetelemetry'), la credencial real NUNCA vive en este repo.
+      - BEEMETRY_RP_SYNC_ENABLED=${BEEMETRY_RP_SYNC_ENABLED:-false}
+      - BEEMETRY_RP_POLL_INTERVAL_MS=${BEEMETRY_RP_POLL_INTERVAL_MS:-30000}
+      - BEEMETRY_RP_INITIAL_LOOKBACK_DAYS=${BEEMETRY_RP_INITIAL_LOOKBACK_DAYS:-7}
+      - BEEMETRY_RP_BATCH_SIZE=${BEEMETRY_RP_BATCH_SIZE:-200}
+      - BEEMETRY_RP_OUTBOX_POLL_MS=${BEEMETRY_RP_OUTBOX_POLL_MS:-5000}
+      - BEEMETRY_RP_OUTBOX_BATCH_SIZE=${BEEMETRY_RP_OUTBOX_BATCH_SIZE:-20}
+      - BEEMETRY_RP_OUTBOX_BACKOFF_BASE_MS=${BEEMETRY_RP_OUTBOX_BACKOFF_BASE_MS:-2000}
+      - BEEMETRY_RP_OUTBOX_BACKOFF_CAP_MS=${BEEMETRY_RP_OUTBOX_BACKOFF_CAP_MS:-900000}
+      - BEEMETRY_RP_CIRCUIT_FAILURE_THRESHOLD=${BEEMETRY_RP_CIRCUIT_FAILURE_THRESHOLD:-5}
+      - BEEMETRY_RP_CIRCUIT_COOLDOWN_MS=${BEEMETRY_RP_CIRCUIT_COOLDOWN_MS:-60000}
+      # API key de servicio para POST /api/rp/webhook/odoo -- única ruta que
+      # no usa sesión/JWT (ver ADR-103). Fail-closed: sin valor definido, el
+      # endpoint responde 503 en vez de aceptar cualquier request.
+      - BEEMETRY_RP_WEBHOOK_KEY=${BEEMETRY_RP_WEBHOOK_KEY:-}
       # SSE push de KPIs en vivo lee de la RÉPLICA (aislado del primario)
       # NOTA: el rol dashboard_ro NO existe hoy en ningún db_scripts/*.sql — esta
       # conexión falla y el código cae de vuelta al primario con credenciales
@@ -553,6 +670,8 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+      redpanda_init:
+        condition: service_completed_successfully
       ai_engine:
         condition: service_healthy
       languagetool:
@@ -707,6 +826,8 @@ services:
       args:
         # Exige modelo ONNX en build (falla si falta).
         VERIFY_GLASSES_ONNX: ${VERIFY_GLASSES_ONNX:-1}
+        SEETAFACE6_COMMIT: ${SEETAFACE6_COMMIT:-a32e2faa0694c0f841ace4df9ead0407b78363c6}
+        SEETAFACE6_BUILD_JOBS: ${SEETAFACE6_BUILD_JOBS:-2}
     image: informe-ai-engine:latest
     restart: unless-stopped
     environment:
@@ -721,8 +842,50 @@ services:
       - INSIGHTFACE_ROOT=/app/.insightface
       # 100% precargado al arranque: face_embedding buffalo_l listo desde el primer request
       - WARMUP_FACE_EMBEDDING=1
+      - SEETAFACE6_CLI_PATH=/opt/seetaface6/bin/seetaface6-face-cli
+      - SEETAFACE6_MODEL_DIR=/opt/seetaface6/models
+      - SEETAFACE6_TIMEOUT_SECONDS=${SEETAFACE6_TIMEOUT_SECONDS:-20}
+      # DeepFace (Facenet512) + Silent-Face-Anti-Spoofing (MiniFASNet) --
+      # proveedor local por defecto (deepface_silentface_adapter.py). Pesos
+      # montados read-only, nunca descargados en runtime (ver
+      # docs/integration/DEEPFACE_SILENTFACE_LOCAL_DOCKER.md).
+      # DEEPFACE_HOME=/app (NO /app/.deepface): deepface.commons.folder_utils
+      # .initialize_folder() siempre hace home + "/.deepface/weights" -- con
+      # DEEPFACE_HOME=/app/.deepface eso resuelve a /app/.deepface/.deepface,
+      # una carpeta que NO existe dentro del volumen read-only montado (el
+      # volumen ya ES ".deepface"), así que el mkdir revienta con
+      # "Read-only file system" en cada arranque (confirmado en runtime,
+      # 2026-08-18) incluso con los pesos ya provisionados. DEEPFACE_HOME=/app
+      # hace que la ruta buscada sea /app/.deepface/weights/..., que coincide
+      # con el punto de montaje real y con la ruta que documenta
+      # DEEPFACE_SILENTFACE_LOCAL_DOCKER.md.
+      - DEEPFACE_HOME=/app
+      - SILENTFACE_DETECTION_MODEL_DIR=/opt/deepface_silentface/models/detection
+      - SILENTFACE_ANTISPOOF_MODEL_DIR=/opt/deepface_silentface/models/anti_spoof
+      - SILENTFACE_LIVENESS_THRESHOLD=${BEEMETRY_SILENTFACE_LIVENESS_THRESHOLD:-0.60}
+      - WARMUP_DEEPFACE=${WARMUP_DEEPFACE:-1}
+      # Sin GPU visible, torch.cuda.is_available() es false y corre en CPU
+      # (más lento, pero no falla) -- ver requirements.txt. Con GPU visible
+      # (host con NVIDIA + nvidia-container-toolkit, bloque `devices` de más
+      # abajo), torch SÍ usa CUDA -- confirmado en runtime con RTX 5060
+      # Laptop (sm_120/Blackwell).
+      - SILENTFACE_DEVICE_ID=${SILENTFACE_DEVICE_ID:-0}
+      # cuDNN (TensorFlow/DeepFace) hace dlopen("libnvrtc.so") sin sufijo de
+      # versión para compilar kernels PTX en GPUs más nuevas que los cubin
+      # precompilados de TensorFlow -- sin este LD_LIBRARY_PATH, cuDNN no
+      # encuentra libnvrtc.so (el paquete pip nvidia-cuda-nvrtc-cu12 solo
+      # instala libnvrtc.so.12, con sufijo) y el proceso termina en
+      # SIGABRT/SIGSEGV en el primer forward de un modelo real. Confirmado en
+      # runtime, 2026-08-18: con esta variable, TensorFlow 2.14.1 SÍ ejecuta
+      # en la GPU (sm_120) vía JIT de PTX -- sin ella corre en CPU en
+      # silencio (sin error visible), lo cual es peor que fallar ruidoso.
+      - LD_LIBRARY_PATH=/usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_cupti/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/curand/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvtx/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvcc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cufft/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib
     volumes:
       - insightface_models:/app/.insightface
+      - ${SEETAFACE6_MODEL_HOST_DIR:-./biometric-models/seetaface6/sf3.0_models}:/opt/seetaface6/models:ro
+      - ${DEEPFACE_WEIGHTS_HOST_DIR:-./biometric-models/deepface}:/app/.deepface:ro
+      - ${DEEPFACE_SILENTFACE_DETECTION_HOST_DIR:-./biometric-models/deepface_silentface/detection}:/opt/deepface_silentface/models/detection:ro
+      - ${DEEPFACE_SILENTFACE_ANTISPOOF_HOST_DIR:-./biometric-models/deepface_silentface/anti_spoof}:/opt/deepface_silentface/models/anti_spoof:ro
       - ./ai_engine_probe_logs:/app/logs
     networks:
       - default
@@ -738,10 +901,23 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 3072M
+          # TensorFlow + PyTorch cargados junto con MediaPipe/InsightFace/
+          # SeetaFace6 en el mismo proceso elevan el pico de RAM frente al
+          # límite anterior (3072M, pensado solo para el stack ONNX liviano).
+          memory: 6144M
         reservations:
           cpus: '1'
-          memory: 1024M
+          memory: 1536M
+          # GPU opcional -- primer servicio del stack que la usa (Ollama corre
+          # explícitamente sin GPU mapeada). Requiere nvidia-container-toolkit
+          # + driver NVIDIA en el host Docker -- si el host no lo tiene, quitar
+          # este bloque "devices" completo; torch/tensorflow caen a CPU solos
+          # si no hay GPU expuesta, pero Docker rechaza el "up" si el bloque
+          # pide una GPU que el host no puede reservar.
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   # Si el login no refleja cambios de UI: .\scripts\rebuild-frontend-docker.ps1
   # (o: docker compose build --no-cache frontend && docker compose up -d frontend)
@@ -753,8 +929,21 @@ services:
     expose:
       - "11434"
     environment:
-      # Keep the model hot in memory permanently (no first-call cold start)
-      - OLLAMA_KEEP_ALIVE=-1
+      # 2026-08-19: era -1 (nunca descargar) desde que Ollama corría en CPU
+      # con 12 GB de RAM, donde ambos modelos convivían sin problema. Con GPU
+      # (RTX 5060, 8 GB VRAM, ver deploy.resources.reservations.devices abajo)
+      # gemma2:2b (chat, ~2.3 GB) y qwen2.5:7b (solo APA7, ~5.5 GB) YA NO
+      # caben los dos a la vez junto con ai_engine -- confirmado en vivo:
+      # cargar qwen2.5:7b desalojaba a gemma2:2b de la GPU, y el siguiente
+      # mensaje del chat pagaba un recargo de ~12-17s (recarga completa del
+      # modelo en VRAM) en vez de los ~0.5-1.5s en caliente. Bajado a 10m
+      # (mismo valor que ya pide cada request del chatbot, ver
+      # mining_chatbot_service.cpp/main.cpp) para que qwen2.5:7b libere su
+      # VRAM solo cuando de verdad no se usa -- el chat (interactivo,
+      # frecuente) no debe pagar el costo de un modelo que solo se usa para
+      # formatear citas APA7 (acción puntual, ya documentada como tolerante a
+      # más latencia).
+      - OLLAMA_KEEP_ALIVE=10m
       # Corrección 2026-08-03 (pérdida de contexto del chatbot): el backend
       # ahora pide num_ctx=8192 por petición (antes no pedía nada y Ollama
       # aplicaba su default por VRAM, 4096 en este host, truncando el prompt
@@ -819,11 +1008,30 @@ services:
           # chatbot minero (más determinante que el modelo elegido). 6 deja
           # margen para el resto de contenedores (mining_gateway usa 6,
           # OpenCV 4, ver BEEMETRY_MINING_GATEWAY_THREADS/OPENCV_THREADS).
+          # Se mantiene como red de seguridad de CPU aunque ya haya GPU (abajo):
+          # si la GPU no está disponible por algún motivo, Ollama cae solo a
+          # CPU (mismo runtime, sin cambio de imagen) y este límite sigue
+          # aplicando.
           cpus: '6'
           memory: 12288M
         reservations:
           cpus: '0.5'
           memory: 1024M
+          # 2026-08-19: análisis de latencia del chatbot (usuario reportaba
+          # respuestas lentas) -- Ollama corría 100% CPU mientras ai_engine ya
+          # usa GPU con éxito en este mismo host (ver ADR-105 punto 8, RTX
+          # 5060 de 8 GB, <300 MiB en uso real). Mismo bloque "devices" que
+          # ai_engine (nvidia-container-toolkit ya probado funcionando en este
+          # host) -- la imagen oficial ollama/ollama trae soporte CUDA
+          # embebido, sin cambiar la imagen. Si el host no tiene GPU visible,
+          # Ollama cae a CPU solo (no falla el arranque) -- a diferencia de
+          # ai_engine, este bloque NO es opcional-quitar-si-no-hay-GPU porque
+          # Ollama no rechaza el "up" sin GPU (Docker sí podría rechazarlo si
+          # pide una GPU inexistente -- quitar este bloque en un host sin GPU).
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   frontend:
     container_name: beemetry-web

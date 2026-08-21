@@ -6,12 +6,16 @@
 # Uso:  docker build -f backend/Dockerfile.verify -t beemetry-backend-verify backend
 FROM ubuntu:24.04 AS builder
 ARG DEBIAN_FRONTEND=noninteractive
+ARG BOOST_VERSION=1.91.0
+ARG BOOST_VERSION_UNDERSCORE=1_91_0
+ARG BOOST_SHA256=5734305f40a76c30f951c9abd409a45a2a19fb546efe4162119250bbe4d3a463
+ARG BACKEND_BUILD_JOBS=2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     pkg-config \
-    libboost-all-dev \
+    wget \
     libopencv-dev \
     libpq-dev \
     librdkafka-dev \
@@ -21,11 +25,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+RUN wget -q -O /tmp/boost.tar.gz \
+      "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz" \
+    && echo "${BOOST_SHA256}  /tmp/boost.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/boost.tar.gz -C /tmp \
+    && cd "/tmp/boost_${BOOST_VERSION_UNDERSCORE}" \
+    && ./bootstrap.sh --prefix=/opt/boost --with-libraries=json \
+    && ./b2 -j"${BACKEND_BUILD_JOBS}" --layout=system variant=release link=shared \
+         threading=multi cxxstd=20 install \
+    && rm -rf /tmp/boost.tar.gz "/tmp/boost_${BOOST_VERSION_UNDERSCORE}"
+
 WORKDIR /app
 COPY . /app
 RUN rm -rf /app/build /app/build-vcpkg /app/build-verify \
     && cmake -S . -B build-verify -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build-verify --config Release -j"$(nproc)" \
+        -DBOOST_ROOT=/opt/boost -DBoost_ROOT=/opt/boost \
+        -DBoost_NO_SYSTEM_PATHS=ON -DCMAKE_PREFIX_PATH=/opt/boost \
+    && cmake --build build-verify --config Release -j"${BACKEND_BUILD_JOBS}" \
     && ctest --test-dir build-verify --output-on-failure
 
 # Deja el binario disponible para inspección/ejecución de verificación.

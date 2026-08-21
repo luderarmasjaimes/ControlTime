@@ -1,0 +1,15 @@
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+[req_distinguished_name]
+CN = login-test-page.local
+[v3_req]
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = localhost
+IP.1 = 127.0.0.1
+IP.2 = 192.168.18.50
+IP.3 = 192.168.18.172
+IP.4 = 192.168.100.178
+IP.5 = 192.168.255.158

@@ -49,6 +49,8 @@
 #include "mining/telemetry_ingest.hpp"
 #include "mining/protocol_adapters.hpp"
 #include "mining/thingsboard_sync.hpp"
+#include "mining/rp_odoo_sync.hpp"
+#include "mining/rp_gateway_routes.hpp"
 #include "mining/device_alarm_routes.hpp"
 #include "mining/notification_routes.hpp"
 #include "mining/map_aggregator.hpp"
@@ -64,7 +66,10 @@
 #include "gdal/conversion_service.hpp"
 #include "text/text_routes.hpp"
 #include "support/support_routes.hpp"
+#include "support/whatsapp_webhook_routes.hpp"
+#include "support/cv_routes.hpp"
 #include "support/mining_chatbot_service.hpp"
+#include "support/support_storage_pg.hpp"
 #include "text_spell_service.hpp"
 #include "onnx_cartoon.hpp"
 #include "vision_pipeline.hpp"
@@ -250,7 +255,8 @@ handleEnroll(const http::request<http::string_body> &req,
         {
             std::scoped_lock lk(gBiometricCaptureMutex);
             auto &slot = getOrCreateBiometricCaptureSession(sessionId);
-            if (slot.state.captureCount < 3 || slot.state.state != 7) {
+            if (slot.state.captureCount < biometric::kRequiredValidCaptureFrames ||
+                slot.state.state != 7) {
                 return makeJsonResponse(http::status::bad_request,
                                         json::object{{"error", "Capture process not complete"}});
             }
@@ -375,17 +381,26 @@ handleRegister(const http::request<http::string_body> &req,
             (void)decodeBase64(bustPayloadEarly, bustBytes);
         }
 
+        // El avatar debe salir del recorte del óvalo (solo rostro, sin fondo
+        // real) -- portraitBytes es la fuente correcta. bustBytes/rawRegImage
+        // quedan solo como fallback si el óvalo no llegó o el AI engine lo
+        // rechaza (ver cadena de fallback más abajo).
         std::optional<std::future<biometric::AiEngineCartoonResult>> cartoonFut;
-        if (!bustBytes.empty()) {
-            std::vector<unsigned char> bustCopy = bustBytes;
-            cartoonFut.emplace(std::async(std::launch::async, [bustCopy]() {
-                return fetchCartoonAvatarBestEffort(bustCopy);
+        if (!portraitBytes.empty()) {
+            std::vector<unsigned char> portraitCopy = portraitBytes;
+            cartoonFut.emplace(std::async(std::launch::async, [portraitCopy]() {
+                return fetchCartoonAvatarBestEffort(portraitCopy);
             }));
             regLog("cartoon_async_started_parallel_with_embedding");
         }
 
         std::vector<double> faceTemplate;
-        std::string biometricProvider = "legacy";
+        // Hallazgo de seguridad 2026-08-10 (db_scripts/53): un face_template
+        // mandado directo por el cliente NUNCA pasó por ningún análisis
+        // facial real -- marcarlo "legacy" (como antes) lo hacía indistinguible
+        // de una plantilla legacy genuina. "unknown_client_supplied" deja
+        // login/face rechazarlo explícitamente en vez de aceptarlo.
+        std::string biometricProvider = "unknown_client_supplied";
         double qualityScore = 0.0;
         if (hasTemplate) {
             for (const auto &v : obj.at("face_template").as_array()) {
@@ -461,6 +476,7 @@ handleRegister(const http::request<http::string_body> &req,
         created.role         = role;
         created.passwordHash = hashPassword(password);
         created.faceTemplate = std::move(faceTemplate);
+        created.faceTemplateProvider = biometricProvider;
         created.createdAt    = nowIso8601();
         created.ruc          = ruc;
         created.phone        = phone;
@@ -471,7 +487,22 @@ handleRegister(const http::request<http::string_body> &req,
         regLog("pre_db_insert");
 
         {
-            std::scoped_lock lk(gAuthMutex);
+            // gAuthMutex solo hace falta en modo File: loadAuthUsers/saveAuthUsers
+            // hacen un check-then-write no atómico sobre el vector en memoria
+            // (duplicado de dni/username), así que SÍ necesita serializarse. En
+            // modo Postgres la unicidad ya la garantiza el índice UNIQUE de la
+            // tabla (ver registerUserPg -> 409 en ADR-101) -- sostener este mutex
+            // de PROCESO durante el round-trip de red a Postgres no aporta
+            // correctitud, solo congela TODO login/registro/facial del sistema
+            // para TODOS los usuarios mientras dura esa consulta (diagnosticado
+            // 2026-08-20: una BD lenta/caída dejaba el mutex tomado hasta el
+            // client_login_timeout de pgbouncer, ~60s). Ver mismo patrón en
+            // handleLoginPassword/handleLoginFace y en
+            // buildAuthLoginCheckIdentityResponse (auth_routes.cpp).
+            std::unique_lock<std::mutex> lk(gAuthMutex, std::defer_lock);
+            if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+                lk.lock();
+            }
             if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
                 std::string dbError;
@@ -550,16 +581,16 @@ handleRegister(const http::request<http::string_body> &req,
 
         const bool deferCartoonWork = cartoonFut.has_value() ||
                                       !rawRegImage.empty() ||
-                                      !portraitBytes.empty();
+                                      !bustBytes.empty();
         if (deferCartoonWork) {
             auto bgCartoonOpt = std::move(cartoonFut);
-            std::vector<unsigned char> bgRawReg  = std::move(rawRegImage);
-            std::vector<unsigned char> bgPortrait = std::move(portraitBytes);
+            std::vector<unsigned char> bgRawReg = std::move(rawRegImage);
+            std::vector<unsigned char> bgBust   = std::move(bustBytes);
             const auto storageModeCapture = cfg.gAuthStorageMode;
             const auto dbUrlCapture       = cfg.gDatabaseUrl;
             std::thread(
                 [bgCartoonOpt = std::move(bgCartoonOpt),
-                 bgRawReg = std::move(bgRawReg), bgPortrait = std::move(bgPortrait),
+                 bgRawReg = std::move(bgRawReg), bgBust = std::move(bgBust),
                  userId = created.id, regDni = dni, regUser = username,
                  regCompany = company, dataRoot,
                  storageModeCapture, dbUrlCapture]() mutable {
@@ -578,11 +609,11 @@ handleRegister(const http::request<http::string_body> &req,
                     std::string hdB64;
                     if (bgCartoonOpt.has_value()) {
                         try {
-                            auto cartoonB = bgCartoonOpt->get();
-                            bgLog("bust_future_done");
-                            if (cartoonB.ok()) {
-                                b64 = std::move(cartoonB.imageBase64);
-                                hdB64 = std::move(cartoonB.imageHdBase64);
+                            auto cartoonP = bgCartoonOpt->get();
+                            bgLog("portrait_future_done");
+                            if (cartoonP.ok()) {
+                                b64 = std::move(cartoonP.imageBase64);
+                                hdB64 = std::move(cartoonP.imageHdBase64);
                             }
                         } catch (const std::exception &ex) {
                             std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: "
@@ -591,17 +622,17 @@ handleRegister(const http::request<http::string_body> &req,
                             std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: unknown\n";
                         }
                     }
-                    if (b64.empty() && !bgRawReg.empty()) {
-                        bgLog("cartoon_sync_raw_bg");
-                        auto cartoon = fetchCartoonAvatarBestEffort(bgRawReg);
+                    if (b64.empty() && !bgBust.empty()) {
+                        bgLog("cartoon_sync_bust_bg");
+                        auto cartoon = fetchCartoonAvatarBestEffort(bgBust);
                         if (cartoon.ok()) {
                             b64 = std::move(cartoon.imageBase64);
                             hdB64 = std::move(cartoon.imageHdBase64);
                         }
                     }
-                    if (b64.empty() && !bgPortrait.empty()) {
-                        bgLog("cartoon_sync_portrait_bg");
-                        auto cartoon2 = fetchCartoonAvatarBestEffort(bgPortrait);
+                    if (b64.empty() && !bgRawReg.empty()) {
+                        bgLog("cartoon_sync_raw_bg");
+                        auto cartoon2 = fetchCartoonAvatarBestEffort(bgRawReg);
                         if (cartoon2.ok()) {
                             b64 = std::move(cartoon2.imageBase64);
                             hdB64 = std::move(cartoon2.imageHdBase64);
@@ -650,7 +681,12 @@ handleRegister(const http::request<http::string_body> &req,
                             }
                         }
                     }
-                    std::scoped_lock lk(gAuthMutex);
+                    // Ver comentario en el registro síncrono más arriba: solo
+                    // File-mode necesita serializarse contra gAuthMutex.
+                    std::unique_lock<std::mutex> lk(gAuthMutex, std::defer_lock);
+                    if (storageModeCapture != AuthStorageMode::Postgres) {
+                        lk.lock();
+                    }
                     if (storageModeCapture == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
                         std::string err;
@@ -897,6 +933,50 @@ handleTokenRefresh(const http::request<http::string_body> &req,
         *pair);
 }
 
+// Ubicación de la PC/dispositivo cliente (opcional, capturada por el
+// navegador vía navigator.geolocation con consentimiento del usuario -- ver
+// frontend/src/auth/geolocation.ts). Nunca condiciona el resultado del
+// login: si falta, es inválida o está fuera de rango, se ignora en
+// silencio y la autenticación sigue su curso normal. `suffix` se anexa al
+// `detail` de la fila de auditoría (lectura humana); latitude/longitude/
+// accuracy van además a columnas dedicadas (db_scripts/58, ADR-107) para
+// poder filtrar/agregar por coordenadas. Compartido por login/password y
+// login/face (antes solo login/face lo leía).
+struct GeoAuditInfo {
+    std::string suffix;
+    std::optional<double> latitude;
+    std::optional<double> longitude;
+    std::optional<double> accuracy;
+};
+
+static GeoAuditInfo extractGeoAuditInfo(const json::object &obj) {
+    GeoAuditInfo info;
+    if (!obj.if_contains("location") || !obj.at("location").is_object()) {
+        return info;
+    }
+    const auto &loc = obj.at("location").as_object();
+    auto asDouble = [](const json::value &v) -> std::optional<double> {
+        if (v.is_double()) return v.as_double();
+        if (v.is_int64()) return static_cast<double>(v.as_int64());
+        return std::nullopt;
+    };
+    std::optional<double> lat, lon, acc;
+    if (loc.if_contains("latitude")) lat = asDouble(loc.at("latitude"));
+    if (loc.if_contains("longitude")) lon = asDouble(loc.at("longitude"));
+    if (loc.if_contains("accuracy")) acc = asDouble(loc.at("accuracy"));
+    if (!lat || !lon || *lat < -90.0 || *lat > 90.0 || *lon < -180.0 || *lon > 180.0) {
+        return info;
+    }
+    info.latitude = lat;
+    info.longitude = lon;
+    info.suffix = " geo=" + std::to_string(*lat) + "," + std::to_string(*lon);
+    if (acc && *acc >= 0.0) {
+        info.accuracy = acc;
+        info.suffix += " geo_accuracy_m=" + std::to_string(*acc);
+    }
+    return info;
+}
+
 // ── POST /api/auth/login/password ───────────────────────────────────────
 static http::response<http::string_body>
 handleLoginPassword(const http::request<http::string_body> &req,
@@ -920,6 +1000,8 @@ handleLoginPassword(const http::request<http::string_body> &req,
         const std::string company  = json::value_to<std::string>(obj.at("company"));
         const std::string username = json::value_to<std::string>(obj.at("username"));
         const std::string password = json::value_to<std::string>(obj.at("password"));
+        const GeoAuditInfo geo = extractGeoAuditInfo(obj);
+        const std::string &geoAuditSuffix = geo.suffix;
 
         // T22 — Rate limiting: 5 fallos / 5 min por clave company|username
         const std::string rateKey = company + "|" + username;
@@ -932,14 +1014,20 @@ handleLoginPassword(const http::request<http::string_body> &req,
         AuthUser found;
         bool ok = false;
         {
-            std::scoped_lock lk(gAuthMutex);
+            // Ver comentario en handleRegister: solo File-mode necesita
+            // serializarse contra gAuthMutex.
+            std::unique_lock<std::mutex> lk(gAuthMutex, std::defer_lock);
+            if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+                lk.lock();
+            }
             if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
                 std::string dbError;
                 std::string errCode;
                 auto user = loginPasswordPg(cfg.gDatabaseUrl, company, username,
                                             password, dbError,
-                                            &errCode);
+                                            &errCode, geoAuditSuffix,
+                                            geo.latitude, geo.longitude, geo.accuracy);
                 if (!user) {
                     loginRateIncrement(rateKey);
                     json::object jo{{"error", dbError}};
@@ -998,7 +1086,7 @@ handleLoginPassword(const http::request<http::string_body> &req,
                     saveAuthUsers(dataRoot, users);
                 }
                 appendAuthAuditLog(dataRoot, "login_password", company,
-                                   match->username, true, "ok");
+                                   match->username, true, "ok" + geoAuditSuffix);
                 found = *match;
                 ok = true;
             }
@@ -1087,10 +1175,17 @@ handleLoginFace(const http::request<http::string_body> &req,
         }
 
         const std::string company = json::value_to<std::string>(obj.at("company"));
+
+        // Ubicación de la PC cliente -- ver extractGeoAuditInfo() arriba
+        // (ADR-107: helper compartido con login/password, antes duplicado acá).
+        const GeoAuditInfo geo = extractGeoAuditInfo(obj);
+        const std::string &geoAuditSuffix = geo.suffix;
+
         std::cout << "[AUTH_FACE] request: company=" << company
                   << " identity=" << identityLogin
                   << " has_template=" << (hasTemplate ? "1" : "0")
-                  << " has_image=" << (hasImage ? "1" : "0") << std::endl;
+                  << " has_image=" << (hasImage ? "1" : "0")
+                  << " has_location=" << (geoAuditSuffix.empty() ? "0" : "1") << std::endl;
 
         // Rate limiting a nivel de cuenta, igual que el login por contraseña
         // (auditoría de seguridad 2026-08-02). Este endpoint acepta un
@@ -1144,7 +1239,15 @@ handleLoginFace(const http::request<http::string_body> &req,
         bool ok = false;
         std::string biometricProvider = "legacy";
         {
-            std::scoped_lock lk(gAuthMutex);
+            // Ver comentario en handleRegister: solo File-mode necesita
+            // serializarse contra gAuthMutex. Este es el endpoint más sensible
+            // a esto -- login facial cuelga aquí durante todo el round-trip a
+            // ai_engine + Postgres del match biométrico (el más lento de los
+            // tres flujos de auth) reteniendo antes el mutex global entero.
+            std::unique_lock<std::mutex> lk(gAuthMutex, std::defer_lock);
+            if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+                lk.lock();
+            }
             if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
                 std::string dbError;
@@ -1153,7 +1256,8 @@ handleLoginFace(const http::request<http::string_body> &req,
                     cfg.gDatabaseUrl, company, identityLogin,
                     clientProbeTemplate, rawImageBytes, base64ForLegacy,
                     legacyThreshold, cfg.gFaceEmbeddingCosineThreshold,
-                    dbError, &probeProv);
+                    dbError, &probeProv, geoAuditSuffix,
+                    geo.latitude, geo.longitude, geo.accuracy);
                 if (!result) {
                     std::cout << "[AUTH_FACE] postgres login failed: company="
                               << company << " identity=" << identityLogin
@@ -1255,7 +1359,7 @@ handleLoginFace(const http::request<http::string_body> &req,
                 appendAuthAuditLog(
                     dataRoot, "login_face", company, match->username, true,
                     "ok score=" + std::to_string(bestScore) +
-                        " probe=" + probeProv);
+                        " probe=" + probeProv + geoAuditSuffix);
                 bestUser = *match;
                 biometricProvider = probeProv.empty() ? "legacy" : probeProv;
                 ok = true;
@@ -1485,9 +1589,18 @@ static http::response<http::string_body> handleMetrics(
           << "# HELP mapas_backend_telemetry_kafka Kafka/Redpanda ingest counters\n"
           << "# TYPE mapas_backend_telemetry_kafka counter\n"
           << "mapas_backend_telemetry_produced_total "       << ti.produced       << "\n"
+          << "mapas_backend_telemetry_delivered_total "      << ti.delivered      << "\n"
           << "mapas_backend_telemetry_produce_errors_total " << ti.produce_errors << "\n"
+          << "mapas_backend_telemetry_delivery_errors_total " << ti.delivery_errors << "\n"
           << "mapas_backend_telemetry_consumed_total "       << ti.consumed       << "\n"
           << "mapas_backend_telemetry_commits_total "        << ti.commits        << "\n"
+          << "mapas_backend_telemetry_commit_errors_total "  << ti.commit_errors  << "\n"
+          << "mapas_backend_telemetry_copy_retries_total "   << ti.copy_retries   << "\n"
+          << "mapas_backend_telemetry_malformed_total "      << ti.malformed      << "\n"
+          << "mapas_backend_telemetry_deduplicated_total "   << ti.deduplicated   << "\n"
+          << "mapas_backend_telemetry_consumer_workers "     << ti.consumer_workers << "\n"
+          << "mapas_backend_telemetry_stalled_workers "      << ti.stalled_workers << "\n"
+          << "mapas_backend_telemetry_producer_outq "        << ti.producer_outq  << "\n"
           << "mapas_backend_telemetry_mode{mode=\"" << ti.mode << "\"} 1\n";
 
         auto tb = mining::tbsync::thingsBoardSyncStats();
@@ -1505,6 +1618,27 @@ static http::response<http::string_body> handleMetrics(
           << "mapas_backend_tbsync_realtime_points_ingested_total "  << tb.realtime_points_ingested   << "\n"
           << "mapas_backend_tbsync_realtime_points_dropped_total "   << tb.realtime_points_dropped_unmapped << "\n"
           << "mapas_backend_tbsync_realtime_errors_total "           << tb.realtime_errors            << "\n";
+
+        auto rp = mining::rpsync::rpSyncStats();
+        m << "# HELP mapas_backend_rpsync RP (TimeTelemetry/Odoo, ADR-103) sync counters\n"
+          << "# TYPE mapas_backend_rpsync counter\n"
+          << "mapas_backend_rpsync_enabled "                     << (rp.enabled ? 1 : 0)   << "\n"
+          << "mapas_backend_rpsync_peers_configured "            << rp.peers_configured    << "\n"
+          << "mapas_backend_rpsync_peers_authenticated_total "   << rp.peers_authenticated << "\n"
+          << "mapas_backend_rpsync_auth_failures_total "         << rp.auth_failures       << "\n"
+          << "mapas_backend_rpsync_backfill_runs_total "         << rp.backfill_runs       << "\n"
+          << "mapas_backend_rpsync_backfill_upserted_total "     << rp.backfill_upserted   << "\n"
+          << "mapas_backend_rpsync_backfill_errors_total "       << rp.backfill_errors     << "\n"
+          << "mapas_backend_rpsync_incremental_polls_total "     << rp.incremental_polls   << "\n"
+          << "mapas_backend_rpsync_incremental_upserted_total "  << rp.incremental_upserted<< "\n"
+          << "mapas_backend_rpsync_incremental_errors_total "    << rp.incremental_errors  << "\n"
+          << "mapas_backend_rpsync_webhook_nudges_total "        << rp.webhook_nudges      << "\n"
+          << "mapas_backend_rpsync_webhook_nudge_errors_total "  << rp.webhook_nudge_errors<< "\n"
+          << "mapas_backend_rpsync_outbox_sent_total "           << rp.outbox_sent         << "\n"
+          << "mapas_backend_rpsync_outbox_retried_total "        << rp.outbox_retried      << "\n"
+          << "mapas_backend_rpsync_outbox_dead_total "           << rp.outbox_dead         << "\n"
+          << "mapas_backend_rpsync_xmlrpc_errors_total "         << rp.xmlrpc_errors       << "\n"
+          << "mapas_backend_rpsync_circuit_open_events_total "   << rp.circuit_open_events << "\n";
     }
 #endif
 
@@ -1662,6 +1796,13 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
     json::object qualifying;
     json::array messages;
     support::ChatIntent intent = support::ChatIntent::Chat;
+    // Canal (ADR-117) y conversation_id (ADR-116) -- mismo contrato que
+    // support_routes.cpp::handleChatMessage (ruta no-streaming), duplicado a
+    // propósito: este handler vive en main.cpp, fuera del módulo support_mod,
+    // y parsea el body a mano (sin Router) por ser SSE crudo sobre el stream.
+    std::string channel = "HomeMinero";
+    std::string conversationId;
+    std::string intentRaw = "chat";
     try {
         auto val = json::parse(req.body());
         if (!val.is_object()) throw std::runtime_error("invalid_json");
@@ -1670,7 +1811,17 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
             qualifying = obj.at("qualifying").as_object();
         }
         if (obj.contains("intent") && obj.at("intent").is_string()) {
-            intent = support::parseChatIntent(json::value_to<std::string>(obj.at("intent")));
+            intentRaw = json::value_to<std::string>(obj.at("intent"));
+            intent = support::parseChatIntent(intentRaw);
+        }
+        if (obj.contains("channel") && obj.at("channel").is_string()) {
+            channel = json::value_to<std::string>(obj.at("channel"));
+        }
+        if (channel != "HomeMinero" && channel != "MovilMinero") {
+            throw std::runtime_error("invalid_channel");
+        }
+        if (obj.contains("conversation_id") && obj.at("conversation_id").is_string()) {
+            conversationId = json::value_to<std::string>(obj.at("conversation_id"));
         }
         if (!obj.contains("messages") || !obj.at("messages").is_array()) {
             throw std::runtime_error("missing_messages");
@@ -1689,6 +1840,21 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
         const std::string full = resp.str();
         asio::write(stream, asio::buffer(full), ec);
         return;
+    }
+
+    // Persistencia best-effort del turno del usuario (ADR-116) -- se hace acá,
+    // antes de intentar Ollama, para no perder el mensaje si el modelo falla
+    // después. `persistChatMessagePg` genera conversationId si viene vacío.
+    if (!messages.empty() && messages.back().is_object()) {
+        const auto &last = messages.back().as_object();
+        if (last.contains("role") &&
+            json::value_to<std::string>(last.at("role")) == "user" &&
+            last.contains("content") && last.at("content").is_string()) {
+            conversationId = support::persistChatMessagePg(
+                config::AppConfig::instance().gDatabaseUrl, conversationId, session->tenantId,
+                session->userId, channel, "user",
+                json::value_to<std::string>(last.at("content")), intentRaw);
+        }
     }
 
     const std::string ollamaBase = getenvOr("BEEMETRY_OLLAMA_URL", "");
@@ -1782,6 +1948,7 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
         std::size_t consumed = 0;
         std::string lineBuf;
         bool anyForwarded = false;
+        std::string assistantReply; // acumulado para persistir el turno completo al final
         while (!parser.is_done()) {
             http::read_some(ollamaStream, readBuf, parser, ec);
             if (ec && ec != http::error::end_of_stream) {
@@ -1807,10 +1974,17 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
                             if (!frag.empty() && !support::fragmentHasCjk(frag)) {
                                 sendSseEvent(json::object{{"chunk", frag}});
                                 anyForwarded = true;
+                                assistantReply += frag;
                             }
                         }
                         if (co.contains("done") && co.at("done").is_bool() && co.at("done").as_bool()) {
-                            sendSseEvent(json::object{{"done", true}});
+                            if (!assistantReply.empty()) {
+                                conversationId = support::persistChatMessagePg(
+                                    config::AppConfig::instance().gDatabaseUrl, conversationId,
+                                    session->tenantId, session->userId, channel, "assistant",
+                                    assistantReply, intentRaw);
+                            }
+                            sendSseEvent(json::object{{"done", true}, {"conversation_id", conversationId}});
                             return;
                         }
                     } catch (...) {
@@ -1823,7 +1997,12 @@ static void handleChatStreamSse(beast::tcp_stream& stream,
         if (!anyForwarded) {
             sendSseEvent(json::object{{"error", "ollama_empty_response"}});
         } else {
-            sendSseEvent(json::object{{"done", true}});
+            if (!assistantReply.empty()) {
+                conversationId = support::persistChatMessagePg(
+                    config::AppConfig::instance().gDatabaseUrl, conversationId, session->tenantId,
+                    session->userId, channel, "assistant", assistantReply, intentRaw);
+            }
+            sendSseEvent(json::object{{"done", true}, {"conversation_id", conversationId}});
         }
     } catch (const std::exception &ex) {
         std::cerr << "[chat_stream] excepcion: " << ex.what() << std::endl;
@@ -2061,6 +2240,7 @@ int main() {
         mining::registerRoutes(gRouter);
         mining_iot::registerRoutes(gRouter);
         mining_iot::registerNotificationRoutes(gRouter);
+        mining::rp_gateway::registerRoutes(gRouter);
         reports::registerRoutes(gRouter);
         formula::registerRoutes(gRouter);
         platform::registerRoutes(gRouter);
@@ -2069,6 +2249,8 @@ int main() {
         gdal_mod::registerRoutes(gRouter);
         text_mod::registerRoutes(gRouter);
         support_mod::registerRoutes(gRouter);
+        support_mod::registerWebhookRoutes(gRouter);
+        support_mod::registerCvRoutes(gRouter); // ADR-122: panel de candidatos RRHH
         registerRemainingRoutes(gRouter);
 
         // ADR-034: motor de alarmas (evaluador de reglas en segundo plano,
@@ -2086,9 +2268,19 @@ int main() {
         std::cout << "biometric provider: "
                   << (cfg.gBiometricProvider == BiometricProvider::DermalogCli
                           ? "dermalog_cli"
+                      : cfg.gBiometricProvider == BiometricProvider::SeetaFace6
+                          ? "seetaface6_local"
+                      : cfg.gBiometricProvider == BiometricProvider::DeepFaceSilent
+                          ? "deepface_silentface"
                           : "legacy")
                   << ", dermalog required: "
-                  << (cfg.gDermalogRequired ? "true" : "false") << std::endl;
+                  << (cfg.gDermalogRequired ? "true" : "false")
+                  << ", seetaface6 required: "
+                  << (cfg.gSeetaFace6Required ? "true" : "false")
+                  << ", deepface_silentface required: "
+                  << (cfg.gDeepFaceSilentRequired ? "true" : "false")
+                  << ", deepface_silentface dermalog fallback: "
+                  << (cfg.gDeepFaceSilentDermalogFallback ? "true" : "false") << std::endl;
         auto &dnnCtx = getAccessoryDnnContext();
         std::cout << "biometric dnn: "
                   << (cfg.gBiometricDnnEnabled ? "enabled" : "disabled")
@@ -2137,9 +2329,17 @@ int main() {
         if (telemetryIngestEnabled) {
             std::size_t batch = 1000;
             int flushMs = 200;
+            std::size_t kafkaWorkers = 3;
+            int copyRetryMs = 100;
             try { batch = std::stoul(getenvOr("BEEMETRY_TELEMETRY_BATCH_SIZE", "1000")); }
             catch (...) {}
             try { flushMs = std::stoi(getenvOr("BEEMETRY_TELEMETRY_FLUSH_MS", "200")); }
+            catch (...) {}
+            try { kafkaWorkers = std::stoul(getenvOr(
+                "BEEMETRY_KAFKA_CONSUMER_WORKERS", "3")); }
+            catch (...) {}
+            try { copyRetryMs = std::stoi(getenvOr(
+                "BEEMETRY_TELEMETRY_COPY_RETRY_MS", "100")); }
             catch (...) {}
             // El ingestor usa UNA conexión persistente para COPY → va DIRECTO a
             // la BD (no por pgbouncer, que es para las conexiones cortas del
@@ -2151,7 +2351,8 @@ int main() {
                 mining::TelemetryIngestor::instance().configureKafka(
                     getenvOr("BEEMETRY_KAFKA_BROKERS", "redpanda:9092"),
                     getenvOr("BEEMETRY_KAFKA_TOPIC", "telemetry"),
-                    getenvOr("BEEMETRY_KAFKA_CONSUMER_GROUP", "telemetry-writers"));
+                    getenvOr("BEEMETRY_KAFKA_CONSUMER_GROUP", "telemetry-writers"),
+                    kafkaWorkers, copyRetryMs);
             }
             mining::TelemetryIngestor::instance().start(ingestUrl, batch,
                                                         flushMs);
@@ -2160,8 +2361,15 @@ int main() {
             // ws_broadcast.hpp / map_aggregator.hpp). Reusa la misma
             // BEEMETRY_TELEMETRY_DATABASE_URL/gDatabaseUrl que el resto del
             // backend (no el canal directo de COPY del ingestor).
-            int mapPollMs = 3000;
-            try { mapPollMs = std::stoi(getenvOr("BEEMETRY_MAP_AGGREGATOR_POLL_MS", "3000")); }
+            // 1500ms (antes 3000ms): el WHERE va por idx_map_markers_tenant_geo /
+            // idx_sensors_tenant_geo, medido con EXPLAIN ANALYZE en vivo
+            // (2026-08-21) en ~2ms por tenant -- había margen de sobra para
+            // bajar el intervalo y que el mapa se sienta más "en vivo" sin
+            // acercarse al costo real de la query. Sigue configurable por
+            // env si algún despliegue tiene muchos tenants con listeners
+            // activos simultáneos y hace falta subirlo.
+            int mapPollMs = 1500;
+            try { mapPollMs = std::stoi(getenvOr("BEEMETRY_MAP_AGGREGATOR_POLL_MS", "1500")); }
             catch (...) {}
             mining::MapAggregator::instance().start(cfg.gDatabaseUrl, mapPollMs);
 
@@ -2175,6 +2383,12 @@ int main() {
             // thingsboard_sync.hpp. Gated por BEEMETRY_THINGSBOARD_SYNC_ENABLED
             // (default false); no-op si está deshabilitado o sin peer configurado.
             mining::tbsync::startThingsBoardSync(cfg.gDatabaseUrl);
+
+            // ADR-103: sync RP (TimeTelemetry/Odoo) → réplica local +
+            // escritura XML-RPC, ver rp_odoo_sync.hpp. Gated por
+            // BEEMETRY_RP_SYNC_ENABLED (default false); mismo criterio que
+            // ThingsBoard -- integración con sistema externo del cliente.
+            mining::rpsync::startRpOdooSync(cfg.gDatabaseUrl);
         }
 #endif
 
@@ -2194,6 +2408,9 @@ int main() {
                 mcfg.key_path = getenvOr("BEEMETRY_TLS_KEY_PATH",
                     "/etc/mining-gateway/certs/server.key");
                 mcfg.ingest_enabled = telemetryIngestEnabled;
+                try { mcfg.max_lines_per_read = std::stoul(getenvOr(
+                    "BEEMETRY_MINING_GATEWAY_MAX_LINES_PER_READ", "256")); }
+                catch (...) {}
                 std::cout << "[MINING-GATEWAY] Initializing on "
                           << mcfg.bind_address << ":" << mcfg.port
                           << " ingest=" << (mcfg.ingest_enabled ? "on" : "off")

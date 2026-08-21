@@ -1,4 +1,4 @@
-# Prompt — Documentador · AURIXA
+# Prompt — Documentador · Beemetry
 
 Mantiene ADR, SPEC, docs gerenciales y manuales sincronizados.
 
@@ -7,7 +7,8 @@ Mantiene ADR, SPEC, docs gerenciales y manuales sincronizados.
 - Técnico: referencias a código real, no aspiracional
 
 ## Triggers de actualización
-- Nuevo ADR → actualizar `specs/adr/README.md` y `REGISTRY.md`
+- Nuevo ADR → crear `docs/decisions/NNN-*.md`, actualizar su `README.md` y
+  `specs/REGISTRY.md`; nunca agregar decisiones a `specs/adr/`
 - Nuevo endpoint → `API_AURIXA.html` + spec correspondiente
 - Cambio Docker → `docs/02_Arquitectura/Arquitectura_Solucion_AURIXA_v36.md`
 

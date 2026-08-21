@@ -33,6 +33,23 @@ async function parseJsonResponse(response: Response): Promise<any> {
             payload,
         })
         let message = payload.error || `Error HTTP ${response.status}`
+        // 429/502/503/504: responden desde nginx (rate limit o backend caído/
+        // reiniciando), no desde el backend C++ -- el cuerpo nunca trae
+        // {error, issues} en el formato de la app, así que sin este caso el
+        // usuario final veía literalmente "Error HTTP 503" (confirmado en
+        // pruebas reales, 2026-08-19: varios reintentos de login en poco
+        // tiempo calibrando distancia/iluminación superaron el límite de
+        // ráfaga de nginx en /api/auth/login/). 429 es el límite de intentos
+        // (esperado en uso normal si se reintenta muy seguido); 502/503/504
+        // es el backend realmente no disponible.
+        if (response.status === 429) {
+            message = 'Demasiados intentos en poco tiempo. Espere unos segundos y vuelva a intentar.'
+        } else if (
+            !payload.error &&
+            (response.status === 502 || response.status === 503 || response.status === 504)
+        ) {
+            message = 'El servicio no está disponible en este momento. Intente nuevamente en unos segundos.'
+        }
         if (Array.isArray(payload.issues) && payload.issues.length > 0) {
             const translations: Record<string, string> = {
                 'suspected_glasses': 'Lentes detectados (Retirar lentes)',
@@ -247,6 +264,9 @@ export interface CompanyRecord {
     updated_by: string;
     deactivated_at?: string;
     deactivated_by?: string;
+    latitude: number | null;
+    longitude: number | null;
+    location_zoom: number | null;
 }
 
 export interface CreateCompanyPayload {
@@ -254,6 +274,9 @@ export interface CreateCompanyPayload {
     ruc?: string;
     country?: string;
     domicilio_fiscal?: string;
+    latitude?: number;
+    longitude?: number;
+    location_zoom?: number;
 }
 
 /** ADR-085/086: extendido para aceptar RUC/país/domicilio opcionales, además
@@ -267,6 +290,14 @@ export async function createCompany(payload: string | CreateCompanyPayload): Pro
         ...(body.ruc ? { ruc: body.ruc } : {}),
         ...(body.country ? { country: body.country } : {}),
         ...(body.domicilio_fiscal ? { domicilio_fiscal: body.domicilio_fiscal } : {}),
+        // ADR-121: lat/lng viajan juntas o ninguna -- ver auth_routes.cpp.
+        ...(typeof body.latitude === 'number' && typeof body.longitude === 'number'
+            ? {
+                  latitude: body.latitude,
+                  longitude: body.longitude,
+                  ...(typeof body.location_zoom === 'number' ? { location_zoom: body.location_zoom } : {}),
+              }
+            : {}),
     })
 }
 
@@ -288,6 +319,9 @@ export async function updateCompany(companyId: string, patch: {
     ruc?: string;
     country?: string;
     domicilio_fiscal?: string;
+    latitude?: number;
+    longitude?: number;
+    location_zoom?: number;
 }): Promise<CompanyRecord> {
     const response = await authFetch(`/api/auth/companies/${encodeURIComponent(companyId)}`, {
         method: 'PUT',
@@ -295,6 +329,36 @@ export async function updateCompany(companyId: string, patch: {
         body: JSON.stringify(patch),
     })
     return parseJsonResponse(response)
+}
+
+export interface CompanyLocation {
+    has_location: boolean;
+    latitude?: number;
+    longitude?: number;
+    zoom?: number;
+}
+
+/** ADR-121: coordenadas de la mina del tenant de la sesión actual — usado por
+ * MapViewer.tsx para reemplazar el centro fijo. Cualquier usuario autenticado
+ * puede consultar la ubicación de su propia empresa (sin permiso especial). */
+export async function fetchCompanyLocation(): Promise<CompanyLocation> {
+    const response = await authFetch('/api/map/company-location')
+    return parseJsonResponse(response)
+}
+
+export interface GeocodeResult {
+    lat: string;
+    lon: string;
+    display_name: string;
+}
+
+/** Proxy server-side a Nominatim (ADR-121) — requiere `empresas.manage`, usado
+ * solo por el buscador de dirección del picker de ubicación de empresa. */
+export async function geocodeAddress(query: string): Promise<GeocodeResult[]> {
+    const params = new URLSearchParams({ q: query })
+    const response = await authFetch(`/api/map/geocode?${params.toString()}`)
+    const payload = await parseJsonResponse(response)
+    return Array.isArray(payload) ? payload : []
 }
 
 /** Baja/reactivación lógica (soft delete — ADR-085). Requiere `empresas.manage`. */
@@ -340,14 +404,20 @@ export async function registerUser(payload: RegisterUserPayload): Promise<any> {
     if (payload.mobile) body.mobile = payload.mobile
     if (payload.email) body.email = payload.email
 
-    /* Enviar plantilla e imagen si existen: el backend prioriza face_template (rápido)
-       y ya no fuerza embedding en ai_engine cuando la plantilla viene del cliente. */
-    const hasTemplate =
-        Array.isArray(payload.faceTemplate) &&
-        payload.faceTemplate.length > 0
-    if (hasTemplate) {
-        body.face_template = payload.faceTemplate
-    }
+    /* Corrección 2026-08-13: NO enviar face_template (plantilla calculada en el
+       cliente). El backend (auth_storage_pg.cpp, hallazgo de seguridad
+       2026-08-10 / db_scripts/53) marca cualquier registro con face_template
+       como provider "unknown_client_supplied" y lo RECHAZA explícitamente en
+       cada login facial posterior -- nunca pasó por análisis facial real. El
+       comentario anterior de este archivo ("el backend prioriza
+       face_template") describía el síntoma, no la intención: quedó
+       desactualizado tras el hallazgo de seguridad, y toda cuenta nueva
+       registrada por esta pantalla terminaba con el login facial
+       permanentemente roto (confirmado en vivo 2026-08-13). Enviar solo
+       face_image_base64 fuerza siempre el embedding real vía ai_engine.
+       payload.faceTemplate se sigue aceptando en la firma por si algún
+       llamador todavía lo usa para otra cosa (p.ej. el óvalo en pantalla),
+       pero ya no viaja al backend. */
     if (payload.faceImageBase64) {
         body.face_image_base64 = payload.faceImageBase64
     }
@@ -377,12 +447,36 @@ export async function registerUser(payload: RegisterUserPayload): Promise<any> {
     return out
 }
 
-export async function loginWithPassword(payload: { company: string; username: string; password: string }): Promise<any> {
-    return postJson('/api/auth/login/password', {
+export async function loginWithPassword(payload: {
+    company: string;
+    username: string;
+    password: string;
+    /** Ubicación de la PC/dispositivo cliente (API de geolocalización del navegador), best-effort. */
+    location?: {
+        latitude: number;
+        longitude: number;
+        accuracy: number;
+        capturedAt: string;
+    } | null;
+}): Promise<any> {
+    const body: Record<string, unknown> = {
         company: payload.company,
         username: payload.username,
         password: payload.password,
-    })
+    }
+    if (
+        payload.location &&
+        Number.isFinite(payload.location.latitude) &&
+        Number.isFinite(payload.location.longitude)
+    ) {
+        body.location = {
+            latitude: payload.location.latitude,
+            longitude: payload.location.longitude,
+            accuracy: payload.location.accuracy,
+            captured_at: payload.location.capturedAt,
+        }
+    }
+    return postJson('/api/auth/login/password', body)
 }
 
 /**
@@ -479,6 +573,13 @@ interface LoginWithFacePayload {
     ruc?: string;
     imageBase64?: string;
     template?: number[];
+    /** Ubicación de la PC cliente (API de geolocalización del navegador), best-effort. */
+    location?: {
+        latitude: number;
+        longitude: number;
+        accuracy: number;
+        capturedAt: string;
+    } | null;
 }
 
 export async function loginWithFace(payload: LoginWithFacePayload): Promise<any> {
@@ -505,11 +606,31 @@ export async function loginWithFace(payload: LoginWithFacePayload): Promise<any>
     if (payload.imageBase64) {
         body.face_image_base64 = payload.imageBase64
     }
-    if (payload.template) {
-        body.face_template = payload.template
+    /* Corrección 2026-08-13: NO enviar face_template (plantilla "clásica"
+       calculada en el cliente, distinta dimensión que el embedding
+       InsightFace real). Con BEEMETRY_BIOMETRIC_PROVIDER=legacy, buildFaceLoginProbe
+       (face_analysis.cpp) revisa clientProbeTemplate ANTES que la imagen: si
+       llega no-vacío compara tamaños contra el embedding guardado (512) y
+       siempre falla con "La plantilla enviada no coincide con el tipo
+       biométrico registrado (embedding vs clásico)" -- reproducido en vivo
+       2026-08-13 con has_template=1 has_image=1 en el log del backend.
+       Mismo problema y misma solución que registerUser() más arriba: enviar
+       solo la imagen fuerza siempre el embedding real vía ai_engine. */
+    if (!body.face_image_base64) {
+        throw new Error('No se capturó imagen facial para validar.')
     }
-    if (!body.face_image_base64 && !body.face_template) {
-        throw new Error('No se capturó imagen o plantilla facial para validar.')
+
+    if (
+        payload.location &&
+        Number.isFinite(payload.location.latitude) &&
+        Number.isFinite(payload.location.longitude)
+    ) {
+        body.location = {
+            latitude: payload.location.latitude,
+            longitude: payload.location.longitude,
+            accuracy: payload.location.accuracy,
+            captured_at: payload.location.capturedAt,
+        }
     }
 
     log.info('[AUTH_FACE] loginWithFace request', {
@@ -519,6 +640,7 @@ export async function loginWithFace(payload: LoginWithFacePayload): Promise<any>
         template_dim: Array.isArray(body.face_template) ? body.face_template.length : 0,
         has_image_base64: Boolean(body.face_image_base64),
         image_base64_len: typeof body.face_image_base64 === 'string' ? body.face_image_base64.length : 0,
+        has_location: Boolean(body.location),
     })
 
     return postJson('/api/auth/login/face', {

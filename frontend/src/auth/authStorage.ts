@@ -7,6 +7,14 @@ export interface Session {
     company: string
     tenantId: string
     role: string
+    /**
+     * Departamento del usuario (soporte técnico, comercial, etc.) tal como lo
+     * devuelve el backend en `user.department` -- solo lo traen los usuarios
+     * "department-scoped" del panel admin de soporte (ver
+     * SupportAdminView.tsx / ADR del chatbot de soporte). `null`/ausente para
+     * el resto de usuarios, igual que `role`.
+     */
+    department?: string | null
     loginType: string
     /**
      * ADR-082 (auditoría de seguridad 2026-08-02): SIEMPRE cadena vacía.
@@ -41,6 +49,7 @@ interface SessionUser {
     tenant_id?: string
     tenantId?: string
     role?: string
+    department?: string | null
     /** ADR-029 (revisado): nombres actuales devueltos por el backend. */
     access_token?: string
     expires_in?: number
@@ -118,6 +127,7 @@ export function createSession(user: SessionUser, loginType = 'user'): Session {
         company: user.company,
         tenantId: typeof user.tenant_id === 'string' ? user.tenant_id : typeof user.tenantId === 'string' ? user.tenantId : '',
         role,
+        department: typeof user.department === 'string' && user.department ? user.department : null,
         loginType: loginType, // 'user' or 'company'
         token: accessToken,
         accessTokenExpiresAt: computeExpiresAt(user.expires_in),
@@ -151,6 +161,39 @@ export function updateSessionTokens(_accessToken: string, expiresInSeconds?: num
     // guardarlo aquí reintroduciría justo el problema que el ADR elimina.
     session.token = ''
     session.accessTokenExpiresAt = computeExpiresAt(expiresInSeconds)
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    return session
+}
+
+/**
+ * @brief Actualiza tenant/empresa/rol activos en la sesión cacheada tras un
+ * cambio de unidad minera (POST /api/auth/tenants/switch). Antes de este
+ * fix, TenantSwitcher.switchTo() solo llamaba a updateSessionTokens (que
+ * únicamente refresca el vencimiento) y luego recargaba la página — el JWT
+ * quedaba apuntando al tenant nuevo (correcto en el backend), pero
+ * getSession().tenantId/company/role en localStorage se quedaban con los
+ * valores del tenant ANTERIOR, así que cualquier código que arme un query
+ * param a partir de getSession() (p.ej. telemetryTenantIdFromSession, usada
+ * por los bloques de sensores del editor de reportes) seguía pidiendo datos
+ * del tenant viejo hasta un logout/login manual.
+ *
+ * No decodifica el JWT (seguiría siendo el patrón que ADR-082 eliminó si se
+ * persistiera el token) — el propio backend ya devuelve tenant_id y role en
+ * el body de la respuesta del switch; el nombre de la unidad se toma de la
+ * lista que TenantSwitcher ya cargó vía GET /api/auth/tenants.
+ */
+export function updateSessionTenant(tenantId: string, company: string, role?: string): Session | null {
+    const session = getSession()
+    if (!session) {
+        return null
+    }
+    session.tenantId = tenantId
+    if (company) {
+        session.company = company
+    }
+    if (typeof role === 'string' && role) {
+        session.role = role.toLowerCase()
+    }
     localStorage.setItem(SESSION_KEY, JSON.stringify(session))
     return session
 }

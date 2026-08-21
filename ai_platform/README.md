@@ -1,8 +1,8 @@
-# Portal de Desarrollo IA · Beemetry / AURIXA
+# Portal de Desarrollo IA · Beemetry
 
-> `docs/decisions/` es el log ADR vigente. `specs/adr/` y
-> `specs/REGISTRY.md` conservan la trazabilidad SDD temprana por SPEC; el RAG
-> indexa ambos y debe tratar `docs/decisions/` como autoridad cuando difieran.
+> `docs/decisions/` es el único log ADR vigente y `specs/REGISTRY.md` mapea
+> cada SPEC a esos identificadores canónicos. `specs/adr/` es historia fuera
+> de Router/RAG porque su numeración colisiona con el log actual (ADR-090).
 
 ## Instalación
 

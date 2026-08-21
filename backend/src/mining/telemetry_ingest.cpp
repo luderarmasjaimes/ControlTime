@@ -11,9 +11,11 @@
 #  include <postgresql/libpq-fe.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <thread>
 
 #include "config/constants.hpp"
 #include "storage/pg_result.hpp"
@@ -24,6 +26,36 @@
 
 namespace mining {
 
+#if HAVE_RDKAFKA
+namespace {
+
+class TelemetryDeliveryReportCb final : public RdKafka::DeliveryReportCb {
+public:
+    TelemetryDeliveryReportCb(std::atomic<std::uint64_t>& delivered,
+                              std::atomic<std::uint64_t>& errors)
+        : delivered_(delivered), errors_(errors) {}
+
+    void dr_cb(RdKafka::Message& message) override {
+        if (message.err() == RdKafka::ERR_NO_ERROR) {
+            delivered_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            errors_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+private:
+    std::atomic<std::uint64_t>& delivered_;
+    std::atomic<std::uint64_t>& errors_;
+};
+
+std::int64_t nowUnixEpochMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+} // namespace
+#endif
+
 TelemetryIngestor& TelemetryIngestor::instance() {
     static TelemetryIngestor inst;
     return inst;
@@ -33,14 +65,19 @@ TelemetryIngestor::~TelemetryIngestor() { stop(); }
 
 void TelemetryIngestor::configureKafka(const std::string& brokers,
                                        const std::string& topic,
-                                       const std::string& group) {
+                                       const std::string& group,
+                                       std::size_t consumer_workers,
+                                       int copy_retry_ms) {
 #if HAVE_RDKAFKA
     kafka_brokers_ = brokers;
     kafka_topic_ = topic;
     kafka_group_ = group;
+    consumer_worker_count_ = std::max<std::size_t>(1, consumer_workers);
+    copy_retry_ms_ = std::max(10, copy_retry_ms);
     mode_ = Mode::Kafka;
 #else
-    (void)brokers; (void)topic; (void)group;
+    (void)brokers; (void)topic; (void)group; (void)consumer_workers;
+    (void)copy_retry_ms;
     std::cerr << "[TELEMETRY] Kafka solicitado pero binario sin HAVE_RDKAFKA; "
                  "usando modo directo." << std::endl;
 #endif
@@ -62,14 +99,45 @@ void TelemetryIngestor::start(const std::string& db_url, std::size_t batch_size,
 
 #if HAVE_RDKAFKA
     if (mode_ == Mode::Kafka) {
-        if (kafkaInitProducer() && kafkaInitConsumer()) {
-            consumer_thread_ = std::thread([this] { consumerLoop(); });
+        bool kafka_ok = kafkaInitProducer();
+        consumers_.reserve(consumer_worker_count_);
+        kafka_conns_.assign(consumer_worker_count_, nullptr);
+        for (std::size_t i = 0; kafka_ok && i < consumer_worker_count_; ++i) {
+            void* consumer = kafkaCreateConsumer(i);
+            if (!consumer) kafka_ok = false;
+            else consumers_.push_back(consumer);
+        }
+        if (kafka_ok && consumers_.size() == consumer_worker_count_) {
+            // Drenar delivery reports aun cuando cese el tráfico. Sin este
+            // hilo las últimas confirmaciones quedaban en outq.
+            producer_poll_thread_ = std::thread([this] {
+                auto* p = static_cast<RdKafka::Producer*>(producer_);
+                while (running_.load()) p->poll(50);
+            });
+            consumer_threads_.reserve(consumer_worker_count_);
+            for (std::size_t i = 0; i < consumer_worker_count_; ++i) {
+                consumer_threads_.emplace_back([this, i] { consumerLoop(i); });
+            }
             std::cout << "[TELEMETRY] Ingestor started mode=KAFKA brokers="
                       << kafka_brokers_ << " topic=" << kafka_topic_
                       << " group=" << kafka_group_ << " batch=" << batch_size_
+                      << " workers=" << consumer_worker_count_
                       << " sensors_cached=" << sensor_cache_.size() << std::endl;
             return;
         }
+        for (void* raw : consumers_) {
+            auto* c = static_cast<RdKafka::KafkaConsumer*>(raw);
+            c->close();
+            delete c;
+        }
+        consumers_.clear();
+        kafka_conns_.clear();
+        if (producer_) {
+            delete static_cast<RdKafka::Producer*>(producer_);
+            producer_ = nullptr;
+        }
+        delete static_cast<TelemetryDeliveryReportCb*>(delivery_cb_);
+        delivery_cb_ = nullptr;
         std::cerr << "[TELEMETRY] Kafka init falló; fallback a modo directo."
                   << std::endl;
         mode_ = Mode::Direct;
@@ -89,19 +157,31 @@ void TelemetryIngestor::stop() {
     }
     q_cv_.notify_all();
     if (flusher_.joinable()) flusher_.join();
-    if (consumer_thread_.joinable()) consumer_thread_.join();
+    for (auto& thread : consumer_threads_) {
+        if (thread.joinable()) thread.join();
+    }
+    consumer_threads_.clear();
 #if HAVE_RDKAFKA
+    if (producer_poll_thread_.joinable()) producer_poll_thread_.join();
     if (producer_) {
         static_cast<RdKafka::Producer*>(producer_)->flush(5000);
         delete static_cast<RdKafka::Producer*>(producer_);
         producer_ = nullptr;
     }
-    if (consumer_) {
-        static_cast<RdKafka::KafkaConsumer*>(consumer_)->close();
-        delete static_cast<RdKafka::KafkaConsumer*>(consumer_);
-        consumer_ = nullptr;
+    for (void* raw : consumers_) {
+        auto* consumer = static_cast<RdKafka::KafkaConsumer*>(raw);
+        consumer->close();
+        delete consumer;
     }
+    consumers_.clear();
+    delete static_cast<TelemetryDeliveryReportCb*>(delivery_cb_);
+    delivery_cb_ = nullptr;
 #endif
+    for (void*& raw : kafka_conns_) {
+        if (raw) PQfinish(static_cast<PGconn*>(raw));
+        raw = nullptr;
+    }
+    kafka_conns_.clear();
     if (conn_) {
         PQfinish(static_cast<PGconn*>(conn_));
         conn_ = nullptr;
@@ -155,7 +235,7 @@ bool TelemetryIngestor::enqueue(TelemetryRow&& row) {
     // integración ThingsBoard con mapas_backend_telemetry_queued creciendo
     // y _inserted_total en 0). Mismo camino que ingestLine() ya usaba.
     if (mode_ == Mode::Kafka) {
-        produceRow(row);
+        if (!produceRow(row)) return false;
         m_received_.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
@@ -200,7 +280,7 @@ bool TelemetryIngestor::ingestLine(const std::string& line) {
 
 #if HAVE_RDKAFKA
     if (mode_ == Mode::Kafka) {
-        produceRow(row);   // durable en Redpanda; el consumidor hace COPY
+        if (!produceRow(row)) return false;
         m_received_.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
@@ -208,25 +288,41 @@ bool TelemetryIngestor::ingestLine(const std::string& line) {
     return enqueue(std::move(row));
 }
 
-bool TelemetryIngestor::ensureConn() {
-    PGconn* c = static_cast<PGconn*>(conn_);
+bool TelemetryIngestor::ensureConn(void*& connection) {
+    PGconn* c = static_cast<PGconn*>(connection);
     if (c && PQstatus(c) == CONNECTION_OK) return true;
     if (c) {
         PQfinish(c);
-        conn_ = nullptr;
+        connection = nullptr;
     }
     c = PQconnectdb(db_url_.c_str());
     if (PQstatus(c) != CONNECTION_OK) {
         PQfinish(c);
-        conn_ = nullptr;
+        connection = nullptr;
         return false;
     }
     // La conexión de ingesta NUNCA debe ser matada por statement_timeout
     // (gobierno aplicado a dashboards). Un COPY largo bajo contención no debe
     // perder el lote. Aislamos esta sesión.
-    PGresult* r = PQexec(c, "SET statement_timeout = 0");
-    if (r) PQclear(r);
-    conn_ = c;
+    // El servidor usa synchronous_commit=off para tráfico general, pero el
+    // consumidor no puede confirmar offsets sobre una transacción cuyo WAL
+    // aún no es durable. Esta sesión de ingesta lo fuerza a ON.
+    PGresult* r = PQexec(c,
+        "SET statement_timeout = 0; SET synchronous_commit = on; "
+        "SET application_name = 'telemetry-copy-worker'; "
+        "CREATE TEMP TABLE IF NOT EXISTS telemetry_ingest_stage ("
+        "tenant_id uuid NOT NULL, sensor_id uuid NOT NULL, "
+        "captured_at timestamptz NOT NULL, value_numeric double precision, "
+        "quality_code smallint NOT NULL, kafka_partition integer, "
+        "kafka_offset bigint) ON COMMIT PRESERVE ROWS");
+    if (!r || PQresultStatus(r) != PGRES_COMMAND_OK) {
+        if (r) PQclear(r);
+        PQfinish(c);
+        connection = nullptr;
+        return false;
+    }
+    PQclear(r);
+    connection = c;
     return true;
 }
 
@@ -325,24 +421,36 @@ constexpr char kBinaryCopySignature[11] = {'P', 'G', 'C', 'O', 'P', 'Y',
 
 } // namespace
 
-bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch) {
+bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch,
+                                  void*& connection) {
     if (batch.empty()) return true;
-    if (!ensureConn()) {
+    if (!ensureConn(connection)) {
         m_flush_errors_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    PGconn* c = static_cast<PGconn*>(conn_);
+    PGconn* c = static_cast<PGconn*>(connection);
+
+    PGresult* tx = PQexec(c, "BEGIN; TRUNCATE telemetry_ingest_stage");
+    if (!tx || PQresultStatus(tx) != PGRES_COMMAND_OK) {
+        if (tx) PQclear(tx);
+        m_flush_errors_.fetch_add(1, std::memory_order_relaxed);
+        PQfinish(c);
+        connection = nullptr;
+        return false;
+    }
+    PQclear(tx);
 
     PGresult* res = PQexec(
         c,
-        "COPY telemetry_raw (tenant_id, sensor_id, captured_at, value_numeric, "
-        "quality_code) FROM STDIN WITH (FORMAT binary)");
+        "COPY telemetry_ingest_stage (tenant_id, sensor_id, captured_at, "
+        "value_numeric, quality_code, kafka_partition, kafka_offset) "
+        "FROM STDIN WITH (FORMAT binary)");
     if (!res || PQresultStatus(res) != PGRES_COPY_IN) {
         if (res) PQclear(res);
         m_flush_errors_.fetch_add(1, std::memory_order_relaxed);
         // Forzar reconexión en el próximo intento
         PQfinish(c);
-        conn_ = nullptr;
+        connection = nullptr;
         return false;
     }
     PQclear(res);
@@ -360,7 +468,7 @@ bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch) {
     for (std::size_t i = 0; ok && i < batch.size(); ++i) {
         const auto& r = batch[i];
         rowBuf.clear();
-        appendBE16(rowBuf, 5);  // 5 campos por fila
+        appendBE16(rowBuf, 7);  // 7 campos por fila
 
         bool uuidOk = true;
         appendUuidField(rowBuf, r.tenant_id, uuidOk);
@@ -383,6 +491,19 @@ bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch) {
         appendBE32(rowBuf, 2);  // quality_code: smallint = int16
         appendBE16(rowBuf, static_cast<std::int16_t>(r.quality_code));
 
+        if (r.kafka_partition >= 0) {
+            appendBE32(rowBuf, 4);
+            appendBE32(rowBuf, r.kafka_partition);
+        } else {
+            appendBE32(rowBuf, -1);
+        }
+        if (r.kafka_offset >= 0) {
+            appendBE32(rowBuf, 8);
+            appendBE64(rowBuf, r.kafka_offset);
+        } else {
+            appendBE32(rowBuf, -1);
+        }
+
         if (PQputCopyData(c, rowBuf.data(), static_cast<int>(rowBuf.size())) != 1) {
             ok = false;
         }
@@ -402,12 +523,40 @@ bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch) {
     // Drenar resultados pendientes
     while ((fin = PQgetResult(c)) != nullptr) PQclear(fin);
 
+    std::uint64_t inserted = 0;
     if (ok) {
-        m_inserted_.fetch_add(batch.size(), std::memory_order_relaxed);
+        PGresult* merge = PQexec(c,
+            "INSERT INTO telemetry_raw (tenant_id, sensor_id, captured_at, "
+            "value_numeric, quality_code, kafka_partition, kafka_offset) "
+            "SELECT tenant_id, sensor_id, captured_at, value_numeric, "
+            "quality_code, kafka_partition, kafka_offset "
+            "FROM telemetry_ingest_stage "
+            "ON CONFLICT (captured_at, kafka_partition, kafka_offset) "
+            "WHERE kafka_partition IS NOT NULL AND kafka_offset IS NOT NULL "
+            "DO NOTHING");
+        if (!merge || PQresultStatus(merge) != PGRES_COMMAND_OK) {
+            ok = false;
+        } else {
+            const char* tuples = PQcmdTuples(merge);
+            if (tuples && *tuples) inserted = std::stoull(tuples);
+        }
+        if (merge) PQclear(merge);
+    }
+    if (ok) {
+        PGresult* commit = PQexec(c, "COMMIT");
+        ok = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+        if (commit) PQclear(commit);
+    }
+    if (ok) {
+        m_inserted_.fetch_add(inserted, std::memory_order_relaxed);
+        m_deduplicated_.fetch_add(batch.size() - inserted,
+                                  std::memory_order_relaxed);
     } else {
+        PGresult* rollback = PQexec(c, "ROLLBACK");
+        if (rollback) PQclear(rollback);
         m_flush_errors_.fetch_add(1, std::memory_order_relaxed);
         PQfinish(c);
-        conn_ = nullptr;
+        connection = nullptr;
     }
     return ok;
 }
@@ -419,35 +568,49 @@ bool TelemetryIngestor::kafkaInitProducer() {
     std::string err;
     RdKafka::Conf* conf = RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL);
     conf->set("bootstrap.servers", kafka_brokers_, err);
+    conf->set("enable.idempotence", "true", err);
+    conf->set("acks", "all", err);
     conf->set("compression.type", "lz4", err);
-    conf->set("linger.ms", "20", err);          // micro-batching del productor
+    conf->set("linger.ms", "5", err);
     conf->set("batch.num.messages", "10000", err);
     conf->set("queue.buffering.max.messages", "1000000", err);
-    conf->set("acks", "1", err);                // durabilidad razonable/latencia
+    conf->set("queue.buffering.max.kbytes", "262144", err);
+    conf->set("message.timeout.ms", "120000", err);
+    delivery_cb_ = new TelemetryDeliveryReportCb(m_delivered_, m_delivery_errors_);
+    conf->set("dr_cb", static_cast<RdKafka::DeliveryReportCb*>(delivery_cb_), err);
     RdKafka::Producer* p = RdKafka::Producer::create(conf, err);
     delete conf;
     if (!p) {
         std::cerr << "[TELEMETRY] producer create fail: " << err << std::endl;
+        delete static_cast<TelemetryDeliveryReportCb*>(delivery_cb_);
+        delivery_cb_ = nullptr;
         return false;
     }
     producer_ = p;
     return true;
 }
 
-bool TelemetryIngestor::kafkaInitConsumer() {
+void* TelemetryIngestor::kafkaCreateConsumer(std::size_t worker_index) {
     std::string err;
     RdKafka::Conf* conf = RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL);
     conf->set("bootstrap.servers", kafka_brokers_, err);
     conf->set("group.id", kafka_group_, err);
+    conf->set("client.id", "telemetry-writer-" + std::to_string(worker_index), err);
     conf->set("enable.auto.commit", "false", err);   // commit manual tras COPY
+    conf->set("enable.auto.offset.store", "true", err);
     conf->set("auto.offset.reset", "earliest", err);
-    conf->set("fetch.min.bytes", "1", err);
+    // Una caída breve de DB no debe provocar rebalance mientras el worker
+    // conserva y reintenta el mismo lote.
+    conf->set("max.poll.interval.ms", "3600000", err);
+    conf->set("session.timeout.ms", "45000", err);
+    conf->set("fetch.min.bytes", "65536", err);
+    conf->set("fetch.wait.max.ms", "50", err);
     conf->set("max.partition.fetch.bytes", "10485760", err);
     RdKafka::KafkaConsumer* c = RdKafka::KafkaConsumer::create(conf, err);
     delete conf;
     if (!c) {
         std::cerr << "[TELEMETRY] consumer create fail: " << err << std::endl;
-        return false;
+        return nullptr;
     }
     std::vector<std::string> topics{kafka_topic_};
     RdKafka::ErrorCode e = c->subscribe(topics);
@@ -455,15 +618,15 @@ bool TelemetryIngestor::kafkaInitConsumer() {
         std::cerr << "[TELEMETRY] subscribe fail: " << RdKafka::err2str(e)
                   << std::endl;
         delete c;
-        return false;
+        return nullptr;
     }
-    consumer_ = c;
-    return true;
+    return c;
 }
 
-void TelemetryIngestor::produceRow(const TelemetryRow& row) {
+bool TelemetryIngestor::produceRow(TelemetryRow& row) {
     RdKafka::Producer* p = static_cast<RdKafka::Producer*>(producer_);
-    if (!p) return;
+    if (!p) return false;
+    if (row.captured_at_epoch_ms <= 0) row.captured_at_epoch_ms = nowUnixEpochMs();
     // Payload compacto: tenant\tsensor\tvalue\tquality\tcaptured_at_epoch_ms
     // (key=sensor → partición). El 5to campo es nuevo; consumerLoop() lo
     // trata como opcional (mensajes viejos en el topic sin ese campo siguen
@@ -476,44 +639,76 @@ void TelemetryIngestor::produceRow(const TelemetryRow& row) {
     payload += std::to_string(row.value_numeric); payload += '\t';
     payload += std::to_string(row.quality_code); payload += '\t';
     payload += std::to_string(row.captured_at_epoch_ms);
-    RdKafka::ErrorCode e = p->produce(
-        kafka_topic_, RdKafka::Topic::PARTITION_UA,
-        RdKafka::Producer::RK_MSG_COPY,
-        const_cast<char*>(payload.data()), payload.size(),
-        row.sensor_id.data(), row.sensor_id.size(), 0, nullptr);
-    if (e != RdKafka::ERR_NO_ERROR) {
-        m_produce_errors_.fetch_add(1, std::memory_order_relaxed);
-        if (e == RdKafka::ERR__QUEUE_FULL) p->poll(10);
-    } else {
-        m_produced_.fetch_add(1, std::memory_order_relaxed);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(250);
+    for (;;) {
+        RdKafka::ErrorCode e = p->produce(
+            kafka_topic_, RdKafka::Topic::PARTITION_UA,
+            RdKafka::Producer::RK_MSG_COPY,
+            const_cast<char*>(payload.data()), payload.size(),
+            row.sensor_id.data(), row.sensor_id.size(), 0, nullptr);
+        if (e == RdKafka::ERR_NO_ERROR) {
+            m_produced_.fetch_add(1, std::memory_order_relaxed);
+            p->poll(0);
+            return true;
+        }
+        if (e != RdKafka::ERR__QUEUE_FULL ||
+            std::chrono::steady_clock::now() >= deadline) {
+            m_produce_errors_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        // Backpressure acotado: servir delivery callbacks libera el out-queue.
+        p->poll(5);
     }
-    p->poll(0);  // sirve callbacks de entrega
 }
 
-void TelemetryIngestor::consumerLoop() {
-    RdKafka::KafkaConsumer* c = static_cast<RdKafka::KafkaConsumer*>(consumer_);
+void TelemetryIngestor::consumerLoop(std::size_t worker_index) {
+    auto* c = static_cast<RdKafka::KafkaConsumer*>(consumers_[worker_index]);
+    void*& connection = kafka_conns_[worker_index];
     std::vector<TelemetryRow> batch;
     batch.reserve(batch_size_ * 2);
     auto last_flush = std::chrono::steady_clock::now();
 
-    auto flush = [&]() {
-        if (batch.empty()) return;
+    auto flush = [&]() -> bool {
+        if (batch.empty()) return true;
         std::uint64_t prev = m_batch_max_.load(std::memory_order_relaxed);
         if (batch.size() > prev)
             m_batch_max_.store(batch.size(), std::memory_order_relaxed);
-        if (copyBatch(batch)) {
-            // Commit de offsets SOLO tras COPY exitoso → at-least-once (durable)
-            c->commitSync();
+
+        bool marked_stalled = false;
+        int retry_ms = copy_retry_ms_;
+        while (running_.load() && !copyBatch(batch, connection)) {
+            m_copy_retries_.fetch_add(1, std::memory_order_relaxed);
+            if (!marked_stalled) {
+                m_stalled_workers_.fetch_add(1, std::memory_order_relaxed);
+                marked_stalled = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(retry_ms));
+            retry_ms = std::min(retry_ms * 2, 5000);
+        }
+        if (marked_stalled)
+            m_stalled_workers_.fetch_sub(1, std::memory_order_relaxed);
+        if (!running_.load()) return false;
+
+        // El lote ya es durable e idempotente. Si el commit falla por un
+        // rebalance, volver a consume() permite reasignar; cualquier replay
+        // se elimina por (captured_at, partition, offset). No usar poll() en
+        // KafkaConsumer: librdkafka requiere consume() para esta API.
+        const RdKafka::ErrorCode commit_error = c->commitSync();
+        if (commit_error == RdKafka::ERR_NO_ERROR) {
             m_commits_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            m_commit_errors_.fetch_add(1, std::memory_order_relaxed);
         }
         m_flushes_.fetch_add(1, std::memory_order_relaxed);
         batch.clear();
+        return true;
     };
 
     while (running_.load()) {
         RdKafka::Message* msg = c->consume(200);  // timeout ms
         if (msg->err() == RdKafka::ERR_NO_ERROR) {
-            // parse "tenant\tsensor\tvalue\tquality"
+            // parse "tenant\tsensor\tvalue\tquality[\tcaptured_at_ms]"
             const char* d = static_cast<const char*>(msg->payload());
             std::string s(d, msg->len());
             std::size_t a = s.find('\t');
@@ -522,6 +717,8 @@ void TelemetryIngestor::consumerLoop() {
             if (a != std::string::npos && b != std::string::npos &&
                 cc != std::string::npos) {
                 TelemetryRow r;
+                r.kafka_partition = msg->partition();
+                r.kafka_offset = msg->offset();
                 r.tenant_id = s.substr(0, a);
                 r.sensor_id = s.substr(a + 1, b - a - 1);
                 // 5to campo (captured_at_epoch_ms) es opcional: mensajes
@@ -539,6 +736,8 @@ void TelemetryIngestor::consumerLoop() {
                 }
                 batch.push_back(std::move(r));
                 m_consumed_.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                m_malformed_.fetch_add(1, std::memory_order_relaxed);
             }
         }
         delete msg;
@@ -548,11 +747,12 @@ void TelemetryIngestor::consumerLoop() {
         bool by_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                            now - last_flush).count() >= flush_ms_;
         if (by_size || (by_time && !batch.empty())) {
-            flush();
+            if (!flush()) break;
             last_flush = now;
         }
     }
-    flush();  // último lote al apagar
+    // Al apagar no se fuerza COPY: el batch queda sin commit y Kafka lo
+    // reentrega en el próximo arranque. Esto prioriza pérdida cero.
 }
 
 #endif // HAVE_RDKAFKA
@@ -586,7 +786,7 @@ void TelemetryIngestor::flushLoop() {
                 const std::size_t n = std::min(kCopyCap, local.size() - off);
                 std::vector<TelemetryRow> chunk(local.begin() + off,
                                                 local.begin() + off + n);
-                copyBatch(chunk);
+                copyBatch(chunk, conn_);
                 m_flushes_.fetch_add(1, std::memory_order_relaxed);
             }
             local.clear();
@@ -598,7 +798,7 @@ void TelemetryIngestor::flushLoop() {
         std::lock_guard<std::mutex> lk(q_mtx_);
         if (!queue_.empty()) local.swap(queue_);
     }
-    if (!local.empty()) copyBatch(local);
+    if (!local.empty()) copyBatch(local, conn_);
 }
 
 TelemetryIngestor::Stats TelemetryIngestor::stats() const {
@@ -612,9 +812,21 @@ TelemetryIngestor::Stats TelemetryIngestor::stats() const {
     s.batch_max = m_batch_max_.load(std::memory_order_relaxed);
     s.sensors_cached = sensor_cache_.size();
     s.produced = m_produced_.load(std::memory_order_relaxed);
+    s.delivered = m_delivered_.load(std::memory_order_relaxed);
     s.produce_errors = m_produce_errors_.load(std::memory_order_relaxed);
+    s.delivery_errors = m_delivery_errors_.load(std::memory_order_relaxed);
     s.consumed = m_consumed_.load(std::memory_order_relaxed);
     s.commits = m_commits_.load(std::memory_order_relaxed);
+    s.commit_errors = m_commit_errors_.load(std::memory_order_relaxed);
+    s.copy_retries = m_copy_retries_.load(std::memory_order_relaxed);
+    s.malformed = m_malformed_.load(std::memory_order_relaxed);
+    s.deduplicated = m_deduplicated_.load(std::memory_order_relaxed);
+    s.consumer_workers = consumers_.size();
+    s.stalled_workers = m_stalled_workers_.load(std::memory_order_relaxed);
+#if HAVE_RDKAFKA
+    if (producer_)
+        s.producer_outq = static_cast<RdKafka::Producer*>(producer_)->outq_len();
+#endif
     s.mode = (mode_ == Mode::Kafka) ? "kafka" : "direct";
     {
         std::lock_guard<std::mutex> lk(q_mtx_);
