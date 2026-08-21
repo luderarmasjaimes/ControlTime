@@ -70,7 +70,7 @@ RUN --mount=type=cache,target=/root/.cache/pip pip install --find-links=/tmp/ven
 # 2026-08-21). --no-deps evita que pip vuelva a comparar nada contra ese
 # stack: instala python-pptx y sus 3 dependencias directas (lxml, Pillow,
 # XlsxWriter) sin resolver nada mas.
-RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps python-pptx>=1.0,<2 lxml Pillow XlsxWriter
+RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps "python-pptx>=1.0,<2" lxml Pillow XlsxWriter
 # torch (cu128) y tensorflow[and-cuda] (CUDA 11.8) instalan nvidia-nccl-cu12
 # Y nvidia-nccl-cu11 en el MISMO path de paquete namespace
 # (site-packages/nvidia/nccl/lib/libnccl.so.2) -- torch 2.11.0+cu128 depende
