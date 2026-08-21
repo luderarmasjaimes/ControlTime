@@ -8,13 +8,15 @@
 
 ## ADRs globales aplicables
 
-> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-011**.
+> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-011**; fuente ADR: `docs/decisions/`.
 
-- **ADR-007** — [`ADR-007-sdd-specs-fuente-verdad.md`](../adr/ADR-007-sdd-specs-fuente-verdad.md)
-- **ADR-009** — [`ADR-009-git-branching-feature-release.md`](../adr/ADR-009-git-branching-feature-release.md)
-- **ADR-010** — [`ADR-010-ai-routing-por-tarea.md`](../adr/ADR-010-ai-routing-por-tarea.md)
-- **ADR-011** — [`ADR-011-rag-memoria-proyecto.md`](../adr/ADR-011-rag-memoria-proyecto.md)
-- **ADR-012** — [`ADR-012-revision-pr-adr-spec.md`](../adr/ADR-012-revision-pr-adr-spec.md)
+- **ADR-024** — [`024-ia-local-ollama-languagetool.md`](../../docs/decisions/024-ia-local-ollama-languagetool.md)
+- **ADR-068** — [`068-ia-editorial-multimodelo-referencias-externas-controladas.md`](../../docs/decisions/068-ia-editorial-multimodelo-referencias-externas-controladas.md)
+- **ADR-090** — [`090-deprecacion-adr-tempranos-ia.md`](../../docs/decisions/090-deprecacion-adr-tempranos-ia.md)
+- **ADR-093** — [`093-vite8-rolldown-migracion-parcial-interop-plotly.md`](../../docs/decisions/093-vite8-rolldown-migracion-parcial-interop-plotly.md)
+- **ADR-094** — [`094-lectura-dni-camara-pdf417-mrz.md`](../../docs/decisions/094-lectura-dni-camara-pdf417-mrz.md)
+- **ADR-095** — [`095-usermaintenancemodal-css-autocontenida-marca.md`](../../docs/decisions/095-usermaintenancemodal-css-autocontenida-marca.md)
+- **ADR-096** — [`096-opencv-4-12-vcpkg-backend.md`](../../docs/decisions/096-opencv-4-12-vcpkg-backend.md)
 
 
 ## 1. Problema

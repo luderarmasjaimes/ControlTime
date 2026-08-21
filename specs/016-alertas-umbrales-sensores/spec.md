@@ -8,13 +8,14 @@
 
 ## ADRs globales aplicables
 
-> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-016**.
+> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-016**; fuente ADR: `docs/decisions/`.
 
-- **ADR-007** — [`ADR-007-sdd-specs-fuente-verdad.md`](../adr/ADR-007-sdd-specs-fuente-verdad.md)
-- **ADR-009** — [`ADR-009-git-branching-feature-release.md`](../adr/ADR-009-git-branching-feature-release.md)
-- **ADR-010** — [`ADR-010-ai-routing-por-tarea.md`](../adr/ADR-010-ai-routing-por-tarea.md)
-- **ADR-011** — [`ADR-011-rag-memoria-proyecto.md`](../adr/ADR-011-rag-memoria-proyecto.md)
-- **ADR-012** — [`ADR-012-revision-pr-adr-spec.md`](../adr/ADR-012-revision-pr-adr-spec.md)
+- **ADR-002** — [`002-backend-cpp-gateway-central.md`](../../docs/decisions/002-backend-cpp-gateway-central.md)
+- **ADR-008** — [`008-bus-eventos-redpanda-etapa2.md`](../../docs/decisions/008-bus-eventos-redpanda-etapa2.md)
+- **ADR-031** — [`031-backend-plataforma-compartida-multicomponente.md`](../../docs/decisions/031-backend-plataforma-compartida-multicomponente.md)
+- **ADR-034** — [`034-core-plataforma-iot-reemplazo-thingsboard.md`](../../docs/decisions/034-core-plataforma-iot-reemplazo-thingsboard.md)
+- **ADR-057** — [`057-dashboard-widgets-estilo-thingsboard.md`](../../docs/decisions/057-dashboard-widgets-estilo-thingsboard.md)
+- **ADR-090** — [`090-deprecacion-adr-tempranos-ia.md`](../../docs/decisions/090-deprecacion-adr-tempranos-ia.md)
 
 
 ## 1. Problema

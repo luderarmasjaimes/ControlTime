@@ -4,6 +4,195 @@ Insumo para la decisión de release v0.1. No implica que el equipo ya haya
 decidido cortar la versión — ver `RUNBOOK.md` para lo que falta antes de
 GO-LIVE.
 
+## [Unreleased] — 2026-08-21
+
+Catch-up documental: esta sección cubre el trabajo real de código entre el
+2026-07-27 (última entrada de este archivo) y hoy, formalizado en
+[ADR-068 a ADR-128](docs/decisions/README.md) — 61 decisiones que hasta ahora
+solo vivían en `docs/decisions/` y en el árbol de trabajo, sin registro aquí.
+No reordena ni reescribe las entradas previas.
+
+### Reportabilidad: TypeScript estricto, bloques técnicos y presentaciones nativas
+
+Migración completa del frontend de producción a TypeScript estricto
+([ADR-069](docs/decisions/069-migracion-frontend-typescript-estricto.md)) y
+bloques/plantillas técnicas por composición
+([ADR-070](docs/decisions/070-bloques-tecnicos-plantillas-semanticas-composicion.md)),
+con TOC fijo en página 2 con continuaciones automáticas
+([ADR-071](docs/decisions/071-toc-pagina-dos-continuaciones-automaticas.md)) y
+modal propio (`SaveTitleModal`) reemplazando `window.prompt()`, con fixes de
+consistencia visual del ribbon
+([ADR-073](docs/decisions/073-modal-propio-reemplaza-dialogos-nativos-consistencia-ribbon.md)).
+Exportación a PPTX en modo presentación vía sidecar híbrido imagen + overlay
+de texto editable
+([ADR-083](docs/decisions/083-exportacion-pptx-modo-presentacion-sidecar-hibrido.md))
+y conversión de ese PPTX a video narrado por diapositiva con `ffmpeg`
+([ADR-084](docs/decisions/084-conversion-pptx-video-narracion-diapositiva.md)).
+Vista previa de impresión, marca de agua y PDF cifrado con contraseña
+([ADR-080](docs/decisions/080-marca-de-agua-y-password-pdf.md)). Cierre del
+proceso: autoría nativa de documentos tipo "presentación" (16:9) en
+ReportStudioV2, sin pasar por exportar un documento existente
+([ADR-128](docs/decisions/128-plantillas-documento-tipo-presentacion.md)), y
+aislamiento por usuario/tenant del caché offline SQLite del navegador con
+purga en logout
+([ADR-127](docs/decisions/127-aislamiento-cache-offline-sqlite-por-usuario.md)).
+De paso: avatar biométrico local HD bajo demanda
+([ADR-074](docs/decisions/074-avatar-biometrico-local-hd-bajo-demanda.md)),
+lectura de DNI por cámara (PDF417+MRZ, sin RENIEC)
+([ADR-094](docs/decisions/094-lectura-dni-camara-pdf417-mrz.md)) e
+internacionalización país/idioma en el acceso
+([ADR-075](docs/decisions/075-internacionalizacion-pais-idioma-acceso.md)).
+
+### Auth, RBAC y empresas
+
+CORS multiorigen para un segundo frontend externo
+([ADR-081](docs/decisions/081-cors-multiorigen-frontend-externo.md)), access
+token en cookie `HttpOnly` con CSRF double-submit
+([ADR-082](docs/decisions/082-autenticacion-cookie-httponly-csrf-double-submit.md)),
+separación de identificadores UUID y secretos CSPRNG
+([ADR-076](docs/decisions/076-separacion-identificadores-secretos-csprng.md))
+y migración versionada de contraseñas legacy a Argon2id
+([ADR-077](docs/decisions/077-migracion-password-argon2id-versionada.md)).
+RBAC real en informes (permisos por transición de workflow + inmutabilidad
+post-firma,
+[ADR-079](docs/decisions/079-rbac-workflow-informes-inmutabilidad-firma.md)),
+CRUD completo de empresas
+([ADR-085](docs/decisions/085-crud-empresas-y-pantalla-administracion.md))
+con RBAC granular `empresas.view`/`empresas.manage`
+([ADR-086](docs/decisions/086-rbac-granular-empresas-view-manage.md)),
+validación de RUC con excepción externa opcional
+([ADR-087](docs/decisions/087-validacion-ruc-registro-externo-opcional.md)) y,
+ya en agosto, validación fiscal para Ecuador, Chile y Costa Rica con
+fallback estructural para el resto del catálogo
+([ADR-102](docs/decisions/102-validacion-fiscal-ecuador-chile-costa-rica-fallback.md)).
+Geolocalización del dispositivo cliente extendida al login por
+contraseña/PIN
+([ADR-107](docs/decisions/107-geolocalizacion-cliente-login-contrasena.md)) y
+estándares de accesibilidad/contraste en formularios
+([ADR-106](docs/decisions/106-accesibilidad-contraste-formularios-ui.md)).
+
+### Biometría: cambio de proveedor por defecto y liveness activo
+
+Tres proveedores evaluados en cadena — SeetaFace6 libre y fail-closed
+([ADR-104](docs/decisions/104-seetaface6-proveedor-biometrico-local.md)),
+luego **DeepFace + Silent-Face-Anti-Spoofing como proveedor local por
+defecto**
+([ADR-105](docs/decisions/105-deepface-silentface-proveedor-biometrico-primario.md)),
+que deja a Dermalog parcialmente superseded
+([ADR-089](docs/decisions/089-biometria-dermalog-cli-integration.md) — ver su
+bloque de actualización). Fallback a pipeline legacy cuando InsightFace
+falla, sin bloquear
+([ADR-099](docs/decisions/099-fallback-insightface-no-bloqueante.md)), límite
+de hilos de onnxruntime para evitar sobre-suscripción en Docker
+([ADR-100](docs/decisions/100-onnxruntime-thread-limit-insightface.md)) y
+aislamiento por sesión en captura biométrica en vivo
+([ADR-098](docs/decisions/098-aislamiento-sesion-captura-biometrica.md)).
+Cierre de un hallazgo real de seguridad: la validación dejaba pasar con
+lentes puestos (sin chequeo ICAO en login) — fusión ONNX corregida a
+solo-veto y carrera de captura resuelta
+([ADR-119](docs/decisions/119-validacion-lentes-biometria-login-y-fusion-onnx.md)),
+con groundwork de liveness activo por giro de cabeza y recalibración de
+`eye_analyzer.py` por resolución de cámara + thread-safety de MediaPipe
+([ADR-125](docs/decisions/125-recalibracion-thread-safety-eye-analyzer.md)),
+reactivado como **liveness activa por desafío-respuesta** (parpadear/boca/
+girar cabeza) en login y registro
+([ADR-126](docs/decisions/126-liveness-activo-desafio-respuesta.md)). Pool de
+conexiones TCP reutilizables hacia `ai_engine`
+([ADR-124](docs/decisions/124-pool-conexiones-tcp-ai-engine.md)).
+
+### Núcleo de plataforma y datos
+
+OpenCV 4.12.0 vía vcpkg en el backend, reemplaza apt 4.6.0
+([ADR-096](docs/decisions/096-opencv-4-12-vcpkg-backend.md)); `ai_engine`
+migra a NumPy 2.x, onnxruntime 1.23.2 y opencv-python-headless 4.14.x
+([ADR-097](docs/decisions/097-numpy2-onnxruntime-opencv-python-ai-engine.md)).
+Conversión GDAL runtime por CLI, administrada y confinada, supersede el
+diferimiento de ADR-028
+([ADR-072](docs/decisions/072-gdal-cli-runtime-admin-confinado.md)). Vite
+5→8/Rolldown con fix de interop CJS→ESM en Plotly
+([ADR-093](docs/decisions/093-vite8-rolldown-migracion-parcial-interop-plotly.md)).
+Línea base de telemetría demostrada: **25.000 eventos/s por edge, cero
+pérdida; 100.000 eventos/s explícitamente no aprobado**
+([ADR-108](docs/decisions/108-capacidad-telemetria-25k-topologia-escalamiento.md)),
+lote de líneas por lectura TLS en `mining-gateway` para reducir writes por
+sesión
+([ADR-120](docs/decisions/120-lote-lineas-lectura-tls-mining-gateway.md)),
+catálogo por zonas y analítica multiserie de sensores
+([ADR-109](docs/decisions/109-catalogo-zonas-sensores-graficos-multiserie.md))
+y portabilidad del stack (export/import y perfil mínimo de telemetría, sin
+ser DR)
+([ADR-111](docs/decisions/111-portabilidad-stack-export-import-perfil-telemetria.md)).
+
+### Integraciones externas: RP/Odoo y GEOCATMIN
+
+Integración RP con TimeTelemetry/Odoo — réplica local, escritura por
+XML-RPC, push realtime al frontend externo
+([ADR-103](docs/decisions/103-integracion-rp-timetelemetry-replica-xmlrpc.md)).
+Coordenadas geográficas de empresa en `auth_companies` para centrar Mapas en
+la mina real
+([ADR-121](docs/decisions/121-coordenadas-geograficas-empresa-mapa.md)) e
+**integración nativa total de GEOCATMIN/INGEMMET** con ingreso directo a la
+zona minera de la sesión activa
+([ADR-123](docs/decisions/123-geocatmin-integracion-plataforma-minera.md),
+SPEC-024 — nueva).
+
+### Módulo nuevo: soporte / bot de WhatsApp (sin SPEC formal todavía)
+
+Ocho ADR en cuatro días (2026-08-18/19) construyen un módulo completo que
+**no existía en el cronograma v36 ni tiene número de SPEC asignado**: bot
+conversacional de WhatsApp Business con menú, reclamos e IA, más plantillas
+de presentación
+([ADR-112](docs/decisions/112-chatbot-whatsapp-menu-reclamos-plantillas.md)),
+enrutamiento multilínea por área vía `metadata.phone_number_id`
+([ADR-113](docs/decisions/113-whatsapp-multilinea-enrutamiento-por-area.md)),
+administración en caliente de números de contacto
+([ADR-114](docs/decisions/114-whatsapp-bot-administracion-numeros-contacto.md)),
+departamento de usuario + RRHH como quinta categoría de soporte
+([ADR-115](docs/decisions/115-departamento-usuario-rbac-rrhh.md)),
+persistencia del chat web con panel admin de búsqueda
+([ADR-116](docs/decisions/116-persistencia-chat-web-panel-admin-busqueda.md)),
+canal HomeMinero (web) con preparación para MovilMinero (campo, todavía sin
+app)
+([ADR-117](docs/decisions/117-canal-chatbot-homeminero-movilminero.md)),
+aceleración GPU para Ollama por latencia del chatbot
+([ADR-118](docs/decisions/118-chatbot-aceleracion-gpu-ollama.md)) y
+postulaciones de CV por WhatsApp con extracción y scoring por IA local
+([ADR-122](docs/decisions/122-cv-postulantes-whatsapp-ia-local-scoring.md)).
+Verificado por build/tests; la entrega real a un teléfono depende de
+credenciales de producción de Meta todavía no provistas.
+
+### Operaciones de campo (propuesta, sin código)
+
+Operaciones de campo offline-first e integración gobernada con ERP queda
+**propuesta**, pendiente de aprobación de producto y arquitectura — no
+confundir con una decisión ya tomada
+([ADR-110](docs/decisions/110-operaciones-campo-offline-integracion-erp.md)).
+
+### Metodología y housekeeping
+
+Depreciación formal de los ADR tempranos de `specs/adr` para el Router de
+IA — `docs/decisions/` queda como único log vigente
+([ADR-090](docs/decisions/090-deprecacion-adr-tempranos-ia.md)). Composición
+RAII para OpenCV en C++
+([ADR-091](docs/decisions/091-opencv-composicion-raii.md)) y plantilla
+corporativa Beemetry/TimeTelemetry como referencia de diseño
+([ADR-092](docs/decisions/092-plantilla-corporativa-timetelemetry-referencia-diseno.md)).
+Corrección real encontrada en `db_scripts/`: cuatro colisiones de numeración
+(`29_*`, `44_*`, `54_*`, `56_*` duplicados) resueltas renombrando los
+archivos más nuevos a `64_`–`67_`, con `docker-compose.yml` actualizado para
+no romper el primer arranque de un volumen `db_data` nuevo — ver el detalle
+completo en [docs/decisions/README.md](docs/decisions/README.md).
+
+### Pendiente de este catch-up
+
+`scripts/project-status-metrics.ps1` sigue reportando **106/196 tareas =
+54,1%** sin cambios desde el 2026-08-18: los 17 ADR más recientes (112–128)
+documentan código real, pero varias piezas —el módulo de soporte/WhatsApp
+completo y SPEC-024 (GEOCATMIN)— todavía no tienen `tasks.md` propio y por
+lo tanto no mueven esa métrica. Ver
+`docs_/01_Planificacion/Informe_Estado_Proyecto_Actualizado_2026-08-18.md`
+para el detalle de gates y riesgos.
+
 ## [Unreleased] — 2026-07-27
 
 ### CORS multiorigen para un segundo frontend externo (2026-08-02)

@@ -1,0 +1,378 @@
+' =============================================================================
+' UN SOLO ARCHIVO — 13 PARTES NUMERADAS (cada una = un @startuml ... @enduml)
+' Copia SOLO el bloque de la parte que quieras renderizar.
+' Notas compatibilidad PlantUML 1.2026+:
+'   - skinparam rectangle: propiedades en VARIAS LINEAS dentro de { } (no en una sola linea).
+'   - Sin nombre tras @startuml (solo @startuml).
+'   - Evitar llaves { } dentro de textos de rectangulos (rompen el parser).
+' =============================================================================
+
+
+' #############################################################################
+' PARTE 01 — Flujo global: lienzo FORMULA → SP → gráfico
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 01 - Flujo global: lienzo / motor / BD / SP / resultado
+
+rectangle "USUARIO (navegador)\nEditor FORMULA (lienzo)" as U
+rectangle "Motor FORMULA (API HTTP)\nPOST /api/block, etc." as M
+rectangle "Base de datos FORMULA\nblocks, connections\ndiagram_id = emp_E_mina_M (tenant)" as DB
+rectangle "Pantalla análisis\nPOST /api/analysis/temperaturas" as A
+rectangle "sp_proceso_temperatura\nPostgreSQL / PL-pgsql" as SP
+rectangle "Filas resultado\nJSON al cliente / gráfico" as R
+
+U --> M : Guarda bloques y conexiones
+M --> DB : SQL lectura/escritura
+A --> SP : Invoca procedimiento
+SP --> DB : Lee blocks, connections\n+ mineria_lecturas
+SP --> R : Devuelve filas
+
+@enduml
+
+
+' #############################################################################
+' PARTE 02 — Mapeo: tipos de bloque en lienzo → comportamiento en SP
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 02 — Mapeo lienzo → SP
+
+rectangle "BLOQUE INICIO\n(sin flechas entrantes)" as BI
+rectangle "Entrada del grafo por lectura\nUN INICIO por diagrama tenant" as CI
+
+rectangle "BLOQUE DECISIÓN\nblockType = decision" as BD
+rectangle "Evalúa expression\nRamas SI / NO" as CD
+
+rectangle "BLOQUE PROCESO\n(otros tipos)" as BP
+rectangle "Ejecuta steps\nvar = expresión\nUna salida" as CP
+
+BI --> CI
+BD --> CD
+BP --> CP
+
+@enduml
+
+
+' #############################################################################
+' PARTE 03 — sp_proceso_temperatura (vista lógica)
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 03 — sp_proceso_temperatura (vista lógica)
+
+rectangle "INICIO SP\nempresa, mina, variable, fechas" as P0
+rectangle "Validar parámetros" as P1
+rectangle "RAISE\nerror validación" as E0
+rectangle "Cargar mina\nvalidar variable" as P2
+rectangle "diagram_id :=\nemp||e||_mina||m" as P3
+rectangle "Buscar INICIO en blocks" as P4
+rectangle "RAISE\nsin INICIO" as E1
+rectangle "FOR lecturas\nmineria_lecturas" as P5
+rectangle "vars.temperatura = valor\nbloque = v_inicio" as P6
+rectangle "BUCLE grafo\n(máx 50, anti-ciclo)" as P7
+rectangle "¿decision?" as D1
+rectangle "Evaluar bool\nrama SI/NO" as P8
+rectangle "Steps JSON\nasignaciones" as P10
+rectangle "¿siguiente bloque?" as D2
+rectangle "RETURN NEXT\nfila resultado" as P13
+rectangle "FIN SP" as P15
+
+P0 --> P1
+P1 --> E0 : error
+P1 --> P2 : ok
+P2 --> P3
+P3 --> P4
+P4 --> E1 : fallo
+P4 --> P5 : OK
+P5 --> P6
+P6 --> P7
+P7 --> D1
+D1 --> P8 : sí
+D1 --> P10 : proceso
+P8 --> D2
+P10 --> D2
+D2 --> P7 : continúa
+D2 --> P13 : termina lectura
+P13 --> P5
+P5 --> P15 : fin FOR
+
+@enduml
+
+
+' #############################################################################
+' PARTE 04 — Un paso del bucle (un bloque del lienzo)
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 04 — Un bloque del grafo (dentro del bucle)
+
+rectangle "Leer bloque_actual\n(blocks, diagram_id)" as L0
+rectangle "DECISIÓN\nexpr bool + conexión SI/NO" as T1
+rectangle "PROCESO\nsteps + fn_eval numérico" as T2
+rectangle "siguiente = to_id\no NULL" as L1
+
+L0 --> T1
+L0 --> T2
+T1 --> L1
+T2 --> L1
+
+@enduml
+
+
+' #############################################################################
+' PARTE 05 — Botón gráfico → SP
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 05 — Cliente análisis → formula_engine → PostgreSQL
+
+rectangle "Cliente analisis.html\nPOST JSON parámetros" as C
+rectangle "formula_engine\nsp_proceso_temperatura\nLIMIT 2000" as FE
+rectangle "PostgreSQL\nejecuta SP" as PG
+rectangle "JSON rows[]" as J
+
+C --> FE
+FE --> PG
+PG --> J
+
+@enduml
+
+
+' #############################################################################
+' PARTE 06 — Arquitectura lógica (backend)
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 06 — Arquitectura lógica backend
+
+rectangle "CLIENTES" as CL
+rectangle "FRONTEND nginx\nSPA + proxy" as NG
+rectangle "backend C++\n/api/*" as WEB
+rectangle "formula_engine\n/formula-api/*" as FORM
+rectangle "sensors_db" as D1
+rectangle "formula DB" as D2
+rectangle "ai_engine" as AI
+rectangle "tileserver" as TS
+
+CL --> NG
+NG --> WEB
+NG --> FORM
+WEB --> D1
+FORM --> D2
+WEB --> AI
+
+@enduml
+
+
+' #############################################################################
+' PARTE 07 — Docker Compose (topología)
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 07 — Topología Docker Compose
+
+rectangle "frontend" as F
+rectangle "web" as W
+rectangle "db sensors_db" as DB1
+rectangle "ai_engine" as AIE
+rectangle "tileserver" as TL
+rectangle "formula_engine" as FM
+rectangle "formula_db" as DB2
+
+F --> W
+W --> DB1
+W --> AIE
+F --> TL
+F --> FM
+FM --> DB2
+
+@enduml
+
+
+' #############################################################################
+' PARTE 08 — Bases de datos (resumen)
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 08 — Resumen bases de datos
+
+rectangle "sensors_db\nauth, telemetría,\ninformes, catálogos" as S
+rectangle "formula\nblocks, SP,\nsessions" as Q
+
+@enduml
+
+
+' #############################################################################
+' PARTE 09 — Editar FORMULA y guardar estado
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 09 — Editor FORMULA → guardar estado
+
+rectangle "Usuario" as U1
+rectangle "Editor app.js\n/formula-api" as SPA
+rectangle "nginx → formula_engine" as NX
+rectangle "formula_db" as FDB
+
+U1 --> SPA
+SPA --> NX
+NX --> FDB
+
+@enduml
+
+
+' #############################################################################
+' PARTE 10 — Análisis temperatura
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 10 — Análisis de temperatura (gráfico / SP)
+
+rectangle "analisis.html" as UA
+rectangle "formula_engine" as FE2
+rectangle "SP + mineria_lecturas" as FDB2
+rectangle "JSON gráfico" as OUT
+
+UA --> FE2
+FE2 --> FDB2
+FDB2 --> OUT
+
+@enduml
+
+
+' #############################################################################
+' PARTE 11 — Guardar historial (snapshot)
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 11 — Guardar fórmula en historial
+
+rectangle "Modal Guardar" as UM
+rectangle "GET /api/state?diagram_id=" as G
+rectangle "POST /api/analysis/guardar" as P
+rectangle "formula_sessions" as FS
+
+UM --> G
+G --> P
+P --> FS
+
+@enduml
+
+
+' #############################################################################
+' PARTE 12 — Restaurar sesión desde historial
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 12 — Restaurar sesión historial
+
+rectangle "Doble clic historial" as UR
+rectangle "POST .../restaurar" as PR
+rectangle "formula_engine\nDELETE+INSERT scoped" as FE3
+rectangle "formula_db" as FDB3
+rectangle "refreshState()" as RC
+
+UR --> PR
+PR --> FE3
+FE3 --> FDB3
+FDB3 --> RC
+
+@enduml
+
+
+' #############################################################################
+' PARTE 13 — Login / biométrica
+' #############################################################################
+@startuml
+skinparam rectangle {
+  roundCorner 12
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam arrowColor #1E293B
+
+title Parte 13 — Login / biométrica (alto nivel)
+
+rectangle "Cliente" as CC
+rectangle "backend web" as BW
+rectangle "sensors_db" as SD
+rectangle "ai_engine" as AE
+
+CC --> BW
+BW --> SD
+BW --> AE
+
+@enduml

@@ -1,0 +1,1317 @@
+{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang3082
+{\fonttbl
+{\f0\froman\fprq2\fcharset0 Times New Roman;}
+{\f1\fswiss\fprq2\fcharset0 Arial;}
+{\f2\fmodern\fprq1\fcharset0 Courier New;}
+{\f3\fswiss\fprq2\fcharset0 Calibri;}
+}
+{\colortbl ;
+\red0\green0\blue0;
+\red255\green255\blue255;
+\red99\green102\blue241;
+\red30\green30\blue60;
+\red245\green245\blue252;
+\red220\green220\blue240;
+\red60\green60\blue120;
+\red180\green60\blue60;
+\red40\green120\blue60;
+\red200\green240\blue210;
+\red240\green200\blue200;
+\red255\green255\blue200;
+\red200\green220\blue255;
+\red80\green80\blue80;
+\red50\green100\blue180;
+\red240\green248\blue255;
+\red30\green100\blue60;
+\red220\green240\blue255;
+\red100\green60\blue180;
+}
+{\stylesheet
+{\s0\f3\fs22\widctlpar\sa120 Normal;}
+{\s1\f1\fs32\b\widctlpar\sa200\sb400\keepn Heading 1;}
+{\s2\f1\fs26\b\widctlpar\sa160\sb300\keepn Heading 2;}
+{\s3\f1\fs22\b\widctlpar\sa120\sb200\keepn Heading 3;}
+{\s4\f1\fs20\b\widctlpar\sa100\sb160\keepn Heading 4;}
+}
+\paperw12240\paperh15840\margl1440\margr1440\margt1440\margb1440
+\widowctrl\hyphauto
+
+{\header\pard\f1\fs18\cf14\qr Administraci\'f3n de Informes T\'e9cnicos Grabados \endash{} Sistema Minero v2.0 \par}
+{\footer\pard\f1\fs18\cf14\qc P\'e1gina {\field{\*\fldinst{PAGE}}{\fldrslt}} de {\field{\*\fldinst{NUMPAGES}}{\fldrslt}} \par}
+
+{\pard\sa0\sb0\par}
+
+{\pard\qc\sa0
+{\shp{\*\shpinst\shpleft800\shptop200\shpright11440\shpbottom1000
+\shpfhdr0\shpbxpage\shpbypage\shpwr3\shpwrk0\shpfblwtxt0
+{\sp{\sn shapeType}{\sv 1}}
+{\sp{\sn fillColor}{\sv 4210752}}
+{\sp{\sn lineColor}{\sv 4210752}}
+}}
+\par}
+
+{\pard\qc\sb600\sa100
+{\f1\fs48\b\cf3 ADMINISTRACI\'d3N DE INFORMES T\'c9CNICOS}\par}
+{\pard\qc\sa100
+{\f1\fs32\b\cf4 Informes Grabados en Base de Datos \endash{} Consulta, Filtrado y Acciones}\par}
+{\pard\qc\sa100
+{\f1\fs22\cf14 Sistema de Informes Mineros \endash{} ReportStudio v2.0}\par}
+{\pard\qc\sa100
+{\f1\fs20\cf14 Fecha: 19 de marzo de 2026 \endash{} Versi\'f3n 1.0}\par}
+{\pard\qc\sa400
+{\f1\fs20\b\cf7 DOCUMENTO T\'c9CNICO: ESPECIFICACI\'d3N FUNCIONAL Y DE IMPLEMENTACI\'d3N}\par}
+
+{\pard\brdrb\brdrs\brdrw20\brdrcf3\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 1. VISI\'d3N GENERAL DEL M\'d3DULO\par}
+
+{\pard\f3\fs22\sa160
+El m\'f3dulo de \b Administraci\'f3n de Informes T\'e9cnicos\b0{} permite gestionar el ciclo de vida completo de los informes t\'e9cnicos mineros que han sido guardados en la base de datos. Es accesible desde un bot\'f3n dedicado en la barra de herramientas superior del editor de Informes T\'e9cnicos (TopToolbar), y presenta una interfaz completa con tabla, filtros avanzados y acciones sobre cada informe seleccionado.\par}
+
+{\pard\f3\fs22\sa160
+La implementaci\'f3n cubre cuatro funciones principales sobre cada informe:\par}
+
+{\pard\f3\fs22\fi-320\li640\sa120
+\bullet{}\tab {\b Abrir para Leer} (modo lectura, sin edici\'f3n, visualizaci\'f3n completa)\par}
+{\pard\f3\fs22\fi-320\li640\sa120
+\bullet{}\tab {\b Enviar a otra persona} de la empresa (enviar notificaci\'f3n interna con enlace al informe)\par}
+{\pard\f3\fs22\fi-320\li640\sa120
+\bullet{}\tab {\b Eliminar} con confirmaci\'f3n y registro de auditor\'eda\par}
+{\pard\f3\fs22\fi-320\li640\sa120
+\bullet{}\tab {\b Abrir para Editar} (carga el informe en el editor completo para modificaci\'f3n)\par}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 2. PUNTO DE ENTRADA: BOT\'d3N EN BARRA DE HERRAMIENTAS\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 2.1 Ubicaci\'f3n y Dise\'f1o del Bot\'f3n\par}
+
+{\pard\f3\fs22\sa160
+El bot\'f3n se a\'f1ade en la \b TopToolbar\b0{} del m\'f3dulo ReportStudioV2, en el {\b Grupo 3 \endash{} Documento}, junto a los botones \i Imprimir\i0{}, \i Revisar Todo\i0{} e \i Optimizar IA\i0{}.\par}
+
+{\pard\f3\fs22\sa100 {\b Archivo afectado:} \f2\fs20 frontend/src/components/ReportStudioV2/components/layout/TopToolbar.jsx\par}
+
+{\pard\f3\fs22\sa200 {\b Especificaci\'f3n visual del bot\'f3n:}\par}
+
+{\trowd\trgaph120\trrh400\trpaddl120\trpaddr120\trpaddb60\trpaddt60
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx3600
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx8400
+\pard\intbl\f1\fs20\b\cf4 Propiedad\cell
+\pard\intbl\f1\fs20\b\cf4 Valor\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx8400
+\pard\intbl\f1\fs20\cf14 Icono Lucide\cell
+\pard\intbl\f1\fs20\cf14 \f2 FolderOpen\f1{} (\'f3 \f2 Archive\f1{})\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx8400
+\pard\intbl\f1\fs20\cf14 Etiqueta visible\cell
+\pard\intbl\f1\fs20\cf14 "Mis Informes"\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx8400
+\pard\intbl\f1\fs20\cf14 Tooltip al pasar el mouse\cell
+\pard\intbl\f1\fs20\cf14 "Administrar informes t\'e9cnicos grabados"\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx8400
+\pard\intbl\f1\fs20\cf14 Posici\'f3n en toolbar\cell
+\pard\intbl\f1\fs20\cf14 Grupo 3 \endash{} entre "Revisar Todo" y "Optimizar IA"\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx8400
+\pard\intbl\f1\fs20\cf14 Clase CSS\cell
+\pard\intbl\f1\fs20\cf14 est\'e1ndar (mismo estilo que los botones existentes)\cell\row
+}
+
+{\pard\sa200\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 2.2 C\'f3digo del Bot\'f3n (TopToolbar.jsx \endash{} fragmento)\par}
+
+{\pard\f3\fs20\sa80 Importaciones adicionales en la cabecera del componente:\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+import \{\line
+\tab Grid,\line
+\tab MousePointer2,\line
+\tab Download,\line
+\tab FileText,\line
+\tab Video,\line
+\tab ZoomIn,\line
+\tab ZoomOut,\line
+\tab Printer,\line
+\tab ScanSearch,\line
+\tab Sparkles,\line
+\tab{\b\cf3 FolderOpen,   // <- NUEVO BOT\'d3N}\line
+\} from 'lucide-react';\line
+\line
+export default function TopToolbar(\{\line
+\tab // ... props existentes ...\line
+\tab{\b\cf3 onOpenReportsAdmin,   // <- NUEVA PROP}\line
+\}) \{\par
+}
+}
+
+{\pard\f3\fs20\sa80 Fragmento de JSX donde se inserta el nuevo bot\'f3n (dentro del Grupo 3 \endash{} Documento):\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+\{/* Bot\'f3n existente: Revisar Todo */\}\line
+<button onClick=\{onReviewDocument\} title="Revisar consistencia del documento">\line
+\tab <ScanSearch size=\{15\} /> Revisar Todo\line
+</button>\line
+\line
+\{/* ===== NUEVO BOT\'d3N: ADMINISTRACI\'d3N DE INFORMES ===== */\}\line
+{\b\cf3 <button\line
+\tab onClick=\{onOpenReportsAdmin\}\line
+\tab title="Administrar informes t\'e9cnicos grabados"\line
+>\line
+\tab <FolderOpen size=\{15\} />\line
+\tab Mis Informes\line
+</button>}\line
+\line
+\{/* Bot\'f3n existente: Optimizar IA */\}\line
+<button onClick=\{onOptimizeDocument\} ...>\line
+\tab <Sparkles size=\{15\} /> Optimizar IA\line
+</button>\par
+}
+}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 3. INTERFAZ: MODAL DE ADMINISTRACI\'d3N DE INFORMES\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 3.1 Estructura Visual del Modal\par}
+
+{\pard\f3\fs22\sa160
+Al hacer clic en "Mis Informes", se despliega un {\b modal de pantalla completa} (overlay 90% del viewport) con la siguiente estructura:\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
++---------------------------------------------------------------------+\line
+|  [FolderOpen] ADMINISTRACI\'d3N DE INFORMES T\'c9CNICOS    [X Cerrar]  |\line
++---------------------------------------------------------------------+\line
+|  FILTROS DE B\'daS QUEDA                                               |\line
+|  [Fecha Inicio __/__/____] [Fecha Fin __/__/____]                   |\line
+|  [Generado por: _________] [Revisado por: ________]                |\line
+|  [Estado: [Todos v]]  [Proyecto: [Todos v]]  [Buscar titulo: ____]  |\line
+|  [Limpiar Filtros]                    [Aplicar Filtros / Buscar]    |\line
++---------------------------------------------------------------------+\line
+|  RESULTADOS: 24 informes encontrados                                |\line
+|  [ ] | N\'b0 | T\'cdTULO | PROYECTO | GENERADO POR | REVISADO | ESTADO | FECHA |\line
+|  [x] | 1  | Informe Sector Norte... | Proyecto A | Juan P. | S\'ed | borrador | 2026-03-15 |\line
+|  [ ] | 2  | Evaluaci\'f3n Q1 2026...  | Proyecto B | Mar\'eda G. | No | aprobado | 2026-03-10 |\line
+|  ... (paginaci\'f3n: < 1 2 3 ... >)                                  |\line
++---------------------------------------------------------------------+\line
+|  Informe seleccionado: "Informe Sector Norte 2026-03-15"            |\line
+|  [Abrir Leer] [Abrir Editar] [Enviar a...] [Eliminar]              |\line
++---------------------------------------------------------------------+\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 3.2 Secciones del Modal\par}
+
+{\pard\s3\f1\fs22\b\cf7\sb160\sa80 A) Cabecera del Modal\par}
+
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab T\'edtulo: {\b "Administraci\'f3n de Informes T\'e9cnicos"} con icono \f2 FolderOpen\f3{}\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Subtexto: empresa y usuario actualmente logueado\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Bot\'f3n de cierre [X] en la esquina superior derecha\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Conteo din\'e1mico: "N informes en la base de datos"\par}
+
+{\pard\s3\f1\fs22\b\cf7\sb160\sa80 B) Panel de Filtros (siempre visible, colapsable opcionalmente)\par}
+
+{\trowd\trgaph120\trrh400\trpaddl120\trpaddr120\trpaddb60\trpaddt60
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx2400
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx4800
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx7200
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx9600
+\pard\intbl\f1\fs20\b\cf4 Campo Filtro\cell
+\pard\intbl\f1\fs20\b\cf4 Tipo UI\cell
+\pard\intbl\f1\fs20\b\cf4 Columna BD\cell
+\pard\intbl\f1\fs20\b\cf4 Comportamiento\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Fecha Inicio\cell
+\pard\intbl\f3\fs20\cf14 DatePicker\cell
+\pard\intbl\f2\fs18\cf14 created_at >=\cell
+\pard\intbl\f3\fs20\cf14 Filtro de rango inicio\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Fecha Fin\cell
+\pard\intbl\f3\fs20\cf14 DatePicker\cell
+\pard\intbl\f2\fs18\cf14 created_at <=\cell
+\pard\intbl\f3\fs20\cf14 Filtro de rango fin\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Generado por\cell
+\pard\intbl\f3\fs20\cf14 Text input\cell
+\pard\intbl\f2\fs18\cf14 created_by ILIKE\cell
+\pard\intbl\f3\fs20\cf14 B\'fasqueda parcial nombre\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Revisado por\cell
+\pard\intbl\f3\fs20\cf14 Text input\cell
+\pard\intbl\f2\fs18\cf14 reviewed_by ILIKE\cell
+\pard\intbl\f3\fs20\cf14 B\'fasqueda parcial nombre\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Estado\cell
+\pard\intbl\f3\fs20\cf14 Select/Dropdown\cell
+\pard\intbl\f2\fs18\cf14 status =\cell
+\pard\intbl\f3\fs20\cf14 Todos / Borrador / Aprobado / Archivado\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Proyecto\cell
+\pard\intbl\f3\fs20\cf14 Select/Dropdown\cell
+\pard\intbl\f2\fs18\cf14 project_id =\cell
+\pard\intbl\f3\fs20\cf14 Lista din\'e1mica desde BD\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 T\'edtulo contiene\cell
+\pard\intbl\f3\fs20\cf14 Text input\cell
+\pard\intbl\f2\fs18\cf14 title ILIKE\cell
+\pard\intbl\f3\fs20\cf14 B\'fasqueda libre en t\'edtulo\cell\row
+}
+
+{\pard\sa200\par}
+
+{\pard\s3\f1\fs22\b\cf7\sb160\sa80 C) Tabla de Resultados\par}
+
+{\pard\f3\fs22\sa160 Columnas de la tabla (ordenables por click en cabecera):\par}
+
+{\trowd\trgaph120\trrh360\trpaddl120\trpaddr120\trpaddb60\trpaddt60
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx600
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx1800
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx4200
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx5800
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx7200
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx8400
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx9600
+\pard\intbl\f1\fs18\b\cf4 Sel.\cell
+\pard\intbl\f1\fs18\b\cf4 N\'b0\cell
+\pard\intbl\f1\fs18\b\cf4 T\'edtulo del Informe\cell
+\pard\intbl\f1\fs18\b\cf4 Proyecto\cell
+\pard\intbl\f1\fs18\b\cf4 Generado por\cell
+\pard\intbl\f1\fs18\b\cf4 Revisado\cell
+\pard\intbl\f1\fs18\b\cf4 Estado\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx1800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx8400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs18\cf14 [o]\cell
+\pard\intbl\f3\fs18\cf14 1\cell
+\pard\intbl\f3\fs18\cf14 Informe Sector Norte Q1\cell
+\pard\intbl\f3\fs18\cf14 Proyecto Alpha\cell
+\pard\intbl\f3\fs18\cf14 Juan P\'e9rez\cell
+\pard\intbl\f3\fs18\cf9 S\'ed\cell
+\pard\intbl\f3\fs18\cf9 Aprobado\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx1800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx7200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx8400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs18\cf14 [ ]\cell
+\pard\intbl\f3\fs18\cf14 2\cell
+\pard\intbl\f3\fs18\cf14 Evaluaci\'f3n Geot\'e9cnica Z2\cell
+\pard\intbl\f3\fs18\cf14 Proyecto Beta\cell
+\pard\intbl\f3\fs18\cf14 Mar\'eda G\'f3mez\cell
+\pard\intbl\f3\fs18\cf8 No\cell
+\pard\intbl\f3\fs18\cf15 Borrador\cell\row
+}
+
+{\pard\sa200\par}
+
+{\pard\f3\fs22\sa160 La tabla soporta:\par}
+{\pard\f3\fs22\fi-320\li640\sa80
+\bullet{}\tab Orden por columna (ASC/DESC) al clickear la cabecera\par}
+{\pard\f3\fs22\fi-320\li640\sa80
+\bullet{}\tab Selecci\'f3n de UNA fila a la vez (radio button visual)\par}
+{\pard\f3\fs22\fi-320\li640\sa80
+\bullet{}\tab Indicador visual de fila seleccionada (fondo resaltado con color \f2 #eef2ff\f3{})\par}
+{\pard\f3\fs22\fi-320\li640\sa80
+\bullet{}\tab Paginaci\'f3n: 20 registros por p\'e1gina con navegaci\'f3n < 1 2 3 ... >\par}
+{\pard\f3\fs22\fi-320\li640\sa80
+\bullet{}\tab Indicador de carga (spinner) durante la b\'fasqueda\par}
+{\pard\f3\fs22\fi-320\li640\sa80
+\bullet{}\tab Mensaje "Sin resultados" cuando ning\'fan informe coincide con los filtros\par}
+
+{\pard\s3\f1\fs22\b\cf7\sb160\sa80 D) Barra de Acciones (se activa al seleccionar un informe)\par}
+
+{\pard\f3\fs22\sa160
+La barra de acciones aparece en la parte inferior del modal, visible \'fanicamente cuando hay un informe seleccionado:\par}
+
+{\trowd\trgaph120\trrh560\trpaddl120\trpaddr120\trpaddb80\trpaddt80
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx2400
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx4000
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx6400
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx9600
+\pard\intbl\f1\fs20\b\cf4 Acci\'f3n\cell
+\pard\intbl\f1\fs20\b\cf4 Icono Lucide\cell
+\pard\intbl\f1\fs20\b\cf4 Estilo Bot\'f3n\cell
+\pard\intbl\f1\fs20\b\cf4 Descripci\'f3n\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4000
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx6400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Abrir para Leer\cell
+\pard\intbl\f2\fs18\cf14 Eye\cell
+\pard\intbl\f3\fs20\cf14 Secundario (gris-azul)\cell
+\pard\intbl\f3\fs20\cf14 Visualiza el informe en modo read-only. No permite edici\'f3n.\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4000
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx6400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Abrir para Editar\cell
+\pard\intbl\f2\fs18\cf14 Pencil\cell
+\pard\intbl\f3\fs20\cf14 Primario (violeta)\cell
+\pard\intbl\f3\fs20\cf14 Carga el informe en el editor completo. Requiere rol admin u operator propietario.\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4000
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx6400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Enviar a...\cell
+\pard\intbl\f2\fs18\cf14 Send\cell
+\pard\intbl\f3\fs20\cf14 Secundario (verde)\cell
+\pard\intbl\f3\fs20\cf14 Abre sub-modal de selecci\'f3n de destinatario interno y mensaje opcional.\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4000
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx6400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Eliminar\cell
+\pard\intbl\f2\fs18\cf14 Trash2\cell
+\pard\intbl\f3\fs20\cf14 Destructivo (rojo)\cell
+\pard\intbl\f3\fs20\cf14 Requiere confirmaci\'f3n explicita (digitar palabra "ELIMINAR"). Registra en audit log.\cell\row
+}
+
+{\pard\sa200\par}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 4. FLUJO DETALLADO POR ACCI\'d3N\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 4.0 Diagrama Unificado del Flujo Operativo (Mejorado)\par}
+
+{\pard\f3\fs22\sa80 Diagrama macro del proceso completo desde toolbar hasta resultado por accion:\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
++--------------------------+\line
+|   USUARIO LOGEADO        |\line
+|   (admin / operator)     |\line
++------------+-------------+\line
+       |\line
+       v\line
++--------------------------+\line
+| TopToolbar: Mis Informes |\line
+| [FolderOpen button]      |\line
++------------+-------------+\line
+       |\line
+       v\line
++-------------------------------------------------------------------+\line
+| MODAL: ADMINISTRACION DE INFORMES TECNICOS                        |\line
+|                                                                   |\line
+|  +-------------------------------------------------------------+  |\line
+|  | PANEL DE FILTROS (7 criterios)                              |  |\line
+|  | FechaInicio | FechaFin | GeneradoPor | RevisadoPor          |  |\line
+|  | Estado | Proyecto | TituloContiene                          |  |\line
+|  | [Limpiar]                                [Buscar/Aplicar]    |  |\line
+|  +-------------------------------------------------------------+  |\line
+|                                                                   |\line
+|  +-------------------------------------------------------------+  |\line
+|  | TABLA DE RESULTADOS (paginada y ordenable)                  |  |\line
+|  | Sel | N | Titulo | Proyecto | Generado | Revisado | Estado  |  |\line
+|  | click en fila -> fila seleccionada y resaltada              |  |\line
+|  +-------------------------------------------------------------+  |\line
+|                                                                   |\line
+|  +-------------------------------------------------------------+  |\line
+|  | BARRA DE ACCIONES (visible solo si hay seleccion)           |  |\line
+|  | [Leer] [Editar] [Enviar] [Eliminar]                         |  |\line
+|  +-------------------------------------------------------------+  |\line
++-----------+----------------+----------------+----------------------+\line
+      |                |                |\line
+      v                v                v                      v\line
+   [LEER]           [EDITAR]         [ENVIAR]              [ELIMINAR]\line
+      |                |                |                      |\line
+      v                v                v                      v\line
+   +----------------+  +----------------+  +----------------+  +----------------+\line
+   | ReadOnlyViewer |  | Carga en Editor|  | Sub-modal      |  | Sub-modal      |\line
+   | solo lectura   |  | Studio (doc)   |  | destinatario   |  | confirmacion   |\line
+   +-------+--------+  +-------+--------+  +-------+--------+  +-------+--------+\line
+     |                   |                   |                   |\line
+     v                   v                   v                   v\line
+   GET /api/reports/{id}   GET /api/reports/{id}  POST /share      DELETE /api/reports/{id}\line
+   mode=read               mode=edit              reports/{id}      (soft-delete)\line
+     |                   |                   |                   |\line
+     v                   v                   v                   v\line
+   Regresa sin cambios      Usuario modifica      notifications      audit_log\line
+   al cerrar visor          y luego guarda        + shares           + refresh tabla\line
+         PUT /api/reports/{id}                      + limpiar seleccion\line
+}\par
+}
+
+{\pard\f3\fs20\sa100\b Nota de implementacion\b0{}: En la plataforma actual, el frontend puede operar en modo persistencia local (localStorage) para guardar/listar/enviar/eliminar informes. Las rutas API mostradas arriba representan el flujo objetivo estandar cuando se habilita backend completo de reportes.\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 4.1 Acci\'f3n: Abrir para Leer\par}
+
+{\pard\f3\fs22\sa80 Diagrama de flujo:\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
+[Usuario selecciona fila] --> [Clic "Abrir Leer"]\line
+    |\line
+    v\line
+[GET /api/reports/\{id\}?mode=read token:Bearer]\line
+    |\line
+    v (Backend devuelve report con content_json)\line
+[Modal principal se cierra]\line
+    |\line
+    v\line
+[Se abre vista ReadOnlyViewer.jsx]\line
+    |\line
+    +-- Renderiza MultipageView con prop readOnly=true\line
+    +-- Todos los bloques: pointer-events: none\line
+    +-- TopToolbar en modo lectura: solo botones [Exportar PDF] [Cerrar]\line
+    +-- Indicador visible "MODO LECTURA - SOLO VISUALIZACI\'d3N"\line
+    |\line
+    v\line
+[Usuario cierra] --> [Regresa al editor en estado previo sin cambios]\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 4.2 Acci\'f3n: Abrir para Editar\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
+[Usuario selecciona fila] --> [Clic "Abrir Editar"]\line
+    |\line
+    v\line
+[Verificar permisos: rol admin O (rol operator AND created_by == usuario_actual)]\line
+    |\line
+    v (Si no tiene permiso: toast de error "Sin permisos para editar este informe")\line
+    v (Si tiene permiso:)\line
+[Pregunta de confirmaci\'f3n: "Se cerrar\'e1 el informe actual sin guardar. \'bfContinuar?"]\line
+    |\line
+    v (Usuario confirma)\line
+[GET /api/reports/\{id\} token:Bearer]\line
+    |\line
+    v\line
+[useEditorStore.loadDocument(report.content_json)]\line
+[useEditorStore.setCurrentReportId(report.id)]\line
+    |\line
+    v\line
+[Modal se cierra]\line
+[Editor muestra el informe cargado con todos sus bloques y p\'e1ginas]\line
+[T\'edtulo en toolbar actualizado al t\'edtulo del informe cargado]\line
+    |\line
+    v\line
+[Usuario edita y al guardar: PUT /api/reports/\{id\} con content_json actualizado]\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 4.3 Acci\'f3n: Enviar a otra persona\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
+[Usuario selecciona fila] --> [Clic "Enviar a..."]\line
+    |\line
+    v\line
+[Sub-modal "Enviar Informe" con:\line
+    - Lista de usuarios de la empresa (GET /api/auth/users?company=X)\line
+    - Buscador por nombre/username\line
+    - Casilla del destinatario seleccionado\line
+    - Campo "Mensaje opcional" (textarea, max 500 chars)\line
+    - Bot\'f3n [Enviar] [Cancelar]\line
+]\line
+    |\line
+    v (Usuario selecciona destinatario y clic Enviar)\line
+[POST /api/reports/\{id\}/share \{\line
+    "to_user_id": "uuid",\line
+    "message": "texto opcional",\line
+    "sent_by": "uuid"\line
+\}]\line
+    |\line
+    v\line
+[Backend inserta en tabla report_shares]\line
+[Backend inserta notificaci\'f3n en tabla notifications]\line
+    |\line
+    v\line
+[Destinatario ve badge "1 nuevo informe enviado" al hacer login]\line
+[Toast de confirmaci\'f3n al emisor: "Informe enviado a Juan P\'e9rez"]\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 4.4 Acci\'f3n: Eliminar\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
+[Usuario selecciona fila] --> [Clic "Eliminar"]\line
+    |\line
+    v\line
+[Sub-modal de confirmaci\'f3n peligrosa:\line
+    - T\'edtulo: "Eliminar Informe (ACCI\'d3N IRREVERSIBLE)"\line
+    - Nombre del informe en texto rojo\line
+    - Solicita confirmar escribiendo: "ELIMINAR"\line
+    - Input text con placeholder "Escribe ELIMINAR para confirmar"\line
+    - Bot\'f3n [Confirmar Eliminaci\'f3n] (deshabilitado hasta texto correcto)\line
+    - Bot\'f3n [Cancelar]\line
+]\line
+    |\line
+    v (Usuario escribe ELIMINAR y confirma)\line
+[DELETE /api/reports/\{id\} token:Bearer]\line
+    |\line
+    v (Backend: soft-delete, campo deleted_at = NOW())\line
+[Backend inserta en auth_audit_logs: event_action = 'report_deleted']\line
+    |\line
+    v\line
+[Toast de confirmaci\'f3n: "Informe eliminado correctamente"]\line
+[Tabla se refresca autom\'e1ticamente]\line
+[Selecci\'f3n limpiada, barra de acciones oculta]\par
+}
+}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 5. MODELO DE DATOS: EXTENSI\'d3N DEL ESQUEMA\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 5.1 Extender Tabla \f2 reports\f1{} existente\par}
+
+{\pard\f3\fs22\sa80
+La tabla \f2 reports\f3{} existente en \f2 db_scripts/01_init.sql\f3{} tiene los campos b\'e1sicos. Se extiende con las siguientes columnas mediante migraci\'f3n:\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
+-- Archivo de migraci\'f3n: db_scripts/05_reports_admin.sql\line
+\line
+-- Extensi\'f3n de la tabla reports existente\line
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS\line
+    created_by UUID REFERENCES auth_users(id) ON DELETE SET NULL;\line
+\line
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS\line
+    reviewed_by UUID REFERENCES auth_users(id) ON DELETE SET NULL;\line
+\line
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS\line
+    reviewed_at TIMESTAMPTZ;\line
+\line
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS\line
+    deleted_at TIMESTAMPTZ;              -- soft delete\line
+\line
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS\line
+    version_number INTEGER NOT NULL DEFAULT 1;\line
+\line
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS\line
+    last_modified_by UUID REFERENCES auth_users(id) ON DELETE SET NULL;\line
+\line
+-- Tabla para env\'edo de informes entre usuarios\line
+CREATE TABLE IF NOT EXISTS report_shares (\line
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\line
+    report_id UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE,\line
+    sent_by UUID NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,\line
+    sent_to UUID NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,\line
+    message TEXT,\line
+    sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\line
+    read_at TIMESTAMPTZ\line
+);\line
+\line
+-- Tabla de notificaciones internas\line
+CREATE TABLE IF NOT EXISTS notifications (\line
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\line
+    user_id UUID NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,\line
+    type VARCHAR(60) NOT NULL,       -- 'report_shared', 'report_reviewed', etc.\line
+    payload JSONB NOT NULL DEFAULT '\{\}',\line
+    is_read BOOLEAN NOT NULL DEFAULT false,\line
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\line
+);\line
+\line
+-- \'cdndices de rendimiento\line
+CREATE INDEX IF NOT EXISTS idx_reports_created_by ON reports(created_by);\line
+CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports(created_at DESC);\line
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);\line
+CREATE INDEX IF NOT EXISTS idx_reports_deleted_at ON reports(deleted_at) WHERE deleted_at IS NULL;\line
+CREATE INDEX IF NOT EXISTS idx_report_shares_sent_to ON report_shares(sent_to);\line
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, is_read);\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 5.2 Estados permitidos en columna \f2 status\f1{}\par}
+
+{\trowd\trgaph120\trrh360\trpaddl120\trpaddr120\trpaddb60\trpaddt60
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx2400
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx5400
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx9600
+\pard\intbl\f1\fs20\b\cf4 Valor BD\cell
+\pard\intbl\f1\fs20\b\cf4 Etiqueta UI\cell
+\pard\intbl\f1\fs20\b\cf4 Color Badge\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f2\fs18\cf14 draft\cell
+\pard\intbl\f3\fs20\cf14 Borrador\cell
+\pard\intbl\f3\fs20\cf15 Azul claro (#dbeafe)\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f2\fs18\cf14 in_review\cell
+\pard\intbl\f3\fs20\cf14 En Revisi\'f3n\cell
+\pard\intbl\f3\fs20\cf14 Amarillo (#fef3c7)\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f2\fs18\cf14 approved\cell
+\pard\intbl\f3\fs20\cf14 Aprobado\cell
+\pard\intbl\f3\fs20\cf14 Verde (#d1fae5)\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f2\fs18\cf14 archived\cell
+\pard\intbl\f3\fs20\cf14 Archivado\cell
+\pard\intbl\f3\fs20\cf14 Gris (#f3f4f6)\cell\row
+}
+
+{\pard\sa200\par}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 6. API REST: ENDPOINTS NUEVOS (BACKEND C++)\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 6.1 Listado con Filtros\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+GET /api/reports\line
+Authorization: Bearer <token>\line
+\line
+Query parameters:\line
+  date_from    string  ISO 8601  (ej: 2026-01-01)\line
+  date_to      string  ISO 8601  (ej: 2026-03-31)\line
+  created_by   string  parcial   (ILIKE '%valor%')\line
+  reviewed_by  string  parcial   (ILIKE '%valor%')\line
+  status       string  exact     (draft|in_review|approved|archived)\line
+  project_id   uuid    exact\line
+  title        string  parcial   (ILIKE '%valor%')\line
+  page         int     default=1\line
+  page_size    int     default=20 max=100\line
+  sort_by      string  default=created_at\line
+  sort_dir     string  asc|desc\line
+\line
+Respuesta 200:\line
+\{\line
+  "total": 42,\line
+  "page": 1,\line
+  "page_size": 20,\line
+  "data": [\line
+    \{\line
+      "id": "uuid",\line
+      "title": "Informe Sector Norte Q1",\line
+      "status": "approved",\line
+      "project_id": "uuid",\line
+      "project_name": "Proyecto Alpha",\line
+      "created_by_id": "uuid",\line
+      "created_by_name": "Juan P\'e9rez",\line
+      "reviewed_by_id": "uuid",\line
+      "reviewed_by_name": "Carlos L\'f3pez",\line
+      "reviewed_at": "2026-03-14T08:00:00Z",\line
+      "version_number": 3,\line
+      "created_at": "2026-03-10T10:30:00Z",\line
+      "updated_at": "2026-03-14T09:15:00Z"\line
+    \},\line
+    ...\line
+  ]\line
+\}\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 6.2 Obtener Informe Completo\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+GET /api/reports/\{id\}\line
+Authorization: Bearer <token>\line
+\line
+Respuesta 200:\line
+\{\line
+  "id": "uuid",\line
+  "title": "Informe Sector Norte Q1",\line
+  "content_json": \{ /* doc completo con p\'e1ginas y bloques */ \},\line
+  "status": "approved",\line
+  "version_number": 3,\line
+  ...meta\line
+\}\line
+\line
+Errores:\line
+  404 Not Found: informe no existe o deleted_at IS NOT NULL\line
+  403 Forbidden: informe pertenece a otra empresa\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 6.3 Guardar / Actualizar Informe\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+-- Crear nuevo:\line
+POST /api/reports\line
+Authorization: Bearer <token>\line
+Content-Type: application/json\line
+\{\line
+  "title": "...",\line
+  "project_id": "uuid",\line
+  "content_json": \{...\},\line
+  "status": "draft"\line
+\}\line
+Respuesta 201: \{ "id": "uuid", ... \}\line
+\line
+-- Actualizar existente:\line
+PUT /api/reports/\{id\}\line
+Authorization: Bearer <token>\line
+\{\line
+  "title": "...",\line
+  "content_json": \{...\},\line
+  "status": "in_review"\line
+\}\line
+Respuesta 200: \{ recoge campos actualizados \}\line
+El campo version_number se autoincrementa en el backend.\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 6.4 Eliminar (soft delete)\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+DELETE /api/reports/\{id\}\line
+Authorization: Bearer <token>\line
+\line
+Backend:\line
+  SET deleted_at = NOW() WHERE id = \{id\}\line
+  INSERT INTO auth_audit_logs (event_action, username, detail, success)\line
+    VALUES ('report_deleted', \{username\}, \{report.title\}, true)\line
+\line
+Respuesta 200: \{ "message": "Informe eliminado correctamente" \}\line
+Errores:\line
+  403: sin permisos (solo admin puede eliminar cualquier informe;\line
+       operator solo puede eliminar los propios en estado draft)\line
+  404: no encontrado\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 6.5 Enviar informe a usuario\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+POST /api/reports/\{id\}/share\line
+Authorization: Bearer <token>\line
+\{\line
+  "to_user_id": "uuid",\line
+  "message": "Por favor revisar secciones 3 y 5"\line
+\}\line
+\line
+Backend:\line
+  Valida que to_user_id es de la misma empresa\line
+  INSERT INTO report_shares (...)\line
+  INSERT INTO notifications (user_id=to_user_id, type='report_shared',\line
+    payload=\{"report_id": id, "report_title": title, "from_user": ...\})\line
+\line
+Respuesta 200: \{ "message": "Informe enviado" \}\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 6.6 Listar usuarios de la empresa (para enviar)\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+GET /api/auth/users?company=\{company_name\}\line
+Authorization: Bearer <token>\line
+\line
+Respuesta 200:\line
+[\line
+  \{ "id": "uuid", "username": "juan.perez",\line
+     "first_name": "Juan", "last_name": "P\'e9rez", "role": "admin" \},\line
+  ...\line
+]\line
+\line
+Nota: excluye al usuario que hace la consulta.\line
+Solo users activos (is_active = true).\par
+}
+}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 7. COMPONENTES FRONTEND A IMPLEMENTAR\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 7.1 \'c1rbol de componentes nuevos\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
+frontend/src/components/ReportStudioV2/\line
+\'c3\'80\'c3\'80\'c3\'80 components/\line
+    \'c3\'80\'c3\'80\'c3\'80 modals/\line
+        \'c3\'80\'c3\'80\'c3\'80 ReportsAdminModal.jsx      <- Modal principal con tabla y filtros\line
+        \'c3\'80\'c3\'80\'c3\'80 ReportsAdminModal.css     <- Estilos del modal\line
+        \'c3\'80\'c3\'80\'c3\'80 ShareReportModal.jsx      <- Sub-modal: enviar informe\line
+        \'c3\'80\'c3\'80\'c3\'80 DeleteReportConfirm.jsx   <- Sub-modal: confirmar eliminaci\'f3n\line
+    \'c3\'80\'c3\'80\'c3\'80 viewers/\line
+        \'c3\'80\'c3\'80\'c3\'80 ReadOnlyViewer.jsx        <- Vista de solo lectura del informe\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 7.2 Prop drilling: App.jsx \uc0\u8594{} TopToolbar\par}
+
+{\pard\f3\fs22\sa80 En \f2 App.jsx\f3{}, se agregan los siguientes estados y handlers:\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+// --- NUEVOS ESTADOS en App.jsx ---\line
+const [showReportsAdmin, setShowReportsAdmin] = useState(false);\line
+const [showReadOnly, setShowReadOnly] = useState(false);\line
+const [readOnlyReport, setReadOnlyReport] = useState(null);\line
+\line
+// Handler: abrir modal de administraci\'f3n\line
+const handleOpenReportsAdmin = () => setShowReportsAdmin(true);\line
+\line
+// Handler: abrir en modo lectura (llamado desde ReportsAdminModal)\line
+const handleOpenReadOnly = (reportData) => \{\line
+  setReadOnlyReport(reportData);\line
+  setShowReportsAdmin(false);\line
+  setShowReadOnly(true);\line
+\};\line
+\line
+// Handler: abrir en modo edici\'f3n\line
+const handleOpenEdit = (reportId, contentJson) => \{\line
+  useEditorStore.getState().loadDocument(contentJson);\line
+  useEditorStore.getState().setCurrentReportId(reportId);\line
+  setShowReportsAdmin(false);\line
+\};\line
+\line
+// En el JSX de App.jsx, agregar los modales:\line
+\{\showReportsAdmin && (\line
+  <ReportsAdminModal\line
+    onClose=\{() => setShowReportsAdmin(false)\}\line
+    onOpenRead=\{handleOpenReadOnly\}\line
+    onOpenEdit=\{handleOpenEdit\}\line
+  />\line
+)\}\line
+\{\showReadOnly && (\line
+  <ReadOnlyViewer\line
+    report=\{readOnlyReport\}\line
+    onClose=\{() => setShowReadOnly(false)\}\line
+  />\line
+)\}\par
+}
+}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 7.3 ReportsAdminModal.jsx \endash{} estructura interna\par}
+
+{\pard\cbpat5\li360\ri360\sa80\sb80
+{\f2\fs18\cf7
+// Hooks internos:\line
+const [filters, setFilters] = useState(\{\line
+  dateFrom: '', dateTo: '',\line
+  createdBy: '', reviewedBy: '',\line
+  status: 'all', projectId: 'all', title: ''\line
+\});\line
+const [reports, setReports] = useState([]);\line
+const [total, setTotal] = useState(0);\line
+const [page, setPage] = useState(1);\line
+const [sortBy, setSortBy] = useState('created_at');\line
+const [sortDir, setSortDir] = useState('desc');\line
+const [loading, setLoading] = useState(false);\line
+const [selected, setSelected] = useState(null);  // informe seleccionado\line
+const [projects, setProjects] = useState([]);     // lista de proyectos\line
+\line
+// Carga initial y cuando cambian filtros:\line
+useEffect(() => \{ fetchReports(); \}, [filters, page, sortBy, sortDir]);\line
+\line
+const fetchReports = async () => \{\line
+  setLoading(true);\line
+  const params = new URLSearchParams(\{\line
+    ...filters, page, page_size: 20,\line
+    sort_by: sortBy, sort_dir: sortDir\line
+  \}).toString();\line
+  const res = await fetch(\`/api/reports?\$\{params\}\`, \{\line
+    headers: \{ Authorization: \`Bearer \$\{getToken()\}\` \}\line
+  \});\line
+  const data = await res.json();\line
+  setReports(data.data);\line
+  setTotal(data.total);\line
+  setLoading(false);\line
+\};\par
+}
+}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 8. CONTROL DE ACCESO Y PERMISOS\par}
+
+{\trowd\trgaph120\trrh400\trpaddl120\trpaddr120\trpaddb60\trpaddt60
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx2800
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx5200
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx9600
+\pard\intbl\f1\fs20\b\cf4 Acci\'f3n\cell
+\pard\intbl\f1\fs20\b\cf4 Rol: admin\cell
+\pard\intbl\f1\fs20\b\cf4 Rol: operator\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Ver lista de informes\cell
+\pard\intbl\f3\fs20\cf9 Todos (misma empresa)\cell
+\pard\intbl\f3\fs20\cf9 Solo los propios\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Abrir para Leer\cell
+\pard\intbl\f3\fs20\cf9 Cualquier informe\cell
+\pard\intbl\f3\fs20\cf9 Solo los propios y los recibidos\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Abrir para Editar\cell
+\pard\intbl\f3\fs20\cf9 Cualquier informe\cell
+\pard\intbl\f3\fs20\cf9 Solo propios en estado draft\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Enviar a...\cell
+\pard\intbl\f3\fs20\cf9 Cualquier informe\cell
+\pard\intbl\f3\fs20\cf9 Solo los propios\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Eliminar\cell
+\pard\intbl\f3\fs20\cf9 Cualquier informe\cell
+\pard\intbl\f3\fs20\cf8 Solo propios en estado draft\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx2800
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx5200
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Ver auditor\'eda\cell
+\pard\intbl\f3\fs20\cf9 S\'ed, panel completo\cell
+\pard\intbl\f3\fs20\cf8 No (ocultar bot\'f3n)\cell\row
+}
+
+{\pard\sa200\par}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 9. DIAGRAMA FUNCIONAL GENERAL\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
+            +----------------------------+\line
+            |      USUARIO LOGEADO       |\line
+            |      (admin / operator)    |\line
+            +-------------+--------------+\line
+                      |\line
+                      v\line
+            +----------------------------+\line
+            | TopToolbar: Mis Informes   |\line
+            | [FolderOpen button]        |\line
+            +-------------+--------------+\line
+                      |\line
+                      v\line
+    +-----------------------------------------------------------------+\line
+    | MODAL: ADMINISTRACION DE INFORMES TECNICOS                      |\line
+    |                                                                 |\line
+    | +-------------------------------------------------------------+ |\line
+    | | PANEL DE FILTROS (7)                                       | |\line
+    | | FechaInicio | FechaFin | GeneradoPor | RevisadoPor         | |\line
+    | | Estado | Proyecto | TituloContiene                         | |\line
+    | | [Limpiar]                                 [Buscar]          | |\line
+    | +-------------------------------------------------------------+ |\line
+    | +-------------------------------------------------------------+ |\line
+    | | TABLA PAGINADA                                              | |\line
+    | | Sel | N | Titulo | Proyecto | Generado | Revisado | Estado | |\line
+    | | click en fila -> seleccion activa + fila resaltada          | |\line
+    | +-------------------------------------------------------------+ |\line
+    | +-------------------------------------------------------------+ |\line
+    | | BARRA DE ACCIONES (solo con seleccion)                      | |\line
+    | | [Leer] [Editar] [Enviar] [Eliminar]                         | |\line
+    | +-------------------------------------------------------------+ |\line
+    +-----------+----------------+----------------+-------------------+\line
+            |                |                |\line
+            v                v                v                   v\line
+          [Leer]           [Editar]         [Enviar]           [Eliminar]\line
+            |                |                |                   |\line
+            v                v                v                   v\line
+      ReadOnlyViewer      Carga en Editor    Sub-modal         Sub-modal\line
+      (solo lectura)      Studio (doc)       destinatario      confirmacion\line
+                                + mensaje          "ELIMINAR"\line
+            |                |                |                   |\line
+            v                v                v                   v\line
+      GET /api/reports/{id}  GET /api/reports/{id}  POST /api/reports/{id}/share\line
+      mode=read              mode=edit              DELETE /api/reports/{id}\line
+            |                |                |                   |\line
+            v                v                v                   v\line
+      salida sin cambios    guardado posterior notifications      audit_log\line
+      al cerrar visor       PUT /api/reports/{id} + shares       + refresco tabla\par
+}
+}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 10. DIAGRAMA L\'d3GICO TI\par}
+
+{\pard\cbpat5\li360\ri360\sa100\sb80
+{\f2\fs18\cf7
++------------------+       +---------------------+       +------------------+\line
+|   BROWSER        |       |   NGINX / PROXY     |       |   C++ BACKEND    |\line
+|  React + Zustand |       |   puerto 5173        |       |   puerto 8081    |\line
++------------------+       +---------------------+       +------------------+\line
+| ReportsAdminModal|  GET  |                     |  SQL  |                  |\line
+| filtros+tabla    |------>| /api/reports?params |------>| SELECT con WHERE |\line
+|                  |<------|       200            |<------| paginaci\'f3n LIMIT|\line
+|                  |       |                     |       |                  |\line
+| ShareReportModal |  POST |                     |  SQL  |                  |\line
+| destinatario     |------>| /api/reports/id/    |------>| INSERT shares    |\line
+| + mensaje        |       |    share            |       | INSERT notif.    |\line
+|                  |<------|       200            |<------|                  |\line
+|                  |       |                     |       |                  |\line
+|DeleteReportConfirm| DEL  |                     |  SQL  |                  |\line
+| texto ELIMINAR   |------>| /api/reports/id     |------>| UPDATE deleted_at|\line
+|                  |<------|       200            |<------| INSERT audit_log |\line
++------------------+       +---------------------+       +--------+---------+\line
+                                                                   |\line
+                                              +-------------------------------------+\line
+                                              |       PostgreSQL / TimescaleDB       |\line
+                                              |  reports + report_shares             |\line
+                                              |  notifications + auth_audit_logs     |\line
+                                              +-------------------------------------+\par
+}
+}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 11. PLAN DE IMPLEMENTACI\'d3N (SPRINTS)\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 Sprint 1: Base de Datos y API (3\endash{}4 d\'edas)\par}
+
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Crear archivo \f2 db_scripts/05_reports_admin.sql\f3{} con ALTER TABLE y tablas nuevas\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Implementar en backend C++: \f2 GET /api/reports\f3{} con todos los filtros y paginaci\'f3n\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Implementar \f2 POST /api/reports\f3{} (crear con campo \f2 created_by\f3{})\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Implementar \f2 PUT /api/reports/\{id\}\f3{} (actualizar con \f2 last_modified_by\f3{})\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Implementar \f2 DELETE /api/reports/\{id\}\f3{} (soft delete + audit log)\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Implementar \f2 POST /api/reports/\{id\}/share\f3{}\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Implementar \f2 GET /api/auth/users?company=X\f3{}\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Validaci\'f3n de permisos por rol en todos los endpoints\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 Sprint 2: Modal principal y tabla (2\endash{}3 d\'edas)\par}
+
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Crear \f2 ReportsAdminModal.jsx\f3{} con tabla, filtros y paginaci\'f3n\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Ordenaci\'f3n por columna (click en header)\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Barra de acciones condicional (solo si hay selecci\'f3n)\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Integraci\'f3n del bot\'f3n en \f2 TopToolbar.jsx\f3{}\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Wiring en \f2 App.jsx\f3{} (prop drilling completo)\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 Sprint 3: Sub-modales y ReadOnly (2 d\'edas)\par}
+
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Crear \f2 ShareReportModal.jsx\f3{} con listado de usuarios y mensaje\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Crear \f2 DeleteReportConfirm.jsx\f3{} con input de confirmaci\'f3n\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Crear \f2 ReadOnlyViewer.jsx\f3{} que renderiza el doc con \f2 pointer-events: none\f3{}\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Lógica de "Abrir para editar" que carga el doc en \f2 useEditorStore\f3{}\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 Sprint 4: Bot\'f3n "Guardar" en editor y autosave (1\endash{}2 d\'edas)\par}
+
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Agregar bot\'f3n "Guardar" en TopToolbar que llama \f2 POST\f3{} o \f2 PUT\f3{} seg\'fan si hay \f2 currentReportId\f3{}\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Mostrar estado "Guardando..." / "Guardado \'c0\u10003" en toolbar\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Autosave opcional: cada 2 minutos mientras el usuario tiene el editor abierto\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 Sprint 5: Notificaciones y auditor\'eda (1 d\'eda)\par}
+
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Badge de notificaciones en el men\'fa de usuario\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Panel de auditor\'eda visible solo para admin (lista de acciones del m\'f3dulo)\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab Tests de integraci\'f3n E2E con Playwright\par}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 12. SEGURIDAD: CHECKLIST OWASP\par}
+
+{\trowd\trgaph120\trrh400\trpaddl120\trpaddr120\trpaddb60\trpaddt60
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx4000
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx9600
+\pard\intbl\f1\fs20\b\cf4 Riesgo\cell
+\pard\intbl\f1\fs20\b\cf4 Mitigaci\'f3n implementada\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4000
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Inyecci\'f3n SQL\cell
+\pard\intbl\f3\fs20\cf14 Todos los par\'e1metros de filtro: prepared statements (libpq PQexecParams). Nunca concatenaci\'f3n cruda.\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4000
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Control de acceso roto\cell
+\pard\intbl\f3\fs20\cf14 Verificaci\'f3n de empresa y rol en cada endpoint backend. Token JWT validado antes de cualquier operaci\'f3n.\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4000
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 XSS en t\'edtulo/mensaje\cell
+\pard\intbl\f3\fs20\cf14 React escapa autom\'e1ticamente en JSX. Mensajes de notificaci\'f3n: nunca dangerouslySetInnerHTML.\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4000
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Eliminaci\'f3n masiva\cell
+\pard\intbl\f3\fs20\cf14 Solo 1 informe por acci\'f3n. Confirmaci\'f3n textual obligatoria. Soft delete (no f\'edsico).\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 IDOR (acceso a ID ajeno)\cell
+\pard\intbl\f3\fs20\cf14 Backend verifica que el report.company_name == token.company_name en cada GET/PUT/DELETE.\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx4400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Logging\cell
+\pard\intbl\f3\fs20\cf14 Todas las acciones destructivas (DELETE, share) registradas en auth_audit_logs con usuario, IP y timestamp.\cell\row
+}
+
+{\pard\sa200\par}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 13. EXPERIENCIA DE USUARIO: ESTADOS Y MENSAJES\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 13.1 Mensajes de retroalimentaci\'f3n (Toasts)\par}
+
+{\trowd\trgaph120\trrh400\trpaddl120\trpaddr120\trpaddb60\trpaddt60
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx3600
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx6400
+\clbrdrt\brdrs\brdrw15\brdrcf3\clbrdrb\brdrs\brdrw15\brdrcf3\clbrdrl\brdrs\brdrw15\brdrcf3\clbrdrr\brdrs\brdrw15\brdrcf3\clcbpat5\cellx9600
+\pard\intbl\f1\fs20\b\cf4 Acci\'f3n\cell
+\pard\intbl\f1\fs20\b\cf4 Toast \'c9xito\cell
+\pard\intbl\f1\fs20\b\cf4 Toast Error\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx6400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Cargar filtros\cell
+\pard\intbl\f3\fs20\cf9 "X informes encontrados"\cell
+\pard\intbl\f3\fs20\cf8 "Error al consultar informes"\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx6400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Enviar informe\cell
+\pard\intbl\f3\fs20\cf9 "Informe enviado a [nombre]"\cell
+\pard\intbl\f3\fs20\cf8 "No se pudo enviar. Intente nuevamente"\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx6400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Eliminar\cell
+\pard\intbl\f3\fs20\cf9 "Informe eliminado correctamente"\cell
+\pard\intbl\f3\fs20\cf8 "Sin permisos para eliminar"\cell\row
+
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx3600
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx6400
+\clbrdrt\brdrs\brdrw10\brdrcf6\clbrdrb\brdrs\brdrw10\brdrcf6\clbrdrl\brdrs\brdrw10\brdrcf6\clbrdrr\brdrs\brdrw10\brdrcf6\cellx9600
+\pard\intbl\f3\fs20\cf14 Abrir editar\cell
+\pard\intbl\f3\fs20\cf9 "Informe cargado para edici\'f3n"\cell
+\pard\intbl\f3\fs20\cf8 "No tiene permisos de edici\'f3n"\cell\row
+}
+
+{\pard\sa200\par}
+
+{\pard\s2\f1\fs24\b\cf4\sb200\sa120 13.2 Estados vacíos y de carga\par}
+
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab {\b Sin resultados:} Icono de carpeta vac\'eda + texto "No se encontraron informes con los filtros seleccionados. Prueba limpiar los filtros."\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab {\b Cargando:} Spinner centrado + texto "Buscando informes..."\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab {\b Error de red:} Icono de alerta + texto "Error de conexi\'f3n. Verifique la red." + bot\'f3n [Reintentar]\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab {\b Sin selecci\'f3n:} Texto en barra de acciones: "Seleccione un informe de la tabla para ver las acciones disponibles."\par}
+
+{\pard\brdrb\brdrs\brdrw10\brdrcf6\sa200\par}
+
+{\pard\s1\f1\fs28\b\cf3\sb400\sa200 14. RESUMEN EJECUTIVO\par}
+
+{\pard\f3\fs22\sa160
+El m\'f3dulo de Administraci\'f3n de Informes T\'e9cnicos cubre el ciclo completo de gesti\'f3n documental de los informes mineros generados con ReportStudio v2.0. Su incorporaci\'f3n requiere trabajo coordinado en tres capas:\par}
+
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab {\b Base de datos} (1 d\'eda): script SQL de extensi\'f3n de tabla \f2 reports\f3{} + tablas \f2 report_shares\f3{} y \f2 notifications\f3{}\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab {\b Backend C++} (3\endash{}4 d\'edas): 6 endpoints nuevos con queries preparadas, validaci\'f3n de rol y auditor\'eda\par}
+{\pard\f3\fs22\fi-320\li640\sa100
+\bullet{}\tab {\b Frontend React} (4\endash{}5 d\'edas): bot\'f3n en toolbar, modal principal, 2 sub-modales, vista read-only\par}
+
+{\pard\cbpat10\li360\ri360\sa80\sb80
+{\f1\fs22\cf17\b \'c0\u10003 Estimaci\'f3n total: 8 a 10 d\'edas de desarrollo (1 desarrollador full-stack).}
+{\f3\fs22\cf17 La feature es tecnicamente factible con la arquitectura actual sin cambios de infraestructura. Se reutilizan los patrones de autenticaci\'f3n, permisos y auditor\'eda ya implementados en el sistema.}\par
+}
+
+{\pard\sa200\par}
+
+{\pard\brdrb\brdrs\brdrw20\brdrcf3\sa200\par}
+
+{\pard\qc\sa100
+{\f3\fs18\cf14 ADMINISTRACI\'d3N DE INFORMES T\'c9CNICOS GRABADOS \endash{} Sistema Minero ReportStudio v2.0}\par}
+{\pard\qc\sa100
+{\f3\fs16\cf14 Elaborado: 19 de marzo de 2026 \endash{} Versi\'f3n 1.0 \endash{} Clasificaci\'f3n: INTERNO}\par}
+}

@@ -172,7 +172,7 @@ mining_runtime_kpi_points (kpi_code, point_label, point_value, point_ts)
 
 ## 9. Despliegue / rollback
 
-- SQL: `db_scripts/28_continuous_aggregates.sql` + `db_scripts/29_telemetry_ingest_optimization.sql`.
+- SQL: `db_scripts/28_continuous_aggregates.sql` + `db_scripts/64_telemetry_ingest_optimization.sql` (renumerado desde `29` el 2026-08-20, colisión de numeración resuelta — ver `docs/decisions/README.md`).
 - Env: `REPLICA_DATABASE_URL` en el backend; rol `dashboard_ro` en `db_init/`.
 - Rollback: cambiar queries a `materialized_only=false` (escanea raw) o a primario.
 

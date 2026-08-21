@@ -75,4 +75,4 @@ T19 opcional (no bloquea nada)
 - Código: `scripts/archive_cold_tier.sh` (export DuckDB + verificación + drop)
 - `docker-compose.yml`: servicio MinIO con credenciales env vars
 - Test: 104.168 filas → 718 KiB Parquet ZSTD (sesión 2026-06)
-- SQL: `db_scripts/29_telemetry_ingest_optimization.sql` (compresión de chunks)
+- SQL: `db_scripts/64_telemetry_ingest_optimization.sql` (compresión de chunks; renumerado desde `29` el 2026-08-20)

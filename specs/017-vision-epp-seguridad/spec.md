@@ -8,13 +8,12 @@
 
 ## ADRs globales aplicables
 
-> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-017**.
+> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-017**; fuente ADR: `docs/decisions/`.
 
-- **ADR-007** — [`ADR-007-sdd-specs-fuente-verdad.md`](../adr/ADR-007-sdd-specs-fuente-verdad.md)
-- **ADR-009** — [`ADR-009-git-branching-feature-release.md`](../adr/ADR-009-git-branching-feature-release.md)
-- **ADR-010** — [`ADR-010-ai-routing-por-tarea.md`](../adr/ADR-010-ai-routing-por-tarea.md)
-- **ADR-011** — [`ADR-011-rag-memoria-proyecto.md`](../adr/ADR-011-rag-memoria-proyecto.md)
-- **ADR-012** — [`ADR-012-revision-pr-adr-spec.md`](../adr/ADR-012-revision-pr-adr-spec.md)
+- **ADR-025** — [`025-biometria-vision-epp-diferidas.md`](../../docs/decisions/025-biometria-vision-epp-diferidas.md)
+- **ADR-090** — [`090-deprecacion-adr-tempranos-ia.md`](../../docs/decisions/090-deprecacion-adr-tempranos-ia.md)
+- **ADR-105** — [`105-deepface-silentface-proveedor-biometrico-primario.md`](../../docs/decisions/105-deepface-silentface-proveedor-biometrico-primario.md)
+- **ADR-110** — [`110-operaciones-campo-offline-integracion-erp.md`](../../docs/decisions/110-operaciones-campo-offline-integracion-erp.md)
 
 
 ## 1. Problema

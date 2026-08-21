@@ -1,5 +1,9 @@
 # ADR-091 — Procesamiento de Imágenes y Composición (C++ OpenCV RAII)
 
+**Status**: accepted
+
+**Ámbito**: plataforma, imágenes
+
 | Campo | Valor |
 |---|---|
 | **Estado** | **Aceptado** |

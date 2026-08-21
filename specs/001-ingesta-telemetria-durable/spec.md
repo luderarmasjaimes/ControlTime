@@ -11,13 +11,16 @@
 
 ## ADRs globales aplicables
 
-> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-001**.
+> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-001**; fuente ADR: `docs/decisions/`.
 
-- **ADR-007** — [`ADR-007-sdd-specs-fuente-verdad.md`](../adr/ADR-007-sdd-specs-fuente-verdad.md)
-- **ADR-009** — [`ADR-009-git-branching-feature-release.md`](../adr/ADR-009-git-branching-feature-release.md)
-- **ADR-010** — [`ADR-010-ai-routing-por-tarea.md`](../adr/ADR-010-ai-routing-por-tarea.md)
-- **ADR-011** — [`ADR-011-rag-memoria-proyecto.md`](../adr/ADR-011-rag-memoria-proyecto.md)
-- **ADR-012** — [`ADR-012-revision-pr-adr-spec.md`](../adr/ADR-012-revision-pr-adr-spec.md)
+- **ADR-001** — [`001-despliegue-soberano-on-prem.md`](../../docs/decisions/001-despliegue-soberano-on-prem.md)
+- **ADR-007** — [`007-ingesta-telemetria-etapa1-libpq.md`](../../docs/decisions/007-ingesta-telemetria-etapa1-libpq.md)
+- **ADR-008** — [`008-bus-eventos-redpanda-etapa2.md`](../../docs/decisions/008-bus-eventos-redpanda-etapa2.md)
+- **ADR-023** — [`023-presupuestos-rendimiento-slas.md`](../../docs/decisions/023-presupuestos-rendimiento-slas.md)
+- **ADR-032** — [`032-timescaledb-instancias-ingesta-lectura.md`](../../docs/decisions/032-timescaledb-instancias-ingesta-lectura.md)
+- **ADR-034** — [`034-core-plataforma-iot-reemplazo-thingsboard.md`](../../docs/decisions/034-core-plataforma-iot-reemplazo-thingsboard.md)
+- **ADR-090** — [`090-deprecacion-adr-tempranos-ia.md`](../../docs/decisions/090-deprecacion-adr-tempranos-ia.md)
+- **ADR-108** — [`108-capacidad-telemetria-25k-topologia-escalamiento.md`](../../docs/decisions/108-capacidad-telemetria-25k-topologia-escalamiento.md)
 
 
 ## 1. Problema / Oportunidad

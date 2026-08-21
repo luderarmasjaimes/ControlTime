@@ -9,13 +9,12 @@
 
 ## ADRs globales aplicables
 
-> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-003**.
+> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-003**; fuente ADR: `docs/decisions/`.
 
-- **ADR-007** — [`ADR-007-sdd-specs-fuente-verdad.md`](../adr/ADR-007-sdd-specs-fuente-verdad.md)
-- **ADR-009** — [`ADR-009-git-branching-feature-release.md`](../adr/ADR-009-git-branching-feature-release.md)
-- **ADR-010** — [`ADR-010-ai-routing-por-tarea.md`](../adr/ADR-010-ai-routing-por-tarea.md)
-- **ADR-011** — [`ADR-011-rag-memoria-proyecto.md`](../adr/ADR-011-rag-memoria-proyecto.md)
-- **ADR-012** — [`ADR-012-revision-pr-adr-spec.md`](../adr/ADR-012-revision-pr-adr-spec.md)
+- **ADR-006** — [`006-timescaledb-hypertables-retencion.md`](../../docs/decisions/006-timescaledb-hypertables-retencion.md)
+- **ADR-023** — [`023-presupuestos-rendimiento-slas.md`](../../docs/decisions/023-presupuestos-rendimiento-slas.md)
+- **ADR-033** — [`033-convencion-nombres-prefijos.md`](../../docs/decisions/033-convencion-nombres-prefijos.md)
+- **ADR-090** — [`090-deprecacion-adr-tempranos-ia.md`](../../docs/decisions/090-deprecacion-adr-tempranos-ia.md)
 
 
 ## 1. Problema

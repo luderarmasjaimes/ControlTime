@@ -185,7 +185,7 @@ sin bloquear el camino" que ADR-072 adoptó para un worker raster dedicado.
 - `backend/src/reports/report_export_jobs.hpp/cpp` (`runVideoExportJob`)
 - `backend/src/reports/report_service.hpp/cpp` (`ExportJobAsset`,
   `upsertExportJobAssetPg`/`listExportJobAssetsPg`)
-- `db_scripts/44_report_export_narration.sql` (`report_export_job_asset`, nueva)
+- `db_scripts/65_report_export_narration.sql` (`report_export_job_asset`, nueva; renumerado desde `44` el 2026-08-20 al resolver una colisión real de numeración, ver `docs/decisions/README.md`)
 - `frontend/src/components/ReportStudioV2/components/modals/NarrationModal.tsx` (nuevo)
 - `frontend/src/components/ReportStudioV2/lib/api.ts`
   (`createVideoExportJob`/`uploadSlideNarration`)

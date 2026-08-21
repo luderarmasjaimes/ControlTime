@@ -8,13 +8,13 @@
 
 ## ADRs globales aplicables
 
-> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-014**.
+> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-014**; fuente ADR: `docs/decisions/`.
 
-- **ADR-007** — [`ADR-007-sdd-specs-fuente-verdad.md`](../adr/ADR-007-sdd-specs-fuente-verdad.md)
-- **ADR-009** — [`ADR-009-git-branching-feature-release.md`](../adr/ADR-009-git-branching-feature-release.md)
-- **ADR-010** — [`ADR-010-ai-routing-por-tarea.md`](../adr/ADR-010-ai-routing-por-tarea.md)
-- **ADR-011** — [`ADR-011-rag-memoria-proyecto.md`](../adr/ADR-011-rag-memoria-proyecto.md)
-- **ADR-012** — [`ADR-012-revision-pr-adr-spec.md`](../adr/ADR-012-revision-pr-adr-spec.md)
+- **ADR-022** — [`022-offline-cola-versionada-indexeddb.md`](../../docs/decisions/022-offline-cola-versionada-indexeddb.md)
+- **ADR-026** — [`026-cartografia-offline-mbtiles-maplibre.md`](../../docs/decisions/026-cartografia-offline-mbtiles-maplibre.md)
+- **ADR-045** — [`045-edicion-offline-sqlite-cliente.md`](../../docs/decisions/045-edicion-offline-sqlite-cliente.md)
+- **ADR-056** — [`056-csp-service-worker-tiles-mapa.md`](../../docs/decisions/056-csp-service-worker-tiles-mapa.md)
+- **ADR-090** — [`090-deprecacion-adr-tempranos-ia.md`](../../docs/decisions/090-deprecacion-adr-tempranos-ia.md)
 
 
 ## 1. Problema

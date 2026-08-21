@@ -8,13 +8,12 @@
 
 ## ADRs globales aplicables
 
-> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-018**.
+> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-018**; fuente ADR: `docs/decisions/`.
 
-- **ADR-007** — [`ADR-007-sdd-specs-fuente-verdad.md`](../adr/ADR-007-sdd-specs-fuente-verdad.md)
-- **ADR-009** — [`ADR-009-git-branching-feature-release.md`](../adr/ADR-009-git-branching-feature-release.md)
-- **ADR-010** — [`ADR-010-ai-routing-por-tarea.md`](../adr/ADR-010-ai-routing-por-tarea.md)
-- **ADR-011** — [`ADR-011-rag-memoria-proyecto.md`](../adr/ADR-011-rag-memoria-proyecto.md)
-- **ADR-012** — [`ADR-012-revision-pr-adr-spec.md`](../adr/ADR-012-revision-pr-adr-spec.md)
+- **ADR-024** — [`024-ia-local-ollama-languagetool.md`](../../docs/decisions/024-ia-local-ollama-languagetool.md)
+- **ADR-068** — [`068-ia-editorial-multimodelo-referencias-externas-controladas.md`](../../docs/decisions/068-ia-editorial-multimodelo-referencias-externas-controladas.md)
+- **ADR-090** — [`090-deprecacion-adr-tempranos-ia.md`](../../docs/decisions/090-deprecacion-adr-tempranos-ia.md)
+- **ADR-095** — [`095-usermaintenancemodal-css-autocontenida-marca.md`](../../docs/decisions/095-usermaintenancemodal-css-autocontenida-marca.md)
 
 
 ## 1. Problema

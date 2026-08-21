@@ -11,8 +11,8 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 - Numerados sin gaps: `NNN-slug.md`, **log único cronológico** (orden de decisión, no por tema).
 - Cada ADR lleva un campo **`Ámbito`** que indica el dominio al que pertenece: `plataforma`,
-  `core-iot`, `datos`, `reports`, `ia`, `geo` (y, a futuro, ámbitos de componentes nuevos como
-  `realtime`). El índice de abajo se **agrupa por ámbito**; la numeración sigue siendo global.
+  `core-iot`, `datos`, `reports`, `ia`, `geo`, `realtime`, `soporte` (y, a futuro, ámbitos de
+  componentes nuevos). El índice de abajo se **agrupa por ámbito**; la numeración sigue siendo global.
 - Plantilla mínima: **Contexto / Decisión / Consecuencias / Alternativas descartadas / Referencias**.
 - Status: `proposed` | `accepted` | `implemented` | `superseded by NNN` | `deferred` | `partial`.
 - Cambiar una decisión NO edita el ADR original: crea uno nuevo con `Supersedes ADR-NNN`, o agrega
@@ -25,6 +25,85 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > campo `Ámbito` da ownership de dominio sin romper el log único, y escala a componentes futuros.
 
 ## Índice de ADRs
+
+> **Auditoría 2026-08-20: 119 → 120 ADRs.** Brecha de trazabilidad real
+> encontrada al analizar el árbol de trabajo actual (proyecto minero +
+> sistema de soporte de campo): **ADR-103, 106 y 112-118** existían como
+> archivos completos en `docs/decisions/` (redactados entre 2026-08-09 y
+> 2026-08-19) pero **ninguno tenía fila en este índice**, y el ámbito
+> `soporte` — declarado en la cabecera de los 7 ADR del bot de WhatsApp/chat
+> web de campo (112-118) — no tenía sección propia en la tabla por ámbito,
+> pese a que la convención de arriba solo mencionaba `plataforma, core-iot,
+> datos, reports, ia, geo, realtime`. Se agregan las filas faltantes de
+> 103/106 a sus tablas existentes y una tabla nueva "### Ámbito `soporte`"
+> más abajo con 112-118. Se agrega **120**
+> (`lote-lineas-lectura-tls-mining-gateway`, ámbito `core-iot`): decisión
+> real sin ADR encontrada en `backend/src/mining/mining_gateway.cpp`
+> (`MiningSession::read_line` agrupa hasta `max_lines_per_read` líneas por
+> `async_write`, reduciendo E/S por sesión bajo ráfaga) — operaba por debajo
+> de la topología de consumidores que sí cubre ADR-108, sin ADR propio hasta
+> ahora. Se corrigieron además, con bloque de actualización fechado (sin
+> editar el texto original, misma convención de este log): **ADR-109**
+> citaba `backend/src/reports/sensor_telemetry_wizard.*` (ruta inexistente;
+> el archivo real vive en `backend/src/mining/`) y un rango de `db_scripts/`
+> que era ambiguo por una colisión de numeración real (**dos** archivos
+> `54_*.sql` — `54_sensor_zones_and_grouping.sql` y
+> `54_deepface_silentface_provider_comment.sql` — y **dos** `56_*.sql` —
+> `56_seed_realistic_sensor_catalog_all_tenants.sql` y
+> `56_telemetry_25k_hardening.sql`, este último ajeno a ADR-109; resuelta en
+> la segunda pasada de abajo); **ADR-116** declaraba la persistencia del
+> chat web y los endpoints de búsqueda como pendientes, pero
+> `persistChatMessagePg` ya está conectado en `main.cpp`/`support_routes.cpp`
+> y `handleSearchTickets`/`handleSearchChatMessages` ya están registrados —
+> verificado por grep directo sobre el código real, no solo por lectura del
+> propio ADR.
+>
+> **Auditoría 2026-08-20 (segunda pasada, mismo día): resolución de la
+> colisión de numeración en `db_scripts/`.** A pedido explícito del
+> developer ("no quiero pendientes"), se investigó a fondo el hallazgo de
+> arriba y resultó ser **más grande de lo reportado inicialmente**: no eran
+> 2 pares duplicados, eran **4** — `db_scripts/` también tenía dos archivos
+> `29_*.sql` (`29_mining_locations_official_gps.sql`,
+> `29_telemetry_ingest_optimization.sql`) y dos `44_*.sql`
+> (`44_adr006_alinear_retencion_archivado.sql`,
+> `44_report_export_narration.sql`) ya **commiteados** desde sesiones
+> anteriores, sin que ningún ADR previo los hubiera señalado. Se renombraron
+> los 4 archivos "perdedores" (el más nuevo de cada par, o el de decisión
+> más reciente cuando ambos se commitearon juntos) a los siguientes números
+> libres, conservando contenido íntegro:
+> - `29_telemetry_ingest_optimization.sql` → **`64_telemetry_ingest_optimization.sql`**
+>   (`29_mining_locations_official_gps.sql`, más antiguo, conserva `29`).
+> - `44_report_export_narration.sql` → **`65_report_export_narration.sql`**
+>   (`44_adr006_alinear_retencion_archivado.sql`, decisión más antigua —
+>   ADR-006 — conserva `44`). De paso se corrigió su comentario interno,
+>   que seguía diciendo "ADR pendiente" pese a estar cerrado por ADR-083/084.
+> - `54_deepface_silentface_provider_comment.sql` → **`66_deepface_silentface_provider_comment.sql`**
+>   (`54_sensor_zones_and_grouping.sql`, de ADR-109, conserva `54`).
+> - `56_telemetry_25k_hardening.sql` → **`67_telemetry_25k_hardening.sql`**
+>   (`56_seed_realistic_sensor_catalog_all_tenants.sql`, de ADR-109, conserva
+>   `56`).
+>
+> `docker-compose.yml` montaba `29_telemetry_ingest_optimization.sql` y
+> `56_telemetry_25k_hardening.sql` por ruta literal en
+> `docker-entrypoint-initdb.d` — de no corregirse, el rename habría roto el
+> primer arranque de un volumen `db_data` nuevo; se actualizaron ambas
+> líneas de montaje a los nombres nuevos y se verificó que ningún otro
+> compose/Dockerfile/script de aplicación referenciaba los 4 nombres
+> viejos. Todas las menciones en prosa encontradas (ADR-084, ADR-109,
+> `specs/002-dashboards-tiempo-real/`, `specs/003-tier-frio-historico/`,
+> `MIGRACION_NUEVA_LAPTOP_2026-08-12.md`, planificación de Gerencia TI) se
+> actualizaron al nombre nuevo. Verificado tras el rename: `ls db_scripts/*.sql`
+> ya no tiene ningún número repetido.
+>
+> **Auditoría 2026-08-18: 108 → 112 ADRs (000-111).** Se agregaron ADR-108
+> (capacidad demostrada de telemetría 25k/s y prohibición de afirmar 100k sin
+> nueva evidencia), ADR-109 (zonas/catálogo y gráficos multiserie) y ADR-110
+> (propuesta de operaciones de campo offline e integración ERP) y ADR-111
+> (portabilidad export/import, sin confundirla con DR/CI-CD aceptados). Se resolvió
+> el conflicto de prioridad biométrica: ADR-105 supersede parcialmente a
+> ADR-089; DeepFace+SilentFace es el default y Dermalog queda secundario bajo
+> fail-closed. SPEC-017/EPP continúa deferred por ADR-025. El registro maestro
+> vigente se actualizó a 23 SPEC y excluye aliases históricos del conteo.
 
 > **Auditado al 2026-07-13**: 46 ADRs (000-045). La columna Status de esta
 > tabla se corrigió para reflejar el estado REAL verificado en cada archivo
@@ -395,6 +474,36 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > 6. No se encontraron conflictos reales entre decisiones arquitectónicas
 >    vigentes en el resto del set (ADR-033/035 revisados: sus estados
 >    `partial`/`proposed` son honestos y deliberados, no brechas).
+>
+> **Auditoría 2026-08-21: 120 → 123 ADRs, mismo patrón de brecha de
+> trazabilidad repetido.** A pedido explícito del developer de revisar todos
+> los cambios/funcionalidades nuevas del árbol de trabajo actual y verificar
+> conflictos entre ADRs: **ADR-121, 122 y 123** existían como archivos
+> completos (redactados 2026-08-20, el mismo día de la auditoría anterior
+> pero posteriores a ella) sin fila en este índice — ADR-121/123 agregados a
+> la tabla `geo` de arriba, ADR-122 agregado a la tabla `soporte` de abajo.
+> Se corrigió además, con bloque de actualización fechado (sin editar el
+> texto original): **ADR-117**, que declaraba "sin parámetro `channel`
+> todavía aceptado por el backend" — verificado por grep directo sobre
+> `backend/src/support/support_routes.cpp` (líneas ~353-360, 394-402, 454 en
+> el árbol de trabajo actual) que el parámetro ya se lee, valida y persiste;
+> sube de `proposed` a `partial` (sigue sin existir la app MovilMinero en
+> sí). No se encontraron conflictos nuevos de decisión incompatible entre
+> ADRs vigentes. Se identificaron 5 piezas de funcionalidad genuinamente
+> nueva sin ADR propio, ya redactadas y agregadas en esta misma pasada como
+> **ADR-124 a 128** (ver tablas `ia`/`reports` arriba): pool de conexiones
+> TCP hacia `ai_engine`; recalibración EAR por resolución de cámara +
+> thread-safety de MediaPipe + groundwork de `head_yaw_ratio` en
+> `eye_analyzer.py`; liveness activo por desafío-respuesta (construido
+> 2026-08-19, desactivado tras pruebas fallidas, **reactivado y recalibrado
+> el 2026-08-21** a pedido explícito del developer); aislamiento por
+> usuario/tenant del caché offline SQLite con purga en logout; y plantillas
+> nativas de documento tipo "presentación". Un sexto candidato inicial,
+> `frontend/src/auth/geolocation.ts`, resultó ser un **falso positivo** de
+> esta misma auditoría: ya está completamente cubierto por **ADR-107**
+> (`geolocalizacion-cliente-login-contrasena`, ya con fila en la tabla
+> `plataforma`) — se corrige acá para que quien lea este log no repita la
+> misma verificación.
 
 ### Ámbito `plataforma` — fundaciones transversales
 | # | Slug | Status | Resumen |
@@ -439,8 +548,19 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 096 | `opencv-4-12-vcpkg-backend` | ✅ implemented, verificado (2026-08-08) | Backend C++ compila OpenCV 4.12.0 estático vía vcpkg manifest, reemplazando `libopencv-dev` 4.6.0 (apt/Ubuntu, congelado desde 2022). Runtime sin cambios (cascades Haar del pipeline legacy). |
 | 101 | `fix-bucle-reintento-registro` | ✅ implemented, verificado (2026-08-08) | El `useEffect` de auto-envío de registro reintentaba cada ~2.7s con los mismos datos tras cualquier error del servidor, borrando el mensaje casi al instante (`setError('')`) — se veía como pantalla parpadeando sin error visible. Un rechazo confirmado del servidor ya no rearma el auto-reintento. |
 | 102 | `validacion-fiscal-ecuador-chile-costa-rica-fallback` | ✅ implemented, verificado (2026-08-09) | RUC Ecuador (13 dígitos, algoritmo SRI real) y RUT Chile (módulo 11, incluida `K`) con dígito verificador real; cédula jurídica Costa Rica y el resto del catálogo (~24 países) con fallback estructural — antes rechazaban siempre el registro. Motivado por proyectos activos en Ecuador/Chile y un proveedor de Costa Rica que no podían registrarse. 625/625 aserciones passed. |
+| 106 | `accesibilidad-contraste-formularios-ui` | ✅ implemented, aprobado (2026-08-14) *(fila agregada 2026-08-20 — el ADR ya existía sin fila en esta tabla, ver auditoría arriba)* | Estándares de contraste y accesibilidad para formularios y UI en todo el frontend (ReportStudio, Dashboard, todas las vistas). |
+| 107 | `geolocalizacion-cliente-login-contrasena` | ✅ implemented (2026-08-17) | Campo opcional `location` (lat/lon del dispositivo cliente, vía `navigator.geolocation`, nunca IP/servidor) extendido a `POST /api/auth/login/password` — ya existía solo en `login/face`, sin ADR ni documentación. Helper de parseo compartido entre ambos handlers; página de prueba HTTP/HTTPS y guía de integración externa actualizadas. |
 
-**Ámbito `plataforma`: 38/40 implemented, 1 partial, 1 proposed** (recalculado 2026-08-09 tras agregar ADR-102; ADR-033 sigue partial deliberadamente, ADR-035 sigue proposed a la espera de decisión de negocio — ver ADRs individuales).
+**Ámbito `plataforma`: 40/42 implemented, 1 partial, 1 proposed** (recalculado 2026-08-20 tras agregar la fila de ADR-106, ya implementado sin fila hasta ahora; ADR-033 sigue partial deliberadamente, ADR-035 sigue proposed a la espera de decisión de negocio — ver ADRs individuales).
+
+### Decisiones transversales agregadas el 2026-08-18
+
+| # | Slug | Status | Resumen |
+|---|---|---|---|
+| 108 | `capacidad-telemetria-25k-topologia-escalamiento` | ✅ implemented a 25k; 100k no aprobado | Fija evidencia 1,5M/1,5M, p99 149,8 ms, recuperación y replay; exige nueva arquitectura/soak antes de reclamar 100k. |
+| 109 | `catalogo-zonas-sensores-graficos-multiserie` | 🟡 código implementado; aceptación integrada pendiente | Catálogo tipo/zona/dispositivo, consulta histórica acotada y diez gráficos insertables; faltan anti-IDOR, render/export y contrato CI. |
+| 110 | `operaciones-campo-offline-integracion-erp` | 📋 proposed | Separa fuentes autoritativas ERP/Beemetry, cliente offline con outbox y artefactos auditables; requiere aprobación y reprogramación. |
+| 111 | `portabilidad-stack-export-import-perfil-telemetria` | 🟡 utilidad implementada; aceptación operativa pendiente | Export/import multiplataforma y perfil de telemetría; faltan checksum, cifrado, restore limpio, RTO/RPO y CI/CD. |
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |
@@ -451,8 +571,14 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 027 | `opencv-procesamiento-imagenes` | ✅ implemented, alcance v0.1 (2026-07-06) | OpenCV en v0.1 = imágenes de informe + captura de mapa; EPP diferida (por diseño). |
 | 034 | `core-plataforma-iot-reemplazo-thingsboard` | ✅ implemented (actualizado 2026-07-13) | Core C++ = plataforma IoT propia: ingesta + fórmulas + gestión de dispositivos + alarmas + adaptadores MQTT/Modbus/OPC-UA (los adaptadores, dados por diferidos el 2026-07-09, se confirmaron implementados y corriendo el 2026-07-13). |
 | 054 | `sync-thingsboard-legacy-aws` | ✅ implemented (2026-07-17) | Conector backfill REST + tiempo real WS que sincroniza el ThingsBoard legacy (hoy AWS) hacia la plataforma propia durante la transición de ADR-034; probado con 6M puntos/10min a 10k/seg. |
+| 103 | `integracion-rp-timetelemetry-replica-xmlrpc` | ✅ implemented (2026-08-10) *(fila agregada 2026-08-20 — el ADR ya existía sin fila en esta tabla, ver auditoría arriba)* | Réplica local RP (TimeTelemetry/Odoo) reusando el patrón ETL de ADR-034, escritura de vuelta por XML-RPC, `http_client` compartido nuevo y push realtime por WS para el frontend externo. |
+| 120 | `lote-lineas-lectura-tls-mining-gateway` | ✅ implemented (2026-08-20) | `MiningSession::read_line` agrupa hasta `max_lines_per_read` (256) líneas por `async_write` en la sesión TLS cruda del gateway, reduciendo E/S por sesión bajo ráfaga sin cambiar el protocolo de línea; opera por debajo de la topología de consumidores de ADR-108, sin modificarla. |
 
-**Ámbito `core-iot`: 6/6 implemented.**
+**Ámbito `core-iot`: 8/8 implemented.**
+
+> ADR-108 es transversal `core-iot/datos/resiliencia`: la cifra comercial
+> aprobada es 25.000 eventos/s por edge en la topología ensayada; 100.000/s
+> permanece explícitamente no aprobado.
 
 ### Ámbito `datos` — bases de datos y almacenamiento
 | # | Slug | Status | Resumen |
@@ -503,8 +629,10 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 083 | `exportacion-pptx-modo-presentacion-sidecar-hibrido` | ✅ implemented (2026-08-03) | Export a PPTX (modo presentación, mismo sidecar Chromium del PDF): captura por página + overlay de texto NATIVO editable/buscable para bloques `text`, gateado por `layoutMode`, job asíncrono real sobre `report_export_job`. Corrige de paso un bug preexistente en `ReadOnlyViewer` (sin `layoutMode`) que también afectaba al PDF. |
 | 084 | `conversion-pptx-video-narracion-diapositiva` | ✅ implemented (2026-08-03) | Convierte el PPTX de ADR-083 a MP4 (`ffmpeg`, corte o fundido) con narración opcional por diapositiva (audio grabado o notas de orador, TTS diferido). Bug real de truncado de video corregido (`-c:v copy` con VFR) y brecha RBAC cerrada (narración exige `informes.edit`, no solo `informes.view`). |
 | 092 | `plantilla-corporativa-timetelemetry-referencia-diseno` | ✅ accepted (2026-08-07) | Registro de referencia de diseño (no una decisión de arquitectura): colores, tipografía (Roboto, no Aptos), estilo de tabla e inventario de 26 layouts extraídos de `Plantilla Telemetry.potx` (entregada por Gerencia). Insumo directo para una futura generación de PPTX con identidad visual oficial (ADR-083/084). |
+| 127 | `aislamiento-cache-offline-sqlite-por-usuario` | ✅ implemented (2026-08-20, ADR redactado 2026-08-21) | Caché offline SQLite del navegador (Cache API) aislado por `userId`+`tenantId` en vez de un único nombre global compartido por todo el origen; migración de una sola vez del caché legado; purga en logout salvo cambios `dirty=1` sin sincronizar. Corrige exposición real de datos entre técnicos que comparten tablet de campo. |
+| 128 | `plantillas-documento-tipo-presentacion` | ✅ implemented (2026-08-20, ADR redactado 2026-08-21) | `docType: 'presentation'` en el catálogo de plantillas — autoría nativa de presentaciones 16:9 (`forceNewSlide`, sin TOC) desde el wizard, distinto de exportar un informe ya existente a PPTX (ADR-083/084). |
 
-**Ámbito `reports`: 33/34 implemented/accepted y 1 superseded** (ADR-019 pasó de partial a implemented el 2026-08-05, ver su actualización; ADR-079 es ámbito `plataforma`, no `reports` — su fila ya está reconciliada en la tabla de `plataforma` arriba). Ver "Progreso del proyecto de reportabilidad" abajo (cálculo no recalculado en esta pasada para 080/083/084 — cubre 010-073 + 019).
+**Ámbito `reports`: 35/36 implemented/accepted y 1 superseded** (ADR-019 pasó de partial a implemented el 2026-08-05, ver su actualización; ADR-079 es ámbito `plataforma`, no `reports` — su fila ya está reconciliada en la tabla de `plataforma` arriba). Ver "Progreso del proyecto de reportabilidad" abajo (cálculo no recalculado en esta pasada para 080/083/084 — cubre 010-073 + 019).
 
 ### Ámbito `ia` — inteligencia artificial local
 | # | Slug | Status | Resumen |
@@ -520,8 +648,14 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 098 | `aislamiento-sesion-captura-biometrica` | ✅ implemented, verificado (2026-08-08) | `X-Capture-Session-Id` por pestaña, propagado frontend→backend→ai_engine. `gBiometricCaptureState` y la histéresis de lentes/EAR en `eye_analyzer.py` eran globales de proceso compartidas por todas las capturas concurrentes. |
 | 099 | `fallback-insightface-no-bloqueante` | ✅ implemented, verificado (2026-08-08) | `analyzeFaceImage()` intentaba InsightFace primero y, si fallaba, retornaba sin caer al pipeline legacy — contradecía ADR-089 (InsightFace es motor secundario). Fallback real restaurado. |
 | 100 | `onnxruntime-thread-limit-insightface` | ✅ implemented, verificado (2026-08-08) | `/face_embedding` tardaba 4-7s con 398% CPU por sobre-suscripción de hilos de onnxruntime (host vs. cuota de cgroup del contenedor). `intra_op_num_threads=2` inyectado vía parche de `InferenceSession`: 0.6-0.8s, 8.7% CPU. |
+| 104 | `seetaface6-proveedor-biometrico-local` | 🔄 superseded by 105 (2026-08-12) | SeetaFace6Open, libre y chino, como proveedor Docker seleccionable con reconocimiento 1:1 de 1024 componentes y PAD fail-closed. No afirma certificación RENIEC/ISO/NIST; exige calibración y evidencia externa antes de producción. Queda en el enum por rollback pero deja de ser el default. |
+| 105 | `deepface-silentface-proveedor-biometrico-primario` | ✅ implemented (2026-08-12) | DeepFace (Facenet512) + Silent-Face-Anti-Spoofing (MiniFASNet) como proveedor biométrico local por defecto, con Dermalog como secundario explícito solo ante fallos de infraestructura (nunca ante rechazos de seguridad). Corrige además la rama de despacho faltante en `loginFaceTargetedPg` que bloqueaba el login facial Postgres de cuentas SeetaFace6. |
+| 119 | `validacion-lentes-biometria-login-y-fusion-onnx` | ✅ implemented (2026-08-19), pendiente verificación con cámara real | Tres causas independientes de "deja pasar con lentes puestos": (1) login facial (los tres proveedores) nunca llamaba a `/analyze_eyes`, sin chequeo ICAO en servidor; (2) captura de registro completaba en 3 frames, por debajo de la ventana de histéresis de lentes (5); (3) fusión CV+ONNX en modo `cv_primary` solo dejaba que ONNX vetara, nunca confirmara — 100% de 3515 falsos negativos reales en `glasses_probe.jsonl` tenían ONNX en 0.7-0.9 pero CV sin señal. Los tres corregidos; replay contra el log real confirma detección en el frame 3 en las 5 sesiones registradas. |
+| 124 | `pool-conexiones-tcp-ai-engine` | ✅ implemented (2026-08-20, ADR redactado 2026-08-21) | Pool en memoria de conexiones TCP idle hacia `ai_engine` (`AiEngineConnPool`, 16 idle/destino, reuso optimista con reintento único), reemplaza abrir/cerrar una conexión por cada verify-frame (cada 175ms) en el hot path biométrico. |
+| 125 | `recalibracion-thread-safety-eye-analyzer` | ✅ implemented (2026-08-19, ADR redactado 2026-08-21) | Recalibración de EAR por resolución de cámara 640×480→960×720 (`EAR_IED_REF_PX` 95→143, `EAR_IED_SCALE_MAX` 1.12→1.00); `combined_ear` (mejor de los dos ojos); `_mediapipe_lock` sobre `FaceLandmarker` compartido (única línea del hot path sin serializar); `head_yaw_ratio_from_points` — groundwork expuesto de punta a punta pero sin gate que lo consuma (ver ADR-126). |
+| 126 | `liveness-activo-desafio-respuesta` | ✅ implemented y activo (construido 2026-08-19, reactivado y recalibrado 2026-08-21) | Liveness activa (ISO/IEC 30107-3): 2 de 4 desafíos sorteados (parpadear/boca/girar cabeza) por sesión. Desactivado el 2026-08-19 tras 0% de finalización real con ventana de 4.5s; reactivado 2026-08-21 con ventana 8s/4 intentos (recalibración conservadora, sin telemetría de campo nueva — requiere monitoreo post-despliegue). |
 
-**Ámbito `ia`: 10 implemented/accepted y 1 deferred por diseño (EPP no cuenta como pendiente v0.1).**
+**Ámbito `ia`: 15 implemented/accepted (1 activo tras recalibración), 1 superseded y 1 deferred por diseño (EPP no cuenta como pendiente v0.1).**
 
 ### Ámbito `geo` — cartografía y geoespacial
 | # | Slug | Status | Resumen |
@@ -530,8 +664,10 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 028 | `gdal-conversion-raster-diferida` | 🔄 superseded by 072 (2026-07-24) | Decisión histórica de diferimiento; dejó de reflejar el runtime. |
 | 056 | `csp-service-worker-tiles-mapa` | ✅ implemented (2026-07-18) | CSP dedicada para el Service Worker de cacheo de tiles (`tile-cache-sw.js`) — la CSP general de la SPA rompía el 100% de los tiles externos; timeout adaptativo + catálogo WMS saneado. |
 | 072 | `gdal-cli-runtime-admin-confinado` | ✅ implemented, verificado E2E (2026-08-05) | GDAL CLI on-demand admin-only, rutas confinadas a `/data`, parámetros allowlist y jobs autenticados/tenant-owned. Pipeline `gdal_translate`+`gdaladdo` verificado contra fixture GeoTIFF real dentro del contenedor: MBTiles válido, tile extraído confirmado JPEG 256×256 real. |
+| 121 | `coordenadas-geograficas-empresa-mapa` | ✅ implemented (2026-08-20) *(fila agregada 2026-08-21 — el ADR ya existía sin fila en esta tabla, ver nota de auditoría arriba)* | Columnas `latitude`/`longitude`/`location_zoom` en `auth_companies` (`db_scripts/68`); `GET /api/map/company-location` centra "Mapas" en la mina real del tenant en vez del `FALLBACK_VIEW` fijo (Toquepala); picker con geocodificación Nominatim solo como aproximación + marcador arrastrable para el ajuste fino — nunca coordenadas generadas por IA. |
+| 123 | `geocatmin-integracion-plataforma-minera` | ✅ implemented (2026-08-20) *(fila agregada 2026-08-21)* | Reescritura de `MiningGeoportalView.tsx`: ingreso directo (sin pantalla de bienvenida de INGEMMET) centrado en la mina activa (ADR-121), catálogo tipado de 134 servicios GEOCATMIN y `GeocatminWorkbench.tsx` (buscador de derechos mineros, superposiciones, medición, buffers, conversor de coordenadas, descarga de shapefiles), en modo dual junto al portal oficial embebido. |
 
-**Ámbito `geo`: 3 activos implementados y 1 superseded (ADR-028).**
+**Ámbito `geo`: 5 activos implementados y 1 superseded (ADR-028).**
 
 ### Ámbito `realtime` — visualización de datos en tiempo real
 | # | Slug | Status | Resumen |
@@ -539,6 +675,28 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 057 | `dashboard-widgets-estilo-thingsboard` | ✅ implemented (2026-07-19) | Gauge radial, tarjetas de agregación y doughnut de estado en Monitoreo→Sensores, alimentados por `/api/sensors/data` real (no telemetría simulada). Primer ADR de este ámbito. |
 
 **Ámbito `realtime`: 1/1 implemented.**
+
+### Ámbito `soporte` — sistema de soporte de campo minero (chatbot WhatsApp + chat web)
+
+Primer ámbito nuevo agregado desde `realtime` (2026-07-19). Cubre el bot
+conversacional de WhatsApp Business para reclamos/consultas de campo, el
+chat web del widget de ReportStudio, y su administración (números de
+contacto, departamentos/RRHH, canal de origen). Las 7 filas ya existían como
+archivos completos sin sección propia en este índice — ver auditoría
+2026-08-20 arriba.
+
+| # | Slug | Status | Resumen |
+|---|---|---|---|
+| 112 | `chatbot-whatsapp-menu-reclamos-plantillas` | ✅ implemented, verificado por build/tests; entrega real a un teléfono pendiente de credenciales de producción de Meta (2026-08-18) | Bot conversacional de WhatsApp Business (menú, reclamos, IA), `whatsapp_message_log` de auditoría cruda, y validación de firma HMAC-SHA256 (`whatsapp_signature.*`, `X-Hub-Signature-256`) fail-closed sobre el webhook entrante. |
+| 113 | `whatsapp-multilinea-enrutamiento-por-area` | ✅ implemented, verificado por build/tests; segunda línea real pendiente de registro en la WABA de Meta (2026-08-19) | Enrutamiento multi-línea por `metadata.phone_number_id`, `defaultWhatsappLine()` como línea de respaldo. |
+| 114 | `whatsapp-bot-administracion-numeros-contacto` | ✅ implemented — tabla, allowlist, endpoints web, pantalla de administración y rama `kMenuAdmin` en producción (2026-08-19) | Administración en caliente (sin redeploy) de los números de contacto que el bot ofrece por menú. |
+| 115 | `departamento-usuario-rbac-rrhh` | 🟡 accepted; esquema y RBAC implementados y aplicados, wiring de bot/panel admin en curso (2026-08-19) | RRHH como quinta categoría de soporte; `department` de usuario + regla `soporte.view`/`soporte.manage` que acota por categoría/canal. |
+| 116 | `persistencia-chat-web-panel-admin-busqueda` | ✅ implemented (corregido 2026-08-20 — ver actualización en el propio ADR; el archivo original decía "accepted, pendiente") | Tabla `support_chat_message` (identidad por `tenant_id`/`user_id`, no por teléfono, a diferencia de `whatsapp_message_log`); `persistChatMessagePg` conectado en `main.cpp`/`support_routes.cpp`; endpoints `GET /api/support/admin/tickets` y `GET /api/support/admin/chat-messages` con paginación al estilo `AuditFilter`. |
+| 117 | `canal-chatbot-homeminero-movilminero` | 🟡 partial *(actualizado 2026-08-21 — ver nota de auditoría arriba: backend ya lee/valida/persiste `channel`, verificado por grep sobre `support_routes.cpp`; sigue sin existir la app MovilMinero)* | Columna `channel` (`CHECK` explícito) en `support_chat_message`; `POST /api/support/chat/message`/`stream` ya aceptan, validan (`HomeMinero`\|`MovilMinero`) y persisten el campo. Falta solo la app MovilMinero en sí — sección "Diferencias esperadas" del ADR sigue siendo prospectiva. |
+| 118 | `chatbot-aceleracion-gpu-ollama` | ✅ implemented (2026-08-19) | Aceleración GPU para Ollama, reduce la latencia del chatbot de soporte. |
+| 122 | `cv-postulantes-whatsapp-ia-local-scoring` | 🟡 implemented, pendiente E2E *(fila agregada 2026-08-21 — el ADR ya existía sin fila en esta tabla)* | Postulaciones de CV por WhatsApp: descarga de media, extracción de texto (`ai_engine::/extract_cv_text`, sin LLM), extracción de campos + score 0-100 vía Ollama (`qwen2.5:7b`) con guarda anti-alucinación (`looksPresentInSource`), correo con adjunto MIME multipart, panel admin RRHH. Retención: indefinida por decisión explícita del developer (2026-08-21, ver actualización en el ADR), sin purga automática. Pendiente: aplicar `db_scripts/69_*.sql` a la BD en ejecución y prueba E2E con WhatsApp Business real. |
+
+**Ámbito `soporte`: 6/8 implemented (1 pendiente E2E), 1 accepted (wiring en curso), 1 partial.**
 
 ### Ámbitos futuros (componentes por venir)
 - *(otros componentes se agregan acá a medida que surgen)*

@@ -1,0 +1,289 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Consolas;}}
+\paperw11906\paperh16838\margl1134\margr1134\margt1134\margb1134
+\fs24
+\b DIAGRAMA DETALLADO DE CREACION DE USUARIO PARA UNA EMPRESA SELECCIONADA\b0\par
+\par
+\b Objetivo\b0\par
+Presentar de forma clara, funcional y editable el flujo de creación de un nuevo usuario dentro de una empresa ya seleccionada en la plataforma, considerando captura facial, definición de credenciales del sistema y selección del perfil o nivel de usuario.\par
+\par
+\b Escenario funcional\b0\par
+La empresa ya existe en la plataforma. Un usuario administrador o responsable autorizado ingresa al módulo de creación de usuarios para registrar a un nuevo integrante de esa empresa.\par
+\par
+\b Datos considerados en la creación de usuario\b0\par
+- Empresa seleccionada\par
+- Nombres del usuario\par
+- Apellidos del usuario\par
+- DNI\par
+- Email\par
+- Teléfono\par
+- Celular\par
+- Captura biométrica facial\par
+- Usuario del sistema\par
+- Contraseña del sistema\par
+- Perfil o nivel de usuario\par
+\par
+\b Secuencia funcional esperada\b0\par
+De acuerdo con tu indicación, el flujo debe respetar este orden principal:\par
+1. Seleccionar empresa\par
+2. Registrar datos personales\par
+3. Capturar rostro\par
+4. Luego solicitar usuario y contraseña del sistema\par
+5. Seleccionar perfil o nivel\par
+6. Validar y crear usuario\par
+\par
+\b Diagrama funcional para usuarios no técnicos\b0\par
+\par
+{\f1\fs20
++------------------------------------+\line
+| 1. Empresa previamente seleccionada|\line
++-------------------+----------------+\line
+                    |\line
+                    v\line
++------------------------------------+\line
+| 2. Ingreso de datos del nuevo      |\line
+|    usuario                         |\line
+| - Nombres                          |\line
+| - Apellidos                        |\line
+| - DNI                              |\line
+| - Email                            |\line
+| - Telefono                         |\line
+| - Celular                          |\line
++-------------------+----------------+\line
+                    |\line
+                    v\line
++------------------------------------+\line
+| 3. Captura facial del usuario      |\line
+|    nuevo                           |\line
++-------------------+----------------+\line
+                    |\line
+                    v\line
++------------------------------------+\line
+| 4. Creacion de credenciales del    |\line
+|    sistema                         |\line
+| - Usuario                          |\line
+| - Password                         |\line
++-------------------+----------------+\line
+                    |\line
+                    v\line
++------------------------------------+\line
+| 5. Seleccion del perfil o nivel    |\line
+| - Admin                            |\line
+| - Operator                         |\line
+| - Otro perfil futuro si aplica     |\line
++-------------------+----------------+\line
+                    |\line
+                    v\line
++------------------------------------+\line
+| 6. Validaciones del sistema        |\line
+| - DNI valido y no duplicado        |\line
+| - Usuario no duplicado             |\line
+| - Password valida                  |\line
+| - Biometria capturada              |\line
+| - Perfil asignado                  |\line
+| - Empresa correctamente vinculada  |\line
++-------------------+----------------+\line
+                    |\line
+           +--------+--------+\line
+           |                 |\line
+           v                 v\line
++------------------+   +------------------------+\line
+| 7A. Error        |   | 7B. Usuario creado     |\line
+| Mostrar motivo   |   | y asociado a empresa   |\line
+| y corregir datos |   | seleccionada           |\line
++------------------+   +-----------+------------+\line
+                                   |\line
+                                   v\line
++-----------------------------------------------+\line
+| 8. Usuario disponible para ingresar a la      |\line
+|    plataforma segun su perfil asignado        |\line
++-----------------------------------------------+\line
+}\par
+\par
+\b Diagrama lógico TI por bloques\b0\par
+\par
+{\f1\fs20
++------------------------------+\line
+| Frontend                     |\line
+| Formulario de alta de usuario|\line
++--------------+---------------+\line
+               |\line
+               | empresa seleccionada\line
+               | datos personales\line
+               | biometria\line
+               | username/password\line
+               | role\line
+               v\line
++------------------------------+\line
+| API Backend                  |\line
+| POST /api/auth/register      |\line
++--------------+---------------+\line
+               |\line
+               v\line
++------------------------------+\line
+| Validacion de payload        |\line
+| - company                    |\line
+| - first_name                 |\line
+| - last_name                  |\line
+| - dni                        |\line
+| - username                   |\line
+| - password                   |\line
+| - role                       |\line
+| - face_template/image        |\line
++--------------+---------------+\line
+               |\line
+               v\line
++------------------------------+\line
+| Motor biometrico             |\line
+| analyzeFaceImage(register)   |\line
+| genera faceTemplate          |\line
++--------------+---------------+\line
+               |\line
+               v\line
++------------------------------+\line
+| Reglas de negocio            |\line
+| - validar DNI                |\line
+| - validar usuario            |\line
+| - hash password              |\line
+| - asignar role               |\line
++--------------+---------------+\line
+               |\line
+               v\line
++------------------------------+\line
+| Persistencia                 |\line
+| auth_users                   |\line
+| auth_audit_logs              |\line
++--------------+---------------+\line
+               |\line
+               v\line
++------------------------------+\line
+| Respuesta                    |\line
+| user + token + role          |\line
++------------------------------+\line
+}\par
+\par
+\b Descripción funcional paso a paso\b0\par
+\b 1. Selección de empresa\b0\par
+El proceso inicia con la empresa ya seleccionada. Todo nuevo usuario queda asociado a esta empresa para garantizar segregación organizacional y trazabilidad.\par
+\par
+\b 2. Datos personales del usuario\b0\par
+Se registran los datos base del colaborador o responsable interno:\par
+- nombres\par
+- apellidos\par
+- DNI\par
+- email\par
+- teléfono\par
+- celular\par
+\par
+\b 3. Captura facial obligatoria\b0\par
+Se toma la imagen del rostro del usuario. El sistema extrae la plantilla biométrica que permitirá autenticación facial posterior.\par
+\par
+\b 4. Creación de usuario y contraseña del sistema\b0\par
+Luego de capturar la biometría, se solicita definir:\par
+- nombre de usuario\par
+- contraseña\par
+\par
+Este orden es importante porque primero se asegura la identidad biométrica del usuario y luego se le habilitan credenciales lógicas para acceso al sistema.\par
+\par
+\b 5. Selección de perfil o nivel\b0\par
+Durante el alta se debe seleccionar el nivel del nuevo usuario. En el estado actual de la solución los perfiles observados son:\par
+- admin\par
+- operator\par
+\par
+\b 6. Validaciones del sistema\b0\par
+Antes de crear el usuario, el sistema debe verificar:\par
+- empresa válida y seleccionada\par
+- DNI válido\par
+- usuario no duplicado dentro de la empresa\par
+- contraseña con longitud mínima válida\par
+- biometría correctamente capturada\par
+- rol correctamente asignado\par
+\par
+\b 7. Persistencia y auditoría\b0\par
+Si todo es correcto, el backend registra el usuario en la estructura de autenticación y registra el evento correspondiente en auditoría.\par
+\par
+\b Implementación actual observada en la solución\b0\par
+La implementación actual utiliza el endpoint:\par
+- POST /api/auth/register\par
+\par
+Campos actualmente soportados por backend:\par
+- company\par
+- first_name\par
+- last_name\par
+- dni\par
+- username\par
+- password\par
+- role\par
+- ruc\par
+- phone\par
+- mobile\par
+- email\par
+- face_template o face_image_base64\par
+\par
+\b Correspondencia con tu requerimiento\b0\par
+El flujo que solicitas es compatible con la lógica actual del backend. Sin embargo, la interfaz funcional debe guiar al usuario en este orden recomendado:\par
+\par
+{\f1\fs20
+Empresa seleccionada\line
+   -> Datos personales\line
+   -> Captura facial\line
+   -> Usuario y password\line
+   -> Seleccion de perfil\line
+   -> Registrar\line
+}\par
+\par
+\b Roles o niveles sugeridos para presentación\b0\par
+- Admin: administra usuarios, auditoría y configuración crítica\par
+- Operator: usa módulos operativos, mapas, dashboards e informes según permisos definidos\par
+\par
+\b Propuesta de experiencia de usuario recomendada\b0\par
+Se recomienda dividir la creación del usuario en 4 bloques visuales dentro del formulario:\par
+1. Empresa seleccionada\par
+2. Datos personales\par
+3. Biometría facial\par
+4. Credenciales y perfil\par
+\par
+Esto mejora comprensión, reduce errores y facilita la capacitación de usuarios no técnicos.\par
+\par
+\b Modelo funcional resumido para presentación\b0\par
+{\f1\fs20
++-------------------+\line
+| Empresa elegida   |\line
++---------+---------+\line
+          |\line
+          v\line
++-------------------+\line
+| Datos personales  |\line
++---------+---------+\line
+          |\line
+          v\line
++-------------------+\line
+| Captura facial    |\line
++---------+---------+\line
+          |\line
+          v\line
++-------------------+\line
+| Usuario/Password  |\line
++---------+---------+\line
+          |\line
+          v\line
++-------------------+\line
+| Perfil/Nivel      |\line
++---------+---------+\line
+          |\line
+          v\line
++-------------------+\line
+| Crear usuario     |\line
++-------------------+\line
+}\par
+\par
+\b Texto ejecutivo para pegar en presentación\b0\par
+La creación de un usuario dentro de una empresa seleccionada sigue un flujo controlado que inicia con la identificación organizacional, continúa con el registro de datos personales, la captura biométrica facial del colaborador, la asignación de credenciales del sistema y finalmente la definición de su perfil o nivel de acceso. Este proceso asegura identidad, control de acceso y trazabilidad dentro de la plataforma.\par
+\par
+\b Referencias técnicas reales de la solución\b0\par
+- Backend: `POST /api/auth/register`\par
+- Frontend: `authApi.registerUser(...)`\par
+- Roles observados: `admin`, `operator`\par
+- Sesión emitida al finalizar registro exitoso\par
+\par
+}

@@ -1,8 +1,20 @@
 # ADR-089 — Integración Comercial Biométrica con Dermalog Face SDK
 
+**Status**: partially superseded by ADR-105
+
+**Ámbito**: ia, seguridad, biometría
+
+> **Actualización 2026-08-18 — parcialmente superseded por ADR-105.** La
+> decisión original de usar Dermalog como proveedor «principal y mandatario»
+> dejó de estar vigente el 2026-08-12. El proveedor local por defecto es
+> DeepFace + Silent-Face-Anti-Spoofing; Dermalog queda como secundario explícito
+> y solo puede utilizarse ante fallos de infraestructura bajo las condiciones
+> fail-closed de ADR-105. Se conserva el texto original inferior como registro
+> histórico. La integración comercial y su mecanismo CLI siguen vigentes.
+
 | Campo | Valor |
 |---|---|
-| **Estado** | **Aceptado** |
+| **Estado** | **Parcialmente superseded por ADR-105 (2026-08-12)** |
 | **Fecha** | 2026-08-05 |
 | **Decisor(es)** | Arquitecto TI + Especialista IA |
 | **Sustituye a** | ADR-005 (InsightFace/ONNX) |

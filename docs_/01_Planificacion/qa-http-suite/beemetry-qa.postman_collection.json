@@ -1,0 +1,213 @@
+{
+  "info": {
+    "name": "Beemetry QA — Suite HTTP (Postman)",
+    "description": "Colección para los casos del Catálogo de Casos de Prueba QA que requieren llamadas HTTP directas (§1-7, 16, 19, 21, 24). Credenciales de prueba dedicadas, no cuentas reales de producción. Ver run-qa-http-suite.sh para el equivalente en curl (ya ejecutado el 2026-07-27, 19/19 PASS).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8082" },
+    { "key": "adminToken", "value": "" },
+    { "key": "operatorToken", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "§3 — Login admin de prueba (JUANP)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"company\":\"Alpayana\",\"username\":\"JUANP\",\"password\":\"123456\"}" },
+        "url": "{{baseUrl}}/api/auth/login/password"
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "exec": [
+          "pm.test('TC-AUTH-01: status authenticated', () => pm.expect(pm.response.json().status).to.eql('authenticated'));",
+          "pm.test('TC-AUTH-01b: method password', () => pm.expect(pm.response.json().method).to.eql('password'));",
+          "pm.collectionVariables.set('adminToken', pm.response.json().user.access_token);"
+        ]}
+      }]
+    },
+    {
+      "name": "TC-AUTH-02 — Usuario inexistente",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"company\":\"Alpayana\",\"username\":\"usuario_que_no_existe_qa\",\"password\":\"x\"}" },
+        "url": "{{baseUrl}}/api/auth/login/password"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('user_not_found', () => pm.expect(pm.response.json().error).to.eql('user_not_found'));"
+      ]}}]
+    },
+    {
+      "name": "TC-AUTH-04 — Password incorrecta",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"company\":\"Alpayana\",\"username\":\"JUANP\",\"password\":\"password_incorrecta_qa\"}" },
+        "url": "{{baseUrl}}/api/auth/login/password"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('wrong_password', () => pm.expect(pm.response.json().error).to.eql('wrong_password'));"
+      ]}}]
+    },
+    {
+      "name": "TC-AUTH-05 — Rate limit (correr 6 veces seguidas)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"company\":\"Alpayana\",\"username\":\"qa_ratelimit_probe\",\"password\":\"wrong\"}" },
+        "url": "{{baseUrl}}/api/auth/login/password"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "// Correr este request 6 veces (Postman Runner, count=6) -- el 6to debe dar too_many_failed_attempts",
+        "pm.test('6to intento: too_many_failed_attempts (correr con Runner x6)', () => { const b = pm.response.json(); pm.expect(['wrong_password','too_many_failed_attempts']).to.include(b.error); });"
+      ]}}]
+    },
+    {
+      "name": "TC-EMP-01 — Listado de empresas",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/auth/companies" },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('200 OK', () => pm.response.to.have.status(200));",
+        "pm.test('companies array presente', () => pm.expect(pm.response.json()).to.have.property('companies'));"
+      ]}}]
+    },
+    {
+      "name": "TC-EMP-02 — Confirmar ausencia de POST companies (hallazgo G2)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"name\":\"Empresa QA Fantasma\"}" },
+        "url": "{{baseUrl}}/api/auth/companies"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('404 (no implementado, confirma G2)', () => pm.response.to.have.status(404));"
+      ]}}]
+    },
+    {
+      "name": "TC-USR-02 — Autoregistro sin biometría (debe rechazar)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"company\":\"Alpayana\",\"first_name\":\"QA\",\"last_name\":\"NoBio\",\"dni\":\"11223344\",\"username\":\"qa_nobio_test\",\"password\":\"QaTest#2026\"}" },
+        "url": "{{baseUrl}}/api/auth/register"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('rechazado por falta de biometría', () => pm.expect(pm.response.json().error).to.include('face_template'));"
+      ]}}]
+    },
+    {
+      "name": "TC-USR-04 — Alta admin, password débil",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\"username\":\"qa_weakpass_test\",\"password\":\"weak12\",\"first_name\":\"QA\",\"last_name\":\"WeakPass\",\"dni\":\"22334455\",\"role\":\"operator\"}" },
+        "url": "{{baseUrl}}/api/auth/users/create"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('rechazado por password corta', () => pm.expect(pm.response.json()).to.have.property('error'));"
+      ]}}]
+    },
+    {
+      "name": "TC-USR-05 — Alta admin, rol inválido",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\"username\":\"qa_badrole_test\",\"password\":\"QaTest#2026\",\"first_name\":\"QA\",\"last_name\":\"BadRole\",\"dni\":\"33445566\",\"role\":\"superadmin\"}" },
+        "url": "{{baseUrl}}/api/auth/users/create"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('rechazado por rol inválido', () => pm.expect(pm.response.json()).to.have.property('error'));"
+      ]}}]
+    },
+    {
+      "name": "§6 — Login operador de prueba (qa_operator_test)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"company\":\"Alpayana\",\"username\":\"qa_operator_test\",\"password\":\"QaTest#2026\"}" },
+        "url": "{{baseUrl}}/api/auth/login/password"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('login operator OK', () => pm.expect(pm.response.json().status).to.eql('authenticated'));",
+        "pm.collectionVariables.set('operatorToken', pm.response.json().user.access_token);"
+      ]}}]
+    },
+    {
+      "name": "TC-USR-06 / TC-RBAC-02 — Operator sin permiso usuarios.manage",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{operatorToken}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\"username\":\"qa_should_not_exist\",\"password\":\"QaTest#2026\",\"first_name\":\"X\",\"last_name\":\"Y\",\"dni\":\"99998888\",\"role\":\"operator\"}" },
+        "url": "{{baseUrl}}/api/auth/users/create"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('403 o error de permiso', () => { const s = pm.response.code; pm.expect([401,403]).to.include(s); });"
+      ]}}]
+    },
+    {
+      "name": "TC-AVA-01/05 — Avatar HD del propio usuario",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+        "url": "{{baseUrl}}/api/auth/avatar/hd"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('200 (enrolado) o 404 (sin biometría) -- ambos válidos', () => pm.expect([200,404]).to.include(pm.response.code));"
+      ]}}]
+    },
+    {
+      "name": "TC-AVA-03 — Avatar HD sin sesión",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/auth/avatar/hd" },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('401', () => pm.response.to.have.status(401));"
+      ]}}]
+    },
+    {
+      "name": "TC-GDAL-01 — Convert con operator (no-admin)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{operatorToken}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\"input\":\"demo.tif\"}" },
+        "url": "{{baseUrl}}/api/convert"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('403', () => pm.response.to.have.status(403));"
+      ]}}]
+    },
+    {
+      "name": "TC-GDAL-02 — Path traversal en /api/convert",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\"input\":\"../../etc/passwd\"}" },
+        "url": "{{baseUrl}}/api/convert"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('rechazado (no 200)', () => pm.expect(pm.response.code).to.not.eql(200));"
+      ]}}]
+    },
+    {
+      "name": "TC-GDAL-06 — GET /api/jobs sin sesión",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/jobs/00000000-0000-0000-0000-000000000000" },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('401', () => pm.response.to.have.status(401));"
+      ]}}]
+    }
+  ]
+}

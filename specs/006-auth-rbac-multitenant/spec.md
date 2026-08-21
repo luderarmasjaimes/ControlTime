@@ -8,13 +8,32 @@
 
 ## ADRs globales aplicables
 
-> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-006**.
+> Trazabilidad automática desde [`specs/REGISTRY.md`](../REGISTRY.md) para **SPEC-006**; fuente ADR: `docs/decisions/`.
 
-- **ADR-007** — [`ADR-007-sdd-specs-fuente-verdad.md`](../adr/ADR-007-sdd-specs-fuente-verdad.md)
-- **ADR-009** — [`ADR-009-git-branching-feature-release.md`](../adr/ADR-009-git-branching-feature-release.md)
-- **ADR-010** — [`ADR-010-ai-routing-por-tarea.md`](../adr/ADR-010-ai-routing-por-tarea.md)
-- **ADR-011** — [`ADR-011-rag-memoria-proyecto.md`](../adr/ADR-011-rag-memoria-proyecto.md)
-- **ADR-012** — [`ADR-012-revision-pr-adr-spec.md`](../adr/ADR-012-revision-pr-adr-spec.md)
+- **ADR-029** — [`029-rbac-identidad-plataforma-jwt.md`](../../docs/decisions/029-rbac-identidad-plataforma-jwt.md)
+- **ADR-030** — [`030-auditoria-100-acciones-server.md`](../../docs/decisions/030-auditoria-100-acciones-server.md)
+- **ADR-036** — [`036-rbac-siete-roles-unificados.md`](../../docs/decisions/036-rbac-siete-roles-unificados.md)
+- **ADR-043** — [`043-endurecimiento-seguridad-pre-pentest.md`](../../docs/decisions/043-endurecimiento-seguridad-pre-pentest.md)
+- **ADR-058** — [`058-auditoria-seguridad-integral-jul2026.md`](../../docs/decisions/058-auditoria-seguridad-integral-jul2026.md)
+- **ADR-063** — [`063-correccion-rbac-siete-roles-asignables.md`](../../docs/decisions/063-correccion-rbac-siete-roles-asignables.md)
+- **ADR-066** — [`066-login-usa-razon-social-minera-no-contratista.md`](../../docs/decisions/066-login-usa-razon-social-minera-no-contratista.md)
+- **ADR-067** — [`067-autoregistro-provisiona-tenant-real.md`](../../docs/decisions/067-autoregistro-provisiona-tenant-real.md)
+- **ADR-073** — [`073-modal-propio-reemplaza-dialogos-nativos-consistencia-ribbon.md`](../../docs/decisions/073-modal-propio-reemplaza-dialogos-nativos-consistencia-ribbon.md)
+- **ADR-075** — [`075-internacionalizacion-pais-idioma-acceso.md`](../../docs/decisions/075-internacionalizacion-pais-idioma-acceso.md)
+- **ADR-076** — [`076-separacion-identificadores-secretos-csprng.md`](../../docs/decisions/076-separacion-identificadores-secretos-csprng.md)
+- **ADR-077** — [`077-migracion-password-argon2id-versionada.md`](../../docs/decisions/077-migracion-password-argon2id-versionada.md)
+- **ADR-078** — [`078-alta-administrada-empresa-tenant-deduplicada.md`](../../docs/decisions/078-alta-administrada-empresa-tenant-deduplicada.md)
+- **ADR-085** — [`085-crud-empresas-y-pantalla-administracion.md`](../../docs/decisions/085-crud-empresas-y-pantalla-administracion.md)
+- **ADR-086** — [`086-rbac-granular-empresas-view-manage.md`](../../docs/decisions/086-rbac-granular-empresas-view-manage.md)
+- **ADR-087** — [`087-validacion-ruc-registro-externo-opcional.md`](../../docs/decisions/087-validacion-ruc-registro-externo-opcional.md)
+- **ADR-088** — [`088-seed-empresas-distribuidoras-usuarios-demo.md`](../../docs/decisions/088-seed-empresas-distribuidoras-usuarios-demo.md)
+- **ADR-090** — [`090-deprecacion-adr-tempranos-ia.md`](../../docs/decisions/090-deprecacion-adr-tempranos-ia.md)
+- **ADR-100** — [`100-onnxruntime-thread-limit-insightface.md`](../../docs/decisions/100-onnxruntime-thread-limit-insightface.md)
+- **ADR-101** — [`101-fix-bucle-reintento-registro.md`](../../docs/decisions/101-fix-bucle-reintento-registro.md)
+- **ADR-102** — [`102-validacion-fiscal-ecuador-chile-costa-rica-fallback.md`](../../docs/decisions/102-validacion-fiscal-ecuador-chile-costa-rica-fallback.md)
+- **ADR-106** — [`106-accesibilidad-contraste-formularios-ui.md`](../../docs/decisions/106-accesibilidad-contraste-formularios-ui.md)
+- **ADR-107** — [`107-geolocalizacion-cliente-login-contrasena.md`](../../docs/decisions/107-geolocalizacion-cliente-login-contrasena.md)
+
 
 ## Decisiones vigentes complementarias
 

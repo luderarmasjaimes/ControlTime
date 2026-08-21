@@ -1,0 +1,230 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Consolas;}}
+\paperw11906\paperh16838\margl1134\margr1134\margt1134\margb1134
+\fs24
+\b DIAGRAMA PROPUESTO - MANTENIMIENTO DE USUARIO (NO IMPLEMENTADO AUN)\b0\par
+\par
+\b Objetivo\b0\par
+Definir el flujo funcional y lógico del módulo de mantenimiento de usuarios por empresa, para control administrativo de cuentas, perfiles y estados, con confirmación de seguridad y trazabilidad completa en auditoría.\par
+\par
+\b Estado\b0\par
+Este documento describe una funcionalidad objetivo que todavía no está implementada en la plataforma actual.\par
+\par
+\b Alcance del módulo propuesto\b0\par
+- Ingreso con cuenta válida de la empresa\par
+- Visualización de tabla de usuarios de la empresa\par
+- Selección de usuario objetivo para mantenimiento\par
+- Acciones: Eliminar, Bloquear, Suspensión temporal, Cambio de perfil\par
+- Ingreso de datos adicionales por acción (si corresponde)\par
+- Aplicar cambios con confirmación de seguridad (facial o contraseña)\par
+- Registro en auditoría de éxito o falla\par
+- Posibilidad de cambiar de usuario objetivo o cerrar interfaz\par
+\par
+\b Datos que debe mostrar la tabla de usuarios\b0\par
+- ID de usuario\par
+- Nombre completo\par
+- Username\par
+- Perfil asignado\par
+- Estado actual (Activo, Bloqueado, Suspendido, etc.)\par
+- Fecha de creación\par
+- Último acceso (opcional)\par
+\par
+\b Diagrama funcional para usuarios no técnicos\b0\par
+\par
+{\f1\fs20
++-----------------------------------------+\line
+| 1. Login con cuenta de empresa          |\line
++----------------------+------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------+\line
+| 2. Abrir modulo Mantenimiento Usuarios  |\line
++----------------------+------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------+\line
+| 3. Mostrar tabla de usuarios de empresa |\line
+| - Nombre                               |\line
+| - Username                             |\line
+| - Perfil                               |\line
+| - Estado                               |\line
++----------------------+------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------+\line
+| 4. Seleccionar usuario objetivo         |\line
++----------------------+------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------+\line
+| 5. Elegir accion de mantenimiento       |\line
+| - Eliminar                              |\line
+| - Bloquear                              |\line
+| - Suspension temporal                   |\line
+| - Cambio de perfil                      |\line
++----------------------+------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------+\line
+| 6. Completar datos adicionales          |\line
+| (si accion lo requiere)                 |\line
+| Ej: motivo, fecha fin suspension,       |\line
+| perfil nuevo, observacion               |\line
++----------------------+------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------+\line
+| 7. Click en Aplicar Cambios             |\line
++----------------------+------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------+\line
+| 8. Confirmacion de seguridad            |\line
+| - Autenticacion facial   o              |\line
+| - Password de confirmacion              |\line
++----------------------+------------------+\line
+                       |\line
+             +---------+----------+\line
+             |                    |\line
+             v                    v\line
++-------------------------+   +---------------------------+\line
+| 9A. Confirmacion falla  |   | 9B. Confirmacion exitosa  |\line
+| No aplica cambios       |   | Ejecuta mantenimiento     |\line
++-----------+-------------+   +-------------+-------------+\line
+            |                               |\line
+            v                               v\line
++-----------------------------------------+\line
+| 10. Registrar en log de auditoria       |\line
+| Exito o falla, usuario objetivo, accion,|\line
+| operador que ejecuta, fecha y detalle   |\line
++----------------------+------------------+\line
+                       |\line
+                       v\line
++-----------------------------------------+\line
+| 11. Continuar:                          |\line
+| - Cambiar a otro usuario                |\line
+| - Cerrar interfaz de mantenimiento      |\line
++-----------------------------------------+\line
+}\par
+\par
+\b Diagrama lógico TI por bloques\b0\par
+\par
+{\f1\fs20
++-------------------------------------+\line
+| Frontend - Maintenance UI           |\line
+| Tabla + panel de acciones           |\line
++------------------+------------------+\line
+                   |\line
+                   v\line
++-------------------------------------+\line
+| API Mantenimiento Usuarios          |\line
+| (nuevo modulo propuesto)            |\line
++------------------+------------------+\line
+                   |\line
+                   +-------> [Consulta usuarios por empresa]\line
+                   |         - perfil\line
+                   |         - estado\line
+                   |\line
+                   +-------> [Validacion de accion]\line
+                   |         - permisos del operador\line
+                   |         - reglas por estado\line
+                   |\line
+                   +-------> [Captura datos adicionales]\line
+                   |         - motivo\line
+                   |         - vigencia\line
+                   |         - perfil destino\line
+                   |\line
+                   +-------> [Confirmacion fuerte]\line
+                             - biometria facial o password\line
+                              \line
+                   +-------> [Motor de cambios]\line
+                             - eliminar\line
+                             - bloquear\line
+                             - suspender temporalmente\line
+                             - cambiar perfil\line
+                              \line
+                   +-------> [Persistencia]\line
+                             - usuarios\line
+                             - estados\line
+                             - historial de cambios\line
+                              \line
+                   +-------> [Auditoria]\line
+                             - exito/falla\line
+                             - actor, objetivo, accion, detalle\line
+}\par
+\par
+\b Especificación funcional por acción\b0\par
+\b 1. Eliminar usuario\b0\par
+- Requiere confirmación explícita\par
+- Datos adicionales opcionales: motivo\par
+- Regla sugerida: impedir eliminar cuenta del último administrador activo\par
+\par
+\b 2. Bloquear usuario\b0\par
+- Acción inmediata\par
+- Datos adicionales sugeridos: motivo de bloqueo\par
+- Resultado: usuario no puede ingresar hasta desbloqueo\par
+\par
+\b 3. Suspensión temporal\b0\par
+- Requiere fecha/hora de inicio y fin, o duración\par
+- Datos adicionales: motivo\par
+- Resultado: acceso denegado durante vigencia de suspensión\par
+\par
+\b 4. Cambio de perfil\b0\par
+- Selección de nuevo perfil (ej: operator, admin)\par
+- Datos adicionales opcionales: justificación\par
+- Regla sugerida: doble confirmación para elevar privilegios a admin\par
+\par
+\b Confirmación de seguridad antes de aplicar\b0\par
+Antes de ejecutar cualquier acción, el sistema debe exigir una segunda validación:\par
+- Opción A: confirmación facial del operador\par
+- Opción B: contraseña de confirmación del operador\par
+\par
+Si la confirmación falla:\par
+- no se aplica la acción\par
+- se registra intento fallido en auditoría\par
+\par
+Si la confirmación es exitosa:\par
+- se aplica la acción\par
+- se registra la operación exitosa en auditoría\par
+\par
+\b Campos de auditoría recomendados\b0\par
+- Fecha y hora\par
+- Empresa\par
+- Usuario operador (quien ejecuta)\par
+- Usuario objetivo (a quien se modifica)\par
+- Acción ejecutada\par
+- Resultado (éxito/falla)\par
+- Método de confirmación (facial/password)\par
+- Motivo/observación\par
+- Dirección IP/dispositivo (si aplica)\par
+\par
+\b Diseño de interfaz recomendado\b0\par
+Se sugiere dividir la pantalla en 3 zonas:\par
+1. Tabla de usuarios de la empresa\par
+2. Panel de acciones de mantenimiento\par
+3. Panel de confirmación y resultado\par
+\par
+Al finalizar una operación, presentar dos botones:\par
+- Mantenimiento a otro usuario\par
+- Cerrar interfaz\par
+\par
+\b Flujo resumido para presentación ejecutiva\b0\par
+{\f1\fs20
+Login Empresa\line
+  -> Tabla usuarios\line
+  -> Seleccionar usuario\line
+  -> Elegir accion\line
+  -> Completar datos adicionales\line
+  -> Aplicar cambios\line
+  -> Confirmar (facial o password)\line
+  -> Registrar log (exito/falla)\line
+  -> Continuar con otro usuario o cerrar\line
+}\par
+\par
+\b Texto breve para pegar en presentación\b0\par
+El módulo de Mantenimiento de Usuario permitirá a la empresa administrar el ciclo de vida de sus cuentas en una sola pantalla. Después de seleccionar al usuario objetivo, el operador autorizado podrá ejecutar acciones como eliminar, bloquear, suspender temporalmente o cambiar perfil. Toda operación exigirá confirmación de seguridad (facial o contraseña) y quedará registrada en auditoría, tanto en caso de éxito como de falla.\par
+\par
+\b Nota de implementación\b0\par
+Este documento representa la especificación funcional y lógica objetivo para desarrollo futuro del módulo.\par
+\par
+}

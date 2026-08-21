@@ -6,6 +6,66 @@
 **Autores**: EC
 **Ámbito**: plataforma
 
+**Actualización 2026-08-19 (TTL del access token — percepción de sesión
+frágil):** el usuario final reportó que "la sesión se cierra cada 15
+minutos". La investigación confirmó que la sesión, en sí, no se cierra: el
+frontend ya hace refresh silencioso transparente contra `/api/auth/refresh`
+(`refreshAccessToken()` en `frontend/src/auth/authApi.ts`, ver el bloque de
+comentarios de esa misma actualización de 2026-07-19 más abajo en este
+archivo) sin desloguear activamente al usuario. Lo que el reporte describía
+es la **percepción**: `BEEMETRY_JWT_ACCESS_TTL_MINUTES` (default 15,
+`std::clamp(..., 1, 120)` en `backend/src/config/app_config.cpp`) es un TTL
+tan corto que multiplica la frecuencia de renovación silenciosa — cada
+petición autenticada tiene más probabilidad de caer justo después de un
+vencimiento y disparar un refresh de por medio, lo que en una sesión con
+tráfico irregular (pausas largas, luego ráfagas de clics) se nota como
+lentitud o fragilidad intermitente aunque nunca haya un logout real de por
+medio.
+
+Se sube el default de `BEEMETRY_JWT_ACCESS_TTL_MINUTES` de 15 a **60
+minutos**, dentro del mismo `clamp(1, 120)` ya existente — **el clamp no se
+tocó**, solo el valor por defecto que se usa cuando la variable de entorno no
+está definida. Esto no reduce la superficie de exposición de forma
+significativa (un access token comprometido seguía siendo válido hasta su
+expiración natural antes de esta actualización, ver "Negativas /
+Trade-offs" del texto original más abajo — ese trade-off ya estaba aceptado
+explícitamente) y sí reduce en la práctica la frecuencia de renovación
+percibida por el usuario.
+
+De paso se encontró que **ninguna de las dos variables de TTL relevantes
+estaba declarada en `.env.example`** — ni `BEEMETRY_JWT_ACCESS_TTL_MINUTES`
+(el TTL del access token, este ADR) ni `BEEMETRY_AUTH_SESSION_TTL_MINUTES`
+(un TTL de sesión separado y preexistente, `gSessionTtlMinutes`, default 480
+min, usado por un mecanismo de sesión distinto al par access/refresh JWT de
+este ADR — ver `app_config.cpp`). Solo vivían como default hardcodeado en el
+código y, para el access token, como valor explícito en `docker-compose.yml`
+(`BEEMETRY_JWT_ACCESS_TTL_MINUTES=15` fijo, **sin** interpolar
+`${BEEMETRY_JWT_ACCESS_TTL_MINUTES}` — ver "Estado de implementación"). Se
+agregan ambas variables a `.env.example` con su default y una referencia a
+este ADR, para que quien configure un despliegue nuevo las vea documentadas
+en el lugar donde ya se documentan `BEEMETRY_JWT_SECRET` y
+`BEEMETRY_JWT_REFRESH_TTL_DAYS`.
+
+## Estado de implementación (verificado en vivo, 2026-08-19)
+
+El hallazgo de `docker-compose.yml` con el valor fijo (`=15`, no
+`=${BEEMETRY_JWT_ACCESS_TTL_MINUTES:-60}`) resultó ser la **causa raíz real**
+del reporte, no solo un TTL corto por default de código: mientras ese valor
+siguiera fijo en el compose, cambiar el default en `app_config.cpp` no tenía
+ningún efecto en el despliegue local vía `docker compose up` (que es como
+corre este stack) — el contenedor `web` siempre recibía `15` sin importar el
+`.env`. Se corrigió la línea a
+`BEEMETRY_JWT_ACCESS_TTL_MINUTES=${BEEMETRY_JWT_ACCESS_TTL_MINUTES:-60}`
+(mismo patrón `${VAR:-default}` que el resto de variables de este bloque) y
+se agregó `BEEMETRY_AUTH_SESSION_TTL_MINUTES=${BEEMETRY_AUTH_SESSION_TTL_MINUTES:-480}`,
+que no estaba wireada en absoluto. Verificado end-to-end: login real contra
+el backend reconstruido devuelve `"expires_in":3600` (60 min × 60 s).
+
+No se re-abre ninguna decisión del texto original ni de las actualizaciones
+anteriores — el esquema híbrido (access corto + refresh server-side rotado)
+sigue vigente sin cambios; lo único que cambia es el valor por defecto del
+TTL corto y la visibilidad de ambas variables en `.env.example`.
+
 **Actualización 2026-07-27 (contrato runtime y entropía):** la cookie legible
 vigente es `csrf_token_v2` con `Path=/`, para que la SPA pueda leerla desde
 cualquier ruta y repetirla en `X-CSRF-Token`; `refresh_token` permanece

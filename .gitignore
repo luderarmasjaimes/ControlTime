@@ -1,6 +1,10 @@
 data/
 tmp/
 ai_engine_probe_logs/
+
+# scripts/export-stack.sh: imágenes + volúmenes + dumps de BD (decenas de GB).
+backups/
+stack_export/
 ai_engine/models/*.onnx
 ai_engine/models/*_meta.json
 data/glasses_dataset/**/*.jpg
@@ -31,6 +35,11 @@ _deployed_frontend.js
 .env
 biometric-models/
 
+# ADR-103: scripts de referencia de TimeTelemetry/Odoo con credenciales
+# hardcodeadas en texto plano (hallazgo de seguridad de la sesión que
+# introdujo la integración RP) -- nunca deben commitearse tal cual.
+RP/
+
 # Salida generada por Doxygen (backend/Doxyfile) — no es código fuente.
 backend/docs/html/
 
@@ -40,3 +49,41 @@ backend/docs/html/
 certs/*.key
 certs/*.crt
 !certs/.gitkeep
+
+# Mismo criterio para el cert autofirmado de external-api-test-page (HTTPS
+# local, puerto 5443) — se regenera con el openssl req de la documentación,
+# nunca se commitea la clave privada.
+external-api-test-page/certs/*.key
+external-api-test-page/certs/*.crt
+
+# SDK comercial de Dermalog (2.3 GB, binarios licenciados WIBU) — se monta
+# en el contenedor via docker-compose.yml (DERMALOG_SDK_HOST_DIR:-./dermalog-sdk
+# -> /opt/dermalog:ro). Nunca commitear: son binarios de terceros bajo
+# licencia, no código del proyecto. Cada máquina que lo necesite debe
+# descargarlo de https://support.dermalog.com/ con su propia cuenta.
+dermalog-sdk/
+vendor/dermalog/*.pdf
+vendor/dermalog/*.tar
+vendor/dermalog/*.zip
+
+# Ruedas de PyPI de terceros vendorizadas para instalación offline del
+# ai_engine (CUDA/cuDNN, ~1.1 GB) — nunca código propio, se re-descargan con
+# pip download si hace falta reconstruir el entorno.
+ai_engine/vendor-wheels/
+
+# Directorios de trabajo/sesión de herramientas locales (agentes de IA,
+# builds puntuales, auditorías ad-hoc) — no son artefactos del proyecto.
+.codex-temp/
+build-logs/
+auditoria-base-datos-*/
+
+# Archivos de bloqueo temporal de Office (~$archivo.pptx/.docx/.xlsx) que
+# aparecen al abrir un documento — nunca son contenido real.
+~$*
+
+# Reclutamiento/RRHH: CVs y datos personales de postulantes (nombre completo,
+# contacto) en texto plano dentro de PDF/DOCX/XLSX. Nunca debe vivir en un
+# repositorio de código fuente, ni siquiera privado -- es información
+# personal de terceros que nunca dieron consentimiento para esto. Gestionar
+# aparte (ATS/carpeta de RRHH fuera del repo).
+docs_/04_Convocatorias_RRHH/cv/

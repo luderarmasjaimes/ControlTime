@@ -1,0 +1,236 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Consolas;}}
+\paperw11906\paperh16838\margl1134\margr1134\margt1134\margb1134
+\fs24
+\b DIAGRAMA DETALLADO DE USO DEL MODULO INFORME MINERO\b0\par
+\b (CREACION DINAMICA DEL DOCUMENTO CON HERRAMIENTAS)\b0\par
+\par
+\b Objetivo\b0\par
+Presentar de forma detallada el flujo de uso del módulo Informe Minero para construir un documento dinámicamente, usando todas las herramientas disponibles de la interfaz actual.\par
+\par
+\b Alcance\b0\par
+Este documento describe cómo un usuario arma, edita, revisa y exporta un informe técnico minero multipágina, incluyendo gestión de bloques, propiedades, zoom, revisión global y optimización asistida.\par
+\par
+\b Módulos de interfaz involucrados\b0\par
+- Barra superior (Top Toolbar)\par
+- Librería de bloques (panel izquierdo)\par
+- Lienzo multipágina A4 (zona central)\par
+- Inspector de propiedades (panel derecho)\par
+- Motor de estado del documento (store)\par
+\par
+\b Diagrama funcional general (usuarios no técnicos)\b0\par
+\par
+{\f1\fs20
++--------------------------------------------+\line
+| 1. Ingresar al modulo Informe Minero       |\line
++----------------------+---------------------+\line
+                       |\line
+                       v\line
++--------------------------------------------+\line
+| 2. Definir vista de trabajo                |\line
+| - Cuadricula ON/OFF                        |\line
+| - Ajuste (snap) ON/OFF                     |\line
+| - Zoom in / Zoom out                       |\line
++----------------------+---------------------+\line
+                       |\line
+                       v\line
++--------------------------------------------+\line
+| 3. Insertar bloques desde libreria         |\line
+| - Texto                                    |\line
+| - Grafico                                  |\line
+| - KPI                                      |\line
+| - Imagen                                   |\line
+| - Tabla                                    |\line
++----------------------+---------------------+\line
+                       |\line
+                       v\line
++--------------------------------------------+\line
+| 4. Organizar estructura del informe        |\line
+| - Nueva pagina                             |\line
+| - Duplicar pagina                          |\line
+| - Plantillas: Encabezado, Pie, Hallazgos  |\line
++----------------------+---------------------+\line
+                       |\line
+                       v\line
++--------------------------------------------+\line
+| 5. Editar bloques en el lienzo             |\line
+| - Mover                                    |\line
+| - Redimensionar                            |\line
+| - Seleccionar bloque                       |\line
++----------------------+---------------------+\line
+                       |\line
+                       v\line
++--------------------------------------------+\line
+| 6. Ajustar propiedades en panel derecho    |\line
+| - Posicion X/Y                             |\line
+| - Ancho/Alto                               |\line
+| - Bloquear / Desbloquear                   |\line
+| - Eliminar                                 |\line
+| - Configuracion de tabla                   |\line
++----------------------+---------------------+\line
+                       |\line
+                       v\line
++--------------------------------------------+\line
+| 7. Revisar calidad global del documento    |\line
+| - Revision de consistencia                 |\line
+| - Deteccion de observaciones               |\line
++----------------------+---------------------+\line
+                       |\line
+                       v\line
++--------------------------------------------+\line
+| 8. Optimizar contenido con IA              |\line
+| - Sugerencias de sintaxis/orden            |\line
+| - Aplicar parcial o total                  |\line
++----------------------+---------------------+\line
+                       |\line
+                       v\line
++--------------------------------------------+\line
+| 9. Exportar resultado                      |\line
+| - Imprimir                                 |\line
+| - Exportar PDF                             |\line
+| - Grabar video (opcional)                  |\line
++--------------------------------------------+\line
+}\par
+\par
+\b Diagrama por herramientas y uso dinámico\b0\par
+\par
+{\f1\fs20
++---------------------------+\line
+| BARRA SUPERIOR            |\line
+| (control del proceso)     |\line
++------------+--------------+\line
+             |\line
+             +--> Cuadricula / Ajuste\line
+             +--> Zoom\line
+             +--> Revisar Todo\line
+             +--> Optimizar IA\line
+             +--> Imprimir / PDF / Video\line
+\line
++---------------------------+\line
+| LIBRERIA DE BLOQUES       |\line
+| (contenido del documento) |\line
++------------+--------------+\line
+             |\line
+             +--> Texto\line
+             +--> Grafico\line
+             +--> KPI\line
+             +--> Imagen\line
+             +--> Tabla\line
+             +--> Plantillas\line
+             +--> Nueva / Duplicar pagina\line
+\line
++---------------------------+\line
+| LIENZO MULTIPAGINA        |\line
+| (construccion visual)     |\line
++------------+--------------+\line
+             |\line
+             +--> Posicionar bloques\line
+             +--> Ordenar por pagina\line
+             +--> Ajuste dinamico por zoom\line
+\line
++---------------------------+\line
+| INSPECTOR PROPIEDADES     |\line
+| (precision de edicion)    |\line
++------------+--------------+\line
+             |\line
+             +--> X, Y, ancho, alto\line
+             +--> Bloquear / eliminar\line
+             +--> Estilos de tabla y formato\line
+\line
++---------------------------+\line
+| MOTOR DE ESTADO           |\line
+| (orquestacion interna)    |\line
++------------+--------------+\line
+             |\line
+             +--> Actualiza paginas\line
+             +--> Guarda elementos\line
+             +--> Versiona cambios\line
+             +--> Renderiza en tiempo real\line
+}\par
+\par
+\b Flujo detallado de operación paso a paso\b0\par
+\b Paso 1: Preparación del entorno de edición\b0\par
+El usuario abre Informe Minero y configura visualización inicial: cuadrícula, ajuste y nivel de zoom para trabajar con precisión.\par
+\par
+\b Paso 2: Construcción de la estructura base\b0\par
+Se define la estructura del informe creando páginas y agregando plantillas de encabezado, pie y hallazgos técnicos.\par
+\par
+\b Paso 3: Inserción dinámica de contenido\b0\par
+Se insertan bloques de texto, gráficos, KPIs, imágenes y tablas según la sección del informe.\par
+\par
+\b Paso 4: Edición visual sobre lienzo\b0\par
+Cada bloque se posiciona y redimensiona directamente en el lienzo multipágina para organizar la narrativa técnica del documento.\par
+\par
+\b Paso 5: Ajuste fino de propiedades\b0\par
+En el panel derecho se editan propiedades numéricas y opciones de control (bloqueo, eliminación, configuración de tabla).\par
+\par
+\b Paso 6: Control de calidad y optimización\b0\par
+Se ejecuta revisión global para detectar observaciones. Luego, se aplican sugerencias de optimización IA para mejorar redacción y consistencia.\par
+\par
+\b Paso 7: Salida final del informe\b0\par
+Con el contenido validado, el usuario imprime, exporta a PDF o genera video de presentación del informe.\par
+\par
+\b Diagrama de decisiones operativas\b0\par
+\par
+{\f1\fs20
++----------------------------------+\line
+| ¿El informe tiene estructura base?|\line
++---------------+------------------+\line
+                |\line
+       +--------+--------+\line
+       |                 |\line
+      NO                SI\line
+       |                 |\line
+       v                 v\line
++----------------+   +---------------------------+\line
+| Crear paginas  |   | Insertar/editar contenido |\line
+| y plantillas   |   | por bloques               |\line
++--------+-------+   +-------------+-------------+\line
+         |                         |\line
+         +------------+------------+\line
+                      |\line
+                      v\line
++----------------------------------+\line
+| ¿Calidad del documento aceptable?|\line
++---------------+------------------+\line
+                |\line
+       +--------+--------+\line
+       |                 |\line
+      NO                SI\line
+       |                 |\line
+       v                 v\line
++------------------+   +---------------------+\line
+| Revisar /         |  | Exportar / Imprimir |\line
+| Optimizar con IA  |  | / Grabar Video      |\line
++------------------+   +---------------------+\line
+}\par
+\par
+\b Matriz de herramientas vs resultado\b0\par
+- Cuadrícula/Ajuste: mejora alineación y precisión de diseño.\par
+- Zoom: facilita edición de detalle y revisión global.\par
+- Librería de bloques: acelera construcción modular del contenido.\par
+- Nueva/Duplicar página: agiliza informes largos y repetitivos.\par
+- Inspector: permite control exacto de geometría y formato.\par
+- Revisión global: detecta inconsistencias de calidad.\par
+- Optimización IA: mejora redacción y orden de texto.\par
+- Exportar/Imprimir/Video: genera entregables finales para operación y gestión.\par
+\par
+\b Recomendaciones de uso para mejores resultados\b0\par
+1. Definir primero estructura de páginas y plantillas.\par
+2. Insertar contenido por bloques de mayor a menor importancia.\par
+3. Usar inspector para uniformizar tamaños y posiciones.\par
+4. Ejecutar revisión global antes de exportar.\par
+5. Aplicar optimización IA y revalidar visualmente.\par
+6. Exportar versión final solo cuando score de revisión sea aceptable.\par
+\par
+\b Texto ejecutivo para presentación\b0\par
+El módulo Informe Minero permite crear documentos técnicos de forma dinámica mediante una arquitectura de bloques. El usuario combina herramientas de estructura, edición visual, control de propiedades y revisión inteligente para producir informes multipágina con trazabilidad y calidad consistente. El flujo está diseñado para que usuarios operativos no técnicos puedan construir documentos complejos con un proceso guiado y exportar resultados de nivel corporativo en PDF, impresión o video.\par
+\par
+\b Referencia funcional de componentes utilizados\b0\par
+- TopToolbar\par
+- LeftLibrary\par
+- MultipageView / PageCanvas\par
+- RightInspector\par
+- Store de edición (estado de documento)\par
+\par
+}

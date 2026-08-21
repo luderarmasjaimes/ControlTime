@@ -1,0 +1,278 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Consolas;}}
+\paperw11906\paperh16838\margl1134\margr1134\margt1134\margb1134
+\fs24
+\b PROPUESTA INTEGRAL\b0\par
+\b INSERCION DE DASHBOARD POWER BI EN INFORME TECNICO MINERO\b0\par
+\b + FACTIBILIDAD, DISE\'d1O E IMPLEMENTACION OBJETIVO\b0\par
+\par
+\b 1. Objetivo del documento\b0\par
+Definir de forma ejecutiva y tecnica el flujo completo para insertar dashboards Power BI parametrizados dentro del Informe Tecnico Minero, incluyendo arquitectura, contrato API, seguridad, rendimiento, trazabilidad, riesgos y plan de implementacion por etapas.\par
+\par
+\b 2. Estado actual\b0\par
+- La funcionalidad se encuentra en estado propuesto (objetivo).\par
+- El ReportStudioV2 ya permite insercion de bloques visuales y guardado local de informes.\par
+- Se propone adicionar un flujo guiado para solicitar un dashboard Power BI y anexarlo como evidencia grafica del informe.\par
+\par
+\b 3. Alcance funcional\b0\par
+Incluye:\par
+- Boton en toolbar: Insertar Dashboard Power BI.\par
+- Modal parametrico (sensor, zona, periodo, filtros).\par
+- Procesamiento backend para render de dashboard.\par
+- Insercion automatica del resultado en el documento activo.\par
+- Metadatos de trazabilidad (quien, cuando, que parametros).\par
+\par
+No incluye en esta fase:\par
+- Edicion interactiva embebida del dashboard dentro del PDF final.\par
+- Personalizacion libre del modelo semantico de Power BI por usuario final.\par
+\par
+\b 4. Actores y responsabilidades\b0\par
+- Usuario operador: solicita visualizacion para analisis operativo.\par
+- Usuario admin: solicita visualizacion y valida cumplimiento de politicas.\par
+- Frontend ReportStudioV2: captura parametros, invoca backend, inserta imagen.\par
+- Backend de reportes: valida, consulta servicio Power BI, devuelve artefacto.\par
+- Power BI Service: ejecuta dataset/report con filtros y genera salida renderizada.\par
+\par
+\b 5. Entradas y salidas\b0\par
+\b Entradas\b0\par
+- Empresa y usuario autenticado.\par
+- Tipo de sensor.\par
+- Zona o area.\par
+- Sensor especifico (codigo + descripcion).\par
+- Rango temporal (fecha inicio, fecha fin).\par
+- Opciones avanzadas (agregacion, umbral, unidad, serie, etc.).\par
+\par
+\b Salidas\b0\par
+- Imagen PNG (o URL temporal) del dashboard.\par
+- Metadatos del resultado (titulo, rango, id consulta, timestamp).\par
+- Bloque imagen insertado en el informe tecnico activo.\par
+- Registro de auditoria funcional y tecnica.\par
+\par
+\b 6. Flujo funcional detallado (no tecnico)\b0\par
+{\f1\fs20
++-----------------------------------------------------------+\line
+| 1. Usuario abre Informe Tecnico Minero                    |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 2. Clic en "Insertar Dashboard Power BI"                 |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 3. Selecciona Tipo de Sensor                              |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 4. Selecciona Zona / Area                                 |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 5. Selecciona Sensor (codigo y descripcion)               |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 6. Define parametros (fecha inicio/fin + filtros extra)   |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 7. Clic en Procesar                                       |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 8. Backend valida y genera resultado desde Power BI       |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 9. Frontend inserta dashboard como bloque imagen          |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               v\line
++-----------------------------------------------------------+\line
+| 10. Usuario ajusta tamano/posicion y guarda el informe    |\line
++-----------------------------------------------------------+\line
+}\par
+\par
+\b 7. Flujo de excepciones\b0\par
+Si algun paso falla, el sistema debe responder de forma controlada:\par
+- Error de autenticacion: solicitar re-login y no perder contexto del formulario.\par
+- Error de parametros: mostrar campo invalido con causa y sugerencia.\par
+- Error de integracion Power BI: registrar incidente y permitir reintento.\par
+- Timeout de render: ofrecer modo asincrono con estado "en proceso".\par
+- Respuesta vacia: informar "sin datos para el rango seleccionado".\par
+\par
+\b 8. Arquitectura logica TI\b0\par
+{\f1\fs20
++-----------------------------------------------------------+\line
+| FRONTEND (ReportStudioV2)                                 |\line
+| - Boton toolbar                                            |\line
+| - Modal parametrico                                        |\line
+| - Insercion de bloque imagen                               |\line
++------------------------------+----------------------------+\line
+                               | HTTPS REST\line
+                               v\line
++-----------------------------------------------------------+\line
+| BACKEND REPORTS API                                        |\line
+| POST /api/reports/powerbi/render                           |\line
+| GET  /api/sensors/catalog                                  |\line
+| GET  /api/sensors/zones                                    |\line
+| GET  /api/sensors/by-zone                                  |\line
++------------------------------+----------------------------+\line
+                               |\line
+                               +--> Validacion negocio\line
+                               |    - empresa\line
+                               |    - rol\line
+                               |    - permisos de sensor\line
+                               |    - rango fechas\line
+                               |\line
+                               +--> Integracion Power BI\line
+                               |    - token AAD / service principal\line
+                               |    - aplicacion de filtros\line
+                               |    - export/render\line
+                               |\line
+                               +--> Persistencia\line
+                               |    - auditoria\line
+                               |    - metadata de consulta\line
+                               |\line
+                               +--> Respuesta\line
+                                    - image_url o image_base64\line
+                                    - metadata\line
+}\par
+\par
+\b 9. Contrato API recomendado\b0\par
+\b Endpoint principal\b0\par
+POST /api/reports/powerbi/render\par
+\par
+\b Request sugerido\b0\par
+{\f1\fs20
+{\line
+  "company": "Minera Raura",\line
+  "requested_by": "admin_raura",\line
+  "sensor_type": "inclinometro",\line
+  "zone_id": "ZONA_NORTE",\line
+  "sensor_id": "INC-RAU-0045",\line
+  "date_from": "2026-01-01T00:00:00Z",\line
+  "date_to": "2026-01-31T23:59:59Z",\line
+  "options": {\line
+    "aggregation": "daily",\line
+    "unit": "mm",\line
+    "show_threshold": true,\line
+    "threshold_mode": "operational"\line
+  }\line
+}\line
+}
+}\par
+\par
+\b Response sugerido\b0\par
+{\f1\fs20
+{\line
+  "status": "ok",\line
+  "request_id": "pbi_req_20260319_181122",\line
+  "dashboard_image_url": "https://host/tmp/pbi_abc123.png",\line
+  "image_width": 1280,\line
+  "image_height": 720,\line
+  "title": "Dashboard Sensor INC-RAU-0045",\line
+  "generated_at": "2026-03-19T18:11:22Z",\line
+  "metadata": {\line
+    "sensor_type": "inclinometro",\line
+    "zone": "ZONA_NORTE",\line
+    "period": "2026-01-01 a 2026-01-31",\line
+    "aggregation": "daily"\line
+  }\line
+}\line
+}
+}\par
+\par
+\b Endpoints auxiliares\b0\par
+- GET /api/sensors/catalog\par
+- GET /api/sensors/zones?company=...\par
+- GET /api/sensors/by-zone?zone_id=...\par
+\par
+\b 10. Modelo de datos minimo (trazabilidad)\b0\par
+\b Tabla: report_powerbi_requests\b0\par
+- id\par
+- company\par
+- username\par
+- sensor_type\par
+- zone_id\par
+- sensor_id\par
+- date_from\par
+- date_to\par
+- options_json\par
+- result_url\par
+- result_status\par
+- latency_ms\par
+- created_at\par
+\par
+\b Tabla: report_powerbi_audit\b0\par
+- id\par
+- request_id\par
+- action (request/render/success/error/timeout)\par
+- detail\par
+- created_at\par
+\par
+\b 11. Seguridad y cumplimiento\b0\par
+- Autenticacion obligatoria con token vigente.\par
+- Autorizacion por empresa y rol.\par
+- Validacion server-side de parametros (no confiar en frontend).\par
+- Sanitizacion de entradas para evitar inyeccion de filtros.\par
+- Enmascarado de secretos (token AAD, credenciales API).\par
+- Auditoria completa en exito y error.\par
+\par
+\b 12. Rendimiento, SLA y operacion\b0\par
+- Timeout recomendado de render sincrono: 20 a 30 segundos.\par
+- Si excede timeout: responder modo asincrono con request_id.\par
+- Cache recomendado por llave: company + sensor + rango + options.\par
+- TTL sugerido cache imagen: 15 a 60 minutos segun criticidad.\par
+- Limite recomendado por usuario: evitar abuso de consultas pesadas.\par
+\par
+\b 13. Matriz de riesgos y mitigaciones\b0\par
+- Latencia alta de Power BI\line
+  Mitigacion: cache, colas, particion de rangos, pre-render programado.\par
+- Token expirado\line
+  Mitigacion: refresh controlado y reintento idempotente.\par
+- Parametros inconsistentes\line
+  Mitigacion: catalogo maestro y validaciones duras en backend.\par
+- Sobrecarga concurrente\line
+  Mitigacion: rate limit, circuit breaker, monitoreo de saturacion.\par
+\par
+\b 14. Plan de implementacion por sprints\b0\par
+\b Sprint 1\b0: UI modal + catalogos sensores + validaciones frontend.\par
+\b Sprint 2\b0: Endpoint render + integracion Power BI + respuesta imagen.\par
+\b Sprint 3\b0: Insercion automatica en informe + metadatos de bloque.\par
+\b Sprint 4\b0: auditoria, observabilidad, cache, hardening y pruebas finales.\par
+\par
+\b 15. Pruebas recomendadas (UAT + tecnico)\b0\par
+\b Funcionales\b0\par
+- Flujo exitoso completo con sensor valido.\par
+- Cambio de filtros y regeneracion correcta.\par
+- Insercion del bloque en informe y guardado posterior.\par
+\par
+\b Negativas\b0\par
+- Sensor no pertenece a zona.\par
+- Rango fecha invalido.\par
+- Sin permisos por rol/empresa.\par
+- Respuesta vacia sin datos.\par
+\par
+\b No funcionales\b0\par
+- Carga concurrente de N solicitudes por minuto.\par
+- Tiempo de respuesta p50/p95/p99.\par
+- Robustez ante caida temporal de Power BI.\par
+\par
+\b 16. Conclusiones ejecutivas\b0\par
+1. La funcionalidad es tecnicamente factible y de alto valor para el informe tecnico minero.\par
+2. El enfoque mas robusto para reportes portables es generar imagen PNG y anexarla al documento.\par
+3. Con autenticacion, validacion, auditoria y cache, el modelo es operativo para produccion.\par
+4. Se recomienda desplegar por etapas (4 sprints) con metrica de uso y calidad desde el primer release.\par
+\par
+\b 17. Resumen corto para presentacion gerencial\b0\par
+El sistema permitira seleccionar sensor, zona y periodo; procesar un dashboard Power BI parametrizado; y anexar automaticamente el resultado al Informe Tecnico Minero. La solucion es viable, escalable y auditable, con controles de seguridad y rendimiento aptos para entorno productivo.\par
+\par
+}

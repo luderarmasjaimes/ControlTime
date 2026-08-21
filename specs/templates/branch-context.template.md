@@ -1,6 +1,7 @@
 # CONTEXT — Rama feature/<slug>
 
-> Copiar a la raíz de la rama o adjuntar al PR. Obligatorio según ADR-009.
+> Copiar a la raíz de la rama o adjuntar al PR. Obligatorio por la
+> Constitución y la metodología de `AGENTS.md`.
 
 | Campo | Valor |
 |-------|-------|
@@ -10,8 +11,8 @@
 | **Modelo IA** | claude \| gpt-5 \| ... |
 
 ## ADRs aplicables
-- ADR-001
-- ADR-007
+- ADR-090
+- ADR-NNN
 - (listar desde specs/REGISTRY.md)
 
 ## Criterios de aceptación (del spec)

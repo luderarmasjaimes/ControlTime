@@ -1,5 +1,9 @@
 # ADR-090 — Depreciación de ADRs Tempranos (`specs/adr`) para el Router de IA
 
+**Status**: implemented (corrección completada 2026-08-18)
+
+**Ámbito**: plataforma, metodología IA
+
 | Campo | Valor |
 |---|---|
 | **Estado** | **Aceptado** |
@@ -12,8 +16,11 @@ Durante la Fase 0 del proyecto, se crearon los documentos `ADR-001` al `ADR-012`
 ## Decisión
 - **El único log arquitectónico válido y vigente es `docs/decisions/`.**
 - El directorio `specs/adr/` queda formalmente **depreciado** para uso como contexto principal de los agentes de programación.
-- El parser de la plataforma IA (`ai_platform/registry_parser.py`) ha sido verificado para resolver identificadores (ej. `ADR-002`) buscando inteligentemente en `docs/decisions/` (`002-*.md`).
+- El parser de la plataforma IA (`ai_platform/registry_parser.py`) resuelve
+  exclusivamente `docs/decisions/` (`NNN-*.md`) y expande rangos del registro.
 - Se elimina `specs/adr/` de los `paths` de todos los agentes en `registry.yaml`.
+- Se elimina `specs/adr/` del índice RAG; conservar archivos históricos no
+  implica inyectarlos al contexto.
 
 ## Consecuencias
 - Los Agentes IA ya no alucinarán con las arquitecturas de la Fase 0.

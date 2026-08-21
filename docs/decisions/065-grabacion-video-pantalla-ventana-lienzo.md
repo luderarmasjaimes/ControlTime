@@ -1,6 +1,6 @@
 # ADR-065 — Grabación de video de pantalla/ventana, insertable en el lienzo
 
-**Status**: implemented (2026-07-21). Verificado en vivo contra el backend real hasta el límite del sandbox de pruebas (el modal abre, la pestaña "Pantalla / Ventana" muestra el flujo correcto, el botón cambia de rótulo según el estado) — una grabación real de punta a punta queda pendiente de una prueba manual (el sandbox de este entorno no permite compartir pantalla).
+**Status**: implemented (2026-07-21). **Actualización 2026-08-17**: se encontró y corrigió un bug de causa raíz compartido con ADR-064 (mismo pipeline de guardado/reproducción, solo cambia el origen del `MediaStream`) — el CSP de producción bloqueaba la carga de videos `data:`/`blob:` sin ningún error visible, mostrando el bloque en negro pese a indicar una duración correcta. Ver "Corrección 2026-08-17" en ADR-064 para el detalle completo y la verificación de punta a punta; el fix (`media-src 'self' data: blob:;` en `frontend/nginx.conf` y `backend/src/http/router.cpp`) aplica igual a esta fuente. La captura de pantalla real (`getDisplayMedia`) en sí sigue sin poder probarse en este sandbox — pendiente de prueba manual puntual, igual que antes, pero el resto del pipeline (grabación → guardado → reproducción) ya quedó confirmado como funcional.
 **Fecha**: 2026-07-21
 **Autores**: EC
 **Ámbito**: reports

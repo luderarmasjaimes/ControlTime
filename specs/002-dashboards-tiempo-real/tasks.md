@@ -67,7 +67,7 @@ T15 (puede ir en paralelo con tests)
 ## Evidencias de implementación (retroactivas)
 
 - Script SQL: `db_scripts/28_continuous_aggregates.sql` (CAGG + política)
-- Script SQL: `db_scripts/29_telemetry_ingest_optimization.sql` (índice parcial, rol, grants)
+- Script SQL: `db_scripts/64_telemetry_ingest_optimization.sql` (índice parcial, rol, grants; renumerado desde `29` el 2026-08-20)
 - Código C++: `backend/src/mining/kpi_service.cpp` (REPLICA_DATABASE_URL)
 - Código C++: `backend/src/mining/mining_routes.cpp` (REPLICA_DATABASE_URL)
 - Código C++: `backend/src/mining/sensor_service.cpp` (REPLICA_DATABASE_URL)
