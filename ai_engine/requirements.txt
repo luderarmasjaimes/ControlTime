@@ -92,10 +92,15 @@ mrz>=0.6.1
 # -- evaluar en la práctica contra CVs reales; ver ADR-122 fase de pruebas).
 python-docx>=1.1,<2
 pdfplumber>=0.11,<1
-# Extracción de texto de CVs en formato PowerPoint (ADR-129) -- puro Python,
-# sin dependencias de sistema (a diferencia de pyzbar/tesseract arriba), no
-# afecta el resto del pin de versiones de este archivo.
-python-pptx>=1.0,<2
+# python-pptx (extracción de CV en PowerPoint, ADR-129) NO se declara acá a
+# propósito: agregarlo a este archivo hizo que el resolver de pip
+# reexplorara el árbol completo y sacara a la luz el conflicto real (ya
+# latente, no causado por python-pptx) entre torch==2.11.0+cu128
+# (nvidia-cudnn-cu12==9.19.0.56) y tensorflow[and-cuda]==2.15.1
+# (nvidia-cudnn-cu12==8.9.4.25) -- build reventado tras ~24 min de
+# backtracking (confirmado en runtime, 2026-08-21). Se instala aparte, con
+# --no-deps, en Dockerfile.ai (fuera de esta resolución) -- ver comentario
+# ahí.
 
 # ---------------------------------------------------------------------------
 # Proveedor biométrico primario: DeepFace (Facenet512) + Silent-Face-Anti-
