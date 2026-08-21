@@ -23,6 +23,13 @@ CREATE TABLE IF NOT EXISTS support_chat_attachment (
     content         bytea NOT NULL,
     content_sha256  text NOT NULL,
     size_bytes      bigint NOT NULL,
+    -- ADR-129: para jpg/png, lectura determinística vía ai_engine
+    -- (/analyze_image -- pyzbar + pytesseract, ver image_analysis_client.cpp)
+    -- ejecutada una sola vez al subir, para no repetir el costo de OCR en
+    -- cada turno de chat que la referencia. NULL para docx/pptx/pdf (no
+    -- aplica) o si la imagen no tenía QR/texto legible.
+    ocr_text        text,
+    qr_codes        jsonb NOT NULL DEFAULT '[]'::jsonb,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_support_chat_attachment_conversation

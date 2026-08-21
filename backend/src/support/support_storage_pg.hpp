@@ -225,16 +225,21 @@ struct ChatAttachmentRecord {
   std::string filename;
   std::string mimeType;
   long sizeBytes = 0;
+  std::string ocrText;      // solo jpg/png (ver analyzeImageWithAiEngine), vacío si no aplica
+  json::array qrCodes;      // idem
   std::string createdAt;
 };
 
 /** @brief Inserta el archivo (bytea) en `support_chat_attachment`. `conversationId`
  * puede venir vacío (adjunto suelto, p.ej. antes del primer turno persistido).
+ * `ocrText`/`qrCodes` vienen vacíos para tipos no-imagen (docx/pptx/pdf) --
+ * ver image_analysis_client.hpp, llamado por el handler antes de persistir.
  * @return true si el INSERT tuvo éxito (ver `out`/`error`). */
 bool saveChatAttachmentPg(const std::string &databaseUrl, const std::string &conversationId,
                           const std::string &tenantId, const std::string &userId,
                           const std::string &filename, const std::string &mimeType,
                           const std::vector<unsigned char> &fileBytes,
+                          const std::string &ocrText, const json::array &qrCodes,
                           ChatAttachmentRecord &out, std::string &error);
 
 /** @brief Recupera el archivo por id, restringido al `tenantId` de la sesión que
@@ -244,6 +249,29 @@ bool saveChatAttachmentPg(const std::string &databaseUrl, const std::string &con
 bool getChatAttachmentPg(const std::string &databaseUrl, const std::string &attachmentId,
                          const std::string &tenantId, std::vector<unsigned char> &fileBytes,
                          std::string &mimeType, std::string &filename);
+
+/** @brief Filtros de `GET /api/support/admin/chat-attachments` (ADR-129,
+ * panel admin) -- mismo patrón que ChatMessageSearchFilter. Sin filtro por
+ * `q`: el contenido es binario, lo único buscable en texto libre sería
+ * `ocr_text`, cubierto por su propio campo si se necesita en el futuro. */
+struct ChatAttachmentSearchFilter {
+  std::optional<std::string> tenantId;
+  std::optional<std::string> conversationId;
+  std::optional<std::string> dateFrom;
+  std::optional<std::string> dateTo;
+  int limit = 20;
+  int offset = 0;
+};
+
+struct ChatAttachmentSearchPageResult {
+  json::array items; // metadatos (sin el binario -- ver getChatAttachmentPg para el archivo)
+  long total = 0;
+};
+
+/** @brief Lista adjuntos (sin el binario) para el panel admin (RBAC
+ * soporte.view/soporte.manage, ver handleSearchChatAttachments). */
+ChatAttachmentSearchPageResult searchChatAttachmentsPg(const std::string &databaseUrl,
+                                                       const ChatAttachmentSearchFilter &filter);
 
 #endif // HAS_LIBPQ
 

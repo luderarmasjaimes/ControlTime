@@ -1,10 +1,14 @@
 #include "support_routes.hpp"
 #include "mining_chatbot_service.hpp"
 #include "support_storage_pg.hpp"
+#include "cv_storage_pg.hpp"
+#include "cv_extraction_client.hpp"
+#include "image_analysis_client.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
 #include "../auth/auth_session.hpp"
 #include "../auth/permissions.hpp"
+#include "../mining/alarm_notifier.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -96,13 +100,31 @@ handleUploadChatAttachment(const http::request<http::string_body> &req,
         json::object{{"error", "invalid_size"}, {"max_bytes", static_cast<int64_t>(kMaxAttachmentBytes)}});
   }
   const std::vector<unsigned char> fileBytes(req.body().begin(), req.body().end());
+  const std::string safeFilename = sanitizeAttachmentFilename(filenameRaw);
+
+  // ADR-129: jpg/png se pasan por ai_engine (QR + OCR, ver
+  // image_analysis_client.hpp) ANTES de persistir -- el modelo de chat es de
+  // solo texto, así que esta es la única forma de que el usuario pueda
+  // "preguntar sobre la imagen" (QR, texto visible) en la misma conversación.
+  // Best-effort: si ai_engine no responde, el adjunto igual se guarda (nunca
+  // se pierde el archivo por un fallo de análisis, mismo criterio que
+  // processCvSubmission en whatsapp_bot_engine.cpp).
+  std::string ocrText;
+  json::array qrCodes;
+  const bool isImage = extIt->second == "image/jpeg" || extIt->second == "image/png";
+  if (isImage) {
+    const auto analysis = support::analyzeImageWithAiEngine(fileBytes, safeFilename, extIt->second);
+    if (analysis.ok) {
+      ocrText = analysis.ocrText;
+      for (const auto &code : analysis.qrCodes) qrCodes.push_back(json::string(code));
+    }
+  }
 
   support::ChatAttachmentRecord record;
   std::string error;
   const bool ok = support::saveChatAttachmentPg(
       config::AppConfig::instance().gDatabaseUrl, conversationId, session->tenantId,
-      session->userId, sanitizeAttachmentFilename(filenameRaw), extIt->second, fileBytes, record,
-      error);
+      session->userId, safeFilename, extIt->second, fileBytes, ocrText, qrCodes, record, error);
   if (!ok) {
     return makeJsonResponse(http::status::internal_server_error,
                             json::object{{"error", error.empty() ? "attachment_save_failed" : error}});
@@ -111,7 +133,9 @@ handleUploadChatAttachment(const http::request<http::string_body> &req,
                           json::object{{"attachment_id", record.id},
                                        {"filename", record.filename},
                                        {"mime_type", record.mimeType},
-                                       {"size_bytes", record.sizeBytes}});
+                                       {"size_bytes", record.sizeBytes},
+                                       {"ocr_text", record.ocrText},
+                                       {"qr_codes", record.qrCodes}});
 #else
   return makeJsonResponse(http::status::service_unavailable,
                           json::object{{"error", "database_unavailable"}});
@@ -148,6 +172,129 @@ handleDownloadChatAttachment(const http::request<http::string_body> &req,
   res.body() = std::move(body);
   res.prepare_payload();
   return res;
+#else
+  return makeJsonResponse(http::status::service_unavailable,
+                          json::object{{"error", "database_unavailable"}});
+#endif
+}
+
+/** @brief Extensiones aceptadas para un CV subido desde el widget web
+ * (ADR-129) -- docx/pptx/pdf, mismos formatos que ya soporta ai_engine
+ * (/extract_cv_text, eye_analyzer.py). A diferencia de
+ * allowedChatAttachmentExtensions(), NO incluye jpg/png: un CV nunca es una
+ * foto suelta. */
+const std::unordered_map<std::string, std::string> &allowedCvExtensions() {
+  static const std::unordered_map<std::string, std::string> kMap = {
+      {".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+      {".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+      {".pdf", "application/pdf"},
+  };
+  return kMap;
+}
+
+// POST /api/support/cv/submit -- adjunta un CV (docx/pptx/pdf) desde el
+// widget de chat (flujo Recursos Humanos, ADR-129), reusando el mismo
+// pipeline que ya procesa los CV recibidos por WhatsApp (ADR-122): guarda el
+// archivo, extrae texto (ai_engine), extrae campos+score (Ollama) y notifica
+// a RRHH por correo -- en ese orden, sin abortar si algún paso falla (nunca
+// se pierde una postulación en silencio). A diferencia del flujo de
+// WhatsApp, acá corre síncrono dentro del propio request: el volumen
+// esperado desde la web es bajo y el usuario ya está viendo el chat
+// esperando una respuesta, no hace falta backgroundearlo.
+http::response<http::string_body>
+handleSubmitWebCv(const http::request<http::string_body> &req,
+                  const std::unordered_map<std::string, std::string> &query) {
+#if HAS_LIBPQ
+  const auto session = auth::resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+  }
+  auto qv = [&](const char *key) -> std::string {
+    auto it = query.find(key);
+    return it != query.end() ? it->second : "";
+  };
+  const std::string filenameRaw = qv("filename");
+  if (filenameRaw.empty()) {
+    return makeJsonResponse(http::status::bad_request, json::object{{"error", "missing_filename"}});
+  }
+
+  std::string lowerName = filenameRaw;
+  std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  const auto dot = lowerName.find_last_of('.');
+  const std::string ext = dot == std::string::npos ? "" : lowerName.substr(dot);
+  const auto &allowed = allowedCvExtensions();
+  const auto extIt = allowed.find(ext);
+  if (extIt == allowed.end()) {
+    return makeJsonResponse(
+        http::status::bad_request,
+        json::object{{"error", "unsupported_file_type"}, {"allowed", "docx, pptx, pdf"}});
+  }
+
+  constexpr std::size_t kMaxCvBytes = 10 * 1024 * 1024; // espejo de BEEMETRY_WHATSAPP_CV_MAX_BYTES
+  if (req.body().empty() || req.body().size() > kMaxCvBytes) {
+    return makeJsonResponse(
+        http::status::bad_request,
+        json::object{{"error", "invalid_size"}, {"max_bytes", static_cast<int64_t>(kMaxCvBytes)}});
+  }
+  const std::vector<unsigned char> fileBytes(req.body().begin(), req.body().end());
+  const std::string safeFilename = sanitizeAttachmentFilename(filenameRaw);
+  auto &cfg = config::AppConfig::instance();
+
+  support::CvSubmissionRecord submission;
+  std::string error;
+  if (!support::insertWebCvSubmissionPg(cfg.gDatabaseUrl, session->tenantId, session->userId,
+                                        safeFilename, extIt->second,
+                                        static_cast<int>(fileBytes.size()), fileBytes, submission,
+                                        error)) {
+    return makeJsonResponse(http::status::internal_server_error,
+                            json::object{{"error", error.empty() ? "cv_submission_failed" : error}});
+  }
+
+  // Extracción de texto (ai_engine) + campos/score (Ollama) -- best-effort,
+  // el archivo ya quedó guardado pase lo que pase (ver comentario de la
+  // función). El mismo criterio de "ninguna postulación se pierde en
+  // silencio" que processCvSubmission (whatsapp_bot_engine.cpp).
+  json::value profileJson = json::value(nullptr);
+  const auto textResult = support::extractCvTextFromAiEngine(fileBytes, safeFilename, extIt->second);
+  support::updateCvSubmissionTextPg(cfg.gDatabaseUrl, submission.id,
+                                    textResult.ok ? textResult.text : "",
+                                    textResult.ok ? "extracted" : "extraction_failed");
+  if (textResult.ok) {
+    const auto fieldsResult = support::extractCvFieldsWithOllama(textResult.text);
+    if (fieldsResult.ok) {
+      std::string profErr;
+      if (support::insertCvCandidateProfilePg(cfg.gDatabaseUrl, submission.id, fieldsResult.profile,
+                                              profErr)) {
+        support::updateCvSubmissionStatusPg(cfg.gDatabaseUrl, submission.id, "scored");
+        json::object p;
+        p["cargo_postulado"] = fieldsResult.profile.cargoPostulado;
+        p["score"] = fieldsResult.profile.score.has_value() ? json::value(*fieldsResult.profile.score)
+                                                             : json::value(nullptr);
+        profileJson = p;
+      }
+    }
+  }
+
+  if (!cfg.gHrCvEmailTo.empty()) {
+    std::string emailDetail;
+    const std::string subject = "Nueva postulación de CV (web) -- " + safeFilename;
+    const std::string bodyText = "Postulante autenticado en la plataforma (tenant " +
+                                 session->tenantId + ", usuario " + session->username +
+                                 ") adjuntó un CV vía el widget de soporte.\nArchivo: " +
+                                 safeFilename;
+    bool emailOk = mining_iot::sendEmailWithAttachment(cfg.gHrCvEmailTo, subject, bodyText,
+                                                       safeFilename, extIt->second, fileBytes,
+                                                       emailDetail);
+    support::updateCvSubmissionStatusPg(cfg.gDatabaseUrl, submission.id,
+                                        emailOk ? "notified" : "notify_failed");
+  }
+
+  return makeJsonResponse(http::status::created,
+                          json::object{{"submission_id", submission.id},
+                                       {"filename", submission.originalFilename},
+                                       {"status", submission.status},
+                                       {"profile_preview", profileJson}});
 #else
   return makeJsonResponse(http::status::service_unavailable,
                           json::object{{"error", "database_unavailable"}});
@@ -682,6 +829,66 @@ handleSearchChatMessages(const http::request<http::string_body> &req,
 #endif
 }
 
+// GET /api/support/admin/chat-attachments -- panel admin (ADR-129), mismo
+// RBAC que handleSearchChatMessages (soporte.view/soporte.manage). Devuelve
+// solo metadatos (ocr_text/qr_codes incluidos) -- el binario se descarga
+// aparte vía GET /api/support/chat/attachment/{id} (handleDownloadChatAttachment),
+// que ya está gateado por tenant_id.
+static http::response<http::string_body>
+handleSearchChatAttachments(const http::request<http::string_body> &req,
+                            const std::unordered_map<std::string, std::string> &query) {
+#if HAS_LIBPQ
+  const auto session = auth::resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+  }
+  if (!auth::hasPermission(session->userId, session->tenantId, session->role, "soporte.view") &&
+      !auth::hasPermission(session->userId, session->tenantId, session->role, "soporte.manage")) {
+    return makeJsonResponse(http::status::forbidden,
+                            json::object{{"error", "forbidden"}, {"need", "soporte.view"}});
+  }
+
+  auto qv = [&](const char *key) -> std::optional<std::string> {
+    auto it = query.find(key);
+    if (it == query.end() || it->second.empty()) return std::nullopt;
+    return it->second;
+  };
+
+  support::ChatAttachmentSearchFilter filter;
+  filter.conversationId = qv("conversation_id");
+  filter.tenantId = qv("tenant_id");
+  filter.dateFrom = qv("date_from");
+  filter.dateTo = qv("date_to");
+
+  int page = 1;
+  int pageSize = 20;
+  try {
+    if (auto p = qv("page")) page = std::max(1, std::stoi(*p));
+  } catch (...) {
+  }
+  try {
+    if (auto ps = qv("page_size")) pageSize = std::stoi(*ps);
+  } catch (...) {
+  }
+  pageSize = std::max(1, std::min(pageSize, 100));
+  filter.limit = pageSize;
+  filter.offset = (page - 1) * pageSize;
+
+  const auto result =
+      support::searchChatAttachmentsPg(config::AppConfig::instance().gDatabaseUrl, filter);
+  const long pages = pageSize > 0 ? (result.total + pageSize - 1) / pageSize : 0;
+  return makeJsonResponse(http::status::ok,
+                          json::object{{"items", result.items},
+                                       {"total", result.total},
+                                       {"page", page},
+                                       {"page_size", pageSize},
+                                       {"pages", pages}});
+#else
+  return makeJsonResponse(http::status::service_unavailable,
+                          json::object{{"error", "database_unavailable"}});
+#endif
+}
+
 static http::response<http::string_body>
 handleEscalate(const http::request<http::string_body> &req,
               const std::unordered_map<std::string, std::string> &query) {
@@ -717,6 +924,8 @@ void registerRoutes(router::Router &r) {
   // Prefijo (path termina en '/'): handleDownloadChatAttachment resuelve el
   // id desde el propio target de la request.
   r.get("/api/support/chat/attachment/", handleDownloadChatAttachment);
+  r.post("/api/support/cv/submit", handleSubmitWebCv);
+  r.get("/api/support/admin/chat-attachments", handleSearchChatAttachments);
   // Prefijo (path termina en '/'): handleGetTicket/handleUpdateTicketStatus
   // resuelven el código (y el sufijo /status) desde el propio target de la
   // request -- ver ticketPathSegments.

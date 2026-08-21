@@ -116,6 +116,48 @@ bool insertCvSubmissionPg(const std::string &databaseUrl, const std::string &pho
   return true;
 }
 
+bool insertWebCvSubmissionPg(const std::string &databaseUrl, const std::string &tenantId,
+                             const std::string &userId, const std::string &originalFilename,
+                             const std::string &mimeType, int fileSizeBytes,
+                             const std::vector<unsigned char> &fileBytes, CvSubmissionRecord &out,
+                             std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = "database_unavailable";
+    return false;
+  }
+
+  const std::string fileB64 = encodeBase64(fileBytes);
+  const std::string sizeStr = std::to_string(fileSizeBytes);
+  const char *params[6] = {tenantId.c_str(), userId.c_str(),  originalFilename.c_str(),
+                           mimeType.c_str(), sizeStr.c_str(), fileB64.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "INSERT INTO cv_submission (channel, tenant_id, user_id, original_filename, mime_type, "
+      "file_size_bytes, file_bytes) "
+      "VALUES ('web', NULLIF($1,'')::uuid, NULLIF($2,'')::uuid, NULLIF($3,''), $4, $5::int, "
+      "decode($6,'base64')) "
+      "RETURNING id::text, COALESCE(phone_e164,''), COALESCE(line_id,''), "
+      "COALESCE(tenant_id::text,''), COALESCE(original_filename,''), mime_type, "
+      "file_size_bytes, status, created_at::text",
+      6, nullptr, params, nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) == 0) {
+    error = "web_cv_submission_insert_failed: " + res.error();
+    return false;
+  }
+  out.id = PQgetvalue(res.get(), 0, 0);
+  out.phoneE164 = PQgetvalue(res.get(), 0, 1);
+  out.lineId = PQgetvalue(res.get(), 0, 2);
+  out.tenantId = PQgetvalue(res.get(), 0, 3);
+  out.originalFilename = PQgetvalue(res.get(), 0, 4);
+  out.mimeType = PQgetvalue(res.get(), 0, 5);
+  out.fileSizeBytes = std::atoi(PQgetvalue(res.get(), 0, 6));
+  out.status = PQgetvalue(res.get(), 0, 7);
+  out.createdAt = PQgetvalue(res.get(), 0, 8);
+  return true;
+}
+
 bool updateCvSubmissionTextPg(const std::string &databaseUrl, const std::string &submissionId,
                               const std::string &rawText, const std::string &status) {
   auto lease = storage::PgPool::instance().acquire(databaseUrl);

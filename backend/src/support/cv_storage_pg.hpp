@@ -87,6 +87,16 @@ bool insertCvSubmissionPg(const std::string &databaseUrl, const std::string &pho
                           const std::vector<unsigned char> &fileBytes, CvSubmissionRecord &out,
                           std::string &error);
 
+/** @brief Igual que insertCvSubmissionPg pero para el canal web (ADR-129,
+ * widget de chat autenticado, sin número de WhatsApp): channel='web',
+ * phone_e164/line_id quedan NULL, se guarda `userId` de la sesión en su
+ * lugar (ver db_scripts/71). @return true si el INSERT tuvo éxito. */
+bool insertWebCvSubmissionPg(const std::string &databaseUrl, const std::string &tenantId,
+                             const std::string &userId, const std::string &originalFilename,
+                             const std::string &mimeType, int fileSizeBytes,
+                             const std::vector<unsigned char> &fileBytes, CvSubmissionRecord &out,
+                             std::string &error);
+
 /** @brief Actualiza raw_text + status tras la extracción de texto (ai_engine).
  * `status` es 'extracted' si hubo texto, 'extraction_failed' si no. */
 bool updateCvSubmissionTextPg(const std::string &databaseUrl, const std::string &submissionId,

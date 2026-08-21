@@ -185,6 +185,7 @@ set(PLATFORM_MODULES
   src/support/cv_storage_pg.cpp
   src/support/cv_extraction_client.cpp
   src/support/cv_routes.cpp
+  src/support/image_analysis_client.cpp
 )
 
 add_executable(beemetry_backend

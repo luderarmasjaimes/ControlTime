@@ -242,6 +242,11 @@ export interface SupportChatMessage {
   transient?: boolean;
   /** Saludo inicial del widget: no lleva chips de acciones (copiar/resumir/ampliar/ideas). */
   isWelcome?: boolean;
+  /** Adjunto (ADR-129): id devuelto por uploadChatAttachment/submitWebCv, para
+   * mostrar una miniatura/chip de descarga bajo la burbuja del mensaje. */
+  attachmentId?: string;
+  attachmentFilename?: string;
+  attachmentMimeType?: string;
 }
 
 /**
@@ -331,6 +336,99 @@ export async function escalateSupportChatToWhatsapp(): Promise<{ status?: string
   } catch (error) {
     const { backendError, backendMessage } = backendErrorMessage(error);
     return { error: backendMessage || backendError || 'escalate_request_failed' };
+  }
+}
+
+/** Categorías válidas de `support_ticket` (ver kValidCategories en support_routes.cpp). */
+export type SupportTicketCategory = 'soporte' | 'comercial' | 'reclamo' | 'agenda' | 'rrhh';
+
+/** Crea un ticket directamente desde la web (ADR-112: endpoint reservado para
+ * este uso desde el principio) -- usado por el menú de WhatsApp del widget
+ * (SupportChatWidget.tsx) para las categorías que requieren contacto humano. */
+export async function createSupportTicket(payload: {
+  category: SupportTicketCategory;
+  description: string;
+  subject?: string;
+  contact_name?: string;
+  priority?: 'baja' | 'media' | 'alta';
+}): Promise<{ code?: string; status?: string; error?: string }> {
+  try {
+    const response = await api.post('/support/tickets', payload, { timeout: 20000 });
+    return response.data ?? { error: 'empty_response' };
+  } catch (error) {
+    const { backendError, backendMessage } = backendErrorMessage(error);
+    return { error: backendMessage || backendError || 'ticket_create_failed' };
+  }
+}
+
+/** Extensiones de archivo aceptadas como adjunto del chat (ADR-129) --
+ * espejo de allowedChatAttachmentExtensions() en support_routes.cpp. */
+export const ALLOWED_CHAT_ATTACHMENT_EXT = ['.docx', '.pptx', '.pdf', '.jpg', '.jpeg', '.png'];
+
+export interface ChatAttachmentUploadResult {
+  attachment_id?: string;
+  filename?: string;
+  mime_type?: string;
+  size_bytes?: number;
+  /** Solo jpg/png (ADR-129): texto detectado por OCR (pytesseract, ver
+   * image_analysis_client.cpp) -- vacío si no había texto legible. */
+  ocr_text?: string;
+  /** Solo jpg/png: contenido de cualquier QR/código de barras detectado. */
+  qr_codes?: string[];
+  error?: string;
+}
+
+/** Sube un archivo adjunto (docx/pptx/pdf/jpg/png) del widget de chat --
+ * cuerpo binario crudo (no multipart), mismo criterio que
+ * tenant_assets_routes.cpp (uploadLogo/uploadGalleryImage). Para jpg/png el
+ * backend ejecuta QR+OCR vía ai_engine antes de responder (ver ocr_text/
+ * qr_codes) -- por eso el timeout es más generoso que otras escrituras. */
+export async function uploadChatAttachment(
+  file: File,
+  conversationId?: string,
+): Promise<ChatAttachmentUploadResult> {
+  try {
+    const params = new URLSearchParams({ filename: file.name });
+    if (conversationId) params.set('conversation_id', conversationId);
+    const response = await api.post(`/support/chat/attachment?${params.toString()}`, file, {
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      timeout: 45000,
+    });
+    return response.data ?? { error: 'empty_response' };
+  } catch (error) {
+    const { backendError, backendMessage } = backendErrorMessage(error);
+    return { error: backendMessage || backendError || 'attachment_upload_failed' };
+  }
+}
+
+/** URL de descarga de un adjunto ya subido (requiere la cookie de sesión --
+ * mismo origen que el resto de la SPA, ver handleDownloadChatAttachment). */
+export function chatAttachmentUrl(attachmentId: string): string {
+  return `${apiBaseUrl()}/support/chat/attachment/${attachmentId}`;
+}
+
+export interface WebCvSubmitResult {
+  submission_id?: string;
+  filename?: string;
+  status?: string;
+  profile_preview?: { cargo_postulado?: string; score?: number } | null;
+  error?: string;
+}
+
+/** Sube un CV (docx/pptx/pdf) desde el flujo "Recursos Humanos" del widget --
+ * reusa el mismo pipeline de extracción+scoring que ya procesa los CV
+ * recibidos por WhatsApp (ADR-122/129). */
+export async function submitWebCv(file: File): Promise<WebCvSubmitResult> {
+  try {
+    const params = new URLSearchParams({ filename: file.name });
+    const response = await api.post(`/support/cv/submit?${params.toString()}`, file, {
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      timeout: 90000,
+    });
+    return response.data ?? { error: 'empty_response' };
+  } catch (error) {
+    const { backendError, backendMessage } = backendErrorMessage(error);
+    return { error: backendMessage || backendError || 'cv_submit_failed' };
   }
 }
 
@@ -476,6 +574,58 @@ export async function searchSupportChatMessages(
   } catch (error) {
     const { status, backendError, backendMessage } = backendErrorMessage(error);
     return emptyAdminSearchResult(page, pageSize, backendMessage || backendError || 'chat_messages_search_failed', status);
+  }
+}
+
+export interface SupportChatAttachmentAdminRow {
+  id: string;
+  conversation_id: string | null;
+  tenant_id: string | null;
+  user_id: string | null;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  ocr_text: string;
+  qr_codes: string[];
+  created_at: string;
+}
+
+export interface SupportChatAttachmentFilters {
+  conversationId?: string;
+  tenantId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+/** GET /api/support/admin/chat-attachments (ADR-129) -- mismo RBAC que
+ * searchSupportChatMessages (soporte.view/soporte.manage). */
+export async function searchSupportChatAttachments(
+  filters: SupportChatAttachmentFilters,
+  page = 1,
+  pageSize = 20,
+): Promise<SupportAdminSearchResult<SupportChatAttachmentAdminRow>> {
+  try {
+    const response = await api.get('/support/admin/chat-attachments', {
+      params: {
+        page,
+        page_size: pageSize,
+        ...(filters.conversationId ? { conversation_id: filters.conversationId } : {}),
+        ...(filters.tenantId ? { tenant_id: filters.tenantId } : {}),
+        ...(filters.dateFrom ? { date_from: filters.dateFrom } : {}),
+        ...(filters.dateTo ? { date_to: filters.dateTo } : {}),
+      },
+    });
+    const data = response.data ?? {};
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+      total: Number(data.total) || 0,
+      page: Number(data.page) || page,
+      page_size: Number(data.page_size) || pageSize,
+      pages: Number(data.pages) || 0,
+    };
+  } catch (error) {
+    const { status, backendError, backendMessage } = backendErrorMessage(error);
+    return emptyAdminSearchResult(page, pageSize, backendMessage || backendError || 'chat_attachments_search_failed', status);
   }
 }
 

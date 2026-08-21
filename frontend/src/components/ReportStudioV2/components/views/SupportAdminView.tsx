@@ -1,17 +1,21 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   LifeBuoy, Search, RotateCcw, AlertTriangle, ChevronLeft, ChevronRight,
-  Ticket, MessagesSquare, Loader2,
+  Ticket, MessagesSquare, Loader2, Paperclip, Download,
 } from 'lucide-react';
 import { getSession } from '../../../../auth/authStorage';
 import { usePermissions } from '../../../../auth/usePermissions';
 import {
   searchSupportTickets,
   searchSupportChatMessages,
+  searchSupportChatAttachments,
+  chatAttachmentUrl,
   type SupportTicket,
   type SupportChatMessageAdminRow,
+  type SupportChatAttachmentAdminRow,
   type SupportTicketFilters,
   type SupportChatMessageFilters,
+  type SupportChatAttachmentFilters,
   type SupportAdminSearchResult,
 } from '../../lib/api';
 
@@ -68,7 +72,7 @@ const PAGE_SIZE = 20;
 const TODAY = new Date().toISOString().slice(0, 10);
 const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
 
-type AdminTab = 'tickets' | 'messages';
+type AdminTab = 'tickets' | 'messages' | 'attachments';
 
 const emptyTicketFilters = (defaultCategory: string): SupportTicketFilters => ({
   category: defaultCategory,
@@ -87,6 +91,20 @@ const emptyMessageFilters = (): SupportChatMessageFilters => ({
   dateFrom: THIRTY_DAYS_AGO,
   dateTo: TODAY,
 });
+
+const emptyAttachmentFilters = (): SupportChatAttachmentFilters => ({
+  conversationId: '',
+  tenantId: '',
+  dateFrom: THIRTY_DAYS_AGO,
+  dateTo: TODAY,
+});
+
+function formatBytes(n: number): string {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  return `${(n / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -163,6 +181,26 @@ export default function SupportAdminView() {
 
   useEffect(() => { setMsgPage(1); }, [msgApplied]);
 
+  // ── Adjuntos del chat (ADR-129) ──
+  const [attFilters, setAttFilters] = useState<SupportChatAttachmentFilters>(emptyAttachmentFilters);
+  const [attApplied, setAttApplied] = useState<SupportChatAttachmentFilters>(attFilters);
+  const [attPage, setAttPage] = useState(1);
+  const [attResult, setAttResult] = useState<SupportAdminSearchResult<SupportChatAttachmentAdminRow> | null>(null);
+  const [attLoading, setAttLoading] = useState(false);
+
+  const loadAttachments = useCallback(async () => {
+    setAttLoading(true);
+    const result = await searchSupportChatAttachments(attApplied, attPage, PAGE_SIZE);
+    setAttResult(result);
+    setAttLoading(false);
+  }, [attApplied, attPage]);
+
+  useEffect(() => {
+    if (tab === 'attachments' && canSeeChatMessages) loadAttachments();
+  }, [tab, canSeeChatMessages, loadAttachments]);
+
+  useEffect(() => { setAttPage(1); }, [attApplied]);
+
   if (permsLoading) {
     return (
       <div className="flex h-screen items-center justify-center text-slate-500 font-bold uppercase text-[10px] animate-pulse bg-slate-950/20">
@@ -173,6 +211,7 @@ export default function SupportAdminView() {
 
   const ticketTotalPages = ticketResult?.pages || 1;
   const msgTotalPages = msgResult?.pages || 1;
+  const attTotalPages = attResult?.pages || 1;
 
   return (
     <div className="flex h-screen w-full flex-col bg-slate-950/20 p-2 lg:p-3 overflow-hidden">
@@ -197,6 +236,11 @@ export default function SupportAdminView() {
           {canSeeChatMessages && (
             <button type="button" className={tabBtnCls(tab === 'messages')} onClick={() => setTab('messages')}>
               <MessagesSquare size={13} /> Mensajes de chat
+            </button>
+          )}
+          {canSeeChatMessages && (
+            <button type="button" className={tabBtnCls(tab === 'attachments')} onClick={() => setTab('attachments')}>
+              <Paperclip size={13} /> Adjuntos
             </button>
           )}
         </div>
@@ -445,6 +489,117 @@ export default function SupportAdminView() {
                 </button>
                 <span>Página {msgPage} de {msgTotalPages}</span>
                 <button type="button" disabled={msgPage >= msgTotalPages} onClick={() => setMsgPage((p) => Math.min(msgTotalPages, p + 1))}
+                  className="p-1 rounded bg-slate-800 disabled:opacity-30 hover:bg-slate-700">
+                  <ChevronRight size={13} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'attachments' && canSeeChatMessages && (
+        <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+          {/* Filtros */}
+          <div className="bg-slate-900/40 border border-white/5 rounded-2xl p-4 backdrop-blur-xl shrink-0">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className={labelCls}>Fecha inicio</label>
+                <input type="date" className={inputCls} value={attFilters.dateFrom || ''}
+                  onChange={(e) => setAttFilters((f) => ({ ...f, dateFrom: e.target.value }))} />
+              </div>
+              <div>
+                <label className={labelCls}>Fecha fin</label>
+                <input type="date" className={inputCls} value={attFilters.dateTo || ''}
+                  onChange={(e) => setAttFilters((f) => ({ ...f, dateTo: e.target.value }))} />
+              </div>
+              <div>
+                <label className={labelCls}>Conversation ID</label>
+                <input type="text" className={inputCls} placeholder="uuid…" value={attFilters.conversationId || ''}
+                  onChange={(e) => setAttFilters((f) => ({ ...f, conversationId: e.target.value }))} />
+              </div>
+              <div className="flex items-end gap-2">
+                <button type="button"
+                  className="flex-1 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5"
+                  onClick={() => { const empty = emptyAttachmentFilters(); setAttFilters(empty); setAttApplied(empty); }}>
+                  <RotateCcw size={12} /> Limpiar
+                </button>
+                <button type="button"
+                  className="flex-1 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/20"
+                  onClick={() => setAttApplied(attFilters)}>
+                  <Search size={12} /> Buscar
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Tabla */}
+          <div className="flex-1 min-h-0 bg-slate-900/40 border border-white/5 rounded-2xl backdrop-blur-xl overflow-hidden flex flex-col">
+            {attResult?.error ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-slate-400">
+                <AlertTriangle className="text-amber-400" size={28} />
+                <p className="text-xs font-bold text-center max-w-md">
+                  {attResult.status === 403
+                    ? 'No tienes permiso para ver los adjuntos del chat (se requiere soporte.view o soporte.manage).'
+                    : 'No se pudo cargar la lista de adjuntos.'}
+                </p>
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 overflow-auto">
+                <table className="w-full text-left text-[11px]">
+                  <thead className="sticky top-0 bg-slate-900/95 backdrop-blur-xl">
+                    <tr className="text-slate-400 uppercase tracking-widest text-[9px] font-black">
+                      <th className="px-3 py-2">Archivo</th>
+                      <th className="px-3 py-2">Tipo</th>
+                      <th className="px-3 py-2">Tamaño</th>
+                      <th className="px-3 py-2">Texto detectado (OCR/QR)</th>
+                      <th className="px-3 py-2">Conversación</th>
+                      <th className="px-3 py-2">Fecha</th>
+                      <th className="px-3 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attLoading ? (
+                      <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-500">
+                        <Loader2 className="inline animate-spin mr-2" size={14} /> Buscando…
+                      </td></tr>
+                    ) : (attResult?.items.length || 0) === 0 ? (
+                      <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-500">Sin resultados.</td></tr>
+                    ) : (
+                      attResult!.items.map((a) => {
+                        const detected = [a.ocr_text, ...(a.qr_codes || [])].filter(Boolean).join(' · ');
+                        return (
+                          <tr key={a.id} className="border-t border-white/5 text-slate-300 hover:bg-slate-800/30 align-top">
+                            <td className="px-3 py-2 max-w-[200px] truncate" title={a.filename}>{a.filename}</td>
+                            <td className="px-3 py-2 text-slate-500">{a.mime_type}</td>
+                            <td className="px-3 py-2 text-slate-500">{formatBytes(a.size_bytes)}</td>
+                            <td className="px-3 py-2 max-w-[320px] truncate" title={detected}>{detected || '—'}</td>
+                            <td className="px-3 py-2 font-mono text-slate-500 max-w-[120px] truncate" title={a.conversation_id || ''}>{a.conversation_id || '—'}</td>
+                            <td className="px-3 py-2 text-slate-500">{formatDate(a.created_at)}</td>
+                            <td className="px-3 py-2">
+                              <a href={chatAttachmentUrl(a.id)} target="_blank" rel="noreferrer"
+                                className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 inline-flex" title="Descargar">
+                                <Download size={12} />
+                              </a>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {/* Paginación */}
+            <div className="flex items-center justify-between px-3 py-2 border-t border-white/5 shrink-0 text-[10px] text-slate-400">
+              <span>{attResult?.total ?? 0} resultado{(attResult?.total ?? 0) !== 1 ? 's' : ''}</span>
+              <div className="flex items-center gap-2">
+                <button type="button" disabled={attPage <= 1} onClick={() => setAttPage((p) => Math.max(1, p - 1))}
+                  className="p-1 rounded bg-slate-800 disabled:opacity-30 hover:bg-slate-700">
+                  <ChevronLeft size={13} />
+                </button>
+                <span>Página {attPage} de {attTotalPages}</span>
+                <button type="button" disabled={attPage >= attTotalPages} onClick={() => setAttPage((p) => Math.min(attTotalPages, p + 1))}
                   className="p-1 rounded bg-slate-800 disabled:opacity-30 hover:bg-slate-700">
                   <ChevronRight size={13} />
                 </button>

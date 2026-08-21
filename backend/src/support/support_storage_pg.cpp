@@ -549,6 +549,7 @@ bool saveChatAttachmentPg(const std::string &databaseUrl, const std::string &con
                           const std::string &tenantId, const std::string &userId,
                           const std::string &filename, const std::string &mimeType,
                           const std::vector<unsigned char> &fileBytes,
+                          const std::string &ocrText, const json::array &qrCodes,
                           ChatAttachmentRecord &out, std::string &error) {
   auto lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = lease.get();
@@ -560,17 +561,20 @@ bool saveChatAttachmentPg(const std::string &databaseUrl, const std::string &con
   const std::string contentB64 = encodeBase64(fileBytes);
   const std::string hash = sha256HexAttachment(fileBytes);
   const std::string sizeStr = std::to_string(fileBytes.size());
-  const char *params[8] = {
+  const std::string qrJson = json::serialize(json::value(qrCodes));
+  const char *params[10] = {
       conversationId.c_str(), tenantId.c_str(), userId.c_str(), filename.c_str(),
       mimeType.c_str(),       contentB64.c_str(), hash.c_str(),  sizeStr.c_str(),
+      ocrText.c_str(),        qrJson.c_str(),
   };
   storage::PgResult res{PQexecParams(
       conn,
       "INSERT INTO support_chat_attachment (conversation_id, tenant_id, user_id, filename, "
-      "mime_type, content, content_sha256, size_bytes) VALUES (NULLIF($1,'')::uuid, "
-      "NULLIF($2,'')::uuid, NULLIF($3,'')::uuid, $4, $5, decode($6,'base64'), $7, $8::bigint) "
+      "mime_type, content, content_sha256, size_bytes, ocr_text, qr_codes) VALUES "
+      "(NULLIF($1,'')::uuid, NULLIF($2,'')::uuid, NULLIF($3,'')::uuid, $4, $5, "
+      "decode($6,'base64'), $7, $8::bigint, NULLIF($9,''), $10::jsonb) "
       "RETURNING id::text, filename, mime_type, size_bytes, created_at::text",
-      8, nullptr, params, nullptr, nullptr, 0)};
+      10, nullptr, params, nullptr, nullptr, 0)};
   if (!res.okTuples() || PQntuples(res.get()) == 0) {
     error = "attachment_insert_failed: " + res.error();
     return false;
@@ -581,7 +585,79 @@ bool saveChatAttachmentPg(const std::string &databaseUrl, const std::string &con
   out.sizeBytes = std::atol(PQgetvalue(res.get(), 0, 3));
   out.createdAt = PQgetvalue(res.get(), 0, 4);
   out.conversationId = conversationId;
+  out.ocrText = ocrText;
+  out.qrCodes = qrCodes;
   return true;
+}
+
+ChatAttachmentSearchPageResult searchChatAttachmentsPg(const std::string &databaseUrl,
+                                                       const ChatAttachmentSearchFilter &filter) {
+  ChatAttachmentSearchPageResult out;
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) return out;
+
+  DynamicWhere where;
+  if (filter.tenantId && !filter.tenantId->empty())
+    where.clauses.push_back("tenant_id = " + where.addParam(*filter.tenantId) + "::uuid");
+  if (filter.conversationId && !filter.conversationId->empty())
+    where.clauses.push_back("conversation_id = " + where.addParam(*filter.conversationId) + "::uuid");
+  if (filter.dateFrom && !filter.dateFrom->empty())
+    where.clauses.push_back("created_at >= " + where.addParam(*filter.dateFrom) + "::date");
+  if (filter.dateTo && !filter.dateTo->empty())
+    where.clauses.push_back("created_at < (" + where.addParam(*filter.dateTo) +
+                            "::date + interval '1 day')");
+
+  const std::string whereSql = where.sql();
+
+  {
+    const std::string sql = "SELECT count(*) FROM support_chat_attachment" + whereSql;
+    const auto params = where.paramPointers();
+    storage::PgResult res{PQexecParams(conn, sql.c_str(), static_cast<int>(params.size()),
+                                       nullptr, params.empty() ? nullptr : params.data(),
+                                       nullptr, nullptr, 0)};
+    if (res.okTuples() && PQntuples(res.get()) == 1) out.total = std::atol(PQgetvalue(res.get(), 0, 0));
+  }
+
+  const std::string limitParam = where.addParam(std::to_string(std::max(1, std::min(filter.limit, 100))));
+  const std::string offsetParam = where.addParam(std::to_string(std::max(0, filter.offset)));
+  const std::string sql =
+      "SELECT id::text, COALESCE(conversation_id::text,''), COALESCE(tenant_id::text,''), "
+      "COALESCE(user_id::text,''), filename, mime_type, size_bytes, COALESCE(ocr_text,''), "
+      "qr_codes, created_at::text FROM support_chat_attachment" + whereSql +
+      " ORDER BY created_at DESC LIMIT " + limitParam + " OFFSET " + offsetParam;
+  const auto params = where.paramPointers();
+  storage::PgResult res{PQexecParams(conn, sql.c_str(), static_cast<int>(params.size()), nullptr,
+                                     params.data(), nullptr, nullptr, 0)};
+  if (res.okTuples()) {
+    for (int i = 0; i < PQntuples(res.get()); ++i) {
+      json::value qrVal;
+      try {
+        qrVal = json::parse(PQgetvalue(res.get(), i, 8));
+      } catch (...) {
+        qrVal = json::array{};
+      }
+      out.items.push_back(json::object{
+          {"id", PQgetvalue(res.get(), i, 0)},
+          {"conversation_id", std::string(PQgetvalue(res.get(), i, 1)).empty()
+                                  ? json::value(nullptr)
+                                  : json::value(PQgetvalue(res.get(), i, 1))},
+          {"tenant_id", std::string(PQgetvalue(res.get(), i, 2)).empty()
+                            ? json::value(nullptr)
+                            : json::value(PQgetvalue(res.get(), i, 2))},
+          {"user_id", std::string(PQgetvalue(res.get(), i, 3)).empty()
+                          ? json::value(nullptr)
+                          : json::value(PQgetvalue(res.get(), i, 3))},
+          {"filename", PQgetvalue(res.get(), i, 4)},
+          {"mime_type", PQgetvalue(res.get(), i, 5)},
+          {"size_bytes", std::atoll(PQgetvalue(res.get(), i, 6))},
+          {"ocr_text", PQgetvalue(res.get(), i, 7)},
+          {"qr_codes", qrVal},
+          {"created_at", PQgetvalue(res.get(), i, 9)},
+      });
+    }
+  }
+  return out;
 }
 
 bool getChatAttachmentPg(const std::string &databaseUrl, const std::string &attachmentId,

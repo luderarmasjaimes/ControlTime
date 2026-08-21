@@ -1,12 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MessageCircle, X, Send, Phone, Clipboard, FileText, Sparkles, Lightbulb, Check, FileStack, SpellCheck, ArrowLeft, ArrowRight, Presentation, Smile } from 'lucide-react';
+import { MessageCircle, X, Send, Phone, Clipboard, FileText, Sparkles, Lightbulb, Check, FileStack, SpellCheck, ArrowLeft, ArrowRight, Presentation, Smile, Paperclip, AlertCircle, Download } from 'lucide-react';
 import {
   fetchSupportChatConfig,
   streamSupportChatMessage,
   escalateSupportChatToWhatsapp,
+  createSupportTicket,
+  uploadChatAttachment,
+  submitWebCv,
+  chatAttachmentUrl,
   textCorrectQuick,
+  ALLOWED_CHAT_ATTACHMENT_EXT,
   type SupportChatIntent,
   type SupportChatMessage,
+  type SupportTicketCategory,
 } from '../../lib/api';
 import { useEditorStore } from '../../store/useEditorStore';
 import { getSession } from '../../../../auth/authStorage';
@@ -34,6 +40,63 @@ const TOPIC_OPTIONS = [
   'Otro',
 ];
 const URGENCY_OPTIONS = ['Baja', 'Media', 'Alta — operación en riesgo'];
+
+/**
+ * Menú de WhatsApp del widget web (ADR-129) -- mismas 9 opciones y mismo
+ * texto que el menú raíz REAL del bot de WhatsApp (menuRootBodyText() en
+ * whatsapp_menu.cpp), para que la experiencia sea consistente entre canales.
+ * A diferencia del bot (que resuelve un dígito/palabra contra
+ * resolveRootMenuChoice), acá cada opción es un botón -- pero el DESTINO de
+ * cada una sigue el mismo criterio: "stay_chat"/"doc_wizard" resuelven sin
+ * salir de la conversación con la IA; "describe" pide un detalle breve y
+ * crea un support_ticket (POST /api/support/tickets, reservado para uso
+ * web desde ADR-112); "rrhh_submenu" abre el sub-flujo de RRHH (CV vs otra
+ * consulta, igual que sendRrhhSubmenu en el bot). `escalate:true` es
+ * exactamente el pedido explícito de la sesión: SOLO Comercial, Reclamos,
+ * Emergencia y Hablar-con-agente notifican de inmediato a un asesor humano
+ * por WhatsApp (mensaje "Se notificó..."); Agenda y RRHH-otra-consulta
+ * quedan registrados como ticket pero sin ese mensaje (no son threading de
+ * "necesito a alguien AHORA").
+ */
+type WaRootAction =
+  | { kind: 'stay_chat' }
+  | { kind: 'doc_wizard' }
+  | { kind: 'rrhh_submenu' }
+  | { kind: 'describe'; category: SupportTicketCategory; priority: 'baja' | 'media' | 'alta'; escalate: boolean };
+
+interface WaRootMenuItem {
+  id: string;
+  label: string;
+  desc: string;
+  action: WaRootAction;
+}
+
+const WA_ROOT_MENU: WaRootMenuItem[] = [
+  { id: 'soporte', label: '🛠️ Soporte técnico', desc: 'Reporta un problema técnico o pregúntale a la IA', action: { kind: 'stay_chat' } },
+  { id: 'comercial', label: '💼 Área comercial', desc: 'Ventas y cotizaciones', action: { kind: 'describe', category: 'comercial', priority: 'media', escalate: true } },
+  { id: 'reclamos', label: '📋 Gestión de reclamos', desc: 'Registra un reclamo y recibe un código', action: { kind: 'describe', category: 'reclamo', priority: 'media', escalate: true } },
+  { id: 'documentos', label: '📄 Generación de documentos', desc: 'Plantillas Word y PowerPoint', action: { kind: 'doc_wizard' } },
+  { id: 'ia', label: '🤖 Consultas a la IA', desc: 'Pregunta lo que necesites en este chat', action: { kind: 'stay_chat' } },
+  { id: 'emergencia', label: '🚨 Emergencia', desc: 'Atención prioritaria inmediata', action: { kind: 'describe', category: 'soporte', priority: 'alta', escalate: true } },
+  { id: 'agenda', label: '🗓️ Agendar visita técnica', desc: 'Coordina una visita en campo', action: { kind: 'describe', category: 'agenda', priority: 'media', escalate: false } },
+  { id: 'rrhh', label: '🧑‍💼 Recursos Humanos', desc: 'Enviar CV, planillas, certificados', action: { kind: 'rrhh_submenu' } },
+  { id: 'agente', label: '👤 Hablar con un agente', desc: 'Canales directos de atención', action: { kind: 'describe', category: 'soporte', priority: 'media', escalate: true } },
+];
+
+type WaFlowState =
+  | { step: 'menu' }
+  | { step: 'rrhh_choice' }
+  | { step: 'rrhh_cv_upload'; uploading: boolean; error: string | null }
+  | {
+      step: 'describe';
+      category: SupportTicketCategory;
+      label: string;
+      priority: 'baja' | 'media' | 'alta';
+      escalateAfter: boolean;
+      description: string;
+      submitting: boolean;
+      error: string | null;
+    };
 
 const emptyQualifying: Qualifying = { name: '', company: '', topic: TOPIC_OPTIONS[0], urgency: URGENCY_OPTIONS[0], description: '' };
 
@@ -134,7 +197,6 @@ export default function SupportChatWidget() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
-  const [escalating, setEscalating] = useState(false);
   const [escalateStatus, setEscalateStatus] = useState<string | null>(null);
   const [config, setConfig] = useState<{ ollama_url_set: boolean; whatsapp_configured: boolean } | null>(null);
   const [copiedFlash, setCopiedFlash] = useState(false);
@@ -154,6 +216,14 @@ export default function SupportChatWidget() {
   const selectElement = useEditorStore((s) => s.selectElement);
   const applyDocumentTemplate = useEditorStore((s) => s.applyDocumentTemplate);
   const [wizard, setWizard] = useState<DocWizardState | null>(null);
+  // Menú de WhatsApp del widget (ADR-129) -- ver WA_ROOT_MENU/WaFlowState más
+  // arriba. Reemplaza la lista de mensajes mientras está activo, mismo patrón
+  // que `wizard`.
+  const [waFlow, setWaFlow] = useState<WaFlowState | null>(null);
+  const [attaching, setAttaching] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [spellchecking, setSpellchecking] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!open || config) return;
@@ -185,13 +255,15 @@ export default function SupportChatWidget() {
    * @param promptText  lo que se envía realmente al modelo (por defecto `text`).
    *                    Los chips lo usan para incrustar el texto a procesar.
    * @param intent      presupuesto de tokens de la respuesta en el backend.
+   * @param extra       campos adicionales a fusionar en el mensaje de usuario
+   *                    (p.ej. metadatos de adjunto -- ver handleAttachFile).
    */
   const sendText = async (
     text: string,
-    { promptText, intent = 'chat' }: { promptText?: string; intent?: SupportChatIntent } = {},
+    { promptText, intent = 'chat', extra }: { promptText?: string; intent?: SupportChatIntent; extra?: Partial<ChatMessage> } = {},
   ) => {
     if (!text || sending) return;
-    const userMessage: ChatMessage = { role: 'user', content: text };
+    const userMessage: ChatMessage = { role: 'user', content: text, ...extra };
     if (promptText && promptText !== text) userMessage.promptContent = promptText;
     // Los avisos locales de error ("No pude conectarme…") se descartan del
     // historial: son de la UI, no turnos del asistente. Si viajaban al backend
@@ -337,22 +409,163 @@ export default function SupportChatWidget() {
         'con las viñetas.\n\n<<<TEXTO>>>\n' + targetText(content) + '\n<<<FIN>>>',
     });
 
-  const escalate = async () => {
-    setEscalating(true);
+  // ── Menú de WhatsApp del widget (ADR-129) ──────────────────────────────
+  // Antes, el botón "WhatsApp" disparaba un único mensaje de escalamiento
+  // genérico de inmediato. Pedido explícito de la sesión: debe mostrar el
+  // mismo menú de 9 opciones que el bot real de WhatsApp, y el mensaje "Se
+  // notificó a un asesor humano" solo debe aparecer TRAS llegar a una opción
+  // que de verdad requiere contacto humano (comercial/reclamos/emergencia/
+  // hablar con agente), nunca al abrir el menú.
+  const openWaMenu = () => {
     setEscalateStatus(null);
+    setWaFlow({ step: 'menu' });
+  };
+  const closeWaFlow = () => setWaFlow(null);
+
+  const chooseWaRootAction = (item: WaRootMenuItem) => {
+    switch (item.action.kind) {
+      case 'stay_chat':
+        setWaFlow(null);
+        break;
+      case 'doc_wizard':
+        setWaFlow(null);
+        startDocWizard();
+        break;
+      case 'rrhh_submenu':
+        setWaFlow({ step: 'rrhh_choice' });
+        break;
+      case 'describe':
+        setWaFlow({
+          step: 'describe',
+          category: item.action.category,
+          label: item.label.replace(/^\S+\s/, ''), // quita el emoji inicial para el subject del ticket
+          priority: item.action.priority,
+          escalateAfter: item.action.escalate,
+          description: '',
+          submitting: false,
+          error: null,
+        });
+        break;
+    }
+  };
+
+  const submitWaDescribe = async () => {
+    if (waFlow?.step !== 'describe' || !waFlow.description.trim() || waFlow.submitting) return;
+    setWaFlow({ ...waFlow, submitting: true, error: null });
+    const result = await createSupportTicket({
+      category: waFlow.category,
+      description: waFlow.description.trim(),
+      subject: waFlow.label,
+      priority: waFlow.priority,
+      contact_name: qualifying.name.trim(),
+    });
+    if (result.error || !result.code) {
+      setWaFlow((w) => (w?.step === 'describe' ? { ...w, submitting: false, error: 'No se pudo registrar tu solicitud. Intenta de nuevo.' } : w));
+      return;
+    }
+    if (waFlow.escalateAfter) {
+      const esc = await escalateSupportChatToWhatsapp();
+      setEscalateStatus(
+        esc.status === 'sent'
+          ? `Se notificó a un asesor humano por WhatsApp. Código de seguimiento: ${result.code}. Te contactarán en breve.`
+          : `Tu solicitud quedó registrada (código ${result.code}), pero no se pudo notificar por WhatsApp en este momento.`,
+      );
+    } else {
+      setEscalateStatus(`Tu solicitud quedó registrada. Código de seguimiento: ${result.code}. Nuestro equipo la revisará.`);
+    }
+    setWaFlow(null);
+  };
+
+  const handleRrhhCvFile = async (file: File) => {
+    const ext = ('.' + (file.name.split('.').pop() || '')).toLowerCase();
+    if (!['.docx', '.pptx', '.pdf'].includes(ext)) {
+      setWaFlow((w) => (w?.step === 'rrhh_cv_upload' ? { ...w, error: 'Formato no soportado para el CV. Solo se aceptan .docx, .pptx o .pdf.' } : w));
+      return;
+    }
+    setWaFlow({ step: 'rrhh_cv_upload', uploading: true, error: null });
+    const result = await submitWebCv(file);
+    if (result.error || !result.submission_id) {
+      setWaFlow({ step: 'rrhh_cv_upload', uploading: false, error: 'No se pudo procesar tu CV. Intenta de nuevo en unos minutos.' });
+      return;
+    }
+    const scoreNote = result.profile_preview?.score != null ? ` (puntaje de triaje IA: ${result.profile_preview.score}/100)` : '';
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        content:
+          `✅ Recibimos tu CV (${file.name})${scoreNote}. Nuestro equipo de RRHH lo revisará y se pondrá en contacto ` +
+          'contigo si tu perfil encaja con una posición disponible.',
+      },
+    ]);
+    setWaFlow(null);
+  };
+
+  // ── Adjuntar archivo en el chat (ADR-129) ──────────────────────────────
+  // docx/pptx/pdf/jpg/png -- cualquier otro tipo se rechaza en el propio
+  // navegador (nunca llega a pedirse la subida). jpg/png pasan por QR+OCR en
+  // el backend (ver uploadChatAttachment) y ese texto se incrusta como
+  // contexto de la siguiente pregunta a la IA -- el modelo de chat es de
+  // solo texto, así es como el usuario puede "preguntar sobre la imagen".
+  const handleAttachFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite volver a elegir el mismo archivo después
+    if (!file) return;
+    const ext = ('.' + (file.name.split('.').pop() || '')).toLowerCase();
+    if (!ALLOWED_CHAT_ATTACHMENT_EXT.includes(ext)) {
+      setAttachError('Tipo de archivo no soportado. Solo se aceptan DOCX, PPTX, PDF, JPG y PNG.');
+      window.setTimeout(() => setAttachError(null), 5000);
+      return;
+    }
+    setAttaching(true);
+    setAttachError(null);
+    const result = await uploadChatAttachment(file, conversationId ?? undefined);
+    setAttaching(false);
+    if (result.error || !result.attachment_id) {
+      setAttachError('No se pudo subir el archivo. Intenta de nuevo.');
+      window.setTimeout(() => setAttachError(null), 5000);
+      return;
+    }
+    const isImage = ext === '.jpg' || ext === '.jpeg' || ext === '.png';
+    const extra: Partial<ChatMessage> = {
+      attachmentId: result.attachment_id,
+      attachmentFilename: file.name,
+      attachmentMimeType: result.mime_type,
+    };
+    const caption = `📎 ${file.name}`;
+
+    if (!isImage) {
+      // docx/pptx/pdf: no hay nada que un modelo de solo texto pueda "leer"
+      // de un archivo sin extraer texto primero -- se deja el adjunto visible
+      // en el historial (descargable) sin disparar un turno de IA.
+      setMessages((prev) => [...prev.filter((m) => !m.transient), { role: 'user', content: caption, ...extra }]);
+      return;
+    }
+
+    // jpg/png: dispara un turno de IA para que confirme lo detectado
+    // (QR/OCR, ver uploadChatAttachment) en la misma conversación.
+    const detected = [result.ocr_text, ...(result.qr_codes || [])].filter((s) => s && s.trim());
+    const context = detected.length
+      ? 'Contenido detectado automáticamente en la imagen (OCR/QR, puede tener errores):\n' + detected.join('\n')
+      : 'No se detectó texto ni código QR legible en la imagen.';
+    await sendText(caption, {
+      extra,
+      promptText:
+        `El usuario adjuntó una imagen ("${file.name}") en el chat.\n${context}\n` +
+        'Responde confirmando brevemente qué detectaste (o que no detectaste nada legible) y ofrece ayuda sobre ese contenido.',
+    });
+  };
+
+  // ── Corrector ortográfico del input principal (mismo backend LanguageTool
+  // que ya usa el asistente de documentos, ver runWizardSpellcheck) ──
+  const runMainSpellcheck = async () => {
+    if (!draft.trim() || spellchecking) return;
+    setSpellchecking(true);
     try {
-      const result = await escalateSupportChatToWhatsapp();
-      if (result.status === 'sent') {
-        setEscalateStatus('Se notificó a un asesor humano por WhatsApp. Te contactarán en breve.');
-      } else {
-        setEscalateStatus(
-          result.error === 'support_number_not_configured' || result.error === 'whatsapp_not_configured'
-            ? 'El escalamiento por WhatsApp aún no está configurado en esta instancia.'
-            : 'No se pudo notificar por WhatsApp en este momento. Intenta de nuevo en unos minutos.',
-        );
-      }
+      const data = await textCorrectQuick(draft);
+      if (!data?.error && data?.text) setDraft(String(data.text));
     } finally {
-      setEscalating(false);
+      setSpellchecking(false);
     }
   };
 
@@ -467,8 +680,8 @@ export default function SupportChatWidget() {
       {open && (
         <div
           style={{
-            width: 340,
-            height: 460,
+            width: 420,
+            height: 480,
             marginBottom: 12,
             borderRadius: 14,
             background: '#0f172a',
@@ -562,6 +775,29 @@ export default function SupportChatWidget() {
               currentSection={currentWizardSection()}
               onGenerate={generateWizardDocument}
             />
+          ) : waFlow ? (
+            <WaFlowPanel
+              flow={waFlow}
+              onChooseRoot={chooseWaRootAction}
+              onCancel={closeWaFlow}
+              onBackToMenu={() => setWaFlow({ step: 'menu' })}
+              onChooseRrhhCv={() => setWaFlow({ step: 'rrhh_cv_upload', uploading: false, error: null })}
+              onChooseRrhhOther={() =>
+                setWaFlow({
+                  step: 'describe',
+                  category: 'rrhh',
+                  label: 'Recursos Humanos',
+                  priority: 'media',
+                  escalateAfter: false,
+                  description: '',
+                  submitting: false,
+                  error: null,
+                })
+              }
+              onRrhhCvFile={handleRrhhCvFile}
+              onDescribeChange={(text) => setWaFlow((w) => (w?.step === 'describe' ? { ...w, description: text } : w))}
+              onSubmitDescribe={submitWaDescribe}
+            />
           ) : (
             <>
               <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -571,8 +807,27 @@ export default function SupportChatWidget() {
                   // solo tienen sentido sobre respuestas reales del modelo a una consulta.
                   const isLastAssistant =
                     m.role === 'assistant' && !m.transient && !m.isWelcome && i === messages.length - 1;
+                  const isImageAttachment = m.attachmentMimeType === 'image/jpeg' || m.attachmentMimeType === 'image/png';
                   return (
                     <div key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
+                      {m.attachmentId && isImageAttachment && (
+                        <img
+                          src={chatAttachmentUrl(m.attachmentId)}
+                          alt={m.attachmentFilename || 'imagen adjunta'}
+                          style={{ maxWidth: '100%', maxHeight: 140, borderRadius: 8, display: 'block', marginBottom: 4 }}
+                        />
+                      )}
+                      {m.attachmentId && !isImageAttachment && (
+                        <a
+                          href={chatAttachmentUrl(m.attachmentId)}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4, fontSize: 11, color: '#7dd3fc', textDecoration: 'none' }}
+                          title="Descargar adjunto"
+                        >
+                          <FileText size={12} /> {m.attachmentFilename} <Download size={11} />
+                        </a>
+                      )}
                       <div
                         style={{
                           background: m.role === 'user' ? '#0369a1' : '#1e293b',
@@ -607,11 +862,22 @@ export default function SupportChatWidget() {
               {escalateStatus && (
                 <div style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8', borderTop: '1px solid #334155' }}>{escalateStatus}</div>
               )}
-              <div style={{ padding: 8, borderTop: '1px solid #334155', display: 'flex', gap: 6 }}>
+              {attachError && (
+                <div style={{ padding: '6px 10px', fontSize: 11, color: '#fca5a5', borderTop: '1px solid #334155', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <AlertCircle size={12} /> {attachError}
+                </div>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ALLOWED_CHAT_ATTACHMENT_EXT.join(',')}
+                onChange={handleAttachFile}
+                style={{ display: 'none' }}
+              />
+              <div style={{ padding: '8px 8px 4px', borderTop: '1px solid #334155', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <button
-                  onClick={escalate}
-                  disabled={escalating}
-                  title="Notificar a un asesor humano por WhatsApp"
+                  onClick={openWaMenu}
+                  title="Soporte por WhatsApp: soporte técnico, comercial, reclamos, emergencias y más"
                   style={{ background: '#059669', border: 'none', borderRadius: 8, color: '#fff', padding: '6px 8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
                 >
                   <Phone size={13} /> WhatsApp
@@ -622,6 +888,14 @@ export default function SupportChatWidget() {
                   style={{ background: '#7c3aed', border: 'none', borderRadius: 8, color: '#fff', padding: '6px 8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
                 >
                   <FileStack size={13} /> Documento
+                </button>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={attaching}
+                  title="Adjuntar archivo (DOCX, PPTX, PDF, JPG, PNG)"
+                  style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, color: '#e2e8f0', padding: '6px 8px', cursor: attaching ? 'default' : 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, opacity: attaching ? 0.6 : 1 }}
+                >
+                  <Paperclip size={14} /> {attaching ? 'Subiendo…' : ''}
                 </button>
                 <div style={{ position: 'relative', display: 'flex' }}>
                   <button
@@ -638,6 +912,17 @@ export default function SupportChatWidget() {
                     />
                   )}
                 </div>
+                <VoiceDictation compact onTranscriptUpdate={(chunk) => setDraft((d) => `${d}${d && !d.endsWith(' ') ? ' ' : ''}${chunk}`)} language="es-PE" />
+                <button
+                  onClick={runMainSpellcheck}
+                  disabled={spellchecking || !draft.trim()}
+                  title="Corrector ortográfico"
+                  style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, color: '#e2e8f0', padding: '6px 8px', cursor: spellchecking || !draft.trim() ? 'default' : 'pointer', display: 'flex', alignItems: 'center', opacity: spellchecking || !draft.trim() ? 0.5 : 1 }}
+                >
+                  <SpellCheck size={14} />
+                </button>
+              </div>
+              <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 6 }}>
                 <input
                   ref={chatInputRef}
                   value={draft}
@@ -674,6 +959,135 @@ export default function SupportChatWidget() {
       >
         {open ? <X size={22} /> : <MessageCircle size={22} />}
       </button>
+    </div>
+  );
+}
+
+interface WaFlowPanelProps {
+  flow: WaFlowState;
+  onChooseRoot: (item: WaRootMenuItem) => void;
+  onCancel: () => void;
+  onBackToMenu: () => void;
+  onChooseRrhhCv: () => void;
+  onChooseRrhhOther: () => void;
+  onRrhhCvFile: (file: File) => void;
+  onDescribeChange: (text: string) => void;
+  onSubmitDescribe: () => void;
+}
+
+/** Menú de WhatsApp del widget (ADR-129) -- ver WA_ROOT_MENU/WaFlowState.
+ * Vive dentro del mismo panel de chat, reemplazando la lista de mensajes
+ * mientras está activo (mismo patrón que DocWizardPanel). */
+function WaFlowPanel({
+  flow, onChooseRoot, onCancel, onBackToMenu, onChooseRrhhCv, onChooseRrhhOther, onRrhhCvFile, onDescribeChange, onSubmitDescribe,
+}: WaFlowPanelProps) {
+  const cvInputRef = useRef<HTMLInputElement | null>(null);
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontWeight: 700, fontSize: 12, color: '#6ee7b7' }}>
+          <Phone size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
+          Soporte por WhatsApp
+        </span>
+        <button onClick={onCancel} title="Cerrar menú" style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}>
+          <X size={14} />
+        </button>
+      </div>
+
+      {flow.step !== 'menu' && (
+        <button
+          onClick={onBackToMenu}
+          style={{ alignSelf: 'flex-start', background: 'none', border: 'none', color: '#38bdf8', cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', gap: 3, padding: 0 }}
+        >
+          <ArrowLeft size={11} /> Volver al menú
+        </button>
+      )}
+
+      {flow.step === 'menu' && (
+        <>
+          <p style={{ margin: 0, color: '#94a3b8', fontSize: 11 }}>¿En qué te ayudamos hoy? Elige una opción:</p>
+          {WA_ROOT_MENU.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => onChooseRoot(item)}
+              style={{ textAlign: 'left', background: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', color: '#e2e8f0', cursor: 'pointer' }}
+            >
+              <div style={{ fontWeight: 700, fontSize: 12 }}>{item.label}</div>
+              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{item.desc}</div>
+            </button>
+          ))}
+        </>
+      )}
+
+      {flow.step === 'rrhh_choice' && (
+        <>
+          <p style={{ margin: 0, color: '#94a3b8', fontSize: 11 }}>🧑‍💼 <strong style={{ color: '#e2e8f0' }}>Recursos Humanos</strong> — ¿qué necesitas?</p>
+          <button onClick={onChooseRrhhCv} style={{ textAlign: 'left', background: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', color: '#e2e8f0', cursor: 'pointer' }}>
+            <div style={{ fontWeight: 700, fontSize: 12 }}>📄 Enviar mi CV</div>
+            <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>Postula adjuntando tu currículum (Word, PowerPoint o PDF)</div>
+          </button>
+          <button onClick={onChooseRrhhOther} style={{ textAlign: 'left', background: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', color: '#e2e8f0', cursor: 'pointer' }}>
+            <div style={{ fontWeight: 700, fontSize: 12 }}>💬 Otra consulta</div>
+            <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>Planillas, certificados, personal</div>
+          </button>
+        </>
+      )}
+
+      {flow.step === 'rrhh_cv_upload' && (
+        <>
+          <p style={{ margin: 0, color: '#94a3b8', fontSize: 11 }}>
+            Adjunta tu CV en <strong style={{ color: '#e2e8f0' }}>Word (.docx), PowerPoint (.pptx) o PDF</strong>. Nuestro
+            equipo de RRHH lo revisará (con apoyo de IA para el triaje inicial).
+          </p>
+          <input
+            ref={cvInputRef}
+            type="file"
+            accept=".docx,.pptx,.pdf"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              if (file) onRrhhCvFile(file);
+            }}
+          />
+          <button
+            onClick={() => cvInputRef.current?.click()}
+            disabled={flow.uploading}
+            style={{ ...primaryBtnStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, opacity: flow.uploading ? 0.6 : 1 }}
+          >
+            <Paperclip size={13} /> {flow.uploading ? 'Subiendo y analizando…' : 'Elegir archivo de CV'}
+          </button>
+          {flow.error && <span style={{ fontSize: 10, color: '#f87171' }}>{flow.error}</span>}
+        </>
+      )}
+
+      {flow.step === 'describe' && (
+        <>
+          <p style={{ margin: 0, color: '#94a3b8', fontSize: 11 }}>
+            <strong style={{ color: '#e2e8f0' }}>{flow.label}</strong> — cuéntanos brevemente qué necesitas:
+          </p>
+          <textarea
+            value={flow.description}
+            onChange={(e) => onDescribeChange(e.target.value)}
+            placeholder="Describe tu solicitud…"
+            style={{ ...inputStyle, height: 80, resize: 'none' }}
+          />
+          {flow.error && <span style={{ fontSize: 10, color: '#f87171' }}>{flow.error}</span>}
+          <p style={{ margin: 0, fontSize: 10, color: '#64748b' }}>
+            {flow.escalateAfter
+              ? 'Al enviar, se registrará tu solicitud y se notificará de inmediato a un asesor humano por WhatsApp.'
+              : 'Al enviar, tu solicitud quedará registrada con un código de seguimiento.'}
+          </p>
+          <button
+            onClick={onSubmitDescribe}
+            disabled={!flow.description.trim() || flow.submitting}
+            style={{ ...primaryBtnStyle, opacity: !flow.description.trim() || flow.submitting ? 0.6 : 1 }}
+          >
+            {flow.submitting ? 'Enviando…' : 'Enviar solicitud'}
+          </button>
+        </>
+      )}
     </div>
   );
 }
