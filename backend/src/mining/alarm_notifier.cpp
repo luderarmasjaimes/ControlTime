@@ -18,6 +18,7 @@
 #include <boost/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -27,6 +28,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace json = boost::json;
 using config::AppConfig;
@@ -211,6 +213,64 @@ bool sendEmail(const std::string& to, const std::string& subject,
     return rc == 0;
 }
 
+// Base64 estándar (RFC 2045, líneas de 76 caracteres -- el límite que exige
+// el formato MIME para el cuerpo de un adjunto) -- self-contained a
+// propósito, mismo criterio que el resto de este archivo (evitar traer una
+// dependencia de otro módulo -- p.ej. biometric::encodeBase64 -- solo para
+// una función de 15 líneas sin estado).
+std::string base64EncodeMime(const std::vector<unsigned char>& data) {
+    static const char* kTable =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((data.size() + 2) / 3) * 4 + data.size() / 57 + 8);
+    std::size_t i = 0;
+    int lineLen = 0;
+    while (i + 2 < data.size()) {
+        const unsigned int n = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+        out += kTable[(n >> 18) & 0x3F];
+        out += kTable[(n >> 12) & 0x3F];
+        out += kTable[(n >> 6) & 0x3F];
+        out += kTable[n & 0x3F];
+        i += 3;
+        lineLen += 4;
+        if (lineLen >= 76) { out += "\r\n"; lineLen = 0; }
+    }
+    const std::size_t rem = data.size() - i;
+    if (rem == 1) {
+        const unsigned int n = data[i] << 16;
+        out += kTable[(n >> 18) & 0x3F];
+        out += kTable[(n >> 12) & 0x3F];
+        out += "==";
+    } else if (rem == 2) {
+        const unsigned int n = (data[i] << 16) | (data[i + 1] << 8);
+        out += kTable[(n >> 18) & 0x3F];
+        out += kTable[(n >> 12) & 0x3F];
+        out += kTable[(n >> 6) & 0x3F];
+        out += "=";
+    }
+    return out;
+}
+
+// Un nombre de archivo de WhatsApp es entrada NO confiable metida en una
+// cabecera MIME (Content-Disposition) -- sin sanitizar, "\r\n" ahí sería
+// inyección de cabeceras de correo (mismo tipo de riesgo que isSafeEmail
+// mitiga para la dirección). Se permite un set conservador de caracteres y
+// se recorta a una longitud razonable; nunca se deja vacío (usa "cv" si
+// todo se filtra).
+std::string sanitizeMimeFilename(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (char c : raw) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc) || c == '.' || c == '_' || c == '-' || c == ' ') {
+            out += c;
+        }
+    }
+    while (!out.empty() && (out.front() == ' ' || out.front() == '.')) out.erase(out.begin());
+    if (out.size() > 120) out.resize(120);
+    return out.empty() ? "cv" : out;
+}
+
 bool sendWebhook(const std::string& url, const std::string& payloadJson, std::string& detail) {
     if (!isSafeUrl(url)) { detail = "url_invalida"; return false; }
     char tmpl[] = "/tmp/beemetry_hook_XXXXXX";
@@ -309,6 +369,59 @@ void dispatch(std::string tenantId, std::string alarmId, std::string eventType,
 }
 
 } // namespace
+
+bool sendEmailWithAttachment(const std::string &to, const std::string &subject,
+                             const std::string &bodyText, const std::string &attachmentFilename,
+                             const std::string &attachmentMimeType,
+                             const std::vector<unsigned char> &attachmentBytes,
+                             std::string &detail) {
+    if (!isSafeEmail(to)) { detail = "email_invalido"; return false; }
+    const std::string host = envOr("BEEMETRY_SMTP_HOST", "mailpit");
+    const std::string port = envOr("BEEMETRY_SMTP_PORT", "1025");
+    const std::string from = envOr("BEEMETRY_ALARM_MAIL_FROM", "alarmas@beemetry.local");
+    if (!isSafeEmail(from)) { detail = "mail_from_invalido"; return false; }
+    if (attachmentBytes.empty()) { detail = "adjunto_vacio"; return false; }
+
+    const std::string safeFilename = sanitizeMimeFilename(attachmentFilename);
+    const std::string mime = attachmentMimeType.empty() ? "application/octet-stream" : attachmentMimeType;
+    const std::string boundary = "----beemetry-" + std::to_string(std::time(nullptr));
+
+    // Mismo transporte que sendEmail() (curl en modo SMTP crudo sobre un
+    // archivo temporal) -- acá el cuerpo es multipart/mixed en vez de
+    // text/plain: una parte de texto (resumen) + una parte con el adjunto
+    // en base64 (Content-Disposition: attachment).
+    char tmpl[] = "/tmp/beemetry_mail_att_XXXXXX";
+    const int fd = mkstemp(tmpl);
+    if (fd < 0) { detail = "mkstemp_fallo"; return false; }
+    {
+        std::ofstream f(tmpl);
+        f << "From: Beemetry RRHH <" << from << ">\r\n"
+          << "To: <" << to << ">\r\n"
+          << "Subject: " << subject << "\r\n"
+          << "MIME-Version: 1.0\r\n"
+          << "Content-Type: multipart/mixed; boundary=\"" << boundary << "\"\r\n\r\n"
+          << "--" << boundary << "\r\n"
+          << "Content-Type: text/plain; charset=utf-8\r\n\r\n"
+          << bodyText << "\r\n\r\n"
+          << "--" << boundary << "\r\n"
+          << "Content-Type: " << mime << "; name=\"" << safeFilename << "\"\r\n"
+          << "Content-Transfer-Encoding: base64\r\n"
+          << "Content-Disposition: attachment; filename=\"" << safeFilename << "\"\r\n\r\n"
+          << base64EncodeMime(attachmentBytes) << "\r\n\r\n"
+          << "--" << boundary << "--\r\n";
+    }
+    close(fd);
+
+    std::ostringstream cmd;
+    cmd << "curl -s -m 20 --url 'smtp://" << host << ":" << port << "' "
+        << "--mail-from '" << from << "' --mail-rcpt '" << to << "' "
+        << "-T " << tmpl;
+    std::string out;
+    const int rc = runCommand(cmd.str(), out);
+    std::remove(tmpl);
+    detail = (rc == 0) ? ("smtp " + host + ":" + port) : ("curl rc=" + std::to_string(rc) + " " + out.substr(0, 200));
+    return rc == 0;
+}
 
 bool validateChannelTarget(const std::string& channelType,
                            const std::string& configJson,

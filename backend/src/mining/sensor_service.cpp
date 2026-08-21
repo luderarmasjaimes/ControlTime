@@ -29,7 +29,6 @@ using auth::resolveAuthSession;
 
 namespace mining {
 
-namespace {
 /**
  * Resuelve el tenant efectivo de una lectura de sensores/telemetría a prueba
  * de IDOR — mismo criterio que resolveAllowedReportTenant (report_routes.cpp)
@@ -43,6 +42,10 @@ namespace {
  * leer los sensores del tenant B). El tenant efectivo SIEMPRE se deriva de
  * la sesión; solo se acepta un tenant distinto si `userBelongsToTenant` lo
  * autoriza (rol admin multi-tenant). `ok=false` → 403.
+ *
+ * Declarada en sensor_service.hpp (no en un namespace anónimo) para que
+ * sensor_telemetry_wizard.cpp reutilice el mismo guard en vez de duplicar
+ * lógica de seguridad.
  */
 std::string resolveAllowedSensorTenant(
     const auth::AuthSession &session,
@@ -58,7 +61,6 @@ std::string resolveAllowedSensorTenant(
   ok = false;
   return session.tenantId;
 }
-}  // namespace
 
 http::response<http::string_body>
 handleGetSensorData(const http::request<http::string_body>& req,

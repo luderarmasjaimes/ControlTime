@@ -285,14 +285,14 @@ function AlarmConfigView() {
             <div className="p-4 border-b border-white/5 bg-slate-950/40 space-y-3 shrink-0 animate-in fade-in slide-in-from-top-2">
               <div className="grid grid-cols-2 gap-3">
                 <div className="col-span-2">
-                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Nombre de la Regla</label>
+                  <label className="form-label">Nombre de la Regla</label>
                   <input type="text" placeholder="Ej. Temperatura crítica chancadora"
-                    className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
+                    className="form-input-base"
                     value={ruleForm.rule_name} onChange={(e) => setRuleForm({ ...ruleForm, rule_name: e.target.value })} />
                 </div>
                 <div>
-                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Sensor / Dispositivo</label>
-                  <select className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
+                  <label className="form-label">Sensor / Dispositivo</label>
+                  <select className="form-select-base"
                     value={ruleForm.sensor_id} onChange={(e) => setRuleForm({ ...ruleForm, sensor_id: e.target.value })}>
                     <option value="">Seleccione…</option>
                     {devices.map((d) => (
@@ -301,23 +301,23 @@ function AlarmConfigView() {
                   </select>
                 </div>
                 <div>
-                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Severidad</label>
-                  <select className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
+                  <label className="form-label">Severidad</label>
+                  <select className="form-select-base"
                     value={ruleForm.severity} onChange={(e) => setRuleForm({ ...ruleForm, severity: e.target.value })}>
                     {SEVERITIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Condición</label>
-                  <select className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
+                  <label className="form-label">Condición</label>
+                  <select className="form-select-base"
                     value={ruleForm.operator} onChange={(e) => setRuleForm({ ...ruleForm, operator: e.target.value })}>
                     {OPERATORS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Umbral (valor numérico)</label>
+                  <label className="form-label">Umbral (valor numérico)</label>
                   <input type="number" step="any" placeholder="Ej. 85.5"
-                    className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-emerald-400 outline-none focus:border-indigo-500/50"
+                    className="form-input-base"
                     value={ruleForm.threshold} onChange={(e) => setRuleForm({ ...ruleForm, threshold: e.target.value })} />
                 </div>
               </div>
@@ -419,22 +419,22 @@ function AlarmConfigView() {
                 </button>
               </div>
               <div>
-                <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Etiqueta</label>
+                <label className="form-label">Etiqueta</label>
                 <input type="text" placeholder="Ej. Guardia turno noche"
-                  className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
+                  className="form-input-base"
                   value={channelForm.label} onChange={(e) => setChannelForm({ ...channelForm, label: e.target.value })} />
               </div>
               <div>
-                <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">
+                <label className="form-label">
                   {channelForm.channel_type === 'email' ? 'Correo destino' : 'URL del webhook'}
                 </label>
                 <input type="text" placeholder={channelForm.channel_type === 'email' ? 'guardia@minera.com' : 'https://hooks.slack.com/...'}
-                  className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white outline-none focus:border-indigo-500/50"
+                  className="form-input-base"
                   value={channelForm.target} onChange={(e) => setChannelForm({ ...channelForm, target: e.target.value })} />
               </div>
               <div>
-                <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Severidad mínima que dispara este canal</label>
-                <select className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
+                <label className="form-label">Severidad mínima que dispara este canal</label>
+                <select className="form-select-base"
                   value={channelForm.min_severity} onChange={(e) => setChannelForm({ ...channelForm, min_severity: e.target.value })}>
                   {SEVERITIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                 </select>

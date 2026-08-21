@@ -21,8 +21,30 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace mining_iot {
+
+/**
+ * @brief Envía un correo con UN adjunto binario (multipart/mixed) -- misma
+ * validación/transporte que el `sendEmail` interno de alarm_notifier.cpp
+ * (curl en modo SMTP crudo vía `BEEMETRY_SMTP_HOST/PORT`), extendido para
+ * llevar el CV original a RRHH (ADR-122). Expuesto fuera del namespace
+ * anónimo porque, a diferencia de `sendEmail` (uso interno de
+ * `notifyAlarmEvent`), este lo llama otro módulo (`support`).
+ *
+ * `attachmentFilename` es tratado como entrada NO confiable (viene del
+ * nombre de archivo que reportó WhatsApp) -- se sanitiza antes de entrar en
+ * una cabecera MIME (sin esto, un nombre de archivo con \r\n sería
+ * inyección de cabeceras de correo).
+ *
+ * @return true si el envío tuvo éxito (ver `detail` para el motivo si no).
+ */
+bool sendEmailWithAttachment(const std::string &to, const std::string &subject,
+                             const std::string &bodyText, const std::string &attachmentFilename,
+                             const std::string &attachmentMimeType,
+                             const std::vector<unsigned char> &attachmentBytes,
+                             std::string &detail);
 
 /**
  * @brief Valida el destino de un canal de notificación antes de guardarlo.

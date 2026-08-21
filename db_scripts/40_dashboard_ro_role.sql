@@ -29,13 +29,15 @@ $$;
 
 ALTER ROLE dashboard_ro WITH LOGIN PASSWORD :ro_password;
 
--- Mínimo privilegio: conexión + lectura de la tabla de KPIs pre-calculados.
--- Sin USAGE amplio ni SELECT sobre el resto del esquema (telemetry_raw,
--- reports, auth_*, etc. quedan fuera del alcance de este rol a propósito).
+-- Mínimo privilegio de solo lectura: conexión + lectura sobre todas las
+-- tablas del esquema público (sensors, sensor_zones, telemetry_raw,
+-- mining_runtime_kpis, mining_sensors, etc.) para offload en la réplica.
 GRANT CONNECT ON DATABASE sensors_db TO dashboard_ro;
 GRANT USAGE ON SCHEMA public TO dashboard_ro;
-GRANT SELECT ON public.mining_runtime_kpis TO dashboard_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO dashboard_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO dashboard_ro;
 
 -- Defensa extra: que nunca pueda escribir aunque alguien le agregue grants
 -- por accidente vía default privileges de otro rol.
 ALTER ROLE dashboard_ro SET default_transaction_read_only = on;
+

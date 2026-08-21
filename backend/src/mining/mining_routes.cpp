@@ -1,6 +1,7 @@
 #include "mining_routes.hpp"
 #include "kpi_service.hpp"
 #include "sensor_service.hpp"
+#include "sensor_telemetry_wizard.hpp"
 #include "surveillance_service.hpp"
 #include "igp_seismic_client.hpp"
 #include "../config/app_config.hpp"
@@ -323,6 +324,8 @@ void registerRoutes(router::Router& r) {
 
   r.get("/api/sensors/data", handleGetSensorData);
   r.get("/api/mining/telemetry/summary", handleGetTelemetrySummary);
+  r.get("/api/mining/telemetry/wizard/catalog", handleGetTelemetryWizardCatalog);
+  r.get("/api/mining/telemetry/wizard/query", handleQueryTelemetrySeries);
 
   r.get("/api/surveillance/cameras", handleGetCameras);
   r.get("/api/surveillance/camera-snapshot", handleCameraSnapshot);
