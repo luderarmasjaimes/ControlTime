@@ -1,4 +1,5 @@
 #include "ai_engine_client.hpp"
+#include "ai_engine_conn_pool.hpp"
 #include "face_analysis.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
@@ -6,6 +7,7 @@
 #include "../onnx_cartoon.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 
@@ -29,10 +31,124 @@ using auth::applyIcaoGlassesEma;
 #define gAiEngineUrl              config::AppConfig::instance().gAiEngineUrl
 #define gAiEngineMaxImageBytes    config::AppConfig::instance().gAiEngineMaxImageBytes
 #define gAiEngineTimeoutMs        config::AppConfig::instance().gAiEngineTimeoutMs
+#define gSeetaFace6TimeoutMs      config::AppConfig::instance().gSeetaFace6TimeoutMs
+#define gDeepFaceSilentTimeoutMs  config::AppConfig::instance().gDeepFaceSilentTimeoutMs
 #define gAiEngineCartoonTimeoutMs config::AppConfig::instance().gAiEngineCartoonTimeoutMs
 #define gCartoonOnnxModelPath     config::AppConfig::instance().gCartoonOnnxModelPath
 
 namespace biometric {
+
+// Cada llamada a ai_engine es un POST-respuesta chico (frame JPEG + JSON de
+// vuelta) sobre la red interna del bridge de Docker: exactamente el patrón
+// que Nagle's algorithm castiga con ~40ms de espera artificial por paquete
+// chico, sin ganar nada a cambio (no hay throughput bulk que agrupar). En la
+// cadencia de verify-frame (VERIFY_SYNC_MS=175ms), ese retraso es un
+// porcentaje no despreciable del presupuesto por frame. No falla la
+// request si el socket no soporta la opción (best-effort).
+static void disableNagleForLowLatency(beast::tcp_stream &stream) {
+  beast::error_code ec;
+  stream.socket().set_option(asio::ip::tcp::no_delay(true), ec);
+}
+
+namespace {
+
+PooledAiConn makeFreshAiConn(const ParsedHttpEndpoint &endpoint,
+                              beast::error_code &ec) {
+  PooledAiConn c;
+  c.ioc = std::make_shared<asio::io_context>();
+  asio::ip::tcp::resolver resolver{*c.ioc};
+  auto const results = resolver.resolve(endpoint.host, endpoint.port, ec);
+  if (ec) return c;
+  c.stream = std::make_shared<beast::tcp_stream>(*c.ioc);
+  c.stream->connect(results, ec);
+  if (ec) {
+    c.stream.reset();
+    return c;
+  }
+  disableNagleForLowLatency(*c.stream);
+  return c;
+}
+
+// POST reusando una conexión pooled hacia `endpoint` si hay una idle
+// disponible (ver ai_engine_conn_pool.hpp para el porqué). Si la conexión
+// reusada falla al escribir (el peer la cerró mientras esperaba idle, p.ej.
+// keep-alive timeout del lado ai_engine), se descarta y se reintenta UNA vez
+// con una conexión nueva -- nunca degrada por debajo del connect-per-request
+// anterior, solo mejora cuando la reutilización efectivamente funciona. Si
+// el servidor no ofrece keep-alive en la respuesta (res.keep_alive()==false
+// -- p.ej. si el server WSGI de desarrollo de Flask no lo soporta), la
+// conexión se cierra normalmente y no se poolea: el código sigue siendo
+// correcto sin importar si ai_engine soporta HTTP/1.1 persistente o no.
+bool sendPooledAiEnginePost(const ParsedHttpEndpoint &endpoint,
+                             const std::string &contentType,
+                             const std::string &body, long timeoutMs,
+                             http::response<http::string_body> &outRes,
+                             std::string &outError) {
+  auto &pool = AiEngineConnPool::instance();
+
+  beast::error_code ec;
+  bool reused = false;
+  std::optional<PooledAiConn> conn = pool.tryAcquire(endpoint.host, endpoint.port);
+  if (conn) {
+    reused = true;
+  } else {
+    PooledAiConn c = makeFreshAiConn(endpoint, ec);
+    if (!c.valid()) {
+      outError = "ai_engine_connect_failed";
+      return false;
+    }
+    conn = std::move(c);
+  }
+
+  auto writeRequest = [&](PooledAiConn &c, beast::error_code &e) {
+    c.stream->expires_after(std::chrono::milliseconds(timeoutMs));
+    http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
+    req.set(http::field::host, endpoint.host);
+    req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+    req.set(http::field::content_type, contentType);
+    req.keep_alive(true);
+    req.body() = body;  // copia: permite reintentar sin mover el original
+    req.prepare_payload();
+    http::write(*c.stream, req, e);
+  };
+
+  writeRequest(*conn, ec);
+  if (ec && reused) {
+    conn->stream.reset();
+    beast::error_code ec2;
+    PooledAiConn fresh = makeFreshAiConn(endpoint, ec2);
+    if (!fresh.valid()) {
+      outError = "ai_engine_connect_failed";
+      return false;
+    }
+    conn = std::move(fresh);
+    reused = false;
+    ec.clear();
+    writeRequest(*conn, ec);
+  }
+  if (ec) {
+    outError = "ai_engine_write_failed";
+    return false;
+  }
+
+  beast::flat_buffer buffer;
+  http::read(*conn->stream, buffer, outRes, ec);
+  if (ec) {
+    outError = "ai_engine_read_failed";
+    return false;
+  }
+
+  if (outRes.keep_alive() && conn->valid()) {
+    conn->stream->expires_never();
+    pool.release(endpoint.host, endpoint.port, *conn);
+  } else if (conn->valid()) {
+    beast::error_code ignore;
+    conn->stream->socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignore);
+  }
+  return true;
+}
+
+}  // namespace
 
 std::optional<AiEngineFrameResult>
 analyzeFrameWithAiEngine(
@@ -75,49 +191,12 @@ analyzeFrameWithAiEngine(
               static_cast<std::streamsize>(imageBytes.size()));
   body += "\r\n--" + boundary + "--\r\n";
 
-  beast::error_code ec;
-  asio::io_context ioc;
-  asio::ip::tcp::resolver resolver{ioc};
-  beast::tcp_stream stream{ioc};
-  stream.expires_after(std::chrono::milliseconds(gAiEngineTimeoutMs));
-
-  auto const results = resolver.resolve(endpoint.host, endpoint.port, ec);
-  if (ec) {
-    AiEngineFrameResult fail;
-    fail.error = "ai_engine_resolve_failed";
-    return fail;
-  }
-
-  stream.connect(results, ec);
-  if (ec) {
-    AiEngineFrameResult fail;
-    fail.error = "ai_engine_connect_failed";
-    return fail;
-  }
-
-  http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
-  req.set(http::field::host, endpoint.host);
-  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
-  req.set(http::field::content_type,
-          "multipart/form-data; boundary=" + boundary);
-  req.body() = std::move(body);
-  req.prepare_payload();
-
-  http::write(stream, req, ec);
-  if (ec) {
-    AiEngineFrameResult fail;
-    fail.error = "ai_engine_write_failed";
-    return fail;
-  }
-
-  beast::flat_buffer buffer;
   http::response<http::string_body> res;
-  http::read(stream, buffer, res, ec);
-  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-
-  if (ec) {
+  std::string sendError;
+  if (!sendPooledAiEnginePost(endpoint, "multipart/form-data; boundary=" + boundary,
+                               body, gAiEngineTimeoutMs, res, sendError)) {
     AiEngineFrameResult fail;
-    fail.error = "ai_engine_read_failed";
+    fail.error = sendError;
     return fail;
   }
   if (res.result() != http::status::ok) {
@@ -184,9 +263,13 @@ analyzeFrameWithAiEngine(
                                : static_cast<double>(obj.at("glasses_cv_score").as_int64());
     }
 
-    const bool aiNoGlassesHint =
-        obj.if_contains("no_glasses") && obj.at("no_glasses").is_bool();
-
+    // NOTA: el booleano "no_glasses" que manda ai_engine por frame se
+    // ignora deliberadamente aquí. Antes se usaba para pisar el resultado
+    // de applyIcaoGlassesEma (Schmitt-trigger sobre rawGlasses), lo que
+    // anulaba esa histéresis y dejaba pasar directo el ruido frame a frame
+    // del detector de lentes -- causa raíz del parpadeo SI/NO observado en
+    // "LENTE/SIN LENTE" durante la captura biométrica, que además impedía
+    // sostener kRequiredValidCaptureFrames consecutivos (biometric_types.hpp).
     if (glassesSessionKey.has_value() && !glassesSessionKey->empty()) {
       std::scoped_lock lk(gGlassesEmaMutex);
       GlassesEmaState &st = gGlassesEmaBySession[*glassesSessionKey];
@@ -194,16 +277,9 @@ analyzeFrameWithAiEngine(
       out.noGlasses =
           applyIcaoGlassesEma(st, rawGlasses, out.detected, emaOut);
       out.glassesScore = emaOut;
-      if (aiNoGlassesHint && out.detected) {
-        out.noGlasses = obj.at("no_glasses").as_bool();
-      }
     } else {
       out.glassesScore = rawGlasses;
-      if (aiNoGlassesHint && out.detected) {
-        out.noGlasses = obj.at("no_glasses").as_bool();
-      } else {
-        out.noGlasses = rawGlasses < 59.0;
-      }
+      out.noGlasses = rawGlasses < 59.0;
     }
     bool hasLeftEar = false;
     bool hasRightEar = false;
@@ -233,6 +309,13 @@ analyzeFrameWithAiEngine(
     if (obj.if_contains("face_frontal") && obj.at("face_frontal").is_bool()) {
       out.hasFaceFrontal = true;
       out.faceFrontal = obj.at("face_frontal").as_bool();
+    }
+    if (obj.if_contains("head_yaw_ratio") &&
+        (obj.at("head_yaw_ratio").is_double() || obj.at("head_yaw_ratio").is_int64())) {
+      out.hasHeadYawRatio = true;
+      out.headYawRatio = obj.at("head_yaw_ratio").is_double()
+                              ? obj.at("head_yaw_ratio").as_double()
+                              : static_cast<double>(obj.at("head_yaw_ratio").as_int64());
     }
     if (obj.if_contains("face_oval_points") && obj.at("face_oval_points").is_array()) {
       const auto &arr = obj.at("face_oval_points").as_array();
@@ -337,6 +420,7 @@ fetchFaceEmbeddingFromAiEngine(const std::vector<unsigned char> &imageBytes) {
   }
 
   stream.connect(results, ec);
+  disableNagleForLowLatency(stream);
   if (ec) {
     out.error = "ai_engine_connect_failed";
     return out;
@@ -412,6 +496,238 @@ fetchFaceEmbeddingFromAiEngine(const std::vector<unsigned char> &imageBytes) {
   }
 }
 
+FaceAnalysis fetchSeetaFaceAnalysisFromAiEngine(
+    const std::vector<unsigned char> &imageBytes, const std::string &mode) {
+  FaceAnalysis out;
+  out.provider = "seetaface6_local";
+  if (gAiEngineUrl.empty()) {
+    out.issues.push_back("ai_engine_disabled");
+    return out;
+  }
+  if (imageBytes.empty() || imageBytes.size() > gAiEngineMaxImageBytes) {
+    out.issues.push_back("ai_engine_skipped_size_limit");
+    return out;
+  }
+  if (mode != "register" && mode != "verify") {
+    out.issues.push_back("invalid_biometric_mode");
+    return out;
+  }
+
+  ParsedHttpEndpoint endpoint;
+  if (!parseHttpEndpoint(gAiEngineUrl + "/seetaface_analyze", endpoint)) {
+    out.issues.push_back("ai_engine_invalid_url");
+    return out;
+  }
+  const std::string boundary = "----InformeBoundary" + makeId();
+  std::string body;
+  body.reserve(imageBytes.size() + 384);
+  body += "--" + boundary + "\r\n";
+  body += "Content-Disposition: form-data; name=\"mode\"\r\n\r\n" + mode + "\r\n";
+  body += "--" + boundary + "\r\n";
+  body += "Content-Disposition: form-data; name=\"image\"; filename=\"frame.jpg\"\r\n";
+  body += "Content-Type: image/jpeg\r\n\r\n";
+  body.append(reinterpret_cast<const char *>(imageBytes.data()),
+              static_cast<std::streamsize>(imageBytes.size()));
+  body += "\r\n--" + boundary + "--\r\n";
+
+  beast::error_code ec;
+  asio::io_context ioc;
+  asio::ip::tcp::resolver resolver{ioc};
+  beast::tcp_stream stream{ioc};
+  stream.expires_after(std::chrono::milliseconds(gSeetaFace6TimeoutMs));
+  const auto results = resolver.resolve(endpoint.host, endpoint.port, ec);
+  if (ec) { out.issues.push_back("ai_engine_resolve_failed"); return out; }
+  stream.connect(results, ec);
+  disableNagleForLowLatency(stream);
+  if (ec) { out.issues.push_back("ai_engine_connect_failed"); return out; }
+
+  http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
+  req.set(http::field::host, endpoint.host);
+  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+  req.set(http::field::content_type, "multipart/form-data; boundary=" + boundary);
+  req.body() = std::move(body);
+  req.prepare_payload();
+  http::write(stream, req, ec);
+  if (ec) { out.issues.push_back("ai_engine_write_failed"); return out; }
+
+  beast::flat_buffer buffer;
+  http::response_parser<http::string_body> parser;
+  parser.body_limit(4U * 1024U * 1024U);
+  http::read(stream, buffer, parser, ec);
+  auto res = parser.release();
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+  if (ec) { out.issues.push_back("ai_engine_read_failed"); return out; }
+  if (res.result() != http::status::ok) {
+    out.issues.push_back("seetaface6_http_not_ok");
+    return out;
+  }
+
+  try {
+    const auto payload = json::parse(res.body());
+    if (!payload.is_object()) {
+      out.issues.push_back("seetaface6_invalid_json");
+      return out;
+    }
+    const auto &obj = payload.as_object();
+    if (const auto *quality = obj.if_contains("quality"); quality && quality->is_object()) {
+      const auto &q = quality->as_object();
+      if (const auto *score = q.if_contains("score"); score &&
+          (score->is_double() || score->is_int64())) {
+        out.qualityScore = score->is_double() ? score->as_double()
+                                             : static_cast<double>(score->as_int64());
+      }
+      if (const auto *issues = q.if_contains("issues"); issues && issues->is_array()) {
+        for (const auto &issue : issues->as_array()) {
+          if (issue.is_string()) out.issues.push_back(json::value_to<std::string>(issue));
+        }
+      }
+    }
+    if (const auto *error = obj.if_contains("error"); error && error->is_string()) {
+      out.issues.push_back(json::value_to<std::string>(*error));
+    }
+    if (const auto *tpl = obj.if_contains("template"); tpl && tpl->is_array()) {
+      for (const auto &value : tpl->as_array()) {
+        double parsed = 0.0;
+        if (value.is_double()) parsed = value.as_double();
+        else if (value.is_int64()) parsed = static_cast<double>(value.as_int64());
+        else continue;
+        if (!std::isfinite(parsed)) {
+          out.faceTemplate.clear();
+          out.issues.push_back("seetaface6_template_non_finite");
+          return out;
+        }
+        out.faceTemplate.push_back(parsed);
+      }
+    }
+    const bool pass = obj.if_contains("pass") && obj.at("pass").is_bool() &&
+                      obj.at("pass").as_bool();
+    const bool validDim = out.faceTemplate.size() == 512 || out.faceTemplate.size() == 1024;
+    if (pass && !validDim) out.issues.push_back("seetaface6_template_dim_invalid");
+    out.ok = pass && validDim;
+    return out;
+  } catch (...) {
+    out.issues.push_back("seetaface6_parse_failed");
+    return out;
+  }
+}
+
+FaceAnalysis fetchDeepFaceSilentAnalysisFromAiEngine(
+    const std::vector<unsigned char> &imageBytes, const std::string &mode) {
+  FaceAnalysis out;
+  out.provider = "deepface_silentface";
+  if (gAiEngineUrl.empty()) {
+    out.issues.push_back("ai_engine_disabled");
+    return out;
+  }
+  if (imageBytes.empty() || imageBytes.size() > gAiEngineMaxImageBytes) {
+    out.issues.push_back("ai_engine_skipped_size_limit");
+    return out;
+  }
+  if (mode != "register" && mode != "verify") {
+    out.issues.push_back("invalid_biometric_mode");
+    return out;
+  }
+
+  ParsedHttpEndpoint endpoint;
+  if (!parseHttpEndpoint(gAiEngineUrl + "/deepface_analyze", endpoint)) {
+    out.issues.push_back("ai_engine_invalid_url");
+    return out;
+  }
+  const std::string boundary = "----InformeBoundary" + makeId();
+  std::string body;
+  body.reserve(imageBytes.size() + 384);
+  body += "--" + boundary + "\r\n";
+  body += "Content-Disposition: form-data; name=\"mode\"\r\n\r\n" + mode + "\r\n";
+  body += "--" + boundary + "\r\n";
+  body += "Content-Disposition: form-data; name=\"image\"; filename=\"frame.jpg\"\r\n";
+  body += "Content-Type: image/jpeg\r\n\r\n";
+  body.append(reinterpret_cast<const char *>(imageBytes.data()),
+              static_cast<std::streamsize>(imageBytes.size()));
+  body += "\r\n--" + boundary + "--\r\n";
+
+  beast::error_code ec;
+  asio::io_context ioc;
+  asio::ip::tcp::resolver resolver{ioc};
+  beast::tcp_stream stream{ioc};
+  stream.expires_after(std::chrono::milliseconds(gDeepFaceSilentTimeoutMs));
+  const auto results = resolver.resolve(endpoint.host, endpoint.port, ec);
+  if (ec) { out.issues.push_back("ai_engine_resolve_failed"); return out; }
+  stream.connect(results, ec);
+  disableNagleForLowLatency(stream);
+  if (ec) { out.issues.push_back("ai_engine_connect_failed"); return out; }
+
+  http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
+  req.set(http::field::host, endpoint.host);
+  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+  req.set(http::field::content_type, "multipart/form-data; boundary=" + boundary);
+  req.body() = std::move(body);
+  req.prepare_payload();
+  http::write(stream, req, ec);
+  if (ec) { out.issues.push_back("ai_engine_write_failed"); return out; }
+
+  beast::flat_buffer buffer;
+  http::response_parser<http::string_body> parser;
+  parser.body_limit(4U * 1024U * 1024U);
+  http::read(stream, buffer, parser, ec);
+  auto res = parser.release();
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+  if (ec) { out.issues.push_back("ai_engine_read_failed"); return out; }
+  if (res.result() != http::status::ok) {
+    out.issues.push_back("ai_engine_http_not_ok");
+    return out;
+  }
+
+  try {
+    const auto payload = json::parse(res.body());
+    if (!payload.is_object()) {
+      out.issues.push_back("deepface_silentface_invalid_json");
+      return out;
+    }
+    const auto &obj = payload.as_object();
+    if (const auto *quality = obj.if_contains("quality"); quality && quality->is_object()) {
+      const auto &q = quality->as_object();
+      if (const auto *score = q.if_contains("score"); score &&
+          (score->is_double() || score->is_int64())) {
+        out.qualityScore = score->is_double() ? score->as_double()
+                                             : static_cast<double>(score->as_int64());
+      }
+      if (const auto *issues = q.if_contains("issues"); issues && issues->is_array()) {
+        for (const auto &issue : issues->as_array()) {
+          if (issue.is_string()) out.issues.push_back(json::value_to<std::string>(issue));
+        }
+      }
+    }
+    if (const auto *error = obj.if_contains("error"); error && error->is_string()) {
+      out.issues.push_back(json::value_to<std::string>(*error));
+    }
+    if (const auto *tpl = obj.if_contains("template"); tpl && tpl->is_array()) {
+      for (const auto &value : tpl->as_array()) {
+        double parsed = 0.0;
+        if (value.is_double()) parsed = value.as_double();
+        else if (value.is_int64()) parsed = static_cast<double>(value.as_int64());
+        else continue;
+        if (!std::isfinite(parsed)) {
+          out.faceTemplate.clear();
+          out.issues.push_back("deepface_silentface_template_non_finite");
+          return out;
+        }
+        out.faceTemplate.push_back(parsed);
+      }
+    }
+    const bool pass = obj.if_contains("pass") && obj.at("pass").is_bool() &&
+                      obj.at("pass").as_bool();
+    // Facenet512 siempre entrega 512 componentes -- a diferencia de
+    // SeetaFace6, que acepta 512 o 1024 según el modelo de reconocimiento.
+    const bool validDim = out.faceTemplate.size() == kFaceEmbeddingVectorDim;
+    if (pass && !validDim) out.issues.push_back("deepface_silentface_template_dim_invalid");
+    out.ok = pass && validDim;
+    return out;
+  } catch (...) {
+    out.issues.push_back("deepface_silentface_parse_failed");
+    return out;
+  }
+}
+
 AiEngineCartoonResult
 fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
   AiEngineCartoonResult out;
@@ -455,6 +771,7 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
   }
 
   stream.connect(results, ec);
+  disableNagleForLowLatency(stream);
   if (ec) {
     out.error = "ai_engine_connect_failed";
     return out;
@@ -589,6 +906,7 @@ scanDocumentWithAiEngine(const std::vector<unsigned char> &imageBytes) {
   }
 
   stream.connect(results, ec);
+  disableNagleForLowLatency(stream);
   if (ec) {
     out.error = "ai_engine_connect_failed";
     return out;

@@ -32,17 +32,48 @@
 #   (namespacing en mediapipe Tasks API; extras opcionales en insightface)
 #   sin ciclo de prueba todavia -- la migracion a NumPy 2.x es ortogonal a
 #   esa decision.
-opencv-python-headless>=4.14,<5
+# Corrección 2026-08-13: opencv-python-headless>=4.12 exige numpy>=2 (ver
+# requires_dist real en PyPI, distinto de lo que decia el comentario de
+# arriba) -- incompatible en tiempo de ejecucion con tensorflow<2.16
+# (AttributeError: _ARRAY_API not found / crash de mediapipe->tensorflow al
+# importar, confirmado en el contenedor). Fijado a 4.11.0.86 (ene-2025,
+# ultima release 4.x que NO exige numpy>=2 para Python 3.10) hasta que
+# tensorflow suba de linea (ver nota de Keras 3 mas abajo). Las tres
+# variantes de opencv deben ir a la MISMA version exacta, no solo el mismo
+# tope <5 (ver comentarios originales sobre la carrera de instalacion).
+opencv-python-headless==4.11.0.86
 # opencv-contrib-python: dependencia transitiva (albumentations/insightface),
 # NO declarada aqui arriba. Comparte el paquete "cv2" con
 # opencv-python-headless -- quien se instale despues sobrescribe los
 # archivos del otro en site-packages. Sin este pin, trajo 5.0.0.93 y gano
 # la carrera, dejando cv2.__version__ en 5.0 pese al <5 de la linea de
-# arriba. Se fija al mismo tope para que, gane quien gane, quede en 4.x.
-opencv-contrib-python<5
+# arriba. Se fija a la misma version exacta que opencv-python-headless.
+opencv-contrib-python==4.11.0.86
+# Mismo problema, causado ahora por deepface: arrastra mtcnn/retina-face
+# (detectores que este adaptador no usa -- se fuerza detector_backend="yunet"
+# en deepface_silentface_adapter.py) que exigen "opencv-python>=4.5.5.64" SIN
+# tope superior. Verificado con `pip install --dry-run`: sin este pin, resolvía
+# opencv_python-5.0.0.93 (mismo paquete "cv2" que opencv-python-headless de
+# arriba) reintroduciendo la carrera de instalación que ya rompió la línea de
+# opencv-contrib-python.
+opencv-python==4.11.0.86
 mediapipe>=0.10.9,<0.11
 flask
-numpy>=2,<3
+# WSGI de producción: Werkzeug (servidor de app.run()) manda "Connection:
+# close" incondicional en cada respuesta (decisión de diseño de Werkzeug,
+# no configurable) -- sin conexiones HTTP/1.1 persistentes, el pool de
+# conexiones del backend C++ hacia ai_engine (ai_engine_conn_pool.hpp) no
+# tiene nada que reutilizar. waitress sigue siendo un solo proceso con pool
+# de threads (no duplica modelos/VRAM como gunicorn -w N lo haría) pero sí
+# soporta keep-alive real. Ver eye_analyzer.py, bloque `if __name__`.
+waitress
+# numpy<2: tensorflow<2.16 (ver mas abajo) no soporta NumPy 2.x -- rompe en
+# import con "AttributeError: _ARRAY_API not found" (confirmado en runtime,
+# no solo en resolucion de pip). El comentario original de mas arriba sobre
+# "numpy>=2 requerido por onnxruntime/opencv-headless" resulto impreciso:
+# onnxruntime==1.23.2 solo exige numpy>=1.21.6 (sin tope), y opencv-headless
+# se bajo de linea arriba justamente para no forzar numpy>=2.
+numpy>=1.24,<2
 requests
 onnxruntime>=1.16.0,<1.24
 # Embeddings faciales (modelos ONNX descargados en INSIGHTFACE_ROOT)
@@ -53,3 +84,57 @@ onnx>=1.15.0,<1.17
 pyzbar>=0.1.9
 pytesseract>=0.3.10
 mrz>=0.6.1
+
+# Extracción de texto plano de CVs (Word/PDF) -- ADR-122, /extract_cv_text.
+# Sin LLM ni interpretación de contenido acá: solo texto crudo, la
+# extracción de campos/scoring ocurre en el backend C++ (Ollama). pdfplumber
+# preferido sobre PyPDF2 (mejor manejo de layouts reales con tablas/columnas
+# -- evaluar en la práctica contra CVs reales; ver ADR-122 fase de pruebas).
+python-docx>=1.1,<2
+pdfplumber>=0.11,<1
+# Extracción de texto de CVs en formato PowerPoint (ADR-129) -- puro Python,
+# sin dependencias de sistema (a diferencia de pyzbar/tesseract arriba), no
+# afecta el resto del pin de versiones de este archivo.
+python-pptx>=1.0,<2
+
+# ---------------------------------------------------------------------------
+# Proveedor biométrico primario: DeepFace (Facenet512) + Silent-Face-Anti-
+# Spoofing (MiniFASNet). Reemplaza a SeetaFace6 como proveedor local por
+# defecto -- ver ai_engine/deepface_silentface_adapter.py y
+# ai_engine/silentface/ (código vendorizado de inferencia, MIT).
+#
+# torch/torchvision: se instalan desde el índice oficial de PyTorch con
+# ruedas CUDA embebidas (--extra-index-url abajo) en vez de cambiar la imagen
+# base a una con CUDA preinstalado -- las ruedas de PyTorch traen su propio
+# runtime CUDA/cuDNN desde hace varias versiones, así que solo hace falta el
+# driver NVIDIA + nvidia-container-toolkit en el host. Si no hay GPU visible,
+# torch.cuda.is_available() es False y todo corre en CPU sin fallar (mismo
+# patrón que el script probado por el usuario).
+#
+# cu128 (no cu121): confirmado en runtime, 2026-08-18, con una GPU real
+# (NVIDIA RTX 5060 Laptop, arquitectura Blackwell / compute capability
+# sm_120). torch==2.2.2+cu121 SÍ detecta la GPU (torch.cuda.is_available()
+# True) pero solo trae kernels precompilados hasta sm_90 -- cualquier
+# operación real revienta con "CUDA error: no kernel image is available for
+# execution on the device" (a diferencia de TensorFlow, que sí compila PTX
+# al vuelo vía el driver; torch no tiene ese fallback automático). torch
+# 2.11.0+cu128 SÍ trae kernels para sm_120 -- probado con una multiplicación
+# de matrices real en GPU, sin errores. Downgrade a cu121 solo si se
+# confirma que el hardware de despliegue es anterior a Blackwell (ver
+# tabla de compute capability en la doc de NVIDIA antes de tocar esto).
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+
+# tensorflow[and-cuda]: DeepFace usa tf.keras para construir/cargar Facenet512.
+# El extra "and-cuda" trae las librerías CUDA/cuDNN como dependencias pip
+# (mismo razonamiento que torch arriba). Se fija <2.16 para evitar el cambio
+# de Keras 3 como backend por defecto (TF 2.16+), no probado todavía con la
+# versión de DeepFace fijada aquí.
+# Version EXACTA (no rango) 2026-08-20: con ">=2.14,<2.16" pip backtrackeaba
+# entre 2.15.1/2.15.0.post1/2.15.0 buscando una compatible con
+# torch==2.11.0+cu128 + numpy<2, re-descargando el wheel completo (475MB)
+# en cada intento fallido -- costó >15 min extra en un build. 2.15.1 es la
+# que finalmente resuelve sin conflicto (confirmada en ese build).
+tensorflow[and-cuda]==2.15.1
+deepface>=0.0.85,<0.1

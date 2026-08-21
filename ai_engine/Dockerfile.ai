@@ -1,3 +1,47 @@
+# syntax=docker/dockerfile:1.7
+FROM python:3.10-bookworm AS seetaface_builder
+
+ARG SEETAFACE6_COMMIT=a32e2faa0694c0f841ace4df9ead0407b78363c6
+ARG SEETAFACE6_BUILD_JOBS=2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# El commit queda fijado para que el build no cambie silenciosamente. Los
+# modelos no se hornean en la imagen: se montan read-only y se verifican por
+# SHA-256 según docs/integration/SEETAFACE6_LOCAL_DOCKER.md.
+RUN git clone --recursive https://github.com/SeetaFace6Open/index.git /src/seetaface6 \
+    && cd /src/seetaface6 \
+    && git checkout "$SEETAFACE6_COMMIT" \
+    && git submodule update --init --recursive \
+    && sed -i '9i#include <functional>' /src/seetaface6/OpenRoleZoo/include/orz/mem/pot.h \
+    && sed -i 's/-DTS_DYNAMIC_INSTRUCTION=ON/-DTS_DYNAMIC_INSTRUCTION=OFF/' \
+       /src/seetaface6/TenniS/craft/build.linux.x64.sh \
+    && find . -path '*/craft/build.linux.x64.sh' -type f \
+       -exec sed -i -e 's/mkdir "$BUILD_DIR"/mkdir -p "$BUILD_DIR"/' \
+                    -e "s/make -j16/make -j${SEETAFACE6_BUILD_JOBS}/" {} +
+
+RUN cd /src/seetaface6/OpenRoleZoo/craft && bash build.linux.x64.sh \
+    && cd /src/seetaface6/SeetaAuthorize/craft && bash build.linux.x64.sh \
+    && cd /src/seetaface6/TenniS/craft && bash build.linux.x64.sh \
+    && cd /src/seetaface6/FaceBoxes/craft && bash build.linux.x64.sh \
+    && cd /src/seetaface6/Landmarker/craft && bash build.linux.x64.sh \
+    && cd /src/seetaface6/FaceAntiSpoofingX6/craft && bash build.linux.x64.sh \
+    && cd /src/seetaface6/FaceRecognizer6/craft && bash build.linux.x64.sh
+
+COPY seetaface6_cli /src/seetaface6_cli
+RUN cmake -S /src/seetaface6_cli -B /src/seetaface6_cli/build \
+      -DSEETAFACE_ROOT=/src/seetaface6/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/seetaface6 \
+    && cmake --build /src/seetaface6_cli/build --parallel "$SEETAFACE6_BUILD_JOBS" \
+    && cmake --install /src/seetaface6_cli/build \
+    && mkdir -p /opt/seetaface6/lib \
+    && if [ -d /src/seetaface6/build/lib ]; then cp -a /src/seetaface6/build/lib/. /opt/seetaface6/lib/; fi \
+    && if [ -d /src/seetaface6/build/lib64 ]; then cp -a /src/seetaface6/build/lib64/. /opt/seetaface6/lib/; fi
+
 FROM python:3.10-bookworm
 
 RUN apt-get update && apt-get install -y \
@@ -7,15 +51,34 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     curl \
     libzbar0 \
+    libgomp1 \
     tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY vendor-wheels /tmp/vendor-wheels
+RUN --mount=type=cache,target=/root/.cache/pip pip install --find-links=/tmp/vendor-wheels --timeout 300 --retries 12 -r requirements.txt
+# torch (cu128) y tensorflow[and-cuda] (CUDA 11.8) instalan nvidia-nccl-cu12
+# Y nvidia-nccl-cu11 en el MISMO path de paquete namespace
+# (site-packages/nvidia/nccl/lib/libnccl.so.2) -- torch 2.11.0+cu128 depende
+# de nvidia-nccl-cu12==2.28.9, pero tensorflow[and-cuda] instala
+# nvidia-nccl-cu11==2.16.5 DESPUES en esta misma capa, pisando fisicamente el
+# .so mas nuevo con el mas viejo -- pip no detecta el conflicto porque ambos
+# paquetes "declaran" ser dueños del mismo archivo. Resultado confirmado en
+# runtime: import torch revienta con "undefined symbol: ncclCommRegister"
+# (2.16.5 no tiene ese simbolo, agregado en NCCL 2.19). Reinstalar cu12 al
+# final, sin dependencias, garantiza que su .so quede como el ultimo escrito
+# en disco sin importar el orden de resolucion de pip. Si sube la version de
+# torch en requirements.txt, revisar tambien esta version (debe coincidir
+# con lo que declare torch en ese momento -- `pip show nvidia-nccl-cu12`
+# tras instalar torch a secas).
+RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps --force-reinstall --no-cache-dir nvidia-nccl-cu12==2.28.9
 
 COPY . .
+COPY --from=seetaface_builder /opt/seetaface6 /opt/seetaface6
+RUN cp -a /opt/seetaface6/lib/. /usr/local/lib/ && ldconfig
 
 # Invalida caché de capas cuando cambia el pipeline de avatar (rebuild --no-cache recomendado).
 LABEL informe.ai_engine.cartoon_pipeline="v6-local-clahe-no-kmeans"
@@ -32,7 +95,40 @@ RUN if [ "$VERIFY_GLASSES_ONNX" = "1" ]; then \
 ENV GLASSES_ONNX_PATH=/app/models/glasses_classifier.onnx
 # Modelos InsightFace (buffalo_l, etc.); en runtime suele montarse un volumen aquí.
 ENV INSIGHTFACE_ROOT=/app/.insightface
+ENV SEETAFACE6_CLI_PATH=/opt/seetaface6/bin/seetaface6-face-cli
+ENV SEETAFACE6_MODEL_DIR=/opt/seetaface6/models
+ENV SEETAFACE6_TIMEOUT_SECONDS=20
 RUN mkdir -p /app/.insightface
+
+# Proveedor biométrico primario (deepface_silentface_adapter.py). Pesos de
+# Facenet512/YuNet (DeepFace) y de detección/anti-spoofing (Silent-Face) se
+# montan read-only en runtime -- nunca se descargan en el contenedor (ver
+# docs/integration/DEEPFACE_SILENTFACE_LOCAL_DOCKER.md).
+# DEEPFACE_HOME=/app (NO /app/.deepface): deepface.commons.folder_utils
+# .initialize_folder() siempre hace home + "/.deepface/weights" -- con
+# DEEPFACE_HOME=/app/.deepface esa cuenta resuelve a /app/.deepface/.deepface,
+# una ruta que no existe dentro del volumen read-only montado (el volumen ya
+# ES ".deepface"), y el mkdir revienta con "Read-only file system" en cada
+# arranque (confirmado en runtime, 2026-08-18). DEEPFACE_HOME=/app hace que la
+# ruta buscada sea /app/.deepface/weights/..., que coincide con el punto de
+# montaje real. docker-compose.yml ya trae este mismo valor (gana en runtime
+# sobre este ENV), pero se corrige aquí también para quien use la imagen sin
+# compose.
+ENV DEEPFACE_HOME=/app
+ENV SILENTFACE_DETECTION_MODEL_DIR=/opt/deepface_silentface/models/detection
+ENV SILENTFACE_ANTISPOOF_MODEL_DIR=/opt/deepface_silentface/models/anti_spoof
+RUN mkdir -p /app/.deepface /opt/deepface_silentface/models/detection /opt/deepface_silentface/models/anti_spoof
+
+# cuDNN (TensorFlow/DeepFace) hace dlopen("libnvrtc.so") -- sin sufijo de
+# version -- para compilar kernels PTX en GPUs mas nuevas que los cubin
+# precompilados del propio TensorFlow (confirmado en runtime con una RTX 5060
+# Laptop, sm_120/Blackwell: TensorFlow 2.14.1 SI corre en GPU vía JIT de PTX,
+# pero solo si esta variable esta seteada -- sin ella, cuDNN no encuentra
+# libnvrtc.so aunque el archivo exista como libnvrtc.so.12 dentro del paquete
+# pip nvidia-cuda-nvrtc-cu12, y el proceso termina en SIGABRT/SIGSEGV al
+# primer forward de un modelo real). Sin esto, ai_engine sigue funcionando
+# pero corriendo TODO en CPU silenciosamente.
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_cupti/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/curand/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvtx/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvcc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cufft/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib
 
 EXPOSE 5000
 

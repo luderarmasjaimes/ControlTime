@@ -45,6 +45,11 @@ from glasses_fusion import (
     warmup_glasses_onnx,
 )
 from dni_scan import scan_dni_image
+from seetaface6_adapter import analyze as analyze_seetaface6
+from seetaface6_adapter import status as seetaface6_status
+from deepface_silentface_adapter import analyze as analyze_deepface_silentface
+from deepface_silentface_adapter import status as deepface_silentface_status
+from deepface_silentface_adapter import warmup as warmup_deepface_silentface
 
 # =============================================================================
 # TUNING — confianza del landmarker (más bajo = más tolerante a caras pequeñas/luz difícil)
@@ -55,9 +60,23 @@ MIN_TRACKING_CONF = float(os.environ.get("MP_MIN_TRACK", "0.42"))
 
 # EAR: umbral base; se adapta ligeramente a la distancia (IED en píxeles)
 EAR_THRESH_BASE = float(os.environ.get("EAR_THRESH_BASE", "0.185"))
-EAR_IED_REF_PX = float(os.environ.get("EAR_IED_REF", "95.0"))  # ~distancia interocular de referencia
+# 143px (antes 95px): la resolución de captura subió de 640x480 a 960x720
+# (1.5x lineal, ver FACIAL_ICAO.CAMERA en frontend/src/config/facialIcaoConfig.ts,
+# 2026-08-19) -- este valor representa la MISMA distancia física de referencia,
+# solo que ahora medida con más píxeles (95*1.5=142.5). Sin este ajuste, la
+# distancia "normal" de siempre habría quedado permanentemente por debajo de la
+# referencia (falso "muy cerca"), sin usar el rango de escala real.
+EAR_IED_REF_PX = float(os.environ.get("EAR_IED_REF", "143.0"))  # ~distancia interocular de referencia
 EAR_IED_SCALE_MIN = float(os.environ.get("EAR_IED_SCALE_MIN", "0.88"))
-EAR_IED_SCALE_MAX = float(os.environ.get("EAR_IED_SCALE_MAX", "1.12"))
+# Techo bajado de 1.12 a 1.00 (2026-08-19, datos reales de producción): a
+# menos IED (cara más lejos/chica) el EAR crudo medido YA baja por la propia
+# pérdida de precisión de pocos píxeles (confirmado: EAR combinado ~0.15-0.24
+# a IED~78-90, contra ~0.30-0.35 a IED~95+) -- exigir un umbral MÁS ALTO
+# encima de un EAR ya más bajo era un doble castigo por distancia, la causa
+# real de que hubiera que acercarse mucho para que "ojos abiertos" pasara
+# rápido. El umbral ya no sube por estar lejos; el piso 0.88 se mantiene
+# (más permisivo de cerca, donde el EAR es confiable y da margen de sobra).
+EAR_IED_SCALE_MAX = float(os.environ.get("EAR_IED_SCALE_MAX", "1.00"))
 
 # Blink blendshape: por encima se considera ojo más cerrado (MediaPipe ~0..1)
 BLINK_STRONG = float(os.environ.get("BLINK_STRONG", "0.52"))
@@ -96,6 +115,22 @@ options = vision.FaceLandmarkerOptions(
     output_face_blendshapes=True,
 )
 detector = vision.FaceLandmarker.create_from_options(options)
+
+# MediaPipe Tasks (FaceLandmarker/ImageSegmenter) NO garantiza que un mismo
+# objeto sea seguro para llamadas concurrentes desde varios hilos -- mismo
+# problema que ya se identificó y se serializó con _lock en
+# face_embedding_insight.py (InsightFace) y con _glasses_lock más abajo (CV
+# de gafas): con threaded=True, dos frames en vuelo al mismo tiempo (la
+# propia UI manda uno cada VERIFY_SYNC_MS=175ms y puede solaparse si un
+# detect() tarda más que eso, o dos sesiones/pestañas concurrentes) pueden
+# corromper el estado interno del detector compartido o colgarlo sin log de
+# cierre -- el mismo síntoma "llega a los frames requeridos y después no
+# avanza, sin error, hasta el timeout" reportado en vivo para login/registro
+# facial. A diferencia de _glasses_lock (que ya protegía el cálculo CV de
+# gafas), detector.detect()/segmenter.segment() -- llamados en CADA
+# verify-frame, la ruta más caliente de todo el pipeline -- corrían sin
+# ningún lock.
+_mediapipe_lock = threading.Lock()
 
 _selfie_segmenter = None
 _selfie_segmenter_failed = False
@@ -147,6 +182,8 @@ class _SessionState:
         "glasses_state_prev",
         "glasses_fusion_hist",
         "glasses_fusion_state_prev",
+        "onnx_confident_no_glasses_streak",
+        "onnx_confident_glasses_streak",
         "left_ear_hist",
         "right_ear_hist",
         "last_touched",
@@ -158,6 +195,8 @@ class _SessionState:
         self.glasses_state_prev = False
         self.glasses_fusion_hist = deque(maxlen=_glasses_fusion_hist_maxlen())
         self.glasses_fusion_state_prev = False
+        self.onnx_confident_no_glasses_streak = 0
+        self.onnx_confident_glasses_streak = 0
         self.left_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
         self.right_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
         self.last_touched = time.monotonic()
@@ -328,6 +367,28 @@ def face_frontal_from_points(points: np.ndarray) -> bool:
     if pitch_ratio < -0.12 or pitch_ratio > 0.95:
         return False
     return True
+
+
+def head_yaw_ratio_from_points(points: np.ndarray) -> float:
+    """
+    Igual geometría que face_frontal_from_points (nariz vs eje interocular)
+    pero con signo: positivo = nariz desplazada hacia el lado derecho de la
+    imagen (usuario giró la cabeza hacia SU izquierda), negativo = hacia el
+    lado izquierdo de la imagen (giró hacia SU derecha). Usado para el
+    desafío activo de liveness "gira la cabeza" -- valores ~0.20-0.25 ya son
+    un giro claro y visible sin perder la detección del rostro (el límite de
+    "no frontal" en face_frontal_from_points es 0.42, mucho más extremo).
+    """
+    if points.shape[0] < 400:
+        return 0.0
+    nose = points[1]
+    le = np.mean(points[LEFT_EYE], axis=0)
+    re = np.mean(points[RIGHT_EYE], axis=0)
+    mid = (le + re) * 0.5
+    ied = float(np.linalg.norm(le - re))
+    if ied < 12.0:
+        return 0.0
+    return float((nose[0] - mid[0]) / ied)
 
 
 def mar_inner_ratio(points):
@@ -743,8 +804,87 @@ def apply_glasses_fusion_pipeline(
                     p_max, sd_max = 0.45, 0.0028
                 sd = float(gdebug.get("spec_density", 1.0))
                 if float(onnx_p) < p_max and sd < sd_max:
-                    hit = False
+                    # No se pisa `hit` aqui con el valor de UN solo frame:
+                    # eso era lo que hacia parpadear "no_glasses" SI/NO cada
+                    # frame con el ruido del clasificador (ver comentario mas
+                    # abajo). El cambio de estado real solo lo aplica el
+                    # bloque de salida confirmada (varios frames sostenidos).
                     gdebug["onnx_no_glasses_veto"] = True
+
+            # El veto de arriba (770-796) ya no pisa `hit` de un solo frame:
+            # solo deja constancia en gdebug. El cambio de estado real (y de
+            # `hit`) requiere confianza ONNX baja Y SOSTENIDA (varios frames,
+            # no uno), aplicada aqui abajo sobre st.glasses_state_prev
+            # (caso real que motivo esto: usuario se quito los lentes,
+            # glasses_debug mostraba glasses_state=true / exit_glasses_condition
+            # =false indefinidamente porque su rim/bridge SIN lentes, 0.206/
+            # 0.070, nunca bajaba del umbral de salida 0.050/0.015 calibrado
+            # con otra cara/iluminacion -- sin este bloque el resultado final
+            # solo parpadeaba con el ruido del clasificador, nunca resolvia
+            # "sin lentes" de forma estable). Esto da salida limpia en vez de
+            # parpadeo, sin bajar el umbral de salida del heuristico CV (que
+            # sigue protegiendo contra quitarse los lentes de un solo frame,
+            # p.ej. un parpadeo de camara o intento de evadir el chequeo).
+            if onnx_p is not None and st.glasses_state_prev:
+                try:
+                    exit_prob = float(
+                        os.environ.get("GLASSES_ONNX_EXIT_CONFIRM_PROB", "0.35")
+                    )
+                    exit_frames = max(
+                        1, int(os.environ.get("GLASSES_ONNX_EXIT_CONFIRM_FRAMES", "3"))
+                    )
+                except ValueError:
+                    exit_prob, exit_frames = 0.35, 3
+                if float(onnx_p) < exit_prob:
+                    st.onnx_confident_no_glasses_streak += 1
+                    if st.onnx_confident_no_glasses_streak >= exit_frames:
+                        st.glasses_state_prev = False
+                        st.glasses_score_hist.clear()
+                        st.onnx_confident_no_glasses_streak = 0
+                        hit = False
+                        gdebug["onnx_confirmed_exit"] = True
+                else:
+                    st.onnx_confident_no_glasses_streak = 0
+            else:
+                st.onnx_confident_no_glasses_streak = 0
+
+            # Simetrico al bloque de arriba, en la direccion contraria: la CV
+            # nunca "entra" (rim/puente/spec no alcanzan sus umbrales -- ver
+            # frame_presence/matte_frame_signal) con gafas sin marco marcado,
+            # de cristal delgado o sin brillo aprovechable en el angulo de la
+            # camara. Evidencia real medida en ai_engine_probe_logs/
+            # glasses_probe.jsonl: 3515 frames confirmados CON gafas puestas
+            # donde onnx_prob estaba en 0.7-0.9 (el clasificador acertaba con
+            # alta confianza) pero cv_glasses_hit era False en el 100% de
+            # ellos -- el modo cv_primary anterior solo dejaba que ONNX
+            # VETARA una deteccion CV (bajar "con lentes" a "sin lentes"),
+            # nunca que la CONFIRMARA (subir "sin lentes" a "con lentes"),
+            # desperdiciando la senal mas fiable de las dos justo cuando la
+            # CV fallaba -- causa raiz confirmada de "deja pasar con lentes
+            # puestos". Igual que la salida, exige confianza ALTA y
+            # SOSTENIDA (varios frames, no uno) para evitar falsos positivos
+            # por ruido del clasificador en un solo frame.
+            if onnx_p is not None and not st.glasses_state_prev:
+                try:
+                    entry_prob = float(
+                        os.environ.get("GLASSES_ONNX_ENTRY_CONFIRM_PROB", "0.65")
+                    )
+                    entry_frames = max(
+                        1, int(os.environ.get("GLASSES_ONNX_ENTRY_CONFIRM_FRAMES", "3"))
+                    )
+                except ValueError:
+                    entry_prob, entry_frames = 0.65, 3
+                if float(onnx_p) > entry_prob:
+                    st.onnx_confident_glasses_streak += 1
+                    if st.onnx_confident_glasses_streak >= entry_frames:
+                        st.glasses_state_prev = True
+                        st.onnx_confident_glasses_streak = 0
+                        hit = True
+                        gdebug["onnx_confirmed_entry"] = True
+                else:
+                    st.onnx_confident_glasses_streak = 0
+            else:
+                st.onnx_confident_glasses_streak = 0
             mode_out = f"{fusion_mode}+cv_primary_bool"
         return fused, hit, mode_out, onnx_p, sf, float(cv_gscore)
 
@@ -754,6 +894,8 @@ def apply_glasses_fusion_pipeline(
 @app.route("/analyze_eyes", methods=["POST"])
 def analyze_eyes():
     global last_glasses_debug
+
+    _t_start = time.perf_counter()
 
     if "image" not in request.files:
         return jsonify({"error": "No image provided"}), 400
@@ -770,6 +912,7 @@ def analyze_eyes():
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({"error": "Invalid image"}), 400
+    _t_decoded = time.perf_counter()
     # Asegurar BGR 8 bits (bilateralFilter 8u solo CV_8UC1/CV_8UC3; no in-place mismo buffer).
     if img.dtype != np.uint8:
         if img.dtype in (np.float32, np.float64) and float(np.nanmax(img)) <= 1.01:
@@ -787,9 +930,18 @@ def analyze_eyes():
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
 
-    detection_result = detector.detect(mp_image)
+    with _mediapipe_lock:
+        detection_result = detector.detect(mp_image)
+    _t_mediapipe = time.perf_counter()
 
     if not detection_result.face_landmarks:
+        print(
+            f"[EYE_AI_TIMING] session={session_id or '-'} detected=False "
+            f"decode_ms:{(_t_decoded - _t_start) * 1000:.1f} "
+            f"mediapipe_ms:{(_t_mediapipe - _t_decoded) * 1000:.1f} "
+            f"total_ms:{(_t_mediapipe - _t_start) * 1000:.1f}",
+            flush=True,
+        )
         st.mouth_closed_prev = True
         st.glasses_state_prev = False
         st.glasses_fusion_hist.clear()
@@ -858,6 +1010,19 @@ def analyze_eyes():
 
     left_open = eye_open_hybrid(left_ear, blink_l, ear_t)
     right_open = eye_open_hybrid(right_ear, blink_r, ear_t)
+    # A distancias mayores (IED bajo, cara chica en el frame), la medición
+    # EAR de UN solo ojo se vuelve ruidosa por menos píxeles/ángulo -- se
+    # midió en producción (2026-08-19, IED~55-62px) casos con EAR L:0.145
+    # EAR R:0.071 en el mismo frame (blink_bs bajo en ambos, sin evidencia de
+    # parpadeo real), exigir left_open Y right_open por separado rechazaba
+    # "ojos abiertos" por ruido de un solo ojo, no porque los ojos
+    # estuvieran cerrados. Un parpadeo real cierra ambos ojos casi
+    # simultáneamente -- si el MEJOR de los dos (EAR más alto, blendshape de
+    # parpadeo más bajo) confirma claramente "abierto", es evidencia
+    # confiable aunque el otro ojo mida ruido en ese frame.
+    combined_ear = max(left_ear, right_ear)
+    combined_blink = min(blink_l, blink_r)
+    both_open_robust = eye_open_hybrid(combined_ear, combined_blink, ear_t)
 
     jaw = bs_get(bs, "jawOpen", "JAW_OPEN")
     mar_ratio = mar_inner_ratio(points)
@@ -865,10 +1030,13 @@ def analyze_eyes():
     mouth_closed_bool = update_mouth_closed(bs, mar_ratio, st)
     mouth_open_bool = not mouth_closed_bool
 
+    _t_landmarks = time.perf_counter()
     cv_gscore, cv_hit, gdebug = glasses_from_frame(img, points, st)
+    _t_glasses_cv = time.perf_counter()
     fused_score, glasses_hit, fusion_mode, onnx_p, stable_fusion, cv_only = (
         apply_glasses_fusion_pipeline(img, float(cv_gscore), bool(cv_hit), gdebug, st)
     )
+    _t_glasses_fusion = time.perf_counter()
     no_glasses = not glasses_hit
     gdebug["glasses_fusion"] = {
         "fused_score": float(fused_score),
@@ -899,8 +1067,10 @@ def analyze_eyes():
         _append_sin_gafas_probe_record(dict(_probe_row))
 
     face_frontal = face_frontal_from_points(points)
+    head_yaw_ratio = head_yaw_ratio_from_points(points)
 
     conf = estimate_confidence(left_ear, right_ear, blink_l, blink_r, True)
+    _t_end = time.perf_counter()
 
     print(
         f"[EYE_AI] IED:{inter_eye:.1f} thr:{ear_t:.3f} EAR L:{left_ear:.3f} R:{right_ear:.3f} "
@@ -909,6 +1079,17 @@ def analyze_eyes():
         f"cv:{cv_gscore:.1f} fusion:{fusion_mode} onnx:"
         f"{(f'{float(onnx_p):.3f}' if onnx_p is not None else '-')} "
         f"frontal:{face_frontal} conf:{conf:.2f}",
+        flush=True,
+    )
+    print(
+        f"[EYE_AI_TIMING] session={session_id or '-'} detected=True "
+        f"decode_ms:{(_t_decoded - _t_start) * 1000:.1f} "
+        f"mediapipe_ms:{(_t_mediapipe - _t_decoded) * 1000:.1f} "
+        f"ear_ms:{(_t_landmarks - _t_mediapipe) * 1000:.1f} "
+        f"glasses_cv_ms:{(_t_glasses_cv - _t_landmarks) * 1000:.1f} "
+        f"glasses_onnx_fusion_ms:{(_t_glasses_fusion - _t_glasses_cv) * 1000:.1f} "
+        f"tail_ms:{(_t_end - _t_glasses_fusion) * 1000:.1f} "
+        f"total_ms:{(_t_end - _t_start) * 1000:.1f}",
         flush=True,
     )
 
@@ -930,12 +1111,13 @@ def analyze_eyes():
             "ear_threshold": float(ear_t),
             "left_open": bool(left_open),
             "right_open": bool(right_open),
-            "both_open": bool(left_open and right_open),
+            "both_open": bool(both_open_robust),
             "mouth_open": bool(mouth_open_bool),
             "mouth_mar": float(jaw),
             "mouth_closed": bool(mouth_closed_bool),
             "no_glasses": bool(no_glasses),
             "face_frontal": bool(face_frontal),
+            "head_yaw_ratio": float(head_yaw_ratio),
             "glasses_score": float(fused_score),
             "glasses_cv_score": float(cv_gscore),
             "glasses_fusion_score": float(fused_score),
@@ -997,7 +1179,8 @@ def _person_mask_grabcut_fallback(img_bgr: np.ndarray) -> Optional[np.ndarray]:
     try:
         rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        dr = detector.detect(mp_image)
+        with _mediapipe_lock:
+            dr = detector.detect(mp_image)
         if not dr.face_landmarks:
             return None
         pts = np.array(
@@ -1035,7 +1218,8 @@ def _person_mask_selfie_or_fallback(img_bgr: np.ndarray) -> np.ndarray:
         try:
             rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            res = seg.segment(mp_image)
+            with _mediapipe_lock:
+                res = seg.segment(mp_image)
             if res.category_mask is not None:
                 mv = np.asarray(res.category_mask.numpy_view(), dtype=np.uint8)
                 if mv.shape[0] != h or mv.shape[1] != w:
@@ -1200,7 +1384,8 @@ def _bust_roi_mask_from_mediapipe(
     try:
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-        dr = detector.detect(mp_image)
+        with _mediapipe_lock:
+            dr = detector.detect(mp_image)
         if not dr.face_landmarks or len(FACE_OVAL_INDICES) < 10:
             return None
         pts = np.array(
@@ -1534,6 +1719,46 @@ def face_embedding():
     )
 
 
+@app.route("/seetaface_analyze", methods=["POST"])
+def seetaface_analyze():
+    """Registro/verificación 1:1 local con detección de vivacidad SeetaFace6."""
+    if "image" not in request.files:
+        return jsonify({"ok": False, "pass": False, "error": "no_image"}), 400
+    raw = request.files["image"].read()
+    if not raw:
+        return jsonify({"ok": False, "pass": False, "error": "empty_image"}), 400
+    mode = request.form.get("mode", "verify").strip().lower()
+    payload = analyze_seetaface6(raw, mode)
+    # Un rechazo biométrico válido (spoof/fuzzy/calidad) es HTTP 200. Los
+    # errores de contrato del cliente sí son 400; indisponibilidad es 503.
+    if payload.get("error") == "invalid_mode":
+        return jsonify(payload), 400
+    if payload.get("error") == "seetaface6_unavailable":
+        return jsonify(payload), 503
+    return jsonify(payload)
+
+
+@app.route("/deepface_analyze", methods=["POST"])
+def deepface_analyze():
+    """Registro/verificación 1:1 local: liveness Silent-Face (MiniFASNet) +
+    identidad DeepFace/Facenet512. Proveedor biométrico local por defecto."""
+    if "image" not in request.files:
+        return jsonify({"ok": False, "pass": False, "error": "no_image"}), 400
+    raw = request.files["image"].read()
+    if not raw:
+        return jsonify({"ok": False, "pass": False, "error": "empty_image"}), 400
+    mode = request.form.get("mode", "verify").strip().lower()
+    payload = analyze_deepface_silentface(raw, mode)
+    # Mismo criterio HTTP que /seetaface_analyze: un rechazo biométrico válido
+    # (spoof/no-match/calidad) es 200; errores de contrato del cliente son
+    # 400; indisponibilidad del motor es 503.
+    if payload.get("error") == "invalid_mode":
+        return jsonify(payload), 400
+    if payload.get("error") in ("silentface_unavailable", "deepface_unavailable"):
+        return jsonify(payload), 503
+    return jsonify(payload)
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify(
@@ -1547,6 +1772,8 @@ def health():
             "glasses_onnx_path": os.environ.get("GLASSES_ONNX_PATH", "").strip() or None,
             "glasses_onnx_error": onnx_load_error(),
             "face_embedding": _face_embed_status(),
+            "seetaface6": seetaface6_status(),
+            "deepface_silentface": deepface_silentface_status(),
             "cartoon_avatar": {
                 "mode": "local",
                 "external_apis": False,
@@ -1559,6 +1786,157 @@ def health():
             },
         }
     )
+
+
+CV_EXTRACT_MAX_BYTES = 10 * 1024 * 1024  # 10MB -- espejo de BEEMETRY_WHATSAPP_CV_MAX_BYTES (backend)
+
+
+def _extract_cv_text_from_pdf(file_bytes):
+    import pdfplumber
+    import io
+
+    parts = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _extract_cv_text_from_docx(file_bytes):
+    import docx
+    import io
+
+    doc = docx.Document(io.BytesIO(file_bytes))
+    parts = [p.text for p in doc.paragraphs if p.text]
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if cell.text:
+                    parts.append(cell.text)
+    return "\n".join(parts)
+
+
+def _extract_cv_text_from_pptx(file_bytes):
+    """ADR-129: algunos postulantes envían un portafolio/CV en PowerPoint en
+    vez de Word/PDF -- mismo criterio de "solo texto plano, sin interpretar"
+    que las otras dos extracciones. Recorre shapes con texto y tablas de cada
+    diapositiva, en orden."""
+    import pptx
+    import io
+
+    prs = pptx.Presentation(io.BytesIO(file_bytes))
+    parts = []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text_frame.text:
+                parts.append(shape.text_frame.text)
+            elif shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        if cell.text:
+                            parts.append(cell.text)
+    return "\n".join(parts)
+
+
+@app.route("/extract_cv_text", methods=["POST"])
+def extract_cv_text():
+    """Extrae texto plano de un CV (Word/PDF/PowerPoint) -- ADR-122/129. Solo
+    extracción, sin interpretación de contenido: la lectura de campos/
+    puntuación del candidato ocurre en el backend C++ (Ollama), nunca acá.
+    `filename` (o el Content-Type del archivo) decide el parser -- .docx vía
+    python-docx, .pdf vía pdfplumber, .pptx vía python-pptx."""
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "no_file_provided"}), 400
+    file = request.files["file"]
+    file_bytes = file.read()
+    if len(file_bytes) == 0:
+        return jsonify({"ok": False, "error": "empty_file"}), 400
+    if len(file_bytes) > CV_EXTRACT_MAX_BYTES:
+        return jsonify({"ok": False, "error": "file_too_large"}), 400
+
+    filename = (file.filename or "").lower()
+    mimetype = (file.mimetype or "").lower()
+    is_pdf = filename.endswith(".pdf") or "pdf" in mimetype
+    is_docx = filename.endswith(".docx") or "wordprocessingml.document" in mimetype
+    is_pptx = filename.endswith(".pptx") or "presentationml" in mimetype
+
+    try:
+        if is_pdf:
+            text = _extract_cv_text_from_pdf(file_bytes)
+        elif is_docx:
+            text = _extract_cv_text_from_docx(file_bytes)
+        elif is_pptx:
+            text = _extract_cv_text_from_pptx(file_bytes)
+        else:
+            return jsonify({"ok": False, "error": "unsupported_format"}), 400
+    except Exception as ex:  # noqa: BLE001 -- documento corrupto/formato inesperado, nunca 500 en silencio
+        return jsonify({"ok": False, "error": "extraction_failed", "detail": str(ex)}), 200
+
+    text = (text or "").strip()
+    if not text:
+        return jsonify({"ok": False, "error": "empty_document"}), 200
+    return jsonify({"ok": True, "text": text, "char_count": len(text)})
+
+
+IMAGE_ANALYZE_MAX_BYTES = 10 * 1024 * 1024  # 10MB -- mismo tope que CV_EXTRACT_MAX_BYTES
+
+
+@app.route("/analyze_image", methods=["POST"])
+def analyze_image():
+    """ADR-129: lectura genérica de imagen adjuntada desde el widget de chat
+    de soporte (SupportChatWidget.tsx) -- QR/código de barras (pyzbar) + OCR
+    de texto visible (pytesseract), en español e inglés. A diferencia de
+    dni_scan.py (formato fijo de DNI peruano), esto NO interpreta ni valida
+    nada: devuelve texto crudo para que el backend C++ lo incruste como
+    contexto en el prompt del chatbot (mismo patrón que los chips
+    Resumir/Ampliar/Ideas de SupportChatWidget.tsx -- el modelo de chat es de
+    solo texto, no multimodal, así que la "lectura" de la imagen ocurre acá,
+    de forma determinística, no en el LLM). Nunca lanza: en el peor caso
+    devuelve ambos campos vacíos."""
+    if "image" not in request.files:
+        return jsonify({"ok": False, "error": "no_image_provided"}), 400
+    file = request.files["image"]
+    img_bytes = file.read()
+    if len(img_bytes) == 0:
+        return jsonify({"ok": False, "error": "empty_image"}), 400
+    if len(img_bytes) > IMAGE_ANALYZE_MAX_BYTES:
+        return jsonify({"ok": False, "error": "file_too_large"}), 400
+
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({"ok": False, "error": "invalid_image"}), 400
+
+    qr_codes = []
+    try:
+        from pyzbar.pyzbar import decode as _zbar_decode
+
+        for code in _zbar_decode(img):
+            try:
+                qr_codes.append(code.data.decode("utf-8", errors="replace"))
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001 -- libzbar no disponible en este entorno
+        pass
+
+    ocr_text = ""
+    try:
+        import pytesseract
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        ocr_text = pytesseract.image_to_string(gray, lang="spa+eng").strip()
+    except Exception:  # noqa: BLE001 -- tesseract no disponible, o imagen sin texto legible
+        ocr_text = ""
+
+    return jsonify({
+        "ok": True,
+        "qr_codes": qr_codes,
+        "ocr_text": ocr_text,
+        "width": int(img.shape[1]),
+        "height": int(img.shape[0]),
+    })
 
 
 @app.route("/scan_document", methods=["POST"])
@@ -1599,4 +1977,38 @@ if __name__ == "__main__":
             warmup_face_embedding()
         except Exception as ex:  # noqa: BLE001
             print(f"[FACE_EMB] Warmup omitido: {ex}", flush=True)
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    if os.environ.get("WARMUP_DEEPFACE", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    ):
+        try:
+            warmup_deepface_silentface()
+        except Exception as ex:  # noqa: BLE001
+            print(f"[DEEPFACE_SILENT] Warmup omitido: {ex}", flush=True)
+    # Werkzeug (servidor de desarrollo de Flask, vía app.run()) manda
+    # "Connection: close" de forma INCONDICIONAL en cada respuesta -- no es
+    # un default configurable, es una decisión de diseño de los propios
+    # mantenedores de Werkzeug (ver comentario en werkzeug/serving.py:
+    # "Always close the connection. This disables HTTP/1.1 keep-alive
+    # connections. They aren't handled well by Python's http.server because
+    # it doesn't know how to drain the stream before the next request
+    # line"). Confirmado en vivo con curl -v: "< Connection: close" pase lo
+    # que pase con protocol_version. Sin conexiones persistentes, el pool de
+    # conexiones del backend C++ (ai_engine_client.cpp, ver
+    # ai_engine_conn_pool.hpp) queda inerte: cada verify-frame
+    # (VERIFY_SYNC_MS=175ms, el endpoint más caliente del pipeline biométrico)
+    # sigue pagando un handshake TCP nuevo aunque el backend intente reusar
+    # la conexión anterior.
+    #
+    # waitress SÍ soporta keep-alive real y sigue siendo un solo proceso con
+    # un pool de threads (semánticamente equivalente a threaded=True) -- NO
+    # duplica la copia en memoria/VRAM de los modelos ya cargados (MediaPipe/
+    # InsightFace/DeepFace/SilentFace), a diferencia de workers multi-proceso
+    # (gunicorn -w N), que sí la duplicarían y agotarían la VRAM de la GPU
+    # (ya usa ~5.2 GB de 8 GB en un solo proceso, ver logs de TensorFlow al
+    # arranque). threads=8 == límite de cpus del contenedor (deploy.resources
+    # en docker-compose.yml).
+    from waitress import serve
+
+    serve(app, host="0.0.0.0", port=5000, threads=8)

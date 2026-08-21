@@ -6,7 +6,7 @@ import {
   resetBiometricCapture,
   loginWithFace
 } from '../../../../auth/authApi';
-import { computeBiometricOvalLayout, buildFullFrameJpegBase64FromVideo, frameToTemplate, type OvalVideoMetrics } from '../../../../auth/biometricOvalFrame';
+import { computeBiometricOvalLayout, buildFullFrameJpegBase64FromVideo, frameToTemplate } from '../../../../auth/biometricOvalFrame';
 
 import { log } from '../../../../lib/logger';
 
@@ -52,7 +52,7 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isVerifyingRef = useRef(false);
 
-  const [serverOval, setServerOval] = useState<OvalVideoMetrics | null>(null);
+  const [serverOval, setServerOval] = useState<{ cx: number; cy: number; w: number; h: number; angle_deg?: number } | null>(null);
 
   const stopCamera = () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -209,7 +209,7 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
-      <div className="bg-slate-900 border border-white/10 w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl shadow-indigo-500/10 flex flex-col min-h-0">
+      <div className="bg-[var(--a11y-bg-form)] border border-[var(--a11y-border-form)] w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl shadow-indigo-500/10 flex flex-col min-h-0">
         <div className="p-6 border-b border-white/5 flex items-center justify-between bg-slate-800/50">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-xl bg-indigo-500/20 border border-indigo-500/20">
@@ -243,9 +243,9 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
                   style={serverOval ? {
                     left: `${(serverOval.cx / 640) * 100}%`,
                     top: `${(serverOval.cy / 480) * 100}%`,
-                    width: `${(serverOval.ow / 640) * 100}%`,
-                    height: `${(serverOval.oh / 480) * 100}%`,
-                    transform: 'translate(-50%, -50%)'
+                    width: `${(serverOval.w / 640) * 100}%`,
+                    height: `${(serverOval.h / 480) * 100}%`,
+                    transform: `translate(-50%, -50%) rotate(${serverOval.angle_deg || 0}deg)`
                   } : defaultOvalLayout ? {
                     left: `${defaultOvalLayout.leftPct}%`,
                     top: `${defaultOvalLayout.topPct}%`,

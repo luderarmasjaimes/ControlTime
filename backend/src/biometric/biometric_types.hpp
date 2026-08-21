@@ -24,6 +24,10 @@ struct BiometricCaptureRuntimeState {
   bool faceStraight = false;
   bool noGlasses = false;
   bool detected = false;
+  /** Signo/magnitud del giro de cabeza del último frame -- ver
+   * AiEngineFrameResult::headYawRatio. Usado por el desafío activo de
+   * liveness "gira la cabeza" del frontend. */
+  double headYawRatio = 0.0;
   bool hasFaceOval = false;
   double faceOvalCx = 0.0;
   double faceOvalCy = 0.0;
@@ -50,6 +54,12 @@ struct AiEngineFrameResult {
   /** MediaPipe / analyze_eyes: nariz vs eje interocular (sustituye Haar+simetría para ICAO). */
   bool hasFaceFrontal = false;
   bool faceFrontal = true;
+  /** Signo/magnitud del giro de cabeza (nariz vs eje interocular, ver
+   * head_yaw_ratio_from_points en eye_analyzer.py): positivo = giro hacia la
+   * izquierda del usuario, negativo = hacia su derecha. Usado por el
+   * desafío activo de liveness "gira la cabeza" del frontend. */
+  bool hasHeadYawRatio = false;
+  double headYawRatio = 0.0;
   /** Señal CV cruda 0–100 desde ai_engine (sin EMA). */
   double glassesCvScore = 0.0;
   /** Tras EMA en C++ (o cruda si sin sesión). */
@@ -68,6 +78,32 @@ struct AiEngineFrameResult {
 };
 
 static constexpr std::size_t kFaceEmbeddingVectorDim = 512;
+
+/**
+ * Frames ICAO válidos consecutivos exigidos antes de dar por completada la
+ * captura biométrica (registro/login). Antes era 3 (hardcoded en varios
+ * puntos) -- MUY por debajo de la ventana de evidencia que usa la
+ * histéresis de lentes en ai_engine/eye_analyzer.py (GLASSES_SCORE_HIST_LEN,
+ * por defecto 5 muestras: st.glasses_score_hist/glasses_fusion_hist).
+ *
+ * Esa histéresis empieza cada sesión asumiendo "sin lentes"
+ * (_SessionState.glasses_state_prev = False) y exige varias muestras
+ * consistentes por encima de sus umbrales de entrada (stable>50/51/54,
+ * ver _glasses_from_frame_impl) para voltear a "con lentes" -- es
+ * deliberadamente lenta para evitar falsos positivos por cejas/nariz/
+ * reflejos. Con solo 3 frames (~3*VERIFY_SYNC_MS ≈ 525ms) la captura podía
+ * completarse ANTES de que esa histéresis alcanzara evidencia suficiente,
+ * dejando pasar a alguien con lentes puestos simplemente porque el
+ * detector de lentes no había "despertado" todavía (carrera, no fallo de
+ * calibración). Igualar este valor a la ventana de la histéresis asegura
+ * que, para cuando la captura se da por completa, el detector de lentes ya
+ * tuvo un ciclo completo de muestras para confirmar su veredicto.
+ *
+ * Debe coincidir con frontend/src/config/facialIcaoConfig.ts
+ * (FACIAL_ICAO.REQUIRED_VALID_FRAMES) y con GLASSES_SCORE_HIST_LEN /
+ * GLASSES_FUSION_HIST_LEN en ai_engine/eye_analyzer.py.
+ */
+static constexpr int kRequiredValidCaptureFrames = 5;
 
 struct AiEngineEmbeddingResult {
   std::vector<double> embedding;

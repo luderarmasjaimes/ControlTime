@@ -32,6 +32,11 @@ using config::BiometricProvider;
 #define gDermalogCliPath            config::AppConfig::instance().gDermalogCliPath
 #define gBiometricProvider          config::AppConfig::instance().gBiometricProvider
 #define gDermalogRequired           config::AppConfig::instance().gDermalogRequired
+#define gSeetaFace6Required         config::AppConfig::instance().gSeetaFace6Required
+#define gFaceSeetaCosineThreshold   config::AppConfig::instance().gFaceSeetaCosineThreshold
+#define gDeepFaceSilentRequired         config::AppConfig::instance().gDeepFaceSilentRequired
+#define gDeepFaceSilentDermalogFallback config::AppConfig::instance().gDeepFaceSilentDermalogFallback
+#define gFaceDeepfaceCosineThreshold    config::AppConfig::instance().gFaceDeepfaceCosineThreshold
 #define gAiEngineUrl                config::AppConfig::instance().gAiEngineUrl
 #define gBiometricIcaoEyeConfidenceMin  config::AppConfig::instance().gBiometricIcaoEyeConfidenceMin
 #define gBiometricIcaoIlluminationMin   config::AppConfig::instance().gBiometricIcaoIlluminationMin
@@ -829,16 +834,165 @@ FaceAnalysis analyzeFaceImageDermalogCli(const std::string &base64Image,
   return result;
 }
 
+bool verifyFaceDermalogCli(const std::vector<unsigned char> &probeImageBytes,
+                           const std::vector<double> &storedTemplateBytes,
+                           double &outScore, std::string &outError) {
+  if (gDermalogCliPath.empty() || !fs::exists(gDermalogCliPath)) {
+    outError = "dermalog_cli_not_found";
+    return false;
+  }
+  if (probeImageBytes.empty() || storedTemplateBytes.empty()) {
+    outError = "empty_input";
+    return false;
+  }
+
+  const auto tmpDir = fs::temp_directory_path();
+  const auto imagePath = tmpDir / ("dermalog_verify_" + makeId() + ".jpg");
+  const auto templatePath = tmpDir / ("dermalog_verify_tpl_" + makeId() + ".json");
+  const auto jsonPath = tmpDir / ("dermalog_verify_out_" + makeId() + ".json");
+
+  {
+    std::ofstream ofs(imagePath, std::ios::binary | std::ios::trunc);
+    ofs.write(reinterpret_cast<const char *>(probeImageBytes.data()),
+              static_cast<std::streamsize>(probeImageBytes.size()));
+  }
+  {
+    // Mismo formato que --mode enroll produce en "template": array JSON de
+    // enteros 0-255 -- storedTemplateBytes ya viene en ese rango (ver
+    // db_scripts/53 y loginFaceTargetedPg, que lo lee tal cual de
+    // face_template::jsonb sin reinterpretarlo).
+    std::ofstream ofs(templatePath, std::ios::trunc);
+    ofs << "[";
+    for (size_t i = 0; i < storedTemplateBytes.size(); ++i) {
+      if (i) ofs << ",";
+      ofs << static_cast<int>(storedTemplateBytes[i]);
+    }
+    ofs << "]";
+  }
+
+  const std::string cmd = security::Validator::shellQuote(gDermalogCliPath) +
+                          " --mode verify --input " +
+                          security::Validator::shellQuote(imagePath.string()) +
+                          " --compare-template " +
+                          security::Validator::shellQuote(templatePath.string()) +
+                          " --output-json " +
+                          security::Validator::shellQuote(jsonPath.string());
+  const int rc = std::system(cmd.c_str());
+
+  bool ok = false;
+  if (fs::exists(jsonPath)) {
+    try {
+      std::ifstream ifs(jsonPath);
+      std::stringstream buffer;
+      buffer << ifs.rdbuf();
+      auto payload = json::parse(buffer.str());
+      if (payload.is_object()) {
+        const auto &obj = payload.as_object();
+        if (auto okField = obj.if_contains("ok"); okField && okField->is_bool() &&
+            okField->as_bool()) {
+          if (auto score = obj.if_contains("score");
+              score && (score->is_double() || score->is_int64())) {
+            outScore = score->is_double() ? score->as_double()
+                                          : static_cast<double>(score->as_int64());
+            ok = true;
+          } else {
+            outError = "dermalog_verify_missing_score";
+          }
+        } else if (auto errField = obj.if_contains("error"); errField && errField->is_string()) {
+          outError = json::value_to<std::string>(*errField);
+        } else {
+          outError = "dermalog_verify_failed";
+        }
+      } else {
+        outError = "dermalog_invalid_json";
+      }
+    } catch (...) {
+      outError = "dermalog_json_parse_failed";
+    }
+  } else {
+    outError = rc != 0 ? "dermalog_cli_execution_failed" : "dermalog_no_output";
+  }
+
+  fs::remove(imagePath);
+  fs::remove(templatePath);
+  fs::remove(jsonPath);
+  return ok;
+}
+
 FaceAnalysis analyzeFaceImage(const std::string &base64Image,
-                              const std::string &mode) {
+                              const std::string &mode,
+                              bool computeEmbedding) {
+  if (gBiometricProvider == BiometricProvider::DeepFaceSilent && computeEmbedding) {
+    std::vector<unsigned char> raw;
+    if (!decodeBase64(base64Image, raw) || raw.empty()) {
+      FaceAnalysis invalid;
+      invalid.provider = "deepface_silentface";
+      invalid.issues.push_back("invalid_base64_image");
+      return invalid;
+    }
+    auto fromDeepFace = fetchDeepFaceSilentAnalysisFromAiEngine(raw, mode);
+    if (fromDeepFace.ok) {
+      return fromDeepFace;
+    }
+    if (gDeepFaceSilentRequired) {
+      // Fail-closed (mismo principio que SeetaFace6/ADR-104): indisponibilidad
+      // o rechazo de seguridad (spoof/no-match/calidad) NUNCA degrada a un
+      // motor más débil cuando el operador exige este proveedor.
+      return fromDeepFace;
+    }
+    // Cascada opcional a Dermalog SOLO ante fallo de INFRAESTRUCTURA
+    // (ai_engine caído/timeout/etc.), nunca ante un rechazo de SEGURIDAD
+    // (spoof detectado, sin rostro, calidad insuficiente): si cayera también
+    // en rechazos de seguridad, quien controla la cámara podría forzar
+    // deliberadamente un fallo de liveness para obtener una segunda
+    // oportunidad con un motor más débil.
+    static const char *kInfraErrorTags[] = {
+        "ai_engine_disabled", "ai_engine_connect_failed", "ai_engine_resolve_failed",
+        "ai_engine_http_not_ok", "ai_engine_read_failed", "ai_engine_write_failed",
+        "ai_engine_skipped_size_limit", "deepface_silentface_invalid_json",
+        "deepface_silentface_parse_failed"};
+    bool isInfraFailure = false;
+    if (!fromDeepFace.issues.empty()) {
+      for (const char *tag : kInfraErrorTags) {
+        if (fromDeepFace.issues.front() == tag) {
+          isInfraFailure = true;
+          break;
+        }
+      }
+    }
+    if (isInfraFailure && gDeepFaceSilentDermalogFallback && !gDermalogCliPath.empty()) {
+      auto fromSdk = analyzeFaceImageDermalogCli(base64Image, mode);
+      if (fromSdk.ok || gDermalogRequired) {
+        return fromSdk;
+      }
+    }
+    // No requerido y no cayó a Dermalog (o Dermalog tampoco lo tenía
+    // disponible): sigue el mismo patrón que SeetaFace6 no-requerido, cae al
+    // pipeline InsightFace/legacy de abajo.
+  }
+
+  if (gBiometricProvider == BiometricProvider::SeetaFace6 && computeEmbedding) {
+    std::vector<unsigned char> raw;
+    if (!decodeBase64(base64Image, raw) || raw.empty()) {
+      FaceAnalysis invalid;
+      invalid.provider = "seetaface6_local";
+      invalid.issues.push_back("invalid_base64_image");
+      return invalid;
+    }
+    auto fromSeeta = fetchSeetaFaceAnalysisFromAiEngine(raw, mode);
+    if (fromSeeta.ok || gSeetaFace6Required) {
+      return fromSeeta;
+    }
+  }
+
   if (gBiometricProvider == BiometricProvider::DermalogCli) {
     auto fromSdk = analyzeFaceImageDermalogCli(base64Image, mode);
     if (fromSdk.ok || gDermalogRequired) {
       return fromSdk;
     }
   }
-  
-  if (!gAiEngineUrl.empty()) {
+
+  if (computeEmbedding && !gAiEngineUrl.empty()) {
     std::vector<unsigned char> raw;
     if (decodeBase64(base64Image, raw) && !raw.empty()) {
       auto aiEm = fetchFaceEmbeddingFromAiEngine(raw);
@@ -855,6 +1009,26 @@ FaceAnalysis analyzeFaceImage(const std::string &base64Image,
       // de bloquear la validacion completa. kLegacyStripCore ya limpia
       // los issues legacy cuando MediaPipe/ai_engine confirma el ICAO.
     }
+  }
+
+  if (!computeEmbedding) {
+    // Vista previa en vivo (/api/process_frame, ver
+    // handleProcessFrame en biometric_routes.cpp): ese llamador usa
+    // aiEval->detected/bothOpen/mouthClosed/noGlasses/faceFrontal para
+    // decidir si el frame es valido, NUNCA eval.ok ni eval.face.issues de
+    // aqui -- lo confirma el propio comentario de handleProcessFrame sobre
+    // por que dejo de usar eval.ok. El pipeline Haar (analyzeFaceImageLegacy,
+    // 3 cascadas: rostro/ojos/sonrisa) es ademas el paso mas caro de todo el
+    // endpoint (~90-100ms medido en runtime, frente a ~20-25ms del resto),
+    // y sin computeEmbedding se ejecutaba en CADA frame solo para tirar el
+    // resultado. La decision de seguridad real (registro/login) sigue
+    // pasando por aqui con computeEmbedding=true y SI corre este pipeline
+    // completo cuando corresponde (SeetaFace6/DeepFace no requeridos,
+    // InsightFace no disponible).
+    FaceAnalysis skipped;
+    skipped.provider = "legacy_skipped_preview";
+    skipped.ok = true;
+    return skipped;
   }
 
   return analyzeFaceImageLegacy(base64Image, mode);
@@ -980,11 +1154,18 @@ bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
                                 std::vector<double> &outProbe, std::string &outProvider,
                                 double &outThreshold, double legacyThreshold,
                                 double embeddingThreshold, std::string &error) {
-  const bool storedIsEmbedding =
-      (storedTemplate.size() == kFaceEmbeddingVectorDim);
-  outThreshold = storedIsEmbedding ? embeddingThreshold : legacyThreshold;
+  const bool providerIsSeeta = gBiometricProvider == BiometricProvider::SeetaFace6;
+  const bool providerIsDeepFace = gBiometricProvider == BiometricProvider::DeepFaceSilent;
+  const bool storedIsEmbedding = storedTemplate.size() == kFaceEmbeddingVectorDim;
+  outThreshold = providerIsSeeta ? gFaceSeetaCosineThreshold
+                : providerIsDeepFace ? gFaceDeepfaceCosineThreshold
+                                 : (storedIsEmbedding ? embeddingThreshold : legacyThreshold);
 
-  if (!clientProbeTemplate.empty()) {
+  // En modo Seeta/DeepFace nunca se confía en una plantilla proporcionada
+  // por el cliente: debe provenir de una imagen evaluada localmente con
+  // liveness (de lo contrario, un cliente podría enviar un embedding
+  // fabricado sin pasar nunca por el chequeo de anti-spoofing).
+  if (!clientProbeTemplate.empty() && !providerIsSeeta && !providerIsDeepFace) {
     if (clientProbeTemplate.size() != storedTemplate.size()) {
       error =
           "La plantilla enviada no coincide con el tipo biométrico registrado "
@@ -992,13 +1173,92 @@ bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
       return false;
     }
     outProbe = clientProbeTemplate;
-    outProvider = storedIsEmbedding ? "client_embedding" : "client_legacy";
+    outProvider = providerIsSeeta ? "client_seetaface6_template"
+                                  : (storedIsEmbedding ? "client_embedding" : "client_legacy");
     return true;
   }
 
   if (!rawImageBytes.has_value() || rawImageBytes->empty()) {
     error = "No se recibió imagen para validar el rostro.";
     return false;
+  }
+
+  // Chequeo ICAO (ojos/boca/lentes/frontalidad) vía MediaPipe (/analyze_eyes,
+  // ver ai_engine/eye_analyzer.py) para LOGIN FACIAL. Ninguna de las tres
+  // ramas de abajo lo hacía: /seetaface_analyze y el equivalente de
+  // DeepFace/Silent-Face SOLO validan vivacidad (anti-spoof) + calidad de
+  // plantilla -- ninguno de los dos adaptadores Python menciona lentes en
+  // absoluto (confirmado: no hay ninguna referencia a "glasses" en
+  // seetaface6_adapter.py ni deepface_silentface_adapter.py); y el fallback
+  // de embedding InsightFace (storedIsEmbedding, más abajo) llamaba
+  // directo a /face_embedding, que SOLO extrae el vector 512-dim. El
+  // resultado real, verificado contra ai_engine_probe_logs/glasses_probe.jsonl:
+  // el registro (runBiometricVerifyForImageBase64) sí exige noGlasses, pero
+  // el LOGIN facial -- con cualquier proveedor configurado -- nunca lo
+  // volvía a comprobar en el servidor. El frontend filtra por JS antes de
+  // enviar, pero eso es una preferencia de UI, no una barrera de seguridad:
+  // un POST directo a /api/auth/login/face con una foto con lentes puestos
+  // nunca era rechazado por esta razón. Mismo criterio fail-closed que
+  // runBiometricVerifyForImageBase64: si el motor IA está configurado pero
+  // falla, se rechaza el login (no se degrada en silencio a "solo comparar
+  // plantilla/embedding").
+  auto aiEval = analyzeFrameWithAiEngine(*rawImageBytes, std::nullopt);
+  if (aiEval.has_value()) {
+    if (!aiEval->error.empty()) {
+      error = "No se pudo validar el rostro (motor IA): " + aiEval->error +
+              ". Intente de nuevo.";
+      return false;
+    }
+    if (aiEval->available) {
+      if (!aiEval->detected) {
+        error = "No se detectó un rostro válido en la imagen. Intente de nuevo.";
+        return false;
+      }
+      if (!aiEval->bothOpen) {
+        error = "Mantenga los ojos abiertos y mire a la cámara. Intente de nuevo.";
+        return false;
+      }
+      if (!aiEval->mouthClosed) {
+        error = "Mantenga la boca cerrada durante la validación facial. Intente de nuevo.";
+        return false;
+      }
+      if (!aiEval->noGlasses) {
+        error = "Se detectaron lentes/gafas puestos. Retíreselos e intente de nuevo.";
+        return false;
+      }
+      if (aiEval->hasFaceFrontal && !aiEval->faceFrontal) {
+        error = "Mire de frente a la cámara para el login facial. Intente de nuevo.";
+        return false;
+      }
+    }
+  }
+
+  if (providerIsSeeta) {
+    auto face = fetchSeetaFaceAnalysisFromAiEngine(*rawImageBytes, "verify");
+    if (!face.ok || face.faceTemplate.size() != storedTemplate.size()) {
+      error =
+          "No se pudo validar vivacidad o extraer una plantilla SeetaFace6 "
+          "compatible. Compruebe cámara, iluminación, modelos y ai_engine.";
+      if (!face.issues.empty()) error += " Código: " + face.issues.front();
+      return false;
+    }
+    outProbe = std::move(face.faceTemplate);
+    outProvider = face.provider;
+    return true;
+  }
+
+  if (providerIsDeepFace) {
+    auto face = fetchDeepFaceSilentAnalysisFromAiEngine(*rawImageBytes, "verify");
+    if (!face.ok || face.faceTemplate.size() != storedTemplate.size()) {
+      error =
+          "No se pudo validar vivacidad o extraer una plantilla facial "
+          "(DeepFace/Silent-Face) compatible. Compruebe cámara, iluminación y ai_engine.";
+      if (!face.issues.empty()) error += " Código: " + face.issues.front();
+      return false;
+    }
+    outProbe = std::move(face.faceTemplate);
+    outProvider = face.provider;
+    return true;
   }
 
   if (storedIsEmbedding) {
@@ -1035,9 +1295,10 @@ bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
 
 BiometricVerifyEval runBiometricVerifyForImageBase64(
     const std::string &base64,
-    const std::optional<std::string> &glassesEmaKey) {
+    const std::optional<std::string> &glassesEmaKey,
+    bool computeEmbedding) {
   BiometricVerifyEval eval;
-  eval.face = analyzeFaceImage(base64, "verify");
+  eval.face = analyzeFaceImage(base64, "verify", computeEmbedding);
   eval.ok = eval.face.ok;
 
   std::vector<unsigned char> frameRaw;

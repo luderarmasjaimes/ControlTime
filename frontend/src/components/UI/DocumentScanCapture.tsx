@@ -93,7 +93,7 @@ export function DocumentScanCapture({ isOpen, onClose, onSuccess }: DocumentScan
 
   return (
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-black/95 backdrop-blur-md">
-      <div className="bg-slate-900 border border-white/10 w-full max-w-lg rounded-[2rem] overflow-hidden flex flex-col p-5 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
+      <div className="bg-[var(--a11y-bg-form)] border border-[var(--a11y-border-form)] w-full max-w-lg rounded-[2rem] overflow-hidden flex flex-col p-5 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
         <div className="flex justify-between items-center mb-4">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-full bg-indigo-500/10 text-indigo-400">
@@ -122,7 +122,7 @@ export function DocumentScanCapture({ isOpen, onClose, onSuccess }: DocumentScan
           )}
 
           {cameraActive && !timedOut && (
-            <div className="absolute top-4 left-4 bg-slate-900/80 backdrop-blur px-3 py-1.5 rounded-xl border border-white/10 flex items-center gap-2">
+            <div className="absolute top-4 left-4 bg-[var(--a11y-bg-form)]/80 backdrop-blur px-3 py-1.5 rounded-xl border border-[var(--a11y-border-form)] flex items-center gap-2">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-[9px] font-black text-white uppercase tracking-wider">Buscando código ({attempts})</span>
             </div>

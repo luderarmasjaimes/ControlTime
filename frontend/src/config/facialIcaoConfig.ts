@@ -12,8 +12,20 @@
  * OpenCV en el cliente: no; solo en Python (ai_engine) y en el binario C++ del backend.
  */
 export const FACIAL_ICAO = {
-    /** Frames ICAO válidos consecutivos antes de considerar captura (FACIAL REQUIRED_VALID_FRAMES) */
-    REQUIRED_VALID_FRAMES: 3,
+    /**
+     * Frames ICAO válidos consecutivos antes de considerar captura completa
+     * (FACIAL REQUIRED_VALID_FRAMES). Antes 3 -- por debajo de la ventana de
+     * evidencia que usa la histéresis de lentes en ai_engine/eye_analyzer.py
+     * (GLASSES_SCORE_HIST_LEN, default 5 muestras): esa histéresis empieza
+     * cada sesión asumiendo "sin lentes" y necesita varias muestras
+     * consistentes para voltear a "con lentes" (evita falsos positivos por
+     * cejas/nariz/reflejos). Con solo 3 frames (~525ms a VERIFY_SYNC_MS) la
+     * captura podía completarse antes de que el detector de lentes tuviera
+     * evidencia suficiente, dejando pasar a alguien con lentes puestos por
+     * pura carrera, no por mala calibración. Debe coincidir con
+     * backend/src/biometric/biometric_types.hpp (kRequiredValidCaptureFrames).
+     */
+    REQUIRED_VALID_FRAMES: 5,
     /** Enfriamiento entre capturas automáticas (ms) */
     CAPTURE_COOLDOWN_MS: 1000,
     /** Coherente con backend BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN (sobre confidence 0..1 del ai_engine) */
@@ -41,10 +53,18 @@ export const FACIAL_ICAO = {
     VERIFY_SYNC_MS: 175,
     /** Calidad JPEG para verify-frame (FACIAL main.js usa 0.6) */
     VERIFY_JPEG_QUALITY: 0.6,
-    /** getUserMedia video ideal (FACIAL www/main.js) */
+    /** getUserMedia video ideal. Antes 640x480 (FACIAL www/main.js) -- subido a
+     * 960x720 el 2026-08-19: a esa resolución, la lectura de ojos/parpadeo de
+     * MediaPipe se degradaba notablemente a distancia media/lejana de la cámara
+     * (confirmado con logs reales: EAR bajo y blink blendshape elevado juntos,
+     * sin evidencia de parpadeo real, solo a IED bajo). Mismo aspecto 4:3, 2.25x
+     * más píxeles -- extiende el rango de distancia utilizable sin tocar los
+     * umbrales de aceptación. Este mismo valor también fija el tamaño del canvas
+     * JPEG enviado al servidor (frameToJpegBase64/buildFullFrameJpegBase64FromVideo),
+     * no solo la resolución pedida a getUserMedia. */
     CAMERA: {
-        width: { ideal: 640 },
-        height: { ideal: 480 },
+        width: { ideal: 960 },
+        height: { ideal: 720 },
         frameRate: { ideal: 15, max: 20 },
     },
     /** Reintento cámara ocupada (ms) — FACIAL main.js */
@@ -58,6 +78,17 @@ export const FACIAL_ICAO = {
         'Timeout de operación en validación facial: se excedieron 60 segundos. Intente de nuevo pulsando «Ingresar con Reconocimiento Facial».',
     /** Retardo tras calidad OK antes de auto-login/captura (ms) */
     AUTO_CAPTURE_DELAY_MS: 350,
+    /**
+     * Corrección 2026-08-13: cooldown mínimo entre reintentos automáticos de
+     * POST /api/auth/login/face. Sin esto, un fallo (p.ej. 503 por
+     * limit_req de nginx en /api/auth/login/, rate=5r/m burst=5) reseteaba
+     * loginSubmitTriggeredRef de inmediato y el useEffect volvía a disparar
+     * en el siguiente frame (~150-200ms) -- loop de reintento sin espera que
+     * agotaba el burst de nginx al instante y ya nunca podía tener éxito
+     * (parpadeo constante + "Error HTTP 503" reportado en vivo). lastAutoTriggerRef
+     * ya existía pero no se usaba como gate; este valor lo activa.
+     */
+    LOGIN_FACE_RETRY_COOLDOWN_MS: 2500,
     /** Suavizado EMA del box facial (más bajo = borde más estable) */
     FACE_BOX_EMA_ALPHA: 0.22,
     /** EMA cuando el detector salta (reflejo / falso positivo) */

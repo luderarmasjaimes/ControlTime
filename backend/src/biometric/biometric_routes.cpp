@@ -48,13 +48,27 @@ handleBiometricStatus(const http::request<http::string_body> &req,
   }
 
   auto &cfg = AppConfig::instance();
+  const char *provider = cfg.gBiometricProvider == BiometricProvider::DermalogCli
+                             ? "dermalog_cli"
+                         : cfg.gBiometricProvider == BiometricProvider::SeetaFace6
+                             ? "seetaface6_local"
+                         : cfg.gBiometricProvider == BiometricProvider::DeepFaceSilent
+                             ? "deepface_silentface"
+                             : "legacy";
   return makeJsonResponse(
       http::status::ok,
       json::object{
-          {"provider", cfg.gBiometricProvider == BiometricProvider::DermalogCli
-                           ? "dermalog_cli"
-                           : "legacy"},
+          {"provider", provider},
           {"dermalog_required", cfg.gDermalogRequired},
+          {"seetaface6_required", cfg.gSeetaFace6Required},
+          {"seetaface6_timeout_ms", cfg.gSeetaFace6TimeoutMs},
+          {"seetaface6_cosine_threshold", cfg.gFaceSeetaCosineThreshold},
+          {"deepface_silentface_required", cfg.gDeepFaceSilentRequired},
+          {"deepface_silentface_timeout_ms", cfg.gDeepFaceSilentTimeoutMs},
+          {"deepface_silentface_dermalog_fallback", cfg.gDeepFaceSilentDermalogFallback},
+          {"face_deepface_cosine_threshold", cfg.gFaceDeepfaceCosineThreshold},
+          {"silentface_liveness_threshold", cfg.gSilentFaceLivenessThreshold},
+          {"certification_claim", false},
           {"dnn", biometricDnnRuntimeStatusJson()}});
 }
 
@@ -123,7 +137,13 @@ handleProcessFrame(const http::request<http::string_body> &req,
     cv::imencode(".jpg", frame, jpg, {cv::IMWRITE_JPEG_QUALITY, 60});
     const std::string base64 = encodeBase64(jpg);
 
-    auto eval = runBiometricVerifyForImageBase64(base64, sessionId);
+    // computeEmbedding=false: este endpoint alimenta la vista previa en vivo
+    // (checklist ICAO + óvalo) -- nunca lee eval.face.faceTemplate, así que
+    // calcular el embedding InsightFace en cada frame (~0.5-0.7s de red+ONNX
+    // por frame, medido en runtime) era trabajo puro desperdiciado. El
+    // template real se calcula donde de verdad se usa: registro
+    // (handleRegister) y login facial (handleLoginFace), en main.cpp.
+    auto eval = runBiometricVerifyForImageBase64(base64, sessionId, false);
 
     bool eyesOpen = true;
     bool mouthClosed = true;
@@ -162,6 +182,10 @@ handleProcessFrame(const http::request<http::string_body> &req,
       st.noGlasses = noGlasses;
       st.faceStraight = frontal;
       st.hasFaceOval = false;
+      if (eval.aiEval.has_value() && eval.aiEval->available &&
+          eval.aiEval->hasHeadYawRatio) {
+        st.headYawRatio = eval.aiEval->headYawRatio;
+      }
 
       if (eval.aiEval.has_value() && eval.aiEval->available &&
           eval.aiEval->hasFaceOvalEllipse) {
@@ -174,18 +198,28 @@ handleProcessFrame(const http::request<http::string_body> &req,
         st.faceOvalAngleDeg = static_cast<double>(e.angle);
       }
 
+      // `detected` ya es eval.ok cuando el motor IA no esta disponible (linea
+      // 137) o aiEval->detected cuando si lo esta -- usar eval.ok aqui en vez
+      // de `detected` reintroducia el heuristico Haar/CV legacy (siempre
+      // activo desde que este endpoint dejo de calcular el embedding, ver
+      // computeEmbedding=false arriba) como bloqueante en cada frame: sus
+      // propios chequeos de lentes/gorro/accesorio/nitidez/simetria son mucho
+      // menos fiables que MediaPipe y casi nunca se limpian a tiempo
+      // (stripLegacyIssuesWhenAiIcaoPasses exige ojos+boca+lentes OK en el
+      // MISMO frame para borrarlos), dejando eval.ok=false la mayoria de
+      // frames aunque el motor IA ya confirmara sin lentes/ojos abiertos.
       const bool frameValid =
-          eval.ok && eyesOpen && mouthClosed && noGlasses && frontal;
+          detected && eyesOpen && mouthClosed && noGlasses && frontal;
 
       if (frameValid) {
         st.captureInvalidStreak = 0;
-        if (st.captureCount < 3) {
+        if (st.captureCount < kRequiredValidCaptureFrames) {
           capturedImages.push_back("data:image/jpeg;base64," + base64);
-          if (capturedImages.size() > 3) {
+          if (capturedImages.size() > kRequiredValidCaptureFrames) {
             capturedImages.erase(capturedImages.begin());
           }
         }
-        st.captureCount = std::min(3, st.captureCount + 1);
+        st.captureCount = std::min(kRequiredValidCaptureFrames, st.captureCount + 1);
       } else {
         st.captureInvalidStreak++;
         if (st.captureInvalidStreak >= 5) {
@@ -195,11 +229,12 @@ handleProcessFrame(const http::request<http::string_body> &req,
         }
       }
 
-      const double livenessScore =
-          std::min(100.0, static_cast<double>(st.captureCount) * 35.0);
+      const double livenessScore = std::min(
+          100.0,
+          static_cast<double>(st.captureCount) * (100.0 / kRequiredValidCaptureFrames));
       st.livenessScore = livenessScore;
 
-      if (st.captureCount >= 3) {
+      if (st.captureCount >= kRequiredValidCaptureFrames) {
         st.state = 7;
       } else if (detected) {
         st.state = 4;
@@ -285,6 +320,7 @@ handleStatus(const http::request<http::string_body> &req,
                                 {"face_straight", s.faceStraight},
                                 {"no_glasses", s.noGlasses}}},
           {"face_oval", faceOvalVal},
+          {"head_yaw_ratio", s.headYawRatio},
           {"liveness_score", s.livenessScore},
       });
 }

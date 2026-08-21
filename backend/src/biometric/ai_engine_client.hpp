@@ -16,6 +16,16 @@ analyzeFrameWithAiEngine(
 AiEngineEmbeddingResult
 fetchFaceEmbeddingFromAiEngine(const std::vector<unsigned char> &imageBytes);
 
+/** Registro/verificación local con SeetaFace6 + anti-spoofing. */
+FaceAnalysis fetchSeetaFaceAnalysisFromAiEngine(
+    const std::vector<unsigned char> &imageBytes, const std::string &mode);
+
+/** Registro/verificación local con DeepFace (Facenet512) + Silent-Face-Anti-
+ * Spoofing (MiniFASNet) -- proveedor biométrico local por defecto. Igual
+ * contrato que fetchSeetaFaceAnalysisFromAiEngine, apunta a /deepface_analyze. */
+FaceAnalysis fetchDeepFaceSilentAnalysisFromAiEngine(
+    const std::vector<unsigned char> &imageBytes, const std::string &mode);
+
 AiEngineCartoonResult
 fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes);
 

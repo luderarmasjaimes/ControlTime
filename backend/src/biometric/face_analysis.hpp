@@ -50,7 +50,28 @@ double meanSaturation(const cv::Mat &bgr);
 
 FaceAnalysis analyzeFaceImageLegacy(const std::string &base64Image, const std::string &mode);
 FaceAnalysis analyzeFaceImageDermalogCli(const std::string &base64Image, const std::string &mode);
-FaceAnalysis analyzeFaceImage(const std::string &base64Image, const std::string &mode);
+
+/**
+ * Verificación 1:1 real contra el matcher nativo de Dermalog
+ * (DermalogFaceRecognition3::VerifyTemplates) -- NUNCA similitud coseno
+ * genérica sobre el blob opaco del template (ver hallazgo de seguridad
+ * 2026-08-10, db_scripts/53_face_template_provider_tracking.sql). Devuelve
+ * el score real 0-100 del SDK vía outScore; false si el CLI no está
+ * disponible, la imagen no tiene rostro, o el template guardado es
+ * inválido (outError describe la causa).
+ */
+bool verifyFaceDermalogCli(const std::vector<unsigned char> &probeImageBytes,
+                           const std::vector<double> &storedTemplateBytes,
+                           double &outScore, std::string &outError);
+// computeEmbedding=false salta la llamada a InsightFace (/face_embedding,
+// ~0.5-0.7s de red+ONNX) y va directo al fallback legacy (Haar local,
+// milisegundos) -- para llamadas donde no se usa face.faceTemplate (ver
+// runBiometricVerifyForImageBase64), solo se necesita un chequeo de
+// deteccion/calidad como red de seguridad si el motor de IA (MediaPipe) no
+// esta disponible. El template real solo se calcula donde de verdad se
+// compara/guarda (registro, login facial, verify-frame).
+FaceAnalysis analyzeFaceImage(const std::string &base64Image, const std::string &mode,
+                              bool computeEmbedding = true);
 
 void applyAiFrontalToFaceIssues(FaceAnalysis &face, const AiEngineFrameResult &ai);
 void stripLegacyIssuesWhenAiIcaoPasses(FaceAnalysis &face, const AiEngineFrameResult &ai);
@@ -64,6 +85,7 @@ bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
                          double embeddingThreshold, std::string &error);
 BiometricVerifyEval runBiometricVerifyForImageBase64(
     const std::string &base64,
-    const std::optional<std::string> &glassesEmaKey = std::nullopt);
+    const std::optional<std::string> &glassesEmaKey = std::nullopt,
+    bool computeEmbedding = true);
 
 } // namespace biometric

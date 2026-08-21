@@ -63,6 +63,22 @@ _lock = threading.Lock()
 _analyzer = None  # type: Optional[Any]
 _analyzer_error: Optional[str] = None
 
+# InsightFace FaceAnalysis.get() no está garantizado como seguro para llamadas
+# concurrentes desde varios hilos (Flask corre con threaded=True): además de
+# las sesiones onnxruntime (thread-safe para Run() en la misma sesión), el
+# wrapper de Python de FaceAnalysis mantiene estado mutable propio (buffers
+# intermedios de detección/landmarks) que SÍ puede correromperse o colgarse
+# si dos peticiones lo llaman al mismo tiempo. Confirmado en runtime,
+# 2026-08-19: con reintentos de login espaciados (usuario esperando cada
+# resultado) nunca se vio el problema; en cuanto el login empezó a fallar
+# seguido (poca luz, varios reintentos casi simultáneos desde el frontend),
+# varias peticiones seguidas quedaron colgadas indefinidamente (sin log de
+# fin) mientras /health seguía respondiendo normal -- señal de que el
+# bloqueo estaba específicamente en fa.get(), no en el proceso entero. Mismo
+# patrón que _glasses_lock en eye_analyzer.py: serializar el cómputo, no el
+# proceso completo.
+_inference_lock = threading.Lock()
+
 
 def embedding_engine_status() -> Dict[str, Any]:
     """
@@ -119,6 +135,26 @@ def _get_analyzer():
         return _analyzer, _analyzer_error
 
 
+def _enhance_low_light_bgr(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    CLAHE sobre el canal L (LAB): recupera contraste/nitidez de rasgos
+    faciales en poca luz sin tocar el color, reduciendo el impacto del
+    ambiente en la similitud del embedding. clipLimit moderado (2.0): no
+    distorsiona imágenes ya bien iluminadas de forma perceptible, así que se
+    aplica siempre en vez de medir brillo y decidir condicionalmente (mismo
+    criterio para registro y login evita un desajuste entre cómo se calculó
+    la plantilla guardada y cómo se calcula el intento de login).
+    """
+    import cv2
+
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l_ch, a_ch, b_ch = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_ch = clahe.apply(l_ch)
+    lab = cv2.merge([l_ch, a_ch, b_ch])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
 def extract_normed_embedding_bgr(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[str]]:
     """
     Devuelve vector L2-normalizado (típ. dim 512) o (None, código/mensaje error).
@@ -128,7 +164,12 @@ def extract_normed_embedding_bgr(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarr
     fa, err = _get_analyzer()
     if fa is None:
         return None, err or "insightface_unavailable"
-    faces = fa.get(img_bgr)
+    try:
+        img_bgr = _enhance_low_light_bgr(img_bgr)
+    except Exception:  # noqa: BLE001
+        pass  # degradar con gracia: seguir con la imagen original si CLAHE falla
+    with _inference_lock:
+        faces = fa.get(img_bgr)
     if not faces:
         return None, "no_face"
     min_det = float(os.environ.get("FACE_EMBED_MIN_DET_SCORE", "0.40"))
