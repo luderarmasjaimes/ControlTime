@@ -35,7 +35,7 @@ public:
     static MapAggregator &instance();
 
     /** @brief Arranca el hilo de polling (no-op si ya está corriendo). databaseUrl: cadena de conexión Postgres a usar en cada ciclo. */
-    void start(const std::string &databaseUrl, int pollIntervalMs = 3000);
+    void start(const std::string &databaseUrl, int pollIntervalMs = 1500);
 
     void stop();
 
@@ -49,7 +49,7 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     std::string databaseUrl_;
-    int pollIntervalMs_ = 3000;
+    int pollIntervalMs_ = 1500;
 
     // Último snapshot conocido por tenant: id de marcador -> hash de sus
     // campos relevantes (lat/lng/status/updated_at concatenados). Comparar

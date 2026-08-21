@@ -1,5 +1,6 @@
 #include "map_routes.hpp"
 #include "wms_proxy.hpp"
+#include "geocode_proxy.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
 #include "../auth/auth_storage_pg.hpp"
@@ -291,11 +292,61 @@ handleComplianceIntersections(const http::request<http::string_body> &req,
     return makeJsonResponse(http::status::ok, body);
 }
 
+// GET /api/map/company-location — resuelve el tenant de la SESIÓN actual (no
+// admite tenant_id por query, a diferencia de /api/map/markers no hace falta:
+// cada usuario solo puede ver la ubicación de su propia empresa) y devuelve
+// las coordenadas guardadas en auth_companies (ADR-121). Reemplaza el
+// INITIAL_VIEW hardcodeado de MapViewer.tsx en el centrado inicial.
+static http::response<http::string_body>
+handleCompanyLocation(const http::request<http::string_body> &req,
+                      const std::unordered_map<std::string, std::string> &query) {
+    const auto session = auth::resolveAuthSession(req, query);
+    if (!session) {
+        return makeJsonResponse(http::status::unauthorized,
+                                json::object{{"error", "unauthorized"}});
+    }
+    auto &cfg = AppConfig::instance();
+    if (cfg.gAuthStorageMode != AuthStorageMode::Postgres || session->tenantId.empty()) {
+        return makeJsonResponse(http::status::ok, json::object{{"has_location", false}});
+    }
+#if HAS_LIBPQ
+    auto __pg_lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+    PGconn *conn = __pg_lease.get();
+    if (PQstatus(conn) != CONNECTION_OK) {
+        return makeJsonResponse(http::status::internal_server_error,
+                                json::object{{"error", "db_unavailable"}});
+    }
+    const std::string tenantId = session->tenantId;
+    const char *params[1] = {tenantId.c_str()};
+    storage::PgResult res{PQexecParams(
+        conn,
+        "SELECT latitude, longitude, location_zoom FROM auth_companies "
+        "WHERE tenant_id = $1::uuid AND latitude IS NOT NULL "
+        "AND longitude IS NOT NULL LIMIT 1",
+        1, nullptr, params, nullptr, nullptr, 0)};
+    if (!res.okTuples() || PQntuples(res.get()) == 0) {
+        return makeJsonResponse(http::status::ok, json::object{{"has_location", false}});
+    }
+    const double lat = std::stod(PQgetvalue(res.get(), 0, 0));
+    const double lng = std::stod(PQgetvalue(res.get(), 0, 1));
+    const int zoom = PQgetisnull(res.get(), 0, 2) ? 13 : std::stoi(PQgetvalue(res.get(), 0, 2));
+    return makeJsonResponse(http::status::ok,
+                            json::object{{"has_location", true},
+                                        {"latitude", lat},
+                                        {"longitude", lng},
+                                        {"zoom", zoom}});
+#else
+    return makeJsonResponse(http::status::ok, json::object{{"has_location", false}});
+#endif
+}
+
 void registerRoutes(router::Router &r) {
     r.get("/api/map/markers", handleMapMarkers);
     r.get("/api/map/official-zones", handleOfficialZones);
     r.get("/api/map/compliance-intersections", handleComplianceIntersections);
+    r.get("/api/map/company-location", handleCompanyLocation);
     r.get("/api/map/wms-proxy", handleWmsProxy);
+    r.get("/api/map/geocode", handleGeocodeProxy);
 }
 
 } // namespace map_mod

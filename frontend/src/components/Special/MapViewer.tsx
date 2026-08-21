@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { Layers, RefreshCw, LocateFixed, Filter, Mountain, ShieldAlert, Route, Drill, Globe2 } from 'lucide-react';
+import { Layers, RefreshCw, LocateFixed, Filter, Mountain, ShieldAlert, Route, Drill, Globe2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Plus, Minus, Home, Compass } from 'lucide-react';
 import WMS_CATALOG from '../../config/wmsCorporateCatalog.json';
 import TerritorialCompliancePanel from './TerritorialCompliancePanel';
 import MapConnectivityBadge from './MapConnectivityBadge';
@@ -11,6 +11,7 @@ import { planForConnectivity, isCompactPayload, decodeCompactMarkers } from '../
 import { saveMarkerSnapshot, loadMarkerSnapshot, formatSnapshotAge } from '../../lib/mapOfflineCache';
 import { createTimeoutWmsLayer } from '../../lib/timeoutWmsLayer';
 import { authHeaders as sharedAuthHeaders } from '../../auth/authStorage';
+import { fetchCompanyLocation } from '../../auth/authApi';
 import {
     applyMarkerDiff,
     boundsToQuery,
@@ -37,7 +38,10 @@ const authHeaders = (): Record<string, string> => {
 
 const WMS_CATALOG_DATA: any = WMS_CATALOG;
 
-const INITIAL_VIEW = { lat: -17.2464, lng: -70.612, zoom: 13 };
+// ADR-121: usado SOLO como fallback cuando la empresa/tenant logueado
+// todavía no tiene coordenadas registradas (ver fetchCompanyLocation más
+// abajo) -- antes era el centro fijo de Mapas para TODAS las empresas.
+const FALLBACK_VIEW = { lat: -17.2464, lng: -70.612, zoom: 13 };
 
 const BASEMAPS: Record<string, { label: string; url: string; attribution: string; maxNativeZoom?: number; subdomains?: string }> = {
     satellite: {
@@ -190,6 +194,10 @@ const MapViewer = ({
     const isComplianceLayout = layout === 'compliance';
     const mapContainerRef = useRef<HTMLDivElement | null>(null);
     const mapRef = useRef<any>(null);
+    // ADR-121: destino del botón "Home" -- arranca en el fallback y se
+    // actualiza una vez a la ubicación real de la empresa (si existe), sin
+    // esperar la red para poder crear el mapa (ver useEffect de abajo).
+    const homeViewRef = useRef({ lat: FALLBACK_VIEW.lat, lng: FALLBACK_VIEW.lng, zoom: FALLBACK_VIEW.zoom });
     const baseLayerRef = useRef<any>(null);
     const markerLayerRef = useRef<any>(null);
     const warningLayerRef = useRef<any>(null);
@@ -227,9 +235,16 @@ const MapViewer = ({
     const [geoCompliance, setGeoCompliance] = useState<any>(null);
     const [geoComplianceLoading, setGeoComplianceLoading] = useState(false);
     const [geoComplianceError, setGeoComplianceError] = useState<string | null>(null);
-    const [mapZoom, setMapZoom] = useState(INITIAL_VIEW.zoom);
+    const [mapZoom, setMapZoom] = useState(FALLBACK_VIEW.zoom);
     const [viewportBounds, setViewportBounds] = useState<MapBoundsLike | null>(null);
     const [viewportRevision, setViewportRevision] = useState(0);
+    // Lectura en vivo de centro/zoom para el widget de navegación -- se
+    // actualiza en cada frame de 'move'/'zoom' (no solo 'moveend'), separada
+    // de mapZoom/viewportBounds a propósito: esos dos disparan reclustering
+    // y refetch de marcadores, algo que sí debe ir debounced a moveend por
+    // costo, mientras que el indicador de posición debe sentirse inmediato.
+    const [liveCenter, setLiveCenter] = useState({ lat: FALLBACK_VIEW.lat, lng: FALLBACK_VIEW.lng });
+    const [liveZoom, setLiveZoom] = useState(FALLBACK_VIEW.zoom);
     // "Última actualización: hace N min" -- solo se muestra cuando los
     // marcadores en pantalla vienen del snapshot de IndexedDB (conectividad
     // OFFLINE total), no cuando vienen de un fetch en vivo exitoso. No
@@ -294,9 +309,15 @@ const MapViewer = ({
         if (mapRef.current) return;
         const map = L.map(mapContainerRef.current!, {
             maxZoom: 22,
-            zoomControl: true,
+            // El control nativo de Leaflet se dibuja dentro del propio div del
+            // mapa (stacking context z-0), por lo que quedaba tapado por el
+            // panel de estadísticas superior izquierdo (z-20, hermano en el
+            // DOM). Se reemplaza por el widget de navegación propio (D-pad +
+            // zoom, abajo a la izquierda) con el mismo lenguaje visual del
+            // resto de paneles flotantes.
+            zoomControl: false,
             preferCanvas: true,
-        } as any).setView([INITIAL_VIEW.lat, INITIAL_VIEW.lng], INITIAL_VIEW.zoom);
+        } as any).setView([FALLBACK_VIEW.lat, FALLBACK_VIEW.lng], FALLBACK_VIEW.zoom);
         mapRef.current = map;
 
         map.createPane('ops-markers');
@@ -359,11 +380,26 @@ const MapViewer = ({
         onViewportChanged();
         map.on('moveend', onViewportChanged);
 
+        // Lectura de posición en tiempo real: 'move' y 'zoom' se disparan en
+        // cada frame durante el arrastre/animación (a diferencia de
+        // 'moveend'/'zoomend', que solo disparan al soltar), así el widget de
+        // navegación refleja el movimiento mientras ocurre, no al finalizar.
+        const onLiveViewChange = () => {
+            const center = map.getCenter();
+            setLiveCenter({ lat: center.lat, lng: center.lng });
+            setLiveZoom(map.getZoom());
+        };
+        onLiveViewChange();
+        map.on('move', onLiveViewChange);
+        map.on('zoom', onLiveViewChange);
+
         return () => {
             window.removeEventListener('resize', onResize);
             resizeObserver?.disconnect();
             if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
             map.off('moveend', onViewportChanged);
+            map.off('move', onLiveViewChange);
+            map.off('zoom', onLiveViewChange);
             if (viewportDebounceRef.current) clearTimeout(viewportDebounceRef.current);
             markerFetchAbortRef.current?.abort();
             renderedMarkerLayersRef.current.clear();
@@ -373,6 +409,32 @@ const MapViewer = ({
             map.remove();
             mapRef.current = null;
         };
+    }, []);
+
+    // ADR-121: recentra el mapa (y el destino del botón "Home") a la mina de
+    // la empresa/tenant logueado, una sola vez al montar -- separado del
+    // efecto de creación del mapa para no bloquearlo con una espera de red.
+    // Si la empresa aún no tiene coordenadas registradas, o el fetch falla,
+    // se queda en FALLBACK_VIEW en silencio -- cero regresión.
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const loc = await fetchCompanyLocation();
+                if (cancelled || !loc.has_location || loc.latitude == null || loc.longitude == null) return;
+                const zoom = loc.zoom ?? FALLBACK_VIEW.zoom;
+                homeViewRef.current = { lat: loc.latitude, lng: loc.longitude, zoom };
+                if (mapRef.current) {
+                    mapRef.current.setView([loc.latitude, loc.longitude], zoom, { animate: false });
+                    setMapZoom(zoom);
+                    setLiveCenter({ lat: loc.latitude, lng: loc.longitude });
+                    setLiveZoom(zoom);
+                }
+            } catch (err) {
+                log.error('company-location', err);
+            }
+        })();
+        return () => { cancelled = true; };
     }, []);
 
     useEffect(() => {
@@ -391,7 +453,18 @@ const MapViewer = ({
             maxZoom: 22,
             maxNativeZoom: cfg.maxNativeZoom,
             attribution: cfg.attribution,
-            subdomains: cfg.subdomains,
+            // OJO: NO pasar `subdomains: cfg.subdomains` directo -- BASEMAPS.terrain
+            // no define `subdomains`, así que cfg.subdomains es `undefined`, y
+            // pasar esa clave con valor `undefined` en el objeto de opciones
+            // SOBRESCRIBE el default interno de Leaflet ('abc') con `undefined`
+            // (L.extend copia la clave sin importar su valor). El resultado:
+            // _getSubdomain() hace `this.options.subdomains.length` sobre
+            // `undefined` y lanza una excepción síncrona durante `addTo()` --
+            // sin ErrorBoundary en la app, esto desmontaba TODA la plataforma
+            // con cada clic en "Terreno". Solo se incluye la clave si el
+            // basemap la define; si no, Leaflet aplica su default ('abc'),
+            // que es justamente el correcto para OpenTopoMap.
+            ...(cfg.subdomains ? { subdomains: cfg.subdomains } : {}),
             updateWhenZooming: false,
             // Paneo: solicitar progresivamente (cada updateInterval), pero
             // conservar cuatro anillos de tiles para que nunca aparezca el
@@ -793,6 +866,20 @@ const MapViewer = ({
         });
     }, [showGeofences]);
 
+    // Desplazamiento en píxeles de pantalla (no en grados lat/lng): a mayor
+    // zoom el mismo salto de 130px cubre menos terreno real, dando siempre
+    // una sensación de "paso" consistente sin importar el nivel de zoom.
+    const PAN_STEP_PX = 130;
+    const panMap = (dx: number, dy: number) => {
+        mapRef.current?.panBy([dx, dy], { animate: true });
+    };
+    const zoomInMap = () => mapRef.current?.zoomIn();
+    const zoomOutMap = () => mapRef.current?.zoomOut();
+    const resetView = () => {
+        const v = homeViewRef.current;
+        mapRef.current?.setView([v.lat, v.lng], v.zoom, { animate: true });
+    };
+
     const fitToVisible = () => {
         if (!mapRef.current || visibleMarkers.length === 0) return;
         const points = visibleMarkers
@@ -825,19 +912,45 @@ const MapViewer = ({
 
     const mapInner = (
         <>
-            <div ref={mapContainerRef} className="absolute inset-0 z-0" />
+            {/*
+             * position/inset/zIndex van inline (no como clases Tailwind) a
+             * propósito: index.html carga Tailwind vía CDN (script async que
+             * inyecta su stylesheet en runtime). L.map() lee
+             * getComputedStyle(el).position de forma SÍNCRONA en el montaje
+             * -- si ese script todavía no inyectó ".absolute", Leaflet ve
+             * "static" y fija inline `position: relative` en el contenedor
+             * (comportamiento propio de Leaflet para poder posicionar sus
+             * panes). Un inline style siempre gana sobre una regla de clase
+             * sin importar el orden de carga, así que si eso ocurre, la
+             * clase `absolute` de Tailwind queda inutilizada para siempre y
+             * el mapa colapsa a height:0 (clippeado por overflow-hidden del
+             * contenedor padre) -- incluyendo cualquier control de Leaflet
+             * dentro, que se vuelve invisible. Con el estilo inline aplicado
+             * por React de forma síncrona, Leaflet ve "absolute" desde el
+             * primer instante y no lo toca.
+             */}
+            <div ref={mapContainerRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
 
             <MapConnectivityBadge />
 
-            <div className="absolute left-3 top-3 z-20 w-[min(92vw,360px)] rounded-xl border border-white/10 bg-slate-950/85 p-3 text-slate-100 shadow-2xl backdrop-blur-md">
+            <div
+                className="absolute left-3 top-3 z-20 w-[min(92vw,360px)] rounded-xl border border-white/10 bg-slate-950/85 p-3 text-slate-100 shadow-2xl backdrop-blur-md"
+                style={{ fontFamily: 'var(--font-mining-ui)' }}
+            >
                 <div className="mb-2 flex items-center justify-between gap-2">
                     <div className="min-w-0">
-                        <h3 className="flex items-center gap-2 text-sm font-bold tracking-wide">
+                        <h3
+                            className="flex items-center gap-2 text-sm font-bold uppercase tracking-wide"
+                            style={{ fontFamily: 'var(--font-mining-display)' }}
+                        >
                             <Layers size={16} className="shrink-0 text-sky-400" />
                             <span className="truncate">{mapTitle}</span>
                         </h3>
                         {geoportalModuleLabel ? (
-                            <p className="mt-1 truncate text-[10px] font-semibold uppercase tracking-wide text-cyan-300/90">
+                            <p
+                                className="mt-1 truncate text-[10px] font-semibold uppercase tracking-wide text-cyan-300/90"
+                                style={{ fontFamily: 'var(--font-mining-ui)' }}
+                            >
                                 Módulo: {geoportalModuleLabel}
                             </p>
                         ) : null}
@@ -852,24 +965,25 @@ const MapViewer = ({
                     </button>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 text-[11px]">
+                <div className="grid grid-cols-3 gap-2 text-[11px]" style={{ fontFamily: 'var(--font-mining-ui)' }}>
                     <div className="rounded-lg border border-slate-700 bg-slate-900/75 px-2 py-1.5">
                         <div className="text-slate-400">Activos</div>
-                        <div className="text-base font-bold">{totals.total}</div>
+                        <div className="text-base font-bold" style={{ fontFamily: 'var(--font-mining-display)' }}>{totals.total}</div>
                     </div>
                     <div className="rounded-lg border border-slate-700 bg-slate-900/75 px-2 py-1.5">
                         <div className="text-slate-400">En línea</div>
-                        <div className="text-base font-bold text-emerald-400">{totals.online}</div>
+                        <div className="text-base font-bold text-emerald-400" style={{ fontFamily: 'var(--font-mining-display)' }}>{totals.online}</div>
                     </div>
                     <div className="rounded-lg border border-slate-700 bg-slate-900/75 px-2 py-1.5">
                         <div className="text-slate-400">Alertas</div>
-                        <div className="text-base font-bold text-amber-400">{totals.warning}</div>
+                        <div className="text-base font-bold text-amber-400" style={{ fontFamily: 'var(--font-mining-display)' }}>{totals.warning}</div>
                     </div>
                 </div>
 
                 {offlineSnapshotAge ? (
                     <div
                         className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] font-semibold text-amber-200"
+                        style={{ fontFamily: 'var(--font-mining-ui)' }}
                         title="Datos de marcadores servidos desde caché local (IndexedDB) por falta de conectividad"
                     >
                         Datos de marcadores: última actualización {offlineSnapshotAge}
@@ -877,8 +991,14 @@ const MapViewer = ({
                 ) : null}
             </div>
 
-            <div className="absolute right-3 top-3 z-20 w-[min(86vw,300px)] rounded-xl border border-white/10 bg-slate-950/85 p-3 text-slate-100 shadow-2xl backdrop-blur-md">
-                <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-300">
+            <div
+                className="absolute right-3 top-3 z-20 w-[min(86vw,300px)] rounded-xl border border-white/10 bg-slate-950/85 p-3 text-slate-100 shadow-2xl backdrop-blur-md"
+                style={{ fontFamily: 'var(--font-mining-ui)' }}
+            >
+                <div
+                    className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-300"
+                    style={{ fontFamily: 'var(--font-mining-display)', letterSpacing: '0.04em' }}
+                >
                     <Filter size={14} className="text-sky-400" />
                     Capas Técnicas
                 </div>
@@ -934,6 +1054,7 @@ const MapViewer = ({
                             value={selectedWmsPreset}
                             onChange={(e) => setSelectedWmsPreset(e.target.value)}
                             className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-200"
+                            style={{ fontFamily: 'var(--font-mining-ui)' }}
                         >
                             {WMS_CATALOG_DATA.regions.map((region: any) => (
                                 <optgroup key={region.id} label={region.label}>
@@ -954,6 +1075,7 @@ const MapViewer = ({
                             value={wmsUrl}
                             onChange={(e) => setWmsUrl(e.target.value)}
                             className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-200"
+                            style={{ fontFamily: 'var(--font-mining-ui)' }}
                             placeholder="https://.../geoserver/wms"
                         />
                     </div>
@@ -964,6 +1086,7 @@ const MapViewer = ({
                             value={wmsLayerName}
                             onChange={(e) => setWmsLayerName(e.target.value)}
                             className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-200"
+                            style={{ fontFamily: 'var(--font-mining-ui)' }}
                             placeholder="minam:riesgo_desastres"
                         />
                     </div>
@@ -992,8 +1115,109 @@ const MapViewer = ({
                 </div>
             </div>
 
-            <div className="absolute bottom-24 right-3 z-20 w-[min(92vw,320px)] rounded-xl border border-white/10 bg-slate-950/88 p-3 text-slate-100 shadow-2xl backdrop-blur-md">
-                <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-amber-200">
+            {/* Widget de navegación: paneo direccional + zoom + posición en vivo.
+                Ocupa la esquina inferior izquierda, la única sin ocupar por
+                otros paneles flotantes. */}
+            <div className="absolute bottom-3 left-3 z-20 flex items-end gap-2">
+                <div
+                    className="rounded-xl border border-white/10 bg-slate-950/88 px-3 py-2 text-slate-100 shadow-2xl backdrop-blur-md"
+                    style={{ fontFamily: 'var(--font-mining-ui)' }}
+                >
+                    <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                        <Compass size={12} className="text-cyan-400" />
+                        Posición
+                    </div>
+                    <div
+                        className="mt-1 whitespace-nowrap tabular-nums text-xs font-bold text-slate-100"
+                        style={{ fontFamily: 'var(--font-mining-display)' }}
+                    >
+                        {liveCenter.lat.toFixed(5)}, {liveCenter.lng.toFixed(5)}
+                    </div>
+                    <div className="text-[10px] text-slate-400">Zoom {liveZoom.toFixed(1)}</div>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-slate-950/88 p-2 shadow-2xl backdrop-blur-md">
+                    <div className="grid w-[108px] grid-cols-3 grid-rows-3 gap-1">
+                        <span />
+                        <button
+                            type="button"
+                            onClick={() => panMap(0, -PAN_STEP_PX)}
+                            title="Desplazar arriba"
+                            className="flex items-center justify-center rounded-md border border-slate-700 bg-slate-900 p-1.5 text-slate-200 transition-colors hover:border-cyan-400/60 hover:bg-slate-800"
+                        >
+                            <ChevronUp size={14} />
+                        </button>
+                        <span />
+                        <button
+                            type="button"
+                            onClick={() => panMap(-PAN_STEP_PX, 0)}
+                            title="Desplazar izquierda"
+                            className="flex items-center justify-center rounded-md border border-slate-700 bg-slate-900 p-1.5 text-slate-200 transition-colors hover:border-cyan-400/60 hover:bg-slate-800"
+                        >
+                            <ChevronLeft size={14} />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetView}
+                            title="Vista inicial"
+                            className="flex items-center justify-center rounded-md border border-slate-700 bg-slate-900 p-1.5 text-slate-200 transition-colors hover:border-cyan-400/60 hover:bg-slate-800"
+                        >
+                            <Home size={13} />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => panMap(PAN_STEP_PX, 0)}
+                            title="Desplazar derecha"
+                            className="flex items-center justify-center rounded-md border border-slate-700 bg-slate-900 p-1.5 text-slate-200 transition-colors hover:border-cyan-400/60 hover:bg-slate-800"
+                        >
+                            <ChevronRight size={14} />
+                        </button>
+                        <span />
+                        <button
+                            type="button"
+                            onClick={() => panMap(0, PAN_STEP_PX)}
+                            title="Desplazar abajo"
+                            className="flex items-center justify-center rounded-md border border-slate-700 bg-slate-900 p-1.5 text-slate-200 transition-colors hover:border-cyan-400/60 hover:bg-slate-800"
+                        >
+                            <ChevronDown size={14} />
+                        </button>
+                        <span />
+                    </div>
+                    <div className="mt-1.5 flex items-center justify-center gap-1">
+                        <button
+                            type="button"
+                            onClick={zoomOutMap}
+                            title="Alejar zoom"
+                            className="flex flex-1 items-center justify-center rounded-md border border-slate-700 bg-slate-900 p-1.5 text-slate-200 transition-colors hover:border-cyan-400/60 hover:bg-slate-800"
+                        >
+                            <Minus size={14} />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={zoomInMap}
+                            title="Acercar zoom"
+                            className="flex flex-1 items-center justify-center rounded-md border border-slate-700 bg-slate-900 p-1.5 text-slate-200 transition-colors hover:border-cyan-400/60 hover:bg-slate-800"
+                        >
+                            <Plus size={14} />
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div
+                // El panel "Capas Técnicas" (derecha, right-3) mide 300px de ancho
+                // y ocupa toda la columna derecha de arriba a abajo (ver más
+                // arriba, ~top-3 a bottom-3). Con right-3 este panel quedaba
+                // exactamente debajo/encima de aquel (mismo x932-1252), tapándolo.
+                // right-[340px] lo desplaza a la izquierda lo suficiente para
+                // despejar esa columna con margen visible.
+                className="absolute bottom-24 right-[340px] z-20 w-[min(92vw,320px)] rounded-xl border border-white/10 bg-slate-950/88 p-3 text-slate-100 shadow-2xl backdrop-blur-md"
+                style={{ fontFamily: 'var(--font-mining-ui)' }}
+            >
+                <div
+                    className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-amber-200"
+                    style={{ fontFamily: 'var(--font-mining-display)', letterSpacing: '0.04em' }}
+                >
                     <ShieldAlert size={14} className="text-amber-400" />
                     Incidentes Recientes
                 </div>
@@ -1023,7 +1247,10 @@ const MapViewer = ({
                 )}
             </div>
 
-            <div className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl border border-white/10 bg-slate-950/88 p-2.5 shadow-2xl backdrop-blur-md">
+            <div
+                className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl border border-white/10 bg-slate-950/88 p-2.5 shadow-2xl backdrop-blur-md"
+                style={{ fontFamily: 'var(--font-mining-ui)' }}
+            >
                 {Object.entries(BASEMAPS).map(([key, cfg]) => (
                     <button
                         key={key}

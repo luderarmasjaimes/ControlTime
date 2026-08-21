@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "description": "Catálogo WMS por región. Perú: INGEMMET/MINEM/OEFA/ANA/SERNANP (ArcGIS 1.3.0, vía geocatmin.ingemmet.gob.pe e idep.gob.pe), SENAMHI (GeoServer 1.3.0, idesep.senamhi.gob.pe — usar /geoserver/ows, el alias /geoserver/wms responde >25s), MTC/IGN (ArcGIS 1.3.0, vía idep.gob.pe). Todas las URL con contenido fueron re-probadas en vivo (GetCapabilities + GetMap con PNG real) el 2026-07-18. El WMS público de MINAM (geoservidor.minam.gob.pe/geoserver) fue dado de baja por la entidad (404 verificado 2026-07-18) — queda como plantilla manual. La PRIMERA región/fuente de esta lista es el preset por defecto del MapViewer: debe ser siempre una capa verificada funcionando, nunca una plantilla.",
+  "description": "Catálogo WMS por región. Perú: INGEMMET/OEFA/ANA/SERNANP (ArcGIS 1.3.0, vía geocatmin.ingemmet.gob.pe e idep.gob.pe), SENAMHI (GeoServer 1.3.0, idesep.senamhi.gob.pe — usar /geoserver/ows, el alias /geoserver/wms responde >25s), MTC/IGN (ArcGIS 1.3.0, vía idep.gob.pe). Todas las URL con contenido fueron re-probadas en vivo (GetCapabilities + GetMap con PNG real) el 2026-07-18, y re-verificadas el 2026-08-21. El WMS público de MINAM (geoservidor.minam.gob.pe/geoserver) fue dado de baja por la entidad (404 verificado 2026-07-18) — queda como plantilla manual. Los dos endpoints MINEM (ESTAMIN, DGFM_FORMAL) empezaron a exigir usuario/clave DGM-DREM entre el 2026-07-18 y el 2026-08-21 (antes respondían anónimo, verificado ese día; ahora devuelven la página HTML de login/token del REST Directory de ArcGIS en vez de la imagen o el XML) — el proxy de este backend no soporta credenciales upstream, así que también quedan como plantilla hasta que se agregue ese soporte o MINEM reabra acceso público. geocatmin.ingemmet.gob.pe (el preset por defecto) no envía su certificado intermedio TLS en el handshake -- el backend confía explícitamente en ese certificado puntual (ver kIngemmetMissingIntermediatePem en wms_proxy.cpp) para poder seguir validando la cadena sin relajar verify_peer. La PRIMERA región/fuente de esta lista es el preset por defecto del MapViewer: debe ser siempre una capa verificada funcionando, nunca una plantilla.",
   "regions": [
     {
       "id": "PERMIN",
@@ -35,21 +35,19 @@
         },
         {
           "id": "minem-estamin",
-          "name": "MINEM Geoportal — ESTAMIN (declaraciones / concesiones)",
-          "url": "https://geoportal.minem.gob.pe/minem/rest/services/WMS/ESTAMIN/MapServer/WMSServer",
-          "defaultLayer": "0",
-          "wmsVersion": "1.3.0",
-          "category": "operacion",
-          "docUrl": "https://geoportal.minem.gob.pe/"
+          "name": "MINEM Geoportal — ESTAMIN (requiere usuario/clave DGM-DREM desde 2026-08; no funciona anónimo)",
+          "url": "",
+          "defaultLayer": "",
+          "category": "plantilla",
+          "docUrl": "https://geoportal.minem.gob.pe/minem/rest/services/WMS/ESTAMIN/MapServer/WMSServer"
         },
         {
           "id": "minem-dgfm",
-          "name": "MINEM Geoportal — Formalización minera (DGFM)",
-          "url": "https://geoportal.minem.gob.pe/minem/rest/services/WMS/DGFM_FORMAL/MapServer/WMSServer",
-          "defaultLayer": "0",
-          "wmsVersion": "1.3.0",
-          "category": "institucional",
-          "docUrl": "https://geoportal.minem.gob.pe/"
+          "name": "MINEM Geoportal — Formalización minera DGFM (requiere usuario/clave DGM-DREM desde 2026-08; no funciona anónimo)",
+          "url": "",
+          "defaultLayer": "",
+          "category": "plantilla",
+          "docUrl": "https://geoportal.minem.gob.pe/minem/rest/services/WMS/DGFM_FORMAL/MapServer/WMSServer"
         },
         {
           "id": "oefa-riesgo-mineria",

@@ -39,7 +39,7 @@ void MapAggregator::start(const std::string &databaseUrl, int pollIntervalMs) {
     bool expected = false;
     if (!running_.compare_exchange_strong(expected, true)) return;
     databaseUrl_ = databaseUrl;
-    pollIntervalMs_ = pollIntervalMs > 0 ? pollIntervalMs : 3000;
+    pollIntervalMs_ = pollIntervalMs > 0 ? pollIntervalMs : 1500;
     thread_ = std::thread([this] { loop(); });
     std::cout << "[MAP_AGGREGATOR] started poll_interval_ms=" << pollIntervalMs_ << std::endl;
 }

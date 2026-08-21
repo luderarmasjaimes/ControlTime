@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -22,6 +23,60 @@ namespace {
 constexpr const char *kDefaultHosts =
     "geocatmin.ingemmet.gob.pe,geoportal.minem.gob.pe,www.idep.gob.pe,"
     "idesep.senamhi.gob.pe,basemap.nationalmap.gov";
+
+// geocatmin.ingemmet.gob.pe (verificado 2026-08-21) no envía su certificado
+// intermedio durante el handshake TLS -- solo el hoja *.ingemmet.gob.pe,
+// emitido por "Sectigo Public Server Authentication CA OV R36". Los otros
+// hosts del allowlist usan la MISMA CA intermedia y sí la envían
+// correctamente (confirmado con `openssl s_client -showcerts`), así que el
+// problema es una omisión de configuración de ese servidor puntual, no de
+// nuestro trust store. set_default_verify_paths() no hace AIA chasing
+// (RFC 5280 §4.2.2.1 es opcional y OpenSSL no lo implementa por defecto),
+// así que sin este certificado la verificación falla con "unable to get
+// local issuer certificate" y la petición completa se cae con
+// wms_upstream_unavailable/502, para ESTE host únicamente.
+//
+// Se añade explícitamente como CA de confianza (no se relaja
+// verify_peer/verify_fail_if_no_peer_cert en ningún host) -- es el
+// certificado intermedio público real de Sectigo, vigente hasta 2036,
+// verificado contra <https://crt.sh/?d=4267304698> antes de incluirlo aquí.
+constexpr const char *kIngemmetMissingIntermediatePem =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIGTDCCBDSgAwIBAgIQLBo8dulD3d3/GRsxiQrtcTANBgkqhkiG9w0BAQwFADBf\n"
+    "MQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQD\n"
+    "Ey1TZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBSNDYw\n"
+    "HhcNMjEwMzIyMDAwMDAwWhcNMzYwMzIxMjM1OTU5WjBgMQswCQYDVQQGEwJHQjEY\n"
+    "MBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTcwNQYDVQQDEy5TZWN0aWdvIFB1Ymxp\n"
+    "YyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gQ0EgT1YgUjM2MIIBojANBgkqhkiG9w0B\n"
+    "AQEFAAOCAY8AMIIBigKCAYEApkMtJ3R06jo0fceI0M52B7K+TyMeGcv2BQ5AVc3j\n"
+    "lYt76TvHIu/nNe22W/RJXX9rWUD/2GE6GF5x0V4bsY7K3IeJ8E7+KzG/TGboySfD\n"
+    "u+F52jqQBbY62ofhYjMeiAbLI02+FqwHeM8uIrUtcX8b2RCxF358TB0NHVccAXZc\n"
+    "FYgZndZCeXxjuca7pJJ20LLUnXtgXcjAE1vY4WvbReW0W6mkeZyNGdmpTcFs5Y+s\n"
+    "yy6LtE5Zocji9J9NlNnReox2RWVyEXpA1ChZ4gqN+ZpVSIQ0HBorVFbBKyhdZyEX\n"
+    "gZgNSNtBRwxqwIzJePJhYd4ZUhO1vk+/uP3nwDk0p95q/j7naXNCSvESnrHPypaB\n"
+    "WRK066nKfPRPi9m9kIOhMdYfS8giFRTcdgL24Ycilj7ecAK9Trh0VbjwouJ4WH+x\n"
+    "bt47u68ZFCD/ac55I0DNHkCpaPruj6e9Rmr7K46wZDAYXuEAqB7tGG/jd6JAA+H2\n"
+    "O44CV98NRsU213f1kScIZntNAgMBAAGjggGBMIIBfTAfBgNVHSMEGDAWgBRWc1hk\n"
+    "lfmSGrASKgRieaFAFYghSTAdBgNVHQ4EFgQU42Z0u3BojSxdTg6mSo+bNyKcgpIw\n"
+    "DgYDVR0PAQH/BAQDAgGGMBIGA1UdEwEB/wQIMAYBAf8CAQAwHQYDVR0lBBYwFAYI\n"
+    "KwYBBQUHAwEGCCsGAQUFBwMCMBsGA1UdIAQUMBIwBgYEVR0gADAIBgZngQwBAgIw\n"
+    "VAYDVR0fBE0wSzBJoEegRYZDaHR0cDovL2NybC5zZWN0aWdvLmNvbS9TZWN0aWdv\n"
+    "UHVibGljU2VydmVyQXV0aGVudGljYXRpb25Sb290UjQ2LmNybDCBhAYIKwYBBQUH\n"
+    "AQEEeDB2ME8GCCsGAQUFBzAChkNodHRwOi8vY3J0LnNlY3RpZ28uY29tL1NlY3Rp\n"
+    "Z29QdWJsaWNTZXJ2ZXJBdXRoZW50aWNhdGlvblJvb3RSNDYucDdjMCMGCCsGAQUF\n"
+    "BzABhhdodHRwOi8vb2NzcC5zZWN0aWdvLmNvbTANBgkqhkiG9w0BAQwFAAOCAgEA\n"
+    "BZXWDHWC3cubb/e1I1kzi8lPFiK/ZUoH09ufmVOrc5ObYH/XKkWUexSPqRkwKFKr\n"
+    "7r8OuG+p7VNB8rifX6uopqKAgsvZtZsq7iAFw04To6vNcxeBt1Eush3cQ4b8nbQR\n"
+    "MQLChgEAqwhuXp9P48T4QEBSksYav7+aFjNySsLYlPzNqVM3RNwvBdvp6vgDtGwc\n"
+    "xlKQZVuuNVIaoYyls8swhxDeSHKpRdxRauTLZ+pl+wGvy0pnrLEJGSz9mOEmfbod\n"
+    "e/XopR2NGqaHJ6bIjyxPu6UtyQGI26En7UAEozACrHz06Nx2jTAY9E6NeB6XuobE\n"
+    "wLK025ZRmvglcURG1BrV24tGHHTgxCe8M3oGlpUSMTKQ2dkgljZVYt+gKdFtWELZ\n"
+    "MuRdi+X3XsrR8LFz+aLUiDRfQqhmw3RxjIyVKvvu9UPYY1nsvxYmFnUSeM+2q1z/\n"
+    "iPUry+xDY9MC6+IhleKT094VKdFVp7LXH42+wvU+17lRolQ2mK2N/nBLVBwaIhib\n"
+    "QXw4VYKwB86Bc6eS6iqsc94KEgD/U4VsjmgfhK+Xp4NM+VYzTTa3QeV3p8xOM0cw\n"
+    "q1p8oZFA+OBcz3FYWpDIe5j0NWKlw9hXsTyPY/HeZUV59akskSOSRSmDfe8wJDPX\n"
+    "58uB9/7lud0G3x0pxQAcffP0ayKavNwDTw4UfJ34cEw=\n"
+    "-----END CERTIFICATE-----\n";
 
 std::string envString(const char *name, const char *fallback) {
     const char *value = std::getenv(name);
@@ -80,6 +135,16 @@ http::response<http::string_body> handleWmsProxy(
         asio::io_context ioc;
         ssl::context context{ssl::context::tls_client};
         context.set_default_verify_paths();
+        // Ver comentario junto a kIngemmetMissingIntermediatePem: completa la
+        // cadena para geocatmin.ingemmet.gob.pe, que no manda su intermedio.
+        // No afecta la verificación de los demás hosts del allowlist -- solo
+        // agrega una CA de confianza más, verify_peer sigue exigido igual.
+        {
+            beast::error_code caEc;
+            context.add_certificate_authority(
+                asio::buffer(kIngemmetMissingIntermediatePem, std::strlen(kIngemmetMissingIntermediatePem)),
+                caEc);
+        }
         context.set_verify_mode(ssl::verify_peer);
         beast::ssl_stream<beast::tcp_stream> stream{ioc, context};
         if (!SSL_set_tlsext_host_name(stream.native_handle(), endpoint.host.c_str())) {
@@ -98,7 +163,14 @@ http::response<http::string_body> handleWmsProxy(
             }
         }
 
-        const auto timeoutMs = envSize("BEEMETRY_WMS_PROXY_TIMEOUT_MS", 12000, 1000, 30000);
+        // 8s (antes 12s): medido en vivo contra los hosts del allowlist
+        // (2026-08-21) -- fuentes sanas responden en 200ms-2s (USGS ~0.2s,
+        // INGEMMET ~1.4s vía curl directo); 8s deja margen amplio sin hacer
+        // esperar al usuario más de lo necesario cuando una fuente externa
+        // está caída/lenta (el proxy corta y el frontend muestra el error de
+        // tesela casi 4s antes que con el timeout viejo). Sigue configurable
+        // por variable de entorno para geoservidores puntuales más lentos.
+        const auto timeoutMs = envSize("BEEMETRY_WMS_PROXY_TIMEOUT_MS", 8000, 1000, 30000);
         beast::get_lowest_layer(stream).expires_after(std::chrono::milliseconds(timeoutMs));
         beast::get_lowest_layer(stream).connect(results, ec);
         if (ec) throw std::runtime_error("connect_failed");

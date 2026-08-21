@@ -46,6 +46,13 @@ interface WmsTileImg extends HTMLImageElement {
 export function createTimeoutWmsLayer(url: string, options: TimeoutWmsOptions): any {
     const timeoutMs = options.timeoutMs ?? WMS_TILE_TIMEOUT_MS;
     const maxAttempts = options.maxAttempts ?? WMS_TILE_MAX_ATTEMPTS;
+    // L.TileLayer.WMS reenvía cualquier opción que no reconoce como parámetro
+    // extra de la query WMS (documentado así en Leaflet) -- timeoutMs/maxAttempts
+    // son opciones internas de ESTA capa, no parámetros WMS, así que hay que
+    // quitarlas antes de construir la capa o terminan como `&maxAttempts=1` en
+    // la URL real, que el allowlist del proxy (wms_proxy_security.cpp) rechaza
+    // con 400 unsupported_parameter -- eso tumbaba TODAS las teselas WMS.
+    const { timeoutMs: _timeoutMs, maxAttempts: _maxAttempts, ...wmsLayerOptions } = options;
 
     const TimeoutWMS = (L.TileLayer.WMS as any).extend({
         createTile(this: any, coords: any, done: (err: any, tile: HTMLImageElement) => void) {
@@ -118,5 +125,5 @@ export function createTimeoutWmsLayer(url: string, options: TimeoutWmsOptions): 
         },
     });
 
-    return new TimeoutWMS(url, options);
+    return new TimeoutWMS(url, wmsLayerOptions);
 }
