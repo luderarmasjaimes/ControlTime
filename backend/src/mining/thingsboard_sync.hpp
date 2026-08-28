@@ -62,6 +62,14 @@ struct ThingsBoardSyncStats {
     std::uint64_t realtime_points_ingested{0};
     std::uint64_t realtime_points_dropped_unmapped{0};
     std::uint64_t realtime_errors{0};
+    // Puntos descartados por captured_at fuera de rango sano (ver
+    // isSaneCapturedAt() en el .cpp) — encontrado en producción: dispositivos
+    // con reloj/RTC sin sincronizar o con unidad de tiempo mal escalada
+    // (segundos en vez de ms) mandan ts de 1970/1990 o de décadas en el
+    // futuro. Sin este filtro, esos puntos llegarían tal cual a
+    // telemetry_raw con la misma fecha corrupta.
+    std::uint64_t backfill_points_rejected_bad_ts{0};
+    std::uint64_t realtime_points_rejected_bad_ts{0};
 };
 
 // Arranca los hilos de sync (uno de backfill + uno de tiempo real por peer
