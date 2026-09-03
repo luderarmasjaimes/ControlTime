@@ -52,7 +52,7 @@ function pickSupportedMimeType(): string {
 
 interface VideoInsertModalProps {
   onClose: () => void;
-  onComplete: (dataUrl: string, meta: { source: 'webcam' | 'screen'; durationSeconds: number; mimeType: string }) => void;
+  onComplete: (dataUrl: string, meta: { source: 'webcam' | 'screen'; durationSeconds: number; mimeType: string; posterDataUrl?: string }) => void;
   initialTab?: 'webcam' | 'screen';
 }
 
@@ -70,6 +70,7 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [posterDataUrl, setPosterDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -133,6 +134,30 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
       // insertado en el lienzo) se ve en negro con "0:00" hasta que el
       // usuario arrastra el control manualmente (ver lib/videoDurationFix.ts).
       fixRecordedVideoElement(resultVideoRef.current);
+      setPosterDataUrl(null);
+      // `fixRecordedVideoElement` reproduce brevemente y pausa ~220ms después
+      // para forzar el pintado de un frame real -- se espera un margen extra
+      // antes de capturarlo a un <canvas> como miniatura ("poster"), que se
+      // adjunta al elemento insertado para que DOCX/PDF puedan mostrar una
+      // imagen real del video en vez de solo texto (formatos que no pueden
+      // reproducir video embebido).
+      const captureTimer = setTimeout(() => {
+        const video = resultVideoRef.current;
+        if (!video || !video.videoWidth || !video.videoHeight) return;
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          setPosterDataUrl(canvas.toDataURL('image/jpeg', 0.82));
+        } catch {
+          // Sin póster el DOCX cae al placeholder de texto ya existente --
+          // no rompe la inserción del video en el lienzo.
+        }
+      }, 450);
+      return () => clearTimeout(captureTimer);
     }
   }, [recordedUrl]);
 
@@ -235,8 +260,9 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
       source: tab,
       durationSeconds: elapsedSeconds,
       mimeType: recordedBlob.type || 'video/webm',
+      posterDataUrl: posterDataUrl || undefined,
     });
-  }, [recordedUrl, recordedBlob, tab, elapsedSeconds, onComplete]);
+  }, [recordedUrl, recordedBlob, tab, elapsedSeconds, posterDataUrl, onComplete]);
 
   const switchTab = useCallback((next: 'webcam' | 'screen') => {
     if (isRecording) return;

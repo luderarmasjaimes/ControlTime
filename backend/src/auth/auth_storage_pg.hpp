@@ -46,14 +46,19 @@ std::string trimCompanyName(const std::string &s);
 /** @brief Inserta una fila en `auth_audit_logs` (best-effort: no propaga errores de escritura).
  * @param latitude,longitude,accuracyMeters Ubicación del dispositivo cliente (ADR-107, db_scripts/58)
  * -- columnas dedicadas para poder filtrar/agregar por coordenadas, además del texto ya presente en
- * `detail` para lectura humana. `nullopt` si no se capturó (no participa en la decisión de auditar). */
+ * `detail` para lectura humana. `nullopt` si no se capturó (no participa en la decisión de auditar).
+ * @param sourceIp IP real del cliente (ADR-130, `http_utils::getClientIp`) -- columna `source_ip`,
+ * presente en el esquema desde `db_scripts/03_auth_biometric.sql` pero que ningún caller poblaba
+ * hasta esta extensión (confirmado en vivo: 0 de ~230 filas existentes la tenían). Cadena vacía si
+ * no se pudo determinar (no bloquea el registro del evento). */
 void appendAuthAuditLogPg(PGconn *conn, const std::string &action,
                           const std::string &company,
                           const std::string &username, bool ok,
                           const std::string &detail,
                           std::optional<double> latitude = std::nullopt,
                           std::optional<double> longitude = std::nullopt,
-                          std::optional<double> accuracyMeters = std::nullopt);
+                          std::optional<double> accuracyMeters = std::nullopt,
+                          const std::string &sourceIp = std::string());
 
 /** @brief Verifica que exista un usuario de `companyName` cuyo RUC coincida (o cualquier usuario de la empresa si `ruc` viene vacío). @return true si existe al menos una fila. */
 bool validateCompanyPg(const std::string &databaseUrl,
@@ -62,7 +67,24 @@ bool validateCompanyPg(const std::string &databaseUrl,
 
 /** @brief Inserta un nuevo `AuthUser` (con plantilla facial) tras validar que el DNI no exista ya. Registra el intento (éxito o fallo) en la auditoría. @return true si el INSERT tuvo éxito. */
 bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
-                    std::string &error);
+                    std::string &error,
+                    /** IP del cliente (ADR-130) -- registrada en la auditoría de alta. */
+                    const std::string &sourceIp = "");
+
+/** @brief MFA/TOTP (ADR-135). Guarda un secreto PENDIENTE (totp_enabled sigue false hasta el primer código válido, ver enableTotpPg). Sobrescribe cualquier secreto pendiente anterior no confirmado. @return true si el UPDATE afectó una fila. */
+bool setPendingTotpSecretPg(const std::string &databaseUrl, const std::string &userId,
+                            const std::string &base32Secret, std::string &error);
+
+/** @brief Lee `(totp_secret, totp_enabled)` de un usuario por `id`. @return nullopt si el usuario no existe. */
+std::optional<std::pair<std::string, bool>> getTotpStatusPg(const std::string &databaseUrl,
+                                                             const std::string &userId,
+                                                             std::string &error);
+
+/** @brief Marca `totp_enabled=true` (llamado tras el primer código válido post-enrolamiento). @return true si el UPDATE afectó una fila. */
+bool enableTotpPg(const std::string &databaseUrl, const std::string &userId, std::string &error);
+
+/** @brief Limpia el secreto y pone `totp_enabled=false` (deshabilita MFA por completo). @return true si el UPDATE afectó una fila. */
+bool disableTotpPg(const std::string &databaseUrl, const std::string &userId, std::string &error);
 
 /** @brief Actualiza el avatar caricaturizado (base64) de un usuario por `id`. Envuelto en transacción con contexto de auditoría cuando `actorUsername` no está vacío. @return true si el UPDATE tuvo éxito. */
 bool updateUserAvatarCartoonPg(const std::string &databaseUrl,
@@ -128,7 +150,11 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                          * auditDetailSuffix. */
                                         std::optional<double> latitude = std::nullopt,
                                         std::optional<double> longitude = std::nullopt,
-                                        std::optional<double> accuracyMeters = std::nullopt);
+                                        std::optional<double> accuracyMeters = std::nullopt,
+                                        /** IP del cliente (ADR-130, `http_utils::getClientIp`)
+                                         * -- se registra en TODAS las filas de auditoría que
+                                         * genera esta función, éxito o fallo. */
+                                        const std::string &sourceIp = "");
 
 /** @brief Autentica por biometría facial: resuelve la identidad, valida estado de cuenta, arma el "probe" (plantilla de cliente o imagen cruda) y compara similitud coseno contra la plantilla almacenada. Registra cada resultado en la auditoría. @return El `AuthUser` y el score de similitud si superó el umbral; `std::nullopt` en cualquier otro caso. */
 std::optional<std::pair<AuthUser, double>>
@@ -147,7 +173,10 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                      * (db_scripts/58) además del texto de auditDetailSuffix. */
                     std::optional<double> latitude = std::nullopt,
                     std::optional<double> longitude = std::nullopt,
-                    std::optional<double> accuracyMeters = std::nullopt);
+                    std::optional<double> accuracyMeters = std::nullopt,
+                    /** IP del cliente (ADR-130) -- registrada en TODAS las
+                     * filas de auditoría que genera esta función. */
+                    const std::string &sourceIp = "");
 
 /** @brief Lista los usuarios de `company` (sin credenciales) para pantallas de mantenimiento. @return Array JSON, vacío si no hay conexión o no hay usuarios. */
 json::array listCompanyUsersPg(const std::string &databaseUrl,
@@ -238,6 +267,11 @@ struct AuthCompanyRecord {
   std::optional<double> latitude;
   std::optional<double> longitude;
   std::optional<int> locationZoom;
+  /** db_scripts/72: 'mining_client' (default) | 'organization'. Se lee/escribe
+   *  vía `tenants.company_type` (subquery correlacionada en kCompanySelectCols)
+   *  -- NO es una columna propia de auth_companies, evita un dual-write nuevo
+   *  (lección de ADR-039). Vacío si la empresa todavía no tiene tenant_id. */
+  std::string companyType = "mining_client";
 };
 
 #if HAS_LIBPQ
@@ -259,6 +293,8 @@ bool getCompanyByIdPg(const std::string &databaseUrl,
  * @return true si la empresa quedó creada (ver `out`); false en cualquier
  * otro caso (ver `error`: "company_already_exists" | "tenant_provision_failed"
  * | "database_unavailable" | "company_create_failed").
+ * @param companyType 'mining_client' (default si vacío) | 'organization' --
+ * se aplica al tenant recién provisionado (db_scripts/72), NO a auth_companies.
  */
 bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
                      const std::string &ruc, const std::string &countryCode,
@@ -268,9 +304,10 @@ bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
                      std::optional<int> locationZoom,
                      const std::string &actorUserId,
                      const std::string &actorRole, AuthCompanyRecord &out,
-                     std::string &error);
+                     std::string &error,
+                     const std::string &companyType = "mining_client");
 
-/** @brief Edita RUC/país/domicilio de una empresa existente. NUNCA toca `name` (el nombre es referenciado por nombre en auth_users/reports/mineria_empresas — renombrar queda fuera de alcance, ver ADR-085). @return true si la fila existía y se actualizó. */
+/** @brief Edita RUC/país/domicilio de una empresa existente. NUNCA toca `name` (el nombre es referenciado por nombre en auth_users/reports/mineria_empresas — renombrar queda fuera de alcance, ver ADR-085). @param companyType Si no vacío, actualiza `tenants.company_type` (db_scripts/72) del tenant vinculado. @return true si la fila existía y se actualizó. */
 bool updateCompanyPg(const std::string &databaseUrl,
                      const std::string &companyId, const std::string &ruc,
                      const std::string &countryCode,
@@ -279,7 +316,8 @@ bool updateCompanyPg(const std::string &databaseUrl,
                      std::optional<double> longitude,
                      std::optional<int> locationZoom,
                      const std::string &actorUserId, AuthCompanyRecord &out,
-                     std::string &error);
+                     std::string &error,
+                     const std::string &companyType = "");
 
 /** @brief Activa/desactiva una empresa (soft delete — nunca borra la fila: hay informes/telemetría/usuarios enlazados por nombre). @param activeUsersAffected Devuelve cuántos usuarios activos tiene la empresa, para que el frontend lo muestre en la confirmación. @return true si la fila existía y se actualizó. */
 bool setCompanyActivePg(const std::string &databaseUrl,

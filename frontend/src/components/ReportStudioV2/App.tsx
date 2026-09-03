@@ -14,11 +14,13 @@ import { usePermissions } from '../../auth/usePermissions';
 import ReportsAdminModal from './components/modals/ReportsAdminModal';
 import ReadOnlyViewer from './components/viewers/ReadOnlyViewer';
 import PdfPasswordModal from './components/PdfPasswordModal';
+import ShareLinkModal from './components/ShareLinkModal';
 import ShareReportModal from './components/modals/ShareReportModal';
 import DeleteReportConfirm from './components/modals/DeleteReportConfirm';
 import MapCaptureModal from './components/modals/MapCaptureModal';
 import ImageInsertModal from './components/modals/ImageInsertModal';
 import VideoInsertModal from './components/modals/VideoInsertModal';
+import { generateDemoReport, type DemoReportProgress } from './lib/demoReportGenerator';
 import NarrationModal from './components/modals/NarrationModal';
 import Apa7CitationModal from './components/modals/Apa7CitationModal';
 import SaveTitleModal from './components/modals/SaveTitleModal';
@@ -32,7 +34,7 @@ import { measurePerfAsync } from './lib/performanceMonitor';
 import {
   fetchReportById,
   fetchReportRevisions,
-  fetchReportPdfBlob,
+  createReportShareLink,
   fetchReportPortableBlob,
   importReportPortable,
   syncMiningKpisFromDashboard,
@@ -41,6 +43,8 @@ import {
   fetchMineSensors,
   fetchSeismicReport,
   createPptxExportJob,
+  createDocxExportJob,
+  createPdfExportJob,
   createVideoExportJob,
   uploadSlideNarration,
   pollExportJob,
@@ -157,6 +161,12 @@ export default function App({
   // ADR-080: contraseña del PDF recién descargado desde el ribbon — se
   // muestra una sola vez (ver PdfPasswordModal), no se persiste.
   const [pdfPassword, setPdfPassword] = useState<string | null>(null);
+  // ADR-138: enlace de acceso directo (sin contraseña) recién generado desde
+  // el ribbon — se muestra una vez (ver ShareLinkModal); a diferencia de
+  // pdfPassword, este SÍ queda persistido en report_pdf_share_links
+  // (server-side) hasta que vence, pero no hace falta recordarlo en el
+  // cliente entre sesiones.
+  const [shareLink, setShareLink] = useState<{ url: string; expiresInHours: number } | null>(null);
   // Stage 3 (PPTX -> video): job pptx exitoso más reciente de ESTA sesión —
   // habilita el botón "Convertir a MP4"; se reinicia si el informe cambia
   // (evita reusar un job de otro reportId al cambiar de informe abierto).
@@ -734,8 +744,40 @@ export default function App({
     setShowVideoInsertModal(false);
   }, []);
 
+  // "Generar Reporte Demo Completo" (MIS INFORMES) -- corre DENTRO del
+  // editor real (mismas acciones del store que un usuario), así valida en
+  // vivo el motor de márgenes/anti-colisión/auto-resize. No auto-guarda: el
+  // documento generado queda cargado en el lienzo y el usuario confirma con
+  // el botón "Guardar" normal -- evita depender de un cierre de store
+  // (`currentReportId`/`currentReportTitle`) capturado en un closure
+  // desactualizado justo después de una generación asíncrona.
+  const handleGenerateDemoReport = useCallback(async () => {
+    const confirmed = await requestConfirmation(
+      '¿Generar el informe demo de prueba exhaustiva (100% de tipos de sensor x 100% de tipos de gráfico, en A4/A3)? Reemplaza el contenido del lienzo actual (sin guardar automáticamente).',
+    );
+    if (!confirmed) return;
+    setShowReportsAdmin(false);
+    setAiStatus('Generando reporte demo…');
+    try {
+      const result = await generateDemoReport((p: DemoReportProgress) => {
+        setAiStatus(`${p.phase} (${p.current}/${p.total})`);
+      });
+      setAiStatus(
+        `Reporte demo generado: ${result.pageCount} páginas, ${result.sensorTypeCount} tipos de sensor, ${result.chartCount} diagramas. Revise y presione "Guardar" para conservarlo.`,
+      );
+    } catch (err) {
+      log.error('Error al generar reporte demo:', err);
+      const message = err instanceof Error ? err.message : '';
+      setAiStatus(
+        message.toLowerCase().includes('ya hay una generación')
+          ? message
+          : 'Error al generar el reporte demo. Verifique el catálogo de sensores del tenant.',
+      );
+    }
+  }, []);
+
   const handleVideoInsertComplete = useCallback(
-    (videoDataUrl: string, meta: { source: 'webcam' | 'screen'; durationSeconds: number; mimeType: string }) => {
+    (videoDataUrl: string, meta: { source: 'webcam' | 'screen'; durationSeconds: number; mimeType: string; posterDataUrl?: string }) => {
       if (!videoDataUrl || videoDataUrl.length < 32) {
         setAiStatus('Error: video vacío o inválido.');
         return;
@@ -746,6 +788,10 @@ export default function App({
           source: meta.source,
           mimeType: meta.mimeType,
           durationSeconds: meta.durationSeconds,
+          // Miniatura real del primer frame -- permite que exportaciones que
+          // no pueden reproducir video (DOCX) embeban una imagen en vez de
+          // solo texto (ver reportDocxBuilder.js/buildReportDocx.ts).
+          posterSrc: meta.posterDataUrl,
         },
       });
       setAiStatus(`Video (${meta.source === 'webcam' ? 'cámara web' : 'pantalla'}, ${meta.durationSeconds}s) insertado en la página activa.`);
@@ -1307,23 +1353,52 @@ export default function App({
   // measurePerfAsync existía pero no se llamaba desde ningún export real.
   const handleExportPdf = useCallback(async () => {
     if (currentReportId) {
-      setAiStatus('Exportando PDF (servidor)...');
+      setAiStatus('Generando PDF (servidor)...');
       try {
-        const { blob, filename, password } = await measurePerfAsync('export', () => fetchReportPdfBlob(currentReportId));
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        setAiStatus('PDF exportado (servidor)');
-        // ADR-080: el PDF llega cifrado y con marca de agua — la contraseña
-        // se muestra una única vez, nunca queda guardada en el backend.
-        if (password) setPdfPassword(password);
-        return;
+        // Job asíncrono (report_export_job, /render-pdf) -- mismo patrón que
+        // DOCX/PPTX (ver comentario de `handleExportDocx`), no el
+        // `fetchReportPdfBlob` síncrono de antes (ADR-016): un informe de
+        // miles de páginas puede terminar de renderizar bien y aun así jamás
+        // llegar a responder dentro del presupuesto de un request HTTP
+        // directo. El sidecar sigue aplicando el mismo watermark + cifrado
+        // (ADR-080) -- la contraseña viaja en el header `X-Pdf-Password` de
+        // `fetchExportJobBlob` recién al descargar, no antes.
+        const { job_id: jobId } = await measurePerfAsync('export', () => createPdfExportJob(currentReportId));
+        const finalStatus = await pollExportJob(currentReportId, jobId, {
+          onProgress: (status) => {
+            setAiStatus(
+              status.status === 'running'
+                ? 'Generando PDF (renderizando informe)...'
+                : 'PDF en cola de exportación...',
+            );
+          },
+        });
+        if (finalStatus.status === 'success') {
+          const { blob, filename, password } = await fetchExportJobBlob(currentReportId, jobId);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          setAiStatus('PDF exportado (servidor)');
+          // ADR-080: el PDF llega cifrado y con marca de agua — la contraseña
+          // se muestra una única vez, nunca queda guardada en el backend.
+          if (password) setPdfPassword(password);
+          return;
+        }
+        if (finalStatus.error_message === 'export_busy') {
+          setAiStatus('Ya hay una exportación pesada en curso. Espere a que termine antes de iniciar otro DOCX/PPTX/PDF.');
+          return;
+        }
+        log.warn('Export PDF servidor no exitoso, usando fallback cliente:', finalStatus.error_message);
       } catch (err) {
+        if (err instanceof Error && err.message === 'export_busy') {
+          setAiStatus('Ya hay una exportación pesada en curso. Espere a que termine antes de iniciar otro DOCX/PPTX/PDF.');
+          return;
+        }
         log.error('Export PDF server-side falló, usando fallback cliente', err);
       }
     }
@@ -1337,31 +1412,91 @@ export default function App({
     setAiStatus(result.success ? `PDF exportado (${result.method})` : 'Error al exportar PDF');
   }, [doc, loggedAuthor, currentReportId, handlePrintPreview]);
 
+  // ADR-138: enlace de acceso directo — a diferencia de handleExportPdf, no
+  // hay fallback cliente: requiere el informe guardado (id real) porque el
+  // token vive en report_pdf_share_links, ligado a un report_id concreto.
+  const handleGenerateShareLink = useCallback(async () => {
+    if (!currentReportId) {
+      setAiStatus('Guardá el informe antes de generar un enlace de acceso directo.');
+      return;
+    }
+    setAiStatus('Generando enlace de acceso directo...');
+    try {
+      const result = await createReportShareLink(currentReportId);
+      setShareLink(result);
+      setAiStatus('Enlace de acceso directo generado.');
+    } catch (err) {
+      log.error('No se pudo generar el enlace de acceso directo', err);
+      setAiStatus('No se pudo generar el enlace de acceso directo.');
+    }
+  }, [currentReportId]);
+
+  // Export DOCX: dos pipelines completos, con el servidor como preferido.
+  // Verificado (2026-08-30) sobre un informe de 14 páginas / 134 elementos /
+  // 56 sensores / 20 tipos de gráfico: el pipeline servidor generó el
+  // documento en ~5.6s con captura completa de los 22 bloques raster; el
+  // pipeline cliente tomó ~22-26s y, al competir por un solo hilo de JS con
+  // 22 capturas html2canvas simultáneas, solo completó 16/22 (el resto queda
+  // como nota de texto, degradado con gracia, no como error). El servidor
+  // solo aplica si el informe ya está guardado (necesita navegar
+  // print-report.html) y en modo 'document' (no 'presentation', como PPTX)
+  // -- en cualquier otro caso, o si el servidor falla, se usa el pipeline
+  // cliente (`exportDOCX`), que no depende de red ni de guardado previo.
   const handleExportDocx = useCallback(async () => {
-    setAiStatus('Exportando DOCX...');
+    const layoutMode = doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
+    if (currentReportId && layoutMode === 'document') {
+      setAiStatus('Generando DOCX (servidor)...');
+      try {
+        const { job_id: jobId } = await measurePerfAsync('export', () => createDocxExportJob(currentReportId));
+        const finalStatus = await pollExportJob(currentReportId, jobId, {
+          onProgress: (status) => {
+            setAiStatus(
+              status.status === 'running'
+                ? 'Generando DOCX (renderizando informe)...'
+                : 'DOCX en cola de exportación...',
+            );
+          },
+        });
+        if (finalStatus.status === 'success') {
+          const { blob, filename } = await fetchExportJobBlob(currentReportId, jobId);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          setAiStatus('DOCX exportado (servidor)');
+          return;
+        }
+        if (finalStatus.error_message === 'export_busy') {
+          setAiStatus('Ya hay una exportación pesada en curso. Espere a que termine antes de iniciar otro DOCX/PDF.');
+          return;
+        }
+        log.warn('Export DOCX servidor no exitoso, usando pipeline cliente:', finalStatus.error_message);
+      } catch (err) {
+        log.warn('Export DOCX servidor falló, usando pipeline cliente:', err);
+      }
+    }
+    setAiStatus('Exportando DOCX (cliente)...');
     const result = await measurePerfAsync('export', () => exportDOCX(doc, { author: loggedAuthor }));
     setAiStatus(result.success ? `DOCX exportado (${result.method})` : 'Error al exportar DOCX');
-  }, [doc, loggedAuthor]);
+  }, [doc, loggedAuthor, currentReportId]);
 
-  // Export PPTX (modo presentación): igual que el PDF, requiere un informe ya
-  // guardado (el servidor renderiza /print-report.html, no puede hacerlo
-  // sobre un borrador que solo existe en memoria del navegador). A diferencia
-  // del PDF, no hay fallback cliente sensato — sin sidecar no hay PPTX. Job
-  // asíncrono (report_export_job): se crea, se hace polling hasta
-  // success/failed, y recién ahí se descarga.
+  // Export PPTX: igual que el PDF, requiere un informe ya guardado (el
+  // servidor renderiza /print-report.html, no puede hacerlo sobre un borrador
+  // que solo existe en memoria del navegador). A diferencia del PDF, no hay
+  // fallback cliente sensato — sin sidecar no hay PPTX. Job asíncrono
+  // (report_export_job): se crea, se hace polling hasta success/failed, y
+  // recién ahí se descarga. Ya NO se exige modo presentación (16:9) --
+  // /render-pptx arma el tamaño del deck con el papel real del informe (A4/
+  // A3) cuando es modo documento, igual que ya hace /render-docx (ver
+  // server.js `paperSizeInches`); forzar el cambio a presentación acá
+  // destruiría la paginación A4/A3 del informe sin necesidad.
   const handleExportPptx = useCallback(async () => {
     if (!currentReportId) {
       setAiStatus('Guarda el informe antes de exportar a PPTX — el servidor necesita un informe guardado para renderizarlo.');
-      return;
-    }
-    const layoutMode = doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
-    if (layoutMode !== 'presentation') {
-      const wantsSwitch = await requestConfirmation(
-        'El PPTX solo se genera en modo presentación (lienzo 16:9). ¿Cambiar el informe a modo presentación ahora?',
-      );
-      if (!wantsSwitch) return;
-      setLayoutMode('presentation');
-      setAiStatus('Informe cambiado a modo presentación. Vuelve a hacer clic en "PPTX" para exportarlo.');
       return;
     }
     setAiStatus('Generando PPTX (servidor)...');
@@ -1538,6 +1673,7 @@ export default function App({
   const designToolbar = (
     <RibbonToolbar
       onExportPdf={handleExportPdf}
+      onGenerateShareLink={handleGenerateShareLink}
       onExportVideo={handleRecordScreenToCanvas}
       onPrint={handlePrintPreview}
       onReviewDocument={handleReviewDocument}
@@ -1976,6 +2112,7 @@ export default function App({
           onClose={() => setShowReportsAdmin(false)}
           onOpenRead={handleOpenRead}
           onOpenEdit={handleOpenEdit}
+          onGenerateDemo={handleGenerateDemoReport}
         />
       )}
 
@@ -1988,6 +2125,11 @@ export default function App({
 
       {pdfPassword && (
         <PdfPasswordModal password={pdfPassword} onClose={() => setPdfPassword(null)} />
+      )}
+
+      {shareLink && (
+        <ShareLinkModal url={shareLink.url} expiresInHours={shareLink.expiresInHours}
+          onClose={() => setShareLink(null)} />
       )}
 
       {showShareModal && shareTarget && (

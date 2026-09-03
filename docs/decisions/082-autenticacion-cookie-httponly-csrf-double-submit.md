@@ -1,5 +1,17 @@
 # ADR-082 — Access token en cookie HttpOnly y protección CSRF double-submit
 
+> **Actualización 2026-08-27**: [ADR-132](132-bearer-en-memoria-cookies-namespaced-aislamiento-multifrontend.md)
+> revisita conscientemente la decisión de este ADR — un hallazgo real de
+> convivencia multi-frontend en el mismo host (dos apps en el mismo dominio,
+> distinto puerto, se pisan la cookie de sesión entre sí; el puerto no
+> participa en la identidad de una cookie por RFC 6265) obligó a volver el
+> `access_token` a memoria de JS como vía primaria (con TTL bajado a 15 min
+> para acotar la ventana de exposición ante XSS). El `refresh_token` sigue
+> siendo exclusivamente cookie `HttpOnly` — la mitigación central de este
+> ADR permanece vigente para la credencial de mayor vida. No se edita el
+> texto original de este ADR-082 (convención de este log); ver ADR-132 para
+> el detalle completo, el trade-off aceptado y la verificación en vivo.
+
 **Status**: implemented (verificado 2026-08-02; pruebas unitarias frontend 32/32 y validación de build/type-check repetidas 2026-08-03)
 **Fecha**: 2026-08-02
 **Autores**: EC

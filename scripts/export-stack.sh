@@ -97,10 +97,15 @@ if [[ "$INCLUDE_VOLUMES" == "1" ]]; then
       continue
     fi
     echo "[export] volumen $full_vol -> volumes/${vol}.tar.gz ..."
-    docker run --rm \
-      -v "${full_vol}:/from:ro" \
-      -v "$EXPORT_DIR/volumes:/to" \
-      alpine sh -c "tar czf /to/${vol}.tar.gz -C /from ."
+    # tar+gzip DENTRO del contenedor (su propia capa de escritura) y se trae
+    # el archivo terminado con `docker cp` -- nunca escribiendo directo a la
+    # carpeta del host vía bind mount: en Docker Desktop (WSL2/virtiofs) el
+    # puente de archivos con volúmenes grandes puede cortar la escritura a
+    # mitad de camino. Mismo criterio que export-stack.ps1.
+    helper_name="beemetry-export-${vol}-$$"
+    docker run --name "$helper_name" -v "${full_vol}:/from:ro" alpine sh -c "tar czf /tmp/${vol}.tar.gz -C /from ."
+    docker cp "${helper_name}:/tmp/${vol}.tar.gz" "$EXPORT_DIR/volumes/${vol}.tar.gz"
+    docker rm -f "$helper_name" >/dev/null
   done
 else
   echo "[export] INCLUDE_VOLUMES=0, saltando volúmenes."
@@ -134,6 +139,17 @@ fi
   echo "include_redpanda=$INCLUDE_REDPANDA"
   echo "volumes_exported=${VOLUMES_TO_EXPORT[*]:-}"
 } > "$EXPORT_DIR/manifest.txt"
+
+# --- 5. Checksums (ADR-111) --------------------------------------------------
+# sha256sum de cada artefacto exportado, formato estándar `sha256sum -c` --
+# import-stack.sh lo verifica ANTES de restaurar nada.
+(
+  cd "$EXPORT_DIR"
+  find images volumes db -type f 2>/dev/null | sort | xargs -r sha256sum > checksums.sha256
+)
+if [[ -s "$EXPORT_DIR/checksums.sha256" ]]; then
+  echo "[export] checksums.sha256 escrito ($(wc -l < "$EXPORT_DIR/checksums.sha256") archivos)."
+fi
 
 TOTAL_SIZE="$(du -sh "$EXPORT_DIR" 2>/dev/null | cut -f1)"
 echo "[export] Listo. Tamaño total: ${TOTAL_SIZE:-desconocido} en $EXPORT_DIR"

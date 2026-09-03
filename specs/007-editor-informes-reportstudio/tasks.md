@@ -46,7 +46,7 @@ T12 ─► T13 (frontend, post-backend)
 - [x] T1-T10 completadas (CRUD funcional, aislamiento multitenant).
 - [x] CA-2 (autosave < 0.5 s), CA-4 (aislamiento), CA-5 (soft delete), CA-6 (RBAC status).
 - [ ] CA-3 (export PDF) — **T11 + T15 pendientes**
-- [ ] Frontend (T12, T13) — pendientes
+- [x] Frontend (T12, T13) — verificado: T12 editor rich-text con `@tiptap/react`/`@tiptap/starter-kit` sobre `content_json` (ADR-010, ADR-013, `frontend/src/components/ReportStudioV2`); T13 autosave activo en `lib/autosaveEngine.ts` (intervalo real 5s + retry, ADR-023, no 3s como decía la tarea original — divergencia documentada, no bloqueante).
 - [x] ADR-007-1..4 registrados.
 
 ## Métricas

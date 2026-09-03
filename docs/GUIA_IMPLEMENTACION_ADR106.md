@@ -205,7 +205,7 @@ Para CADA archivo, responder:
 - `ZoneSensorPicker.tsx` (opciones de sensores)
 - `SensorInspector.tsx` (lista de sensores seleccionados)
 - `SensorMultiChartInspector.tsx` (si tiene listbox)
-- Cualquier dropod-wn/combobox customizado con Konva
+- Cualquier dropod-wn/combobox customizado con 
 
 ### 3.4 CATEGORÍA D: Labels y help text
 

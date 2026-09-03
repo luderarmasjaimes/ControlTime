@@ -123,6 +123,9 @@ struct AppConfig {
     std::string gExportDataRoot;
     int gPptxExportTimeoutMs = 60000;
     int gVideoExportTimeoutMs = 180000;
+    // Export DOCX (modo documento, mismo sidecar/EXPORT_DATA_ROOT que
+    // PPTX/MP4 arriba) -- ver runDocxExportJob (report_export_jobs.cpp).
+    int gDocxExportTimeoutMs = 60000;
     // IGP/CENSIS (Instituto Geofisico del Peru) -- fuente oficial de
     // sismicidad, API HTTPS publica sin autenticacion (ver igp_seismic_client.hpp).
     std::string gIgpApiBaseUrl = "https://ultimosismo.igp.gob.pe";
@@ -243,6 +246,16 @@ struct AppConfig {
     std::string gJwtSecret;
     int gJwtAccessTtlMinutes = 15;
     int gJwtRefreshTtlDays = 7;
+    // Token dedicado para el sidecar de export server-side (ver
+    // auth::issueExportAccessToken) -- un export grande (144+ páginas) puede
+    // tardar más que el TTL normal de acceso; sin esto, cada fetch de
+    // telemetría del propio informe empieza a fallar con 401 a mitad de
+    // camino (reproducido en vivo). Nunca se entrega al navegador. Subido de
+    // 120 a 240 min tras medir en vivo un export DOCX de 2104 páginas/6300
+    // diagramas: al ritmo real observado (~101 min de procesamiento propio
+    // del sidecar para llegar al 69.5%), un documento de esa escala necesita
+    // ~145 min -- 120 dejaba un margen demasiado ajustado.
+    int gJwtExportTtlMinutes = 240;
     // ADR-029, "Actualización 2026-07-19": el refresh token migró de
     // localStorage (JSON body) a una cookie HttpOnly — Secure debe quedar en
     // true en cualquier despliegue con TLS real delante (terminado por el

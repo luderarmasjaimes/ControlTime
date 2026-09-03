@@ -127,6 +127,42 @@ ALTER TABLE auth_companies ADD COLUMN IF NOT EXISTS location_zoom INTEGER;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_company_id ON auth_companies (company_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_name_norm ON auth_companies (lower(btrim(name)));
 CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_companies_ruc ON auth_companies (ruc) WHERE ruc <> '';
+-- Espejo obligatorio de db_scripts/72 (company_type/region en tenants +
+-- org_tenant_access + permiso org.cross_tenant.manage): un despliegue limpio
+-- solo monta 01-29, así que esto también debe crearse aquí -- mismo criterio
+-- que el bloque de auth_companies de arriba (ADR-086/072).
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS company_type TEXT NOT NULL DEFAULT 'mining_client';
+ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_company_type_check;
+ALTER TABLE tenants ADD CONSTRAINT tenants_company_type_check
+    CHECK (company_type IN ('mining_client', 'organization'));
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS region TEXT;
+ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_region_check;
+ALTER TABLE tenants ADD CONSTRAINT tenants_region_check
+    CHECK (region IS NULL OR region IN ('north_america', 'central_america', 'south_america'));
+UPDATE tenants SET company_type = 'organization'
+WHERE tenant_name IN ('Beemetry', 'TimeTelemetry') AND company_type <> 'organization';
+CREATE TABLE IF NOT EXISTS org_tenant_access (
+    id BIGSERIAL PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    granted_by UUID NOT NULL REFERENCES auth_users(id),
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at TIMESTAMPTZ,
+    revoked_by UUID REFERENCES auth_users(id),
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    UNIQUE (user_id, tenant_id)
+);
+ALTER TABLE org_tenant_access DROP CONSTRAINT IF EXISTS org_tenant_access_role_check;
+ALTER TABLE org_tenant_access ADD CONSTRAINT org_tenant_access_role_check
+    CHECK (role IN ('admin', 'manager', 'supervisor', 'geologist', 'safety', 'operator', 'viewer'));
+CREATE INDEX IF NOT EXISTS idx_org_tenant_access_user_active ON org_tenant_access (user_id) WHERE active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_org_tenant_access_tenant_active ON org_tenant_access (tenant_id) WHERE active = TRUE;
+INSERT INTO platform_permissions (code, module, description) VALUES
+    ('org.cross_tenant.manage', 'organizacion', 'Otorgar/revocar acceso cruzado de personal de organización a empresas mineras clientes')
+ON CONFLICT (code) DO NOTHING;
+INSERT INTO role_permissions (tenant_id, role, permission_code)
+SELECT NULL, 'admin', 'org.cross_tenant.manage' ON CONFLICT DO NOTHING;
 CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_event_time ON auth_audit_logs(event_time DESC);
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'operator';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS ruc VARCHAR(20) DEFAULT '';
@@ -137,6 +173,10 @@ ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS account_status VARCHAR(20) DEFAU
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS suspension_until TIMESTAMPTZ;
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS face_template JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS avatar_cartoon_base64 TEXT;
+-- db_scripts/81: MFA/TOTP (ver ese archivo para el razonamiento completo).
+ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
+ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS totp_enrolled_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS auth_user_maintenance_audit (
     id BIGSERIAL PRIMARY KEY,
@@ -210,7 +250,8 @@ void appendAuthAuditLogPg(PGconn *conn, const std::string &action,
                           const std::string &detail,
                           std::optional<double> latitude,
                           std::optional<double> longitude,
-                          std::optional<double> accuracyMeters) {
+                          std::optional<double> accuracyMeters,
+                          const std::string &sourceIp) {
   // Formatear a std::string ANTES de armar el arreglo de params: PQexecParams
   // guarda punteros crudos, así que el buffer detrás de cada puntero debe
   // seguir vivo hasta la llamada -- si se formateara dentro del inicializador
@@ -218,18 +259,19 @@ void appendAuthAuditLogPg(PGconn *conn, const std::string &action,
   const std::string latStr = latitude ? std::to_string(*latitude) : "";
   const std::string lonStr = longitude ? std::to_string(*longitude) : "";
   const std::string accStr = accuracyMeters ? std::to_string(*accuracyMeters) : "";
-  const char *params[8] = {action.c_str(), company.c_str(), username.c_str(),
+  const char *params[9] = {action.c_str(), company.c_str(), username.c_str(),
                            ok ? "true" : "false", detail.c_str(),
                            latitude ? latStr.c_str() : nullptr,
                            longitude ? lonStr.c_str() : nullptr,
-                           accuracyMeters ? accStr.c_str() : nullptr};
+                           accuracyMeters ? accStr.c_str() : nullptr,
+                           sourceIp.empty() ? nullptr : sourceIp.c_str()};
   storage::PgResult r{PQexecParams(
       conn,
       "INSERT INTO auth_audit_logs(event_action, company_name, username, "
-      "success, detail, latitude, longitude, accuracy_m) "
+      "success, detail, latitude, longitude, accuracy_m, source_ip) "
       "VALUES($1, $2, $3, $4::boolean, $5, $6::double precision, "
-      "$7::double precision, $8::double precision)",
-      8, nullptr, params, nullptr, nullptr, 0)};
+      "$7::double precision, $8::double precision, $9)",
+      9, nullptr, params, nullptr, nullptr, 0)};
 }
 
 bool validateCompanyPg(const std::string &databaseUrl, const std::string &companyName, const std::string &ruc, std::string &error) {
@@ -250,8 +292,92 @@ bool validateCompanyPg(const std::string &databaseUrl, const std::string &compan
   return exists;
 }
 
+bool setPendingTotpSecretPg(const std::string &databaseUrl, const std::string &userId,
+                           const std::string &base32Secret, std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  const char *params[2] = {base32Secret.c_str(), userId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "UPDATE auth_users SET totp_secret=$1, totp_enabled=false, totp_enrolled_at=NULL "
+      "WHERE id=$2::uuid",
+      2, nullptr, params, nullptr, nullptr, 0)};
+  if (!res.okCommand()) {
+    error = PQresultErrorMessage(res.get());
+    return false;
+  }
+  return std::string(PQcmdTuples(res.get())) != "0";
+}
+
+std::optional<std::pair<std::string, bool>> getTotpStatusPg(const std::string &databaseUrl,
+                                                             const std::string &userId,
+                                                             std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return std::nullopt;
+  }
+  const char *params[1] = {userId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn, "SELECT totp_secret, totp_enabled FROM auth_users WHERE id=$1::uuid",
+      1, nullptr, params, nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) == 0) {
+    error = res.okTuples() ? "user not found" : PQresultErrorMessage(res.get());
+    return std::nullopt;
+  }
+  const std::string secret = PQgetisnull(res.get(), 0, 0) ? "" : PQgetvalue(res.get(), 0, 0);
+  const bool enabled = !PQgetisnull(res.get(), 0, 1) &&
+                        std::string(PQgetvalue(res.get(), 0, 1)) == "t";
+  return std::make_pair(secret, enabled);
+}
+
+bool enableTotpPg(const std::string &databaseUrl, const std::string &userId, std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  const char *params[1] = {userId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "UPDATE auth_users SET totp_enabled=true, totp_enrolled_at=NOW() "
+      "WHERE id=$1::uuid AND totp_secret IS NOT NULL",
+      1, nullptr, params, nullptr, nullptr, 0)};
+  if (!res.okCommand()) {
+    error = PQresultErrorMessage(res.get());
+    return false;
+  }
+  return std::string(PQcmdTuples(res.get())) != "0";
+}
+
+bool disableTotpPg(const std::string &databaseUrl, const std::string &userId, std::string &error) {
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  const char *params[1] = {userId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "UPDATE auth_users SET totp_secret=NULL, totp_enabled=false, totp_enrolled_at=NULL "
+      "WHERE id=$1::uuid",
+      1, nullptr, params, nullptr, nullptr, 0)};
+  if (!res.okCommand()) {
+    error = PQresultErrorMessage(res.get());
+    return false;
+  }
+  return std::string(PQcmdTuples(res.get())) != "0";
+}
+
 bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
-                    std::string &error) {
+                    std::string &error, const std::string &sourceIp) {
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
   if (PQstatus(conn) != CONNECTION_OK) {
@@ -283,7 +409,7 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
   if (PQntuples(checkRes.get()) > 0) {
     error = "dni already exists";
     appendAuthAuditLogPg(conn, "register", user.company, user.username, false,
-                         "dni_exists");
+                         "dni_exists", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     return false;
   }
 
@@ -307,7 +433,7 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
   if (PQntuples(usernameCheckRes.get()) > 0) {
     error = "username already exists in this company";
     appendAuthAuditLogPg(conn, "register", user.company, user.username, false,
-                         "username_exists");
+                         "username_exists", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     return false;
   }
 
@@ -347,12 +473,12 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
   if (!insOk) {
     error = "failed to insert user";
     appendAuthAuditLogPg(conn, "register", user.company, user.username, false,
-                         "insert_failed");
+                         "insert_failed", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     return false;
   }
 
   appendAuthAuditLogPg(conn, "register", user.company, user.username, true,
-                       "ok");
+                       "ok", std::nullopt, std::nullopt, std::nullopt, sourceIp);
   return true;
 }
 
@@ -620,7 +746,8 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &auditDetailSuffix,
                                         std::optional<double> latitude,
                                         std::optional<double> longitude,
-                                        std::optional<double> accuracyMeters) {
+                                        std::optional<double> accuracyMeters,
+                                        const std::string &sourceIp) {
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
   if (PQstatus(conn) != CONNECTION_OK) {
@@ -631,7 +758,8 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
 
   const std::string sql =
       "SELECT id, company_name, first_name, last_name, dni, username, role, "
-      "password_hash, face_template::text, created_at::text, avatar_cartoon_base64, account_status, suspension_until::text "
+      "password_hash, face_template::text, created_at::text, avatar_cartoon_base64, account_status, suspension_until::text, "
+      "totp_secret, totp_enabled "
       "FROM auth_users WHERE company_name=$1 AND " +
       pgSqlAuthIdentityMatch(identityKey, 2) + " LIMIT 4";
   const char *params[2] = {company.c_str(), identityKey.c_str()};
@@ -648,7 +776,7 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
   const int rowCount = PQntuples(res.get());
   if (rowCount == 0) {
     appendAuthAuditLogPg(conn, "login_password", company, identityKey, false,
-                         "user_not_found");
+                         "user_not_found", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     error = kAuthUserNotFoundMsg;
     if (errorCodeOut != nullptr) {
       *errorCodeOut = "user_not_found";
@@ -657,7 +785,7 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
   }
   if (rowCount > 1) {
     appendAuthAuditLogPg(conn, "login_password", company, identityKey, false,
-                         "ambiguous_identity");
+                         "ambiguous_identity", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     error = kAuthAmbiguousIdentityMsg;
     if (errorCodeOut != nullptr) {
       *errorCodeOut = "ambiguous_identity";
@@ -690,10 +818,15 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
   if (!PQgetisnull(res.get(), 0, 10)) {
     u.avatarCartoonBase64 = PQgetvalue(res.get(), 0, 10);
   }
+  if (!PQgetisnull(res.get(), 0, 13)) {
+    u.totpSecret = PQgetvalue(res.get(), 0, 13);
+  }
+  u.totpEnabled = !PQgetisnull(res.get(), 0, 14) &&
+                  std::string(PQgetvalue(res.get(), 0, 14)) == "t";
 
   if (!http_utils::verifyPassword(password, u.passwordHash)) {
     appendAuthAuditLogPg(conn, "login_password", company, u.username, false,
-                         "invalid_password");
+                         "invalid_password", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     error = kAuthWrongPasswordMsg;
     if (errorCodeOut != nullptr) {
       *errorCodeOut = "wrong_password";
@@ -728,7 +861,7 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
 
   u.tenantId = resolveTelemetryTenantIdPg(static_cast<void *>(conn), u.id, u.company);
   appendAuthAuditLogPg(conn, "login_password", company, u.username, true,
-                       "ok" + auditDetailSuffix, latitude, longitude, accuracyMeters);
+                       "ok" + auditDetailSuffix, latitude, longitude, accuracyMeters, sourceIp);
   return u;
 }
 
@@ -762,7 +895,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                     const std::string &auditDetailSuffix,
                     std::optional<double> latitude,
                     std::optional<double> longitude,
-                    std::optional<double> accuracyMeters) {
+                    std::optional<double> accuracyMeters,
+                    const std::string &sourceIp) {
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
   if (PQstatus(conn) != CONNECTION_OK) {
@@ -774,7 +908,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
   const std::string sql =
       "SELECT id, company_name, first_name, last_name, dni, username, role, "
       "password_hash, face_template::text, created_at::text, ruc, phone, mobile, email, "
-      "avatar_cartoon_base64, account_status, suspension_until::text, face_template_provider "
+      "avatar_cartoon_base64, account_status, suspension_until::text, face_template_provider, "
+      "totp_secret, totp_enabled "
       "FROM auth_users WHERE company_name=$1 AND " +
       pgSqlAuthIdentityMatch(identityKey, 2) + " LIMIT 4";
   const char *params[2] = {company.c_str(), identityKey.c_str()};
@@ -791,13 +926,13 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
   const int rows = PQntuples(res.get());
   if (rows == 0) {
     appendAuthAuditLogPg(conn, "login_face", company, "unknown", false,
-                         "no_user_for_identity");
+                         "no_user_for_identity", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     error = kAuthUserNotFoundMsg;
     return std::nullopt;
   }
   if (rows > 1) {
     appendAuthAuditLogPg(conn, "login_face", company, "unknown", false,
-                         "ambiguous_identity");
+                         "ambiguous_identity", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     error = "El identificador coincide con más de un registro en esa empresa. "
             "Use un dato único (por ejemplo el DNI) e intente de nuevo.";
     return std::nullopt;
@@ -835,13 +970,18 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
   u.faceTemplateProvider = PQgetisnull(res.get(), 0, 17)
                                ? "unknown"
                                : PQgetvalue(res.get(), 0, 17);
+  if (!PQgetisnull(res.get(), 0, 18)) {
+    u.totpSecret = PQgetvalue(res.get(), 0, 18);
+  }
+  u.totpEnabled = !PQgetisnull(res.get(), 0, 19) &&
+                  std::string(PQgetvalue(res.get(), 0, 19)) == "t";
 
   std::vector<double> tpl;
   try {
     auto parsed = json::parse(PQgetvalue(res.get(), 0, 8));
     if (!parsed.is_array()) {
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "invalid_template");
+                           "invalid_template", std::nullopt, std::nullopt, std::nullopt, sourceIp);
       error = "El usuario indicado no tiene una plantilla facial válida "
               "registrada. Complete el registro biométrico e intente de nuevo.";
       return std::nullopt;
@@ -855,7 +995,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
     }
   } catch (...) {
     appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                         "template_parse_failed");
+                         "template_parse_failed", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     error = "El usuario indicado no tiene una plantilla facial válida "
             "registrada. Complete el registro biométrico e intente de nuevo.";
     return std::nullopt;
@@ -863,7 +1003,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
 
   if (tpl.size() < 100) {
     appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                         "template_too_short");
+                         "template_too_short", std::nullopt, std::nullopt, std::nullopt, sourceIp);
     error = "El usuario indicado no tiene biometría facial registrada de forma "
             "completa. Registre el rostro e intente de nuevo.";
     return std::nullopt;
@@ -887,7 +1027,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                                tpl, probe, probeProvider, useThreshold,
                                legacyThreshold, embeddingThreshold, error)) {
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "probe_build_failed");
+                           "probe_build_failed", std::nullopt, std::nullopt, std::nullopt, sourceIp);
       return std::nullopt;
     }
     bestScore = cosineSimilarity(probe, tpl);
@@ -897,7 +1037,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                 << " score=" << bestScore << " threshold=" << useThreshold
                 << std::endl;
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "no_match score=" + std::to_string(bestScore));
+                           "no_match score=" + std::to_string(bestScore),
+                           std::nullopt, std::nullopt, std::nullopt, sourceIp);
       error = "La biometría facial no coincide con el usuario indicado. "
               "Verifique su identidad y vuelva a intentar.";
       return std::nullopt;
@@ -911,7 +1052,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
     // de rama para seetaface6_local que este proveedor reemplaza.
     if (!rawImageBytes.has_value() || rawImageBytes->empty()) {
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "deepface_silentface_requires_image");
+                           "deepface_silentface_requires_image", std::nullopt, std::nullopt, std::nullopt, sourceIp);
       error = "Esta cuenta requiere una imagen de cámara real para la "
               "verificación facial.";
       return std::nullopt;
@@ -925,7 +1066,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                 << std::endl;
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
                            "deepface_silentface_verify_failed: " +
-                               (probeFace.issues.empty() ? "unknown" : probeFace.issues.front()));
+                               (probeFace.issues.empty() ? "unknown" : probeFace.issues.front()),
+                           std::nullopt, std::nullopt, std::nullopt, sourceIp);
       error = "No se pudo validar el rostro. Intente de nuevo con mejor "
               "iluminación y encuadre.";
       return std::nullopt;
@@ -938,7 +1080,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                 << " score=" << bestScore << " threshold=" << useThreshold
                 << std::endl;
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "no_match score=" + std::to_string(bestScore));
+                           "no_match score=" + std::to_string(bestScore),
+                           std::nullopt, std::nullopt, std::nullopt, sourceIp);
       error = "La biometría facial no coincide con el usuario indicado. "
               "Verifique su identidad y vuelva a intentar.";
       return std::nullopt;
@@ -950,7 +1093,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
     // ningún análisis facial real detrás).
     if (!rawImageBytes.has_value() || rawImageBytes->empty()) {
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "dermalog_requires_image");
+                           "dermalog_requires_image", std::nullopt, std::nullopt, std::nullopt, sourceIp);
       error = "Esta cuenta requiere una imagen de cámara real para la "
               "verificación facial.";
       return std::nullopt;
@@ -962,7 +1105,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                 << " user=" << u.username << " reason=" << dermalogError
                 << std::endl;
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "dermalog_verify_failed: " + dermalogError);
+                           "dermalog_verify_failed: " + dermalogError,
+                           std::nullopt, std::nullopt, std::nullopt, sourceIp);
       error = dermalogError == "no_license"
                   ? "La verificación biométrica de alta seguridad no está "
                     "disponible temporalmente (licencia pendiente). "
@@ -981,7 +1125,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                 << " score=" << bestScore << " threshold=" << kDermalogThreshold
                 << std::endl;
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "no_match score=" + std::to_string(bestScore));
+                           "no_match score=" + std::to_string(bestScore),
+                           std::nullopt, std::nullopt, std::nullopt, sourceIp);
       error = "La biometría facial no coincide con el usuario indicado. "
               "Verifique su identidad y vuelva a intentar.";
       return std::nullopt;
@@ -996,7 +1141,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
               << " user=" << u.username
               << " provider=" << u.faceTemplateProvider << std::endl;
     appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                         "rejected_weak_provider:" + u.faceTemplateProvider);
+                         "rejected_weak_provider:" + u.faceTemplateProvider,
+                         std::nullopt, std::nullopt, std::nullopt, sourceIp);
     error = "Esta cuenta tiene una biometría facial registrada con un método "
             "que ya no se considera seguro. Vuelva a registrar su rostro "
             "para reactivar el login facial, o use su contraseña mientras "
@@ -1007,7 +1153,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
   appendAuthAuditLogPg(conn, "login_face", company, u.username, true,
                        "ok score=" + std::to_string(bestScore) + " probe=" +
                            probeProvider + auditDetailSuffix,
-                       latitude, longitude, accuracyMeters);
+                       latitude, longitude, accuracyMeters, sourceIp);
   if (probeProviderOut != nullptr) {
     *probeProviderOut = probeProvider;
   }
@@ -1023,10 +1169,15 @@ json::array listCompanyUsersPg(const std::string &databaseUrl, const std::string
     return users;
   }
   const char *params[1] = {company.c_str()};
+  // avatar_cartoon_base64 (db_scripts/13_auth_avatar_cartoon_reset_users.sql):
+  // agregado para que ShareReportModal.tsx pueda mostrar el avatar real del
+  // destinatario en vez de leer una lista mock de localStorage con solo
+  // iniciales como "avatar".
   storage::PgResult res{PQexecParams(
       conn,
       "SELECT id, company_name, first_name, last_name, dni, username, role, "
-      "ruc, phone, mobile, email, account_status, suspension_until::text "
+      "ruc, phone, mobile, email, account_status, suspension_until::text, "
+      "avatar_cartoon_base64 "
       "FROM auth_users WHERE company_name = $1 "
       "ORDER BY first_name, last_name",
       1, nullptr, params, nullptr, nullptr, 0)};
@@ -1045,7 +1196,8 @@ json::array listCompanyUsersPg(const std::string &databaseUrl, const std::string
         {"mobile", PQgetvalue(res.get(), i, 9)},
         {"email", PQgetvalue(res.get(), i, 10)},
         {"account_status", PQgetvalue(res.get(), i, 11)},
-        {"suspension_until", PQgetisnull(res.get(), i, 12) ? json::value(nullptr) : json::value(PQgetvalue(res.get(), i, 12))}
+        {"suspension_until", PQgetisnull(res.get(), i, 12) ? json::value(nullptr) : json::value(PQgetvalue(res.get(), i, 12))},
+        {"avatar_base64", PQgetisnull(res.get(), i, 13) ? json::value("") : json::value(PQgetvalue(res.get(), i, 13))}
       });
     }
   }
@@ -1285,8 +1437,14 @@ AuditPageResult readAuthAuditPg(const std::string &databaseUrl,
   dataParams.push_back(std::to_string(filter.offset));
   const std::size_t offsetIdx = dataParams.size();
 
+  // ADR-130: source_ip/latitude/longitude/accuracy_m existían en el esquema
+  // desde db_scripts/03/58 pero esta consulta -- la que alimenta el Centro de
+  // Auditoría del frontend -- nunca las seleccionaba; quedaban invisibles
+  // para cualquier revisión de seguridad aunque el backend ya las escribiera
+  // (login/registro) o recién empezara a hacerlo (empresas/acceso cruzado).
   std::ostringstream sql;
-  sql << "SELECT event_time::text,event_action,company_name,username,success,detail "
+  sql << "SELECT event_time::text,event_action,company_name,username,success,detail,"
+      << "COALESCE(source_ip,''),latitude,longitude,accuracy_m "
       << "FROM auth_audit_logs" << where.str()
       << " ORDER BY event_time DESC LIMIT $" << limitIdx << "::bigint"
       << " OFFSET $" << offsetIdx << "::bigint";
@@ -1301,12 +1459,17 @@ AuditPageResult readAuthAuditPg(const std::string &databaseUrl,
 
   const int rows = PQntuples(res.get());
   for (int i = 0; i < rows; ++i) {
-    out.logs.push_back(json::object{{"event_time", PQgetvalue(res.get(), i, 0)},
-                                    {"event_action", PQgetvalue(res.get(), i, 1)},
-                                    {"company_name", PQgetvalue(res.get(), i, 2)},
-                                    {"username", PQgetvalue(res.get(), i, 3)},
-                                    {"success", std::string(PQgetvalue(res.get(), i, 4)) == "t"},
-                                    {"detail", PQgetvalue(res.get(), i, 5)}});
+    out.logs.push_back(json::object{
+        {"event_time", PQgetvalue(res.get(), i, 0)},
+        {"event_action", PQgetvalue(res.get(), i, 1)},
+        {"company_name", PQgetvalue(res.get(), i, 2)},
+        {"username", PQgetvalue(res.get(), i, 3)},
+        {"success", std::string(PQgetvalue(res.get(), i, 4)) == "t"},
+        {"detail", PQgetvalue(res.get(), i, 5)},
+        {"source_ip", PQgetvalue(res.get(), i, 6)},
+        {"latitude", PQgetisnull(res.get(), i, 7) ? json::value(nullptr) : json::value(http_utils::safeStod(PQgetvalue(res.get(), i, 7)))},
+        {"longitude", PQgetisnull(res.get(), i, 8) ? json::value(nullptr) : json::value(http_utils::safeStod(PQgetvalue(res.get(), i, 8)))},
+        {"accuracy_m", PQgetisnull(res.get(), i, 9) ? json::value(nullptr) : json::value(http_utils::safeStod(PQgetvalue(res.get(), i, 9)))}});
   }
 
   return out;
@@ -1498,7 +1661,7 @@ PasswordMigrationResult migrateLegacyPasswordHashesPg(const std::string &databas
 
 namespace {
 
-/** Arma un AuthCompanyRecord desde una fila de la SELECT canónica (16 columnas, ver kCompanySelectCols). */
+/** Arma un AuthCompanyRecord desde una fila de la SELECT canónica (17 columnas, ver kCompanySelectCols). */
 AuthCompanyRecord companyRecordFromRow(PGresult *res, int row, bool maskRuc) {
   AuthCompanyRecord c;
   c.companyId = PQgetvalue(res, row, 0);
@@ -1519,6 +1682,9 @@ AuthCompanyRecord companyRecordFromRow(PGresult *res, int row, bool maskRuc) {
   if (!PQgetisnull(res, row, 13)) c.latitude = std::stod(PQgetvalue(res, row, 13));
   if (!PQgetisnull(res, row, 14)) c.longitude = std::stod(PQgetvalue(res, row, 14));
   if (!PQgetisnull(res, row, 15)) c.locationZoom = std::stoi(PQgetvalue(res, row, 15));
+  // db_scripts/72: subquery correlacionada a tenants.company_type (columna 16)
+  // -- ya viene con COALESCE a 'mining_client' en kCompanySelectCols.
+  c.companyType = PQgetvalue(res, row, 16);
   return c;
 }
 
@@ -1527,7 +1693,13 @@ const char kCompanySelectCols[] =
     "COALESCE(tenant_id::text,''), active, demo_data, created_at::text, "
     "COALESCE(updated_at::text,''), COALESCE(updated_by,''), "
     "COALESCE(deactivated_at::text,''), COALESCE(deactivated_by,''), "
-    "latitude, longitude, location_zoom";
+    "latitude, longitude, location_zoom, "
+    // db_scripts/72: company_type vive en tenants, no en auth_companies --
+    // subquery correlacionada (funciona igual en SELECT/INSERT..RETURNING/
+    // UPDATE..RETURNING porque auth_companies es siempre el nombre de la
+    // tabla objetivo en las tres formas, ver kCompanySelectCols call sites).
+    "COALESCE((SELECT t.company_type FROM tenants t "
+    "WHERE t.tenant_id = auth_companies.tenant_id), 'mining_client')";
 
 json::object companyRecordToJson(const AuthCompanyRecord &c) {
   return json::object{
@@ -1541,7 +1713,8 @@ json::object companyRecordToJson(const AuthCompanyRecord &c) {
       {"deactivated_by", c.deactivatedBy},
       {"latitude", c.latitude ? json::value(*c.latitude) : json::value(nullptr)},
       {"longitude", c.longitude ? json::value(*c.longitude) : json::value(nullptr)},
-      {"location_zoom", c.locationZoom ? json::value(*c.locationZoom) : json::value(nullptr)}};
+      {"location_zoom", c.locationZoom ? json::value(*c.locationZoom) : json::value(nullptr)},
+      {"company_type", c.companyType}};
 }
 
 } // namespace
@@ -1596,7 +1769,8 @@ bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
                      std::optional<int> locationZoom,
                      const std::string &actorUserId,
                      const std::string &actorRole, AuthCompanyRecord &out,
-                     std::string &error) {
+                     std::string &error,
+                     const std::string &companyType) {
   auto lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = lease.get();
   if (PQstatus(conn) != CONNECTION_OK || !ensureAuthSchemaPg(conn)) {
@@ -1663,6 +1837,16 @@ bool createCompanyPg(const std::string &databaseUrl, const std::string &name,
   if (linked.okCommand()) {
     out.tenantId = tenantId;
   }
+  // db_scripts/72: company_type vive en tenants, no en auth_companies -- se
+  // aplica recién ahora que el tenant existe. 'mining_client' (el default) no
+  // necesita UPDATE (ya es el valor por defecto de la columna).
+  if (companyType == "organization") {
+    const char *typeParams[1] = {tenantId.c_str()};
+    storage::PgResult typed{PQexecParams(
+        conn, "UPDATE tenants SET company_type='organization' WHERE tenant_id=$1::uuid",
+        1, nullptr, typeParams, nullptr, nullptr, 0)};
+    if (typed.okCommand()) out.companyType = "organization";
+  }
   return true;
 }
 
@@ -1674,7 +1858,8 @@ bool updateCompanyPg(const std::string &databaseUrl,
                      std::optional<double> longitude,
                      std::optional<int> locationZoom,
                      const std::string &actorUserId, AuthCompanyRecord &out,
-                     std::string &error) {
+                     std::string &error,
+                     const std::string &companyType) {
   auto lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = lease.get();
   if (PQstatus(conn) != CONNECTION_OK || !ensureAuthSchemaPg(conn)) {
@@ -1709,6 +1894,17 @@ bool updateCompanyPg(const std::string &databaseUrl,
     return false;
   }
   out = companyRecordFromRow(res.get(), 0, /*maskRuc=*/false);
+  // db_scripts/72: company_type vive en tenants -- solo se toca si el caller
+  // mandó un valor explícito (companyType vacío == "no cambiar", mismo
+  // criterio de "solo lo que viene en el body" que el resto de esta función).
+  if ((companyType == "organization" || companyType == "mining_client") &&
+      !out.tenantId.empty()) {
+    const char *typeParams[2] = {companyType.c_str(), out.tenantId.c_str()};
+    storage::PgResult typed{PQexecParams(
+        conn, "UPDATE tenants SET company_type=$1 WHERE tenant_id=$2::uuid",
+        2, nullptr, typeParams, nullptr, nullptr, 0)};
+    if (typed.okCommand()) out.companyType = companyType;
+  }
   return true;
 }
 

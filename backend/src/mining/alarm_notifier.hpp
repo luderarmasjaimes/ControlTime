@@ -5,8 +5,13 @@
 //   - WebSocket (implícito, siempre): push inmediato a toda sesión WS viva
 //     del tenant vía WsRegistry (la misma infraestructura del mapa en vivo).
 //   - email: SMTP saliente vía curl (relay configurable con
-//     BEEMETRY_SMTP_HOST/PORT — por defecto el sidecar mailpit del compose;
-//     en producción se apunta al SMTP corporativo de la minera).
+//     BEEMETRY_SMTP_HOST/PORT — por defecto el sidecar mailpit del compose,
+//     que NO entrega a bandejas reales, solo las atrapa para inspección en
+//     http://localhost:8025; en producción, o para que un correo llegue de
+//     verdad, se apunta a un relay real vía BEEMETRY_SMTP_HOST/PORT +
+//     BEEMETRY_SMTP_USER/PASS + BEEMETRY_SMTP_TLS=1, p.ej. Gmail:
+//     smtp.gmail.com:587 con un App Password de la cuenta -- ver 2026-08-21
+//     en CLAUDE.md/notas del proyecto).
 //   - webhook: POST JSON a una URL — cubre genéricamente Slack, Teams,
 //     Telegram, WhatsApp Business API y cualquier integración propia.
 //
@@ -45,6 +50,17 @@ bool sendEmailWithAttachment(const std::string &to, const std::string &subject,
                              const std::string &attachmentMimeType,
                              const std::vector<unsigned char> &attachmentBytes,
                              std::string &detail);
+
+/**
+ * @brief Envía un correo de texto plano (sin adjunto) -- mismo transporte y
+ * validaciones (isSafeEmail, anti-inyección de cabeceras) que
+ * `sendEmailWithAttachment`, expuesto igual para que otro módulo (`notify`,
+ * canal "email" de POST /api/notifications/send y de
+ * POST /api/reports/{id}/share) lo reutilice sin duplicar la composición
+ * SMTP cruda por curl.
+ */
+bool sendPlainEmail(const std::string &to, const std::string &subject,
+                    const std::string &body, std::string &detail);
 
 /**
  * @brief Valida el destino de un canal de notificación antes de guardarlo.

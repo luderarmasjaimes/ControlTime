@@ -192,3 +192,16 @@ TEST_CASE("resolveCorsOrigin refleja solo origenes de la allowlist configurada",
         REQUIRE(http_utils::resolveCorsOrigin("").empty());
     }
 }
+
+TEST_CASE("PDF de enlace directo se sirve inline y sin cabecera de contrasena",
+          "[http_utils][pdf][adr138]") {
+    const std::string bytes{"%PDF-1.7\0binario", 16};
+    auto response = http_utils::makeInlinePdfResponse("informe.pdf", bytes);
+
+    REQUIRE(response.result() == http::status::ok);
+    REQUIRE(response[http::field::content_type] == "application/pdf");
+    REQUIRE(response[http::field::content_disposition] ==
+            "inline; filename=\"informe.pdf\"");
+    REQUIRE(response.find("X-Pdf-Password") == response.end());
+    REQUIRE(response.body() == bytes);
+}

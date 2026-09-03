@@ -39,7 +39,13 @@
 #include "auth/auth_storage_file.hpp"
 #include "auth/auth_storage_pg.hpp"
 #include "auth/auth_routes.hpp"
+#include "auth/org_access_routes.hpp"
+#include "auth/mfa_routes.hpp"
+#include "auth/totp.hpp"
+#include "auth/tax_id.hpp"
 #include "auth/jwt.hpp"
+#include "security/validators.hpp"
+#include "security/security_alerts.hpp"
 #include "biometric/biometric_types.hpp"
 #include "biometric/face_analysis.hpp"
 #include "biometric/ai_engine_client.hpp"
@@ -56,6 +62,7 @@
 #include "mining/map_aggregator.hpp"
 #include "ws_broadcast.hpp"
 #include "reports/report_routes.hpp"
+#include "notify/notify_routes.hpp"
 #include "formula/formula_service.hpp"
 #include "formula/formula_routes.hpp"
 #include "platform/platform_routes.hpp"
@@ -112,6 +119,11 @@ using auth::AuditPageResult;
 using auth::resolveAuthSession;
 using auth::extractAuthTokenFromRequest;
 using auth::issueAuthSession;
+using auth::createMfaPendingToken;
+using auth::consumeMfaPendingToken;
+using auth::invalidateMfaPendingToken;
+using auth::normalizeTaxId;
+using auth::validateTaxIdChecksum;
 using auth::revokeAuthSession;
 using auth::resolveRoleForUsername;
 using auth::gAuthMutex;
@@ -129,6 +141,7 @@ using auth::migrateLegacyPasswordHashesPg;
 using auth::readAuthAuditPg;
 using auth::registerUserPg;
 using auth::findOrCreateTenantForCompanyPg;
+using auth::validateCompanyPg;
 using auth::loginPasswordPg;
 using auth::loginFaceTargetedPg;
 using auth::updateUserAvatarCartoonPg;
@@ -172,6 +185,44 @@ withAuthCookies(http::response<http::string_body> res, const AuthTokenPair &pair
 // =========================================================================
 //  Route handlers NOT yet extracted into modules
 // =========================================================================
+
+// ── POST /api/security/csp-report ────────────────────────────────────────
+// Endpoint del `report-uri` de la CSP (router.cpp / frontend/nginx.conf).
+// Sin esto, una violación de CSP en producción (ej. alguien probando
+// exactamente los vectores del red-team de 2026-08-26: img-src/connect-src
+// hacia un host propio) pasa en silencio -- el navegador la descarta
+// localmente si no hay dónde reportarla. Público y sin CSRF a propósito: el
+// navegador lo llama por su cuenta, sin que ninguna página JS invoque
+// fetch/XHR (no pasa por authFetch), así que no puede llevar el header. Solo
+// registra (nunca fallar el request por un body raro): un reporte de CSP
+// jamás debe poder tumbar nada. Rate-limit dedicado en nginx.conf
+// (zone=csp_report) para que no sirva como vector de flood/log-spam.
+static http::response<http::string_body>
+handleCspReport(const http::request<http::string_body> &req,
+                const std::unordered_map<std::string, std::string> & /*query*/) {
+    std::string summary = "(cuerpo vacío o no parseable)";
+    try {
+        const auto parsed = json::parse(req.body());
+        if (parsed.is_object()) {
+            const auto &obj = parsed.as_object();
+            const auto *report = obj.if_contains("csp-report");
+            const auto &target = (report && report->is_object()) ? *report : parsed;
+            summary = json::serialize(target);
+        }
+    } catch (...) {
+        // Cuerpo no-JSON o vacío (algunos navegadores mandan distinto shape) --
+        // se registra igual, sin romper nada.
+        if (!req.body().empty()) summary = req.body().substr(0, 500);
+    }
+    std::cerr << "[CSP_VIOLATION] ip=" << http_utils::getClientIp(req)
+              << " " << summary << std::endl;
+    security::sendSecurityAlert("csp_violation",
+                                "ip=" + http_utils::getClientIp(req) + " " + summary);
+    http::response<http::string_body> res{http::status::no_content, req.version()};
+    res.set(http::field::content_type, "application/json");
+    res.prepare_payload();
+    return res;
+}
 
 // ── GET /api/reset_capture ──────────────────────────────────────────────
 static http::response<http::string_body>
@@ -339,6 +390,7 @@ handleRegister(const http::request<http::string_body> &req,
 
         std::string role   = obj.if_contains("role")   && obj.at("role").is_string()   ? json::value_to<std::string>(obj.at("role"))   : resolveRoleForUsername(username);
         std::string ruc    = obj.if_contains("ruc")    && obj.at("ruc").is_string()    ? json::value_to<std::string>(obj.at("ruc"))    : "";
+        std::string country = obj.if_contains("country") && obj.at("country").is_string() ? json::value_to<std::string>(obj.at("country")) : "PE";
         std::string phone  = obj.if_contains("phone")  && obj.at("phone").is_string()  ? json::value_to<std::string>(obj.at("phone"))  : "";
         std::string mobile = obj.if_contains("mobile") && obj.at("mobile").is_string() ? json::value_to<std::string>(obj.at("mobile")) : "";
         std::string email  = obj.if_contains("email")  && obj.at("email").is_string()  ? json::value_to<std::string>(obj.at("email"))  : "";
@@ -464,6 +516,79 @@ handleRegister(const http::request<http::string_body> &req,
                 json::object{{"error", "username or password length is invalid"}});
         }
 
+        if (!security::Validator::isValidDisplayName(firstName) ||
+            !security::Validator::isValidDisplayName(lastName) ||
+            !security::Validator::isValidDisplayName(company, 200)) {
+            return makeJsonResponse(
+                http::status::bad_request,
+                json::object{{"error", "first_name, last_name or company contains invalid characters or is too long"}});
+        }
+
+        // Hallazgo de red-team CRÍTICO (2026-08-26): el registro público
+        // permitía a cualquier anónimo autoasignarse `role: "admin"` (payload
+        // explícito) al autoregistrarse en una empresa YA EXISTENTE -- toma de
+        // control total de un tenant real, sin invitación ni aprobación de
+        // nadie. También explotable SIN el campo "role": resolveRoleForUsername
+        // (arriba) ya otorgaba "admin" a cualquier username "admin"/"admin_*"
+        // -- un heurístico pensado para bootstrap local que nunca se auditó
+        // contra el registro público.
+        //
+        // Regla: el registro público solo puede elegir su propio rol (el
+        // explícito o el heurístico) para una empresa NUEVA -- nadie más a
+        // quien perjudicar todavía, es el bootstrap legítimo del primer admin
+        // de un tenant recién creado. Si la empresa YA tiene al menos un
+        // usuario, se fuerza el rol más bajo ("viewer") sin excepción --
+        // cualquier elevación real debe pasar por el alta admin-driven ya
+        // autenticada y autorizada (auth_routes.cpp::handleAdminCreateUser,
+        // exige el permiso "usuarios.manage").
+        bool companyAlreadyHasUsers = false;
+        if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+            std::string companyExistsErr;
+            companyAlreadyHasUsers = validateCompanyPg(cfg.gDatabaseUrl, company, "", companyExistsErr);
+#endif
+        } else {
+            const auto existingUsers = loadAuthUsers(dataRoot);
+            companyAlreadyHasUsers = std::any_of(
+                existingUsers.begin(), existingUsers.end(),
+                [&](const auto &u) { return u.company == company; });
+        }
+        if (companyAlreadyHasUsers && role != "viewer") {
+            std::cerr << "[AUTH_REGISTER_ROLE_DOWNGRADED] company=" << company
+                      << " user=" << username << " requested_role=" << role
+                      << " -> viewer" << std::endl;
+            security::sendSecurityAlert("auth_register_role_downgraded",
+                                        "company=" + company + " user=" + username +
+                                            " requested_role=" + role +
+                                            " ip=" + http_utils::getClientIp(req));
+            role = "viewer";
+        }
+
+        // Endurecimiento adicional (ADR-135): el bootstrap de admin de
+        // empresa NUEVA (arriba) sigue siendo posible sin invitación -- es
+        // el flujo legítimo para el primer empleado de un cliente minero
+        // real. Pero "empresa nueva" hoy se decide por IGUALDAD EXACTA de
+        // `company_name` (ADR-066): "Minera Raura " (espacio) o una variante
+        // de mayúsculas/acentos cuenta como "nueva" y permitiría bootstrap de
+        // admin sobre lo que a simple vista parece la misma empresa
+        // (typosquatting de nombre, documentado como riesgo residual en
+        // ADR-134). Exigir un RUC con dígito verificador válido para ESE
+        // bootstrap de admin sube el costo de ese ataque: ya no basta con
+        // escribir un nombre parecido, hace falta un RUC matemáticamente
+        // válido del país declarado -- no impide un RUC real pero ajeno
+        // (verificación contra el padrón real, ADR-102, sigue sin existir
+        // aquí), pero cierra el caso trivial de "cualquier variante de
+        // nombre + cualquier dato".
+        if (!companyAlreadyHasUsers && role == "admin") {
+            const std::string normalizedRuc = normalizeTaxId(ruc);
+            if (normalizedRuc.empty() || !validateTaxIdChecksum(normalizedRuc, country)) {
+                return makeJsonResponse(
+                    http::status::bad_request,
+                    json::object{{"error", "ruc_valido_requerido_para_admin_de_empresa_nueva"}});
+            }
+            ruc = normalizedRuc;
+        }
+
         regLog("post_validate");
 
         AuthUser created;
@@ -506,7 +631,8 @@ handleRegister(const http::request<http::string_body> &req,
             if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
 #if HAS_LIBPQ
                 std::string dbError;
-                if (!registerUserPg(cfg.gDatabaseUrl, created, dbError)) {
+                if (!registerUserPg(cfg.gDatabaseUrl, created, dbError,
+                                    http_utils::getClientIp(req))) {
                     return makeJsonResponse(http::status::conflict,
                                             json::object{{"error", dbError}});
                 }
@@ -844,7 +970,7 @@ static bool csrfHeaderMatchesCookie(const http::request<http::string_body> &req)
     // reproduciendo el mismo `csrf_token_mismatch` indefinidamente para
     // cualquier sesión activa desde antes del fix. Cambiar el nombre evita
     // la colisión por completo: la cookie vieja queda inerte y expira sola.
-    const std::string cookieCsrf = http_utils::extractCookie(req, "csrf_token_v2");
+    const std::string cookieCsrf = http_utils::extractCookie(req, "beemetry_csrf_token");
     if (cookieCsrf.empty()) {
         return false;
     }
@@ -867,7 +993,7 @@ handleLogout(const http::request<http::string_body> &req,
     if (!session)
         return makeJsonResponse(http::status::unauthorized,
                                 json::object{{"error", "unauthorized"}});
-    const std::string refreshToken = http_utils::extractCookie(req, "refresh_token");
+    const std::string refreshToken = http_utils::extractCookie(req, "beemetry_refresh_token");
     // CSRF solo se exige cuando hay una cookie de refresh que revocar -- si el
     // cliente no la tenía (ya venció, o nunca hizo login con cookie), el
     // logout igual debe poder revocar el access token vigente.
@@ -891,7 +1017,7 @@ handleLogout(const http::request<http::string_body> &req,
 static http::response<http::string_body>
 handleTokenRefresh(const http::request<http::string_body> &req,
                    const std::unordered_map<std::string, std::string> & /*query*/) {
-    const std::string refreshToken = http_utils::extractCookie(req, "refresh_token");
+    const std::string refreshToken = http_utils::extractCookie(req, "beemetry_refresh_token");
     if (refreshToken.empty()) {
         return makeJsonResponse(http::status::bad_request,
             json::object{{"error", "missing_refresh_token"}});
@@ -1027,7 +1153,8 @@ handleLoginPassword(const http::request<http::string_body> &req,
                 auto user = loginPasswordPg(cfg.gDatabaseUrl, company, username,
                                             password, dbError,
                                             &errCode, geoAuditSuffix,
-                                            geo.latitude, geo.longitude, geo.accuracy);
+                                            geo.latitude, geo.longitude, geo.accuracy,
+                                            http_utils::getClientIp(req));
                 if (!user) {
                     loginRateIncrement(rateKey);
                     json::object jo{{"error", dbError}};
@@ -1099,6 +1226,20 @@ handleLoginPassword(const http::request<http::string_body> &req,
         }
 
         loginRateClear(rateKey);  // login exitoso: reinicia contador
+
+        // MFA/TOTP (ADR-135): password (o biometría, ver handleLoginFace) es
+        // el PRIMER factor -- si la cuenta tiene TOTP activo, no se emite
+        // sesión todavía. mfa_token es de un solo uso real y expira en 5 min
+        // (createMfaPendingToken/auth_session.cpp); nunca es aceptado como
+        // access token por ningún endpoint normal (mapa en memoria separado
+        // del de sesiones, no un JWT).
+        if (found.totpEnabled) {
+            const std::string mfaToken = createMfaPendingToken(found);
+            return makeJsonResponse(http::status::ok,
+                                    json::object{{"status", "mfa_required"},
+                                                 {"mfa_token", mfaToken}});
+        }
+
         const auto sessionToken = issueAuthSession(found);
         return withAuthCookies(
             makeJsonResponse(
@@ -1106,6 +1247,64 @@ handleLoginPassword(const http::request<http::string_body> &req,
                 json::object{{"status", "authenticated"},
                              {"method", "password"},
                              {"user", authUserSessionJson(found, sessionToken)}}),
+            sessionToken);
+    } catch (const std::exception &ex) {
+        return makeJsonResponse(http::status::bad_request,
+                                json::object{{"error", ex.what()}});
+    }
+}
+
+// ── POST /api/auth/login/mfa ────────────────────────────────────────────
+// Segundo paso del login cuando handleLoginPassword/handleLoginFace
+// devolvieron `mfa_required`. body: {"mfa_token": "...", "code": "123456"}.
+static http::response<http::string_body>
+handleLoginMfa(const http::request<http::string_body> &req,
+              const std::unordered_map<std::string, std::string> & /*query*/) {
+    try {
+        auto val = json::parse(req.body());
+        if (!val.is_object()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "invalid JSON body"}});
+        }
+        const auto &obj = val.as_object();
+        std::string mfaToken, code;
+        if (const auto *v = obj.if_contains("mfa_token")) if (v->is_string()) mfaToken = json::value_to<std::string>(*v);
+        if (const auto *v = obj.if_contains("code")) if (v->is_string()) code = json::value_to<std::string>(*v);
+        if (mfaToken.empty() || code.empty()) {
+            return makeJsonResponse(http::status::bad_request,
+                                    json::object{{"error", "mfa_token_y_code_requeridos"}});
+        }
+
+        // Rate limit por mfa_token (no por cuenta): el token ya prueba que se
+        // pasó el primer factor para ESTE intento puntual, así que acotar por
+        // token es suficiente y no castiga otros logins legítimos concurrentes
+        // de la misma cuenta.
+        if (!loginRateCheck("mfa|" + mfaToken)) {
+            return makeJsonResponse(http::status::too_many_requests,
+                json::object{{"error", "too_many_failed_attempts"},
+                             {"detail", "Demasiados intentos. Vuelva a iniciar sesión."}});
+        }
+
+        const auto pending = consumeMfaPendingToken(mfaToken);
+        if (!pending) {
+            return makeJsonResponse(http::status::unauthorized,
+                                    json::object{{"error", "mfa_token_invalido_o_vencido"}});
+        }
+        if (!auth::totp::verifyCode(pending->totpSecret, code)) {
+            loginRateIncrement("mfa|" + mfaToken);
+            return makeJsonResponse(http::status::unauthorized,
+                                    json::object{{"error", "codigo_invalido"}});
+        }
+        invalidateMfaPendingToken(mfaToken);
+        loginRateClear("mfa|" + mfaToken);
+
+        const auto sessionToken = issueAuthSession(*pending);
+        return withAuthCookies(
+            makeJsonResponse(
+                http::status::ok,
+                json::object{{"status", "authenticated"},
+                             {"method", "password_mfa"},
+                             {"user", authUserSessionJson(*pending, sessionToken)}}),
             sessionToken);
     } catch (const std::exception &ex) {
         return makeJsonResponse(http::status::bad_request,
@@ -1257,7 +1456,8 @@ handleLoginFace(const http::request<http::string_body> &req,
                     clientProbeTemplate, rawImageBytes, base64ForLegacy,
                     legacyThreshold, cfg.gFaceEmbeddingCosineThreshold,
                     dbError, &probeProv, geoAuditSuffix,
-                    geo.latitude, geo.longitude, geo.accuracy);
+                    geo.latitude, geo.longitude, geo.accuracy,
+                    http_utils::getClientIp(req));
                 if (!result) {
                     std::cout << "[AUTH_FACE] postgres login failed: company="
                               << company << " identity=" << identityLogin
@@ -1378,6 +1578,18 @@ handleLoginFace(const http::request<http::string_body> &req,
         }
 
         faceAttempt.success();
+
+        // MFA/TOTP (ADR-135): mismo gate que handleLoginPassword -- la
+        // biometría facial es un factor fuerte, pero si la cuenta además
+        // activó TOTP, se exige igual (defensa en profundidad: un spoof
+        // facial exitoso por sí solo tampoco basta).
+        if (bestUser.totpEnabled) {
+            const std::string mfaToken = createMfaPendingToken(bestUser);
+            return makeJsonResponse(http::status::ok,
+                                    json::object{{"status", "mfa_required"},
+                                                 {"mfa_token", mfaToken}});
+        }
+
         const auto sessionToken = issueAuthSession(bestUser);
         std::cout << "[AUTH_FACE] success user=" << bestUser.username
                   << " company=" << bestUser.company
@@ -1617,7 +1829,9 @@ static http::response<http::string_body> handleMetrics(
           << "mapas_backend_tbsync_realtime_ws_reconnects_total "    << tb.realtime_ws_reconnects     << "\n"
           << "mapas_backend_tbsync_realtime_points_ingested_total "  << tb.realtime_points_ingested   << "\n"
           << "mapas_backend_tbsync_realtime_points_dropped_total "   << tb.realtime_points_dropped_unmapped << "\n"
-          << "mapas_backend_tbsync_realtime_errors_total "           << tb.realtime_errors            << "\n";
+          << "mapas_backend_tbsync_realtime_errors_total "           << tb.realtime_errors            << "\n"
+          << "mapas_backend_tbsync_backfill_points_rejected_bad_ts_total "  << tb.backfill_points_rejected_bad_ts << "\n"
+          << "mapas_backend_tbsync_realtime_points_rejected_bad_ts_total "  << tb.realtime_points_rejected_bad_ts << "\n";
 
         auto rp = mining::rpsync::rpSyncStats();
         m << "# HELP mapas_backend_rpsync RP (TimeTelemetry/Odoo, ADR-103) sync counters\n"
@@ -1652,11 +1866,13 @@ static http::response<http::string_body> handleMetrics(
 static void registerRemainingRoutes(router::Router &r) {
     r.post("/api/auth/register",          handleRegister);
     r.post("/api/auth/login/password",    handleLoginPassword);
+    r.post("/api/auth/login/mfa",         handleLoginMfa);
     r.post("/api/auth/login/face",        handleLoginFace);
     r.post("/api/auth/logout",            handleLogout);          // T21
     r.post("/api/auth/refresh",           handleTokenRefresh);    // T21
     r.get("/api/auth/audit",              handleAudit);
     r.get("/api/auth/audit/export.csv",   handleAuditExportCsv);
+    r.post("/api/security/csp-report",    handleCspReport);
     r.get("/api/reset_capture",           handleResetCapture);
     r.get("/api/captured_images",         handleCapturedImages);
     r.get("/api/users",                   handleLegacyUsers);
@@ -2066,9 +2282,23 @@ static void session(beast::tcp_stream stream) {
     // decenas de handshakes + decenas de hilos por pantalla. Reutilizando la
     // conexión, esa misma pantalla usa 1 handshake y 1 hilo.
     for (int served = 0; served < kMaxRequestsPerConnection; ++served) {
-        http::request<http::string_body> req;
-        http::read(stream, buffer, req, ec);
+        // `http::read(stream, buffer, req, ec)` con un `message` en vez de un
+        // `request_parser` explícito (versión anterior) construye un parser
+        // TEMPORAL con el límite de body POR DEFECTO de Beast para requests
+        // (1'000'000 bytes) -- no hay forma de configurarlo por ese overload.
+        // Cualquier request por encima de ~1MB (p.ej. guardar un informe de
+        // lienzo de cientos de páginas) fallaba con un RST crudo, sin
+        // respuesta HTTP -- reproducido en vivo: `POST /api/reports` con un
+        // informe de 378 páginas / 1.06MB devolvía net::ERR_CONNECTION_RESET
+        // en el navegador, sin ningún log de error del lado del backend (el
+        // `if (ec) return;` de abajo cierra la conexión en silencio). Un
+        // `request_parser` explícito permite subir el límite -- 64MB da
+        // margen holgado para informes grandes sin quedar sin límite real.
+        http::request_parser<http::string_body> parser;
+        parser.body_limit(64 * 1024 * 1024);
+        http::read(stream, buffer, parser, ec);
         if (ec) return;
+        http::request<http::string_body> req = parser.release();
 
         // Las ramas WS y SSE de abajo se apropian del socket para toda la vida
         // de la conexión (o la liberan a otro io_context), así que siempre
@@ -2236,12 +2466,15 @@ int main() {
 
         // Register all module routes
         auth::registerRoutes(gRouter);
+        auth::org_access::registerRoutes(gRouter);
+        auth::mfa::registerRoutes(gRouter);
         biometric::registerRoutes(gRouter);
         mining::registerRoutes(gRouter);
         mining_iot::registerRoutes(gRouter);
         mining_iot::registerNotificationRoutes(gRouter);
         mining::rp_gateway::registerRoutes(gRouter);
         reports::registerRoutes(gRouter);
+        notify::registerRoutes(gRouter);
         formula::registerRoutes(gRouter);
         platform::registerRoutes(gRouter);
         tenant_assets::registerRoutes(gRouter);

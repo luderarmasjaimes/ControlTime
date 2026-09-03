@@ -96,6 +96,7 @@ endif()
 # Módulos base (seguridad, servidor, visión)
 set(BASE_MODULES
   src/security/api_auth.cpp
+  src/security/security_alerts.cpp
   src/server/connection_pool.cpp
   src/vision/opencv_raii.cpp
 )
@@ -116,9 +117,12 @@ set(AUTH_MODULES
   src/auth/auth_storage_file.cpp
   src/auth/auth_storage_pg.cpp
   src/auth/auth_routes.cpp
+  src/auth/org_access_routes.cpp
   src/auth/permissions.cpp
   src/auth/tax_id.cpp
   src/auth/tax_registry_client.cpp
+  src/auth/totp.cpp
+  src/auth/mfa_routes.cpp
 )
 
 # Módulos biométricos
@@ -133,13 +137,16 @@ set(BIOMETRIC_MODULES
 set(MINING_MODULES
   src/mining/kpi_service.cpp
   src/mining/sensor_service.cpp
+  src/mining/sensor_tenant_resolver.cpp
   src/mining/sensor_telemetry_wizard.cpp
+  src/mining/simulation_status_routes.cpp
   src/mining/igp_seismic_client.cpp
   src/mining/surveillance_service.cpp
   src/mining/mining_gateway.cpp
   src/mining/mining_routes.cpp
   src/mining/telemetry_ingest.cpp
   src/mining/device_alarm_routes.cpp
+  src/mining/alarm_rule_evaluator.cpp
   src/mining/map_aggregator.cpp
   src/mining/protocol_adapters.cpp
   src/mining/thingsboard_sync.cpp
@@ -151,12 +158,16 @@ set(MINING_MODULES
 
 # Módulos de reportes y fórmulas
 set(REPORTS_MODULES
+  src/notify/notify_service.cpp
+  src/notify/notify_routes.cpp
+  src/notify/sms_client.cpp
   src/reports/report_service.cpp
   src/reports/report_routes.cpp
   src/reports/report_pdf_export.cpp
   src/reports/report_export_jobs.cpp
   src/reports/report_document_settings.cpp
   src/reports/report_portable.cpp
+  src/reports/report_share_links.cpp
   src/formula/formula_service.cpp
   src/formula/formula_routes.cpp
 )
@@ -331,15 +342,32 @@ if(Catch2_FOUND)
     tests/test_tax_id.cpp
     tests/test_whatsapp_bot_menu.cpp
     tests/test_whatsapp_webhook_signature.cpp
+    tests/test_sensor_anti_idor.cpp
+    tests/test_alarm_rule_evaluator.cpp
     src/http/http_utils.cpp
     src/config/app_config.cpp
     src/map/wms_proxy_security.cpp
     src/map/geocode_proxy_security.cpp
     src/auth/tax_id.cpp
     src/auth/jwt.cpp
+    src/auth/permissions.cpp
+    src/mining/sensor_tenant_resolver.cpp
+    src/mining/alarm_rule_evaluator.cpp
     src/support/whatsapp_menu.cpp
     src/support/whatsapp_signature.cpp
   )
+  # NOTA (2026-09-02): tests/test_sensor_anti_idor.cpp (SPEC-021 T7) ya
+  # compila en este target liviano. El intento anterior (2026-08-30, ver
+  # historial de este archivo) fallaba porque enlazaba sensor_service.cpp
+  # completo -- ese archivo también define handlers que llaman
+  # auth::resolveAuthSession (auth_session.cpp -> auth_storage_pg.cpp ->
+  # biometric/*, OpenCV/ONNX), cadena incompatible con este target. Se
+  # extrajo resolveAllowedSensorTenant a su propia unidad de compilación
+  # (src/mining/sensor_tenant_resolver.cpp) que solo depende de
+  # auth::AuthSession (auth_types.hpp, liviano) y auth::userBelongsToTenant
+  # (permissions.cpp, agregado también acá -- sin HAS_LIBPQ en este target,
+  # cae fail-closed a `return false`, que es exactamente el comportamiento
+  # que la 3ra prueba de test_sensor_anti_idor.cpp ya esperaba).
   target_include_directories(beemetry_backend_tests PRIVATE
     ${Boost_INCLUDE_DIRS}
     src

@@ -28,7 +28,21 @@
 | **T15** | Alerta: lag > 5 MB → notificación (Alertmanager/Grafana) | Art.5 | SYS | Sonnet | ☐ |
 | **T16** | Alerta: `slot.active = false` → notificación (slot inactivo acumula WAL) | Art.5 | SYS | Sonnet | ☐ |
 | **T17** | Documentar `max_locks_per_transaction=256` en runbook (lección aprendida) | Art.8 | BE3 | Haiku | ☑ |
-| **T18** | PgBouncer para primario (transaction pooling, escrituras) | Art.9 | SYS | Sonnet | ☐ |
+| **T18** | PgBouncer para primario (transaction pooling, escrituras) | Art.9 | SYS | Sonnet | ☑ |
+
+> **Actualización 2026-08-30**: T18 verificado — `docker-compose.yml` servicio
+> `pgbouncer` (`beemetry-pgbouncer`, imagen `edoburu/pgbouncer:v1.23.1-p3`,
+> `DB_HOST=db` → primario) con `POOL_MODE=transaction` y
+> `MAX_CLIENT_CONN=10000`, exactamente los parámetros que pedía la tarea.
+> Confirmado en vivo: el backend real se conecta a través de él
+> (`beemetry-api` usa `host=pgbouncer` en su cadena de conexión primaria,
+> contenedor `beemetry-pgbouncer` corriendo y healthy). **T8 sigue
+> pendiente**: no existe un PgBouncer equivalente delante de la réplica —
+> `BEEMETRY_REPLICA_DATABASE_URL` (línea 722 de `docker-compose.yml`)
+> conecta directo a `db_replica:5432`, sin pooler. T14-T16 (métricas/alertas
+> Prometheus/Grafana/Alertmanager) también siguen pendientes — no existe
+> ningún contenedor de esa familia en el stack actual, verificado por
+> `docker ps -a`.
 
 > **Nota:** T1-T7, T9-T13, T17 completadas en sesión 2026-06 (réplica funcional,
 > lag=0 verificado, aislamiento R/W físico probado). T8, T14-T16, T18 pendientes.
@@ -54,8 +68,9 @@ T17 (docs, puede hacerse en paralelo)
   - [x] CA-3 CPU primario 25% con 50 dashboards (réplica los absorbe)
   - [x] CA-4 `pg_is_in_recovery()=true`
   - [x] CA-5 ingesta continúa con réplica parada
-- [ ] PgBouncer (T8, T18) — **pendiente**
-- [ ] Métricas/alertas (T14-T16) — **pendientes**
+- [x] T18 PgBouncer primario (transaction pooling, `MAX_CLIENT_CONN=10000`) — verificado 2026-08-30, ver actualización arriba
+- [ ] T8 PgBouncer réplica — **pendiente** (`REPLICA_DATABASE_URL` conecta directo, sin pooler)
+- [ ] Métricas/alertas (T14-T16) — **pendientes**, sin stack Prometheus/Grafana/Alertmanager en el compose actual
 - [ ] ADR-004-1..5 registrados.
 - [ ] Sin violar Constitución (Art. 3, 5, 9).
 - [ ] Gate R5: evidencia de lag=0 + aislamiento + carga 1h.

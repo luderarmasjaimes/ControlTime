@@ -152,10 +152,10 @@ function GeocatminWorkbench({ initialCompanyName, onCaptureComplete }: Geocatmin
           const target = {
             lat: remote.latitude,
             lng: remote.longitude,
-            zoom: remote.location_zoom || 14,
+            zoom: remote.zoom || 14,
           };
           setCurrentCenter(target);
-          setResolvedSiteName(remote.company_name || activeCompanyName);
+          setResolvedSiteName(activeCompanyName);
           setUtmInfo(convertWgs84ToUtm(target.lat, target.lng));
           if (mapInstanceRef.current) {
             mapInstanceRef.current.setView([target.lat, target.lng], target.zoom);

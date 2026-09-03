@@ -1,5 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { useEditorStore, resolvePagePaperSetup, type ReportPage } from '../../store/useEditorStore';
+import { getReportLayoutMetrics } from '../../lib/reportLayoutMetrics';
 import PageCanvas from './PageCanvas';
 
 /** Control de "Tamaño de página" independiente por hoja — pedido explícito:
@@ -75,6 +76,89 @@ function PagePaperSetupControl({ page }: { page: ReportPage }) {
           >
             Aplicar
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface VirtualPageProps {
+  page: ReportPage;
+  totalPages: number;
+  zoomPercent: number;
+  onRequestImageReplace?: (pageNumber: number, elementId: string, source?: string) => void;
+  onRequestCoverImage?: (pageNumber: number, elementId: string) => void;
+  tenantId?: string;
+}
+
+/** Monta `PageCanvas` (Stage de Konva + posibles gráficos ECharts en vivo por
+ * cada sensor_multi_chart de la página) SOLO cuando la hoja está cerca del
+ * viewport, y la desmonta cuando se aleja -- sin esto, un documento de
+ * cientos de páginas (p.ej. la prueba exhaustiva de 56 tipos de sensor × 20
+ * tipos de gráfico, 273 páginas / 920 diagramas) monta TODOS los Stage y
+ * TODAS las instancias de ECharts a la vez, sin importar el scroll, y la
+ * pestaña del navegador se congela/crashea antes de terminar de pintar
+ * (reproducido en vivo: 273 páginas colgaron la pestaña). El placeholder
+ * reproduce el mismo alto/ancho que ocupa el Stage real (mismo cálculo de
+ * PAGE_WIDTH/PAGE_HEIGHT vía `getReportLayoutMetrics`) para que el scroll,
+ * el atajo PageUp/PageDown (`getShells()` más abajo, que depende de
+ * offsetTop reales) y el layout general no salten al montar/desmontar. */
+function VirtualPage({ page, totalPages, zoomPercent, onRequestImageReplace, onRequestCoverImage, tenantId }: VirtualPageProps) {
+  const layoutMode = useEditorStore((s) =>
+    s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
+  );
+  const docPaperSize = useEditorStore((s) => s.doc.meta?.paperSize);
+  const docOrientation = useEditorStore((s) => s.doc.meta?.orientation);
+  const { paperSize, orientation } = resolvePagePaperSetup(
+    { paperSize: page.paperSize, orientation: page.orientation },
+    { paperSize: docPaperSize, orientation: docOrientation },
+  );
+  const { PAGE_WIDTH, PAGE_HEIGHT } = getReportLayoutMetrics(layoutMode, paperSize, orientation);
+  const scale = Math.min(4, Math.max(0.1, (Number(zoomPercent) || 100) / 100));
+
+  const ref = useRef<HTMLDivElement>(null);
+  // Arranca en `false`: IntersectionObserver siempre dispara un callback
+  // inicial async apenas se llama `observe()` (spec), así que las páginas
+  // realmente visibles pasan a `true` casi de inmediato -- pero arrancar en
+  // `true` montaría los Stage/gráficos de TODAS las páginas por un instante
+  // antes de que ese primer callback las corrija, que es exactamente el
+  // frame que cuelga la pestaña en documentos de cientos de páginas.
+  const [isNear, setIsNear] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsNear(entry.isIntersecting),
+      // Margen generoso: monta el Stage/gráficos ANTES de que la hoja entre
+      // en pantalla (scroll suave, sin parpadeo) y los desmonta poco después
+      // de salir -- suficiente para navegar con PageUp/PageDown sin destello
+      // de placeholder, sin mantener cientos de páginas vivas a la vez.
+      { root: null, rootMargin: '1600px 0px', threshold: 0 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={ref}>
+      {isNear ? (
+        <PageCanvas
+          page={page}
+          totalPages={totalPages}
+          viewportScale={scale}
+          onRequestImageReplace={onRequestImageReplace}
+          onRequestCoverImage={onRequestCoverImage}
+          tenantId={tenantId}
+        />
+      ) : (
+        <div className="page-wrapper" style={{ width: PAGE_WIDTH * scale, minWidth: PAGE_WIDTH * scale }}>
+          <div className="page-meta">
+            {layoutMode === 'presentation'
+              ? totalPages > 1 ? `Diapositiva ${page.page_number} de ${totalPages}` : `Diapositiva ${page.page_number}`
+              : totalPages > 1 ? `Página ${page.page_number} de ${totalPages}` : `Página ${page.page_number}`}
+          </div>
+          <div style={{ width: PAGE_WIDTH * scale, height: PAGE_HEIGHT * scale, background: '#fff', border: '1px solid #dbe3f1' }} />
         </div>
       )}
     </div>
@@ -182,10 +266,10 @@ function MultipageView({ zoomPercent = 100, onRequestImageReplace, onRequestCove
         {pages.map((page) => (
           <div key={page.page_number} className="multipage-page-shell">
             {layoutMode !== 'presentation' && <PagePaperSetupControl page={page} />}
-            <PageCanvas
+            <VirtualPage
               page={page}
               totalPages={pages.length}
-              viewportScale={Math.min(4, Math.max(0.1, (Number(zoomPercent) || 100) / 100))}
+              zoomPercent={zoomPercent}
               onRequestImageReplace={onRequestImageReplace}
               onRequestCoverImage={onRequestCoverImage}
               tenantId={tenantId}

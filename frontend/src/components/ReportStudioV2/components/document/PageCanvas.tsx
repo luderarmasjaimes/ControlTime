@@ -42,6 +42,7 @@ import LiveChartBlock from '../dashboard/LiveChartBlock';
 import TableBlock from './TableBlock';
 import SensorWidget from './SensorWidget';
 import SensorMultiChartWidget from './SensorMultiChartWidget';
+import { sensorDashboardMinHeight } from '../../lib/sensorMultiChartLayout';
 import MiningKpiWidget from './MiningKpiWidget';
 import SeismicReportWidget from './SeismicReportWidget';
 import FloatingContextualToolbar from './FloatingContextualToolbar';
@@ -887,6 +888,79 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
     selectElement(elementId);
     setContextMenu({ x: event.clientX, y: event.clientY, elementId });
   };
+
+  /** Bloque `image` -- extraído a función para poder renderizarlo en DOS
+   * puntos distintos del orden de pintado según `wrapMode` (ver los dos
+   * `.filter(...).map(renderImageElement)` en el JSX): el pintado de los
+   * overlays Html sigue el orden de DECLARACIÓN en el JSX, no `zIndex`, así
+   * que "Detrás del texto" se declara temprano (antes de chart/kpi/tabla/
+   * sensor) y todo lo demás (incl. "Delante del texto") se declara tarde
+   * (después de sensor_multi_chart) para que sí pueda quedar realmente
+   * encima de un gráfico de sensores superpuesto. */
+  const renderImageElement = (element: ReportElement) => {
+    // 'Detrás/delante del texto': ambos flotan libremente (sin afectar el
+    // flujo, ver wrapExclusions arriba); el z-index solo desempata DENTRO
+    // de este mismo punto de declaración (p.ej. contra 'cover').
+    const imageZIndex = element.wrapMode === 'behind' ? 5 : 15;
+    return (
+      <Html key={`${element.id}-image`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none', zIndex: imageZIndex } }}>
+        <div
+          className="report-canvas-html-shield"
+          onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
+          style={{
+            width: element.width - 8,
+            height: element.height - 8,
+            overflow: 'hidden',
+            borderRadius: '4px',
+          }}
+        >
+          <img
+            src={resolveReportImageSrc(element)}
+            alt={element.props?.alt || element.id}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: (element.objectFit as any) || 'cover',
+              display: 'block',
+            }}
+          />
+        </div>
+      </Html>
+    );
+  };
+
+  /** Bloque `video` -- mismo motivo/patrón que `renderImageElement`. */
+  const renderVideoElement = (element: ReportElement) => (
+    <Html key={`${element.id}-video`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'auto', zIndex: element.wrapMode === 'behind' ? 5 : 15 } }}>
+      <div
+        className="report-canvas-html-shield"
+        onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
+        style={{
+          width: element.width - 8,
+          height: element.height - 8,
+          overflow: 'hidden',
+          borderRadius: '4px',
+          background: '#000',
+        }}
+      >
+        {element.src ? (
+          <video
+            src={element.src}
+            controls
+            // ADR-064/065: los .webm de MediaRecorder no traen
+            // Duration/índice de búsqueda -- sin este fix se ven
+            // en negro con "0:00" (ver lib/videoDurationFix.ts).
+            ref={(el) => fixRecordedVideoElement(el)}
+            style={{ width: '100%', height: '100%', display: 'block' }}
+          />
+        ) : (
+          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 12 }}>
+            Sin video
+          </div>
+        )}
+      </div>
+    </Html>
+  );
   const [isDictating, setIsDictating] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   // Vista previa de dictado (resultados NO finales de SpeechRecognition):
@@ -1501,6 +1575,10 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 strokeDash = undefined;
               }
 
+              const renderedHeight = element.type === 'sensor_multi_chart'
+                ? Math.max(Number(element.height) || 0, sensorDashboardMinHeight(element.props || {}, Number(element.width) || 0))
+                : element.height;
+
               return (
               <Rect
                 key={element.id}
@@ -1508,7 +1586,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 x={element.x}
                 y={element.y}
                 width={element.width}
-                height={element.height}
+                height={renderedHeight}
                 fill={
                   isTextElement
                     ? 'rgba(255,255,255,0.001)'
@@ -1624,19 +1702,6 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 listening={false}
               />
             ))}
-
-          {page.elements.map((element) => (
-            <Text
-              key={`${element.id}-label`}
-              x={element.x + 10}
-              y={element.y + 10}
-              text={`${element.type.toUpperCase()} • ${element.id}`}
-              fontSize={12}
-              fill="#1f3f7a"
-              listening={false}
-              visible={element.type !== 'text' && element.type !== 'header' && element.type !== 'footer'}
-            />
-          ))}
 
           {page.elements
             .filter((element) => element.type === 'chart')
@@ -1947,88 +2012,26 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               );
             })}
 
-          {/* Imágenes libres — DELIBERADAMENTE declaradas después de 'cover'
-             para que, visualmente, cualquier imagen insertada sobre la
-             carátula (p.ej. "Insertar Imagen Empresa", ver ADR-048 revisado)
-             quede POR ENCIMA de su fondo (el orden de pintado de los
-             overlays Html sigue el orden de declaración en el JSX, no
-             zIndex). */}
+          {/* Imágenes libres, wrapMode 'behind' ("Detrás del texto") --
+             declaradas aquí, ANTES que chart/kpi/tabla/sensor, para que de
+             verdad queden detrás de cualquier otro bloque que las
+             sobreponga (antes esto solo garantizaba estar detrás de
+             sensor/sensor_multi_chart/texto por casualidad de orden, nunca
+             lo decidía `wrapMode`). Las demás imágenes (todo wrapMode que
+             no sea 'behind') se renderizan más abajo, cerca del texto --
+             ver ese bloque para el porqué. */}
           {page.elements
-            .filter((element) => element.type === 'image')
-            .map((element) => {
-              // 'Detrás/delante del texto': ambos flotan libremente (sin
-              // afectar el flujo, ver wrapExclusions arriba), difieren solo
-              // en apilamiento visual. El div wrapper que genera react-konva-
-              // utils fija z-index:10 por defecto (misma capa que el texto);
-              // se sobreescribe explícitamente para las imágenes.
-              const imageZIndex = element.wrapMode === 'behind' ? 5 : 15;
-              return (
-              <Html key={`${element.id}-image`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none', zIndex: imageZIndex } }}>
-                <div
-                  className="report-canvas-html-shield"
-                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                  style={{
-                    width: element.width - 8,
-                    height: element.height - 8,
-                    overflow: 'hidden',
-                    borderRadius: '4px',
-                  }}
-                >
-                  <img
-                    src={resolveReportImageSrc(element)}
-                    alt={element.props?.alt || element.id}
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: (element.objectFit as any) || 'cover',
-                      display: 'block',
-                    }}
-                  />
-                </div>
-              </Html>
-              );
-            })}
+            .filter((element) => element.type === 'image' && element.wrapMode === 'behind')
+            .map((element) => renderImageElement(element))}
 
-          {/* Videos insertados (webcam o pantalla/ventana grabada, ADR-064/065)
-             -- a diferencia de las imágenes, el <video> necesita
-             pointerEvents activo para que sus controles nativos (play/pausa/
-             volumen) respondan al click; esto hace que arrastrar el bloque
-             deba hacerse por el borde/marco, no tocando el reproductor mismo
-             -- mismo trade-off que cualquier bloque con controles interactivos
-             embebidos en un overlay Html sobre Konva. */}
+          {/* Videos insertados, wrapMode 'behind' -- mismo motivo que las
+             imágenes 'behind' arriba: renderizados temprano para que de
+             verdad queden detrás de chart/kpi/tabla/sensor. El resto de
+             videos (todo wrapMode que no sea 'behind') se renderiza más
+             abajo junto a las imágenes no-'behind'. */}
           {page.elements
-            .filter((element) => element.type === 'video')
-            .map((element) => (
-              <Html key={`${element.id}-video`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'auto', zIndex: element.wrapMode === 'behind' ? 5 : 15 } }}>
-                <div
-                  className="report-canvas-html-shield"
-                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                  style={{
-                    width: element.width - 8,
-                    height: element.height - 8,
-                    overflow: 'hidden',
-                    borderRadius: '4px',
-                    background: '#000',
-                  }}
-                >
-                  {element.src ? (
-                    <video
-                      src={element.src}
-                      controls
-                      // ADR-064/065: los .webm de MediaRecorder no traen
-                      // Duration/índice de búsqueda -- sin este fix se ven
-                      // en negro con "0:00" (ver lib/videoDurationFix.ts).
-                      ref={(el) => fixRecordedVideoElement(el)}
-                      style={{ width: '100%', height: '100%', display: 'block' }}
-                    />
-                  ) : (
-                    <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 12 }}>
-                      Sin video
-                    </div>
-                  )}
-                </div>
-              </Html>
-            ))}
+            .filter((element) => element.type === 'video' && element.wrapMode === 'behind')
+            .map((element) => renderVideoElement(element))}
 
           {page.elements
             .filter((element) => element.type === 'toc')
@@ -2120,25 +2123,51 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
 
           {page.elements
             .filter((element) => element.type === 'sensor_multi_chart')
-            .map((element) => (
-              <Html key={`${element.id}-sensor-multi-chart`} groupProps={{ x: element.x, y: element.y, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                <div
-                  className="report-canvas-html-shield"
-                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                  style={{ width: element.width, height: element.height }}
-                >
-                  <SensorMultiChartWidget
-                    title={element.props?.title || 'Gráfico de sensores'}
-                    selections={element.props?.selections}
-                    chartType={element.props?.chartType}
-                    from={element.props?.from}
-                    to={element.props?.to}
-                    width={element.width}
-                    height={element.height}
-                  />
-                </div>
-              </Html>
-            ))}
+            .map((element) => {
+              const renderedHeight = Math.max(
+                Number(element.height) || 0,
+                sensorDashboardMinHeight(element.props || {}, Number(element.width) || 0)
+              );
+              return (
+                <Html key={`${element.id}-sensor-multi-chart`} groupProps={{ x: element.x, y: element.y, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
+                  <div
+                    className="report-canvas-html-shield"
+                    onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
+                    style={{ width: element.width, height: renderedHeight }}
+                  >
+                    <SensorMultiChartWidget
+                      title={element.props?.title || 'Gráfico de sensores'}
+                      selections={element.props?.selections}
+                      chartType={element.props?.chartType}
+                      chartTypes={element.props?.chartTypes}
+                      comboConfig={element.props?.comboConfig}
+                      from={element.props?.from}
+                      to={element.props?.to}
+                      width={element.width}
+                      height={renderedHeight}
+                    />
+                  </div>
+                </Html>
+              );
+            })}
+
+          {/* Imágenes y videos SIN wrapMode 'behind' (cuadrado/estrecho/
+             transparente/arriba y abajo/delante del texto/en línea/sin
+             ajuste) -- declarados aquí, DESPUÉS de chart/kpi/tabla/sensor/
+             sensor_multi_chart, para que "Ajustar texto" pueda de verdad
+             traer una imagen o video al frente de un gráfico de sensores
+             que la sobreponga. Antes el bloque de imágenes se declaraba
+             ANTES que sensor/sensor_multi_chart incondicionalmente, así que
+             ningún valor de `wrapMode` lograba subir una imagen por encima
+             de un gráfico de sensores superpuesto -- reportado en vivo como
+             que la imagen "se pierde" al tocar las opciones de Ajustar
+             texto (en realidad seguía ahí, solo tapada). */}
+          {page.elements
+            .filter((element) => element.type === 'image' && element.wrapMode !== 'behind')
+            .map((element) => renderImageElement(element))}
+          {page.elements
+            .filter((element) => element.type === 'video' && element.wrapMode !== 'behind')
+            .map((element) => renderVideoElement(element))}
 
           {page.elements
             .filter((element) => element.type === 'text')

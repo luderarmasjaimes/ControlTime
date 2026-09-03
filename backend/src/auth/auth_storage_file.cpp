@@ -401,14 +401,32 @@ AuditPageResult readAuthAuditTail(const std::string &dataRoot,
 }
 
 static std::string csvEscape(const std::string &v) {
-  bool mustQuote = v.find(',') != std::string::npos ||
-                   v.find('"') != std::string::npos ||
-                   v.find('\n') != std::string::npos;
+  // Inyección de fórmulas CSV (hallazgo de red-team, 2026-08-26): username,
+  // company_name y detail vienen de campos de usuario sin más restricción
+  // que bloquear `<`/`>` (isValidDisplayName, ADR-133/134) -- un valor como
+  // `=cmd|'/c calc'!A1` o `@SUM(1+1)*cmd|...` pasa esa validación intacta y,
+  // si un admin abre el CSV exportado en Excel/LibreOffice/Sheets, se
+  // interpreta como fórmula (potencial ejecución de comandos vía DDE, no
+  // solo fuga de datos). Mitigación estándar (OWASP CSV Injection): si la
+  // celda empieza con uno de los caracteres que un hoja de cálculo trata
+  // como inicio de fórmula (`=+-@`, y tab/CR que algunos motores también
+  // aceptan), se antepone un apóstrofo -- fuerza texto plano en Excel/Sheets
+  // sin alterar el valor visible para quien solo lee el CSV como texto.
+  std::string value = v;
+  if (!value.empty()) {
+    const char c0 = value[0];
+    if (c0 == '=' || c0 == '+' || c0 == '-' || c0 == '@' || c0 == '\t' || c0 == '\r') {
+      value.insert(value.begin(), '\'');
+    }
+  }
+  bool mustQuote = value.find(',') != std::string::npos ||
+                   value.find('"') != std::string::npos ||
+                   value.find('\n') != std::string::npos;
   if (!mustQuote) {
-    return v;
+    return value;
   }
   std::string out = "\"";
-  for (char c : v) {
+  for (char c : value) {
     if (c == '"') out += "\"\"";
     else out.push_back(c);
   }
@@ -418,13 +436,24 @@ static std::string csvEscape(const std::string &v) {
 
 std::string auditRowsToCsv(const json::array &logs) {
   std::ostringstream oss;
-  oss << "event_time,event_action,company_name,username,success,detail\n";
+  // ADR-130: source_ip/latitude/longitude/accuracy_m sumados -- antes el
+  // export de auditoría (uso de cumplimiento/seguridad) descartaba estos
+  // datos aunque el backend ya los generara para login/registro.
+  oss << "event_time,event_action,company_name,username,success,detail,"
+      << "source_ip,latitude,longitude,accuracy_m\n";
   for (const auto &item : logs) {
     if (!item.is_object()) continue;
     const auto &obj = item.as_object();
     const auto getStr = [&](const char *k) {
       if (auto p = obj.if_contains(k); p && p->is_string()) {
         return json::value_to<std::string>(*p);
+      }
+      return std::string();
+    };
+    const auto getNum = [&](const char *k) {
+      if (auto p = obj.if_contains(k); p && p->is_number()) {
+        return std::to_string(p->is_double() ? p->as_double()
+                                              : static_cast<double>(p->as_int64()));
       }
       return std::string();
     };
@@ -438,7 +467,11 @@ std::string auditRowsToCsv(const json::array &logs) {
         << csvEscape(getStr("company_name")) << ','
         << csvEscape(getStr("username")) << ','
         << csvEscape(success) << ','
-        << csvEscape(getStr("detail")) << '\n';
+        << csvEscape(getStr("detail")) << ','
+        << csvEscape(getStr("source_ip")) << ','
+        << getNum("latitude") << ','
+        << getNum("longitude") << ','
+        << getNum("accuracy_m") << '\n';
   }
   return oss.str();
 }

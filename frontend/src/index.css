@@ -3609,6 +3609,18 @@ textarea {
     color: #fecaca;
 }
 
+.audit-geo {
+    font-family: 'Consolas', 'Cascadia Mono', monospace;
+    font-size: 0.7rem;
+    color: #cbd5e1;
+    white-space: nowrap;
+}
+
+.audit-geo-coords {
+    color: #7dd3fc;
+    margin-top: 2px;
+}
+
 .audit-pagination {
     margin-top: 12px;
     display: flex;

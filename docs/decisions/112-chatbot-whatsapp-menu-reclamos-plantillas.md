@@ -1,5 +1,42 @@
 # ADR-112 — Bot conversacional de WhatsApp Business (menú, reclamos, IA) + plantillas de presentación
 
+> **Actualización 2026-08-30**: el desarrollador confirmó que se va a usar
+> el token de prueba de Meta ahora (compra del comercial diferida a más
+> adelante) — con eso, se auditó el camino de entrega real. `.env` sí tiene
+> credenciales reales cargadas (`BEEMETRY_WHATSAPP_ACCESS_TOKEN`,
+> `PHONE_NUMBER_ID`, `BUSINESS_ACCOUNT_ID`, webhook verify token). Pero el
+> túnel que expone el webhook local a Meta (`beemetry-webhook-tunnel`,
+> Cloudflare "quick tunnel" sin cuenta) estaba **caído de verdad** al
+> revisarlo: la URL pública conocida (`rabbit-eau-has-raymond.trycloudflare.com`)
+> ya ni resolvía por DNS — Cloudflare la había dado de baja. Recreado el
+> contenedor (`docker stop/rm` + `docker run` con la misma config: imagen
+> `cloudflare/cloudflared:latest`, `tunnel --no-autoupdate --url
+> http://backend:8081`, red `informecliente_default`) para forzar que
+> pidiera una URL nueva — un simple `docker restart` no alcanzó, cloudflared
+> no volvió a pedir tunnel nuevo con el proceso reiniciado in-place.
+>
+> **Verificado en vivo, extremo a extremo, con la URL nueva**
+> (`https://reaching-comm-sectors-derived.trycloudflare.com`):
+> `GET /api/support/whatsapp/webhook?hub.verify_token=<token incorrecto a propósito>`
+> a través del túnel devolvió `403 {"error":"verification_failed"}` — la
+> petición viajó Cloudflare → túnel → red Docker → `handleWebhookVerify`
+> real y fue rechazada correctamente (con el token real devolvería `200` +
+> el `hub.challenge`, completando el handshake que Meta exige). El camino
+> completo está probado; falta solo (1) actualizar la URL del webhook en el
+> dashboard de Meta a la nueva dirección — paso manual, requiere acceso a la
+> cuenta de Meta Business — y (2) correr el envío/recepción real de un
+> mensaje de punta a punta.
+>
+> **Esto NO cierra el pendiente de "entrega real a un teléfono"**: un
+> "quick tunnel" sin cuenta es explícitamente para pruebas — Cloudflare
+> mismo advierte "no uptime guarantee", y **la URL cambia cada vez que el
+> contenedor se recrea**, exigiendo re-registrarla en Meta cada vez. Para
+> un entorno que sobreviva más que una sesión de pruebas hace falta un
+> túnel con nombre (cuenta Cloudflare) o el `nginx-tls-server.conf.example`
+> ya mencionado en ADR-130 — ninguno de los dos existe todavía. El estado
+> real es: **infraestructura de prueba reparada y verificada hoy**, no
+> "listo para producción".
+
 **Status**: implemented, verificado por build/tests (ver "Evidencia y referencias"); entrega real a un teléfono pendiente de credenciales de producción de Meta.
 
 **Fecha**: 2026-08-18

@@ -8,7 +8,7 @@ import { requestConfirmation } from '../../../UI/ConfirmActionDialog';
 import { usePermissions } from '../../../../auth/usePermissions';
 import {
   fetchCompaniesAdmin, createCompany, updateCompany, setCompanyActive,
-  validateCompanyDetailed, type CompanyRecord,
+  validateCompanyDetailed, type CompanyRecord, type CompanyType,
 } from '../../../../auth/authApi';
 import CompanyLocationPicker from '../../../Special/CompanyLocationPicker';
 import { log } from '../../../../lib/logger';
@@ -49,13 +49,15 @@ function CompanyManagementView() {
   const [createForm, setCreateForm] = useState<{
     name: string; ruc: string; country: string; domicilio_fiscal: string;
     latitude: number | null; longitude: number | null; location_zoom: number | null;
-  }>({ name: '', ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null });
+    company_type: CompanyType;
+  }>({ name: '', ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null, company_type: 'mining_client' });
   const [createRegistry, setCreateRegistry] = useState<RegistryState>('idle');
 
   const [editForm, setEditForm] = useState<{
     ruc: string; country: string; domicilio_fiscal: string;
     latitude: number | null; longitude: number | null; location_zoom: number | null;
-  }>({ ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null });
+    company_type: CompanyType;
+  }>({ ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null, company_type: 'mining_client' });
   const [saving, setSaving] = useState(false);
   const [togglingActive, setTogglingActive] = useState(false);
 
@@ -95,6 +97,7 @@ function CompanyManagementView() {
         latitude: selectedCompany.latitude ?? null,
         longitude: selectedCompany.longitude ?? null,
         location_zoom: selectedCompany.location_zoom ?? null,
+        company_type: selectedCompany.company_type || 'mining_client',
       });
     }
   }, [selectedCompany]);
@@ -130,6 +133,7 @@ function CompanyManagementView() {
         ruc: createForm.ruc.replace(/\D/g, '') || undefined,
         country: createForm.country,
         domicilio_fiscal: createForm.domicilio_fiscal.trim() || undefined,
+        company_type: createForm.company_type,
         ...(createForm.latitude != null && createForm.longitude != null
           ? {
               latitude: createForm.latitude,
@@ -140,7 +144,7 @@ function CompanyManagementView() {
       });
       setStatusMsg({ type: 'success', text: `Empresa "${name}" creada correctamente.` });
       setShowCreateForm(false);
-      setCreateForm({ name: '', ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null });
+      setCreateForm({ name: '', ruc: '', country: 'PE', domicilio_fiscal: '', latitude: null, longitude: null, location_zoom: null, company_type: 'mining_client' });
       setCreateRegistry('idle');
       loadData();
     } catch (err) {
@@ -159,6 +163,7 @@ function CompanyManagementView() {
         ruc: editForm.ruc.replace(/\D/g, ''),
         country: editForm.country,
         domicilio_fiscal: editForm.domicilio_fiscal.trim(),
+        company_type: editForm.company_type,
         ...(editForm.latitude != null && editForm.longitude != null
           ? {
               latitude: editForm.latitude,
@@ -299,6 +304,15 @@ function CompanyManagementView() {
               <input type="text" className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
                 value={createForm.domicilio_fiscal} onChange={e => setCreateForm({ ...createForm, domicilio_fiscal: e.target.value })} />
             </div>
+            <div>
+              <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Tipo de empresa</label>
+              <select className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
+                value={createForm.company_type}
+                onChange={e => setCreateForm({ ...createForm, company_type: e.target.value as CompanyType })}>
+                <option value="mining_client">Empresa minera (cliente)</option>
+                <option value="organization">Empresa de organización (Beemetry/TimeTelemetry)</option>
+              </select>
+            </div>
           </div>
           <div className="mt-3">
             <CompanyLocationPicker
@@ -330,14 +344,15 @@ function CompanyManagementView() {
                   <th className="px-5 py-4 text-[10px] font-black text-slate-500 uppercase">Razón Social</th>
                   <th className="px-5 py-4 text-[10px] font-black text-slate-500 uppercase">RUC</th>
                   <th className="px-5 py-4 text-[10px] font-black text-slate-500 uppercase text-center">País</th>
+                  <th className="px-5 py-4 text-[10px] font-black text-slate-500 uppercase text-center">Tipo</th>
                   <th className="px-5 py-4 text-[10px] font-black text-slate-500 uppercase text-center">Estado</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
                 {loading ? (
-                  <tr><td colSpan={4} className="py-10 text-center text-slate-500 animate-pulse font-bold uppercase text-[9px]">Cargando empresas...</td></tr>
+                  <tr><td colSpan={5} className="py-10 text-center text-slate-500 animate-pulse font-bold uppercase text-[9px]">Cargando empresas...</td></tr>
                 ) : filteredCompanies.length === 0 ? (
-                  <tr><td colSpan={4} className="py-10 text-center text-slate-500 font-bold uppercase text-[9px]">No hay registros.</td></tr>
+                  <tr><td colSpan={5} className="py-10 text-center text-slate-500 font-bold uppercase text-[9px]">No hay registros.</td></tr>
                 ) : filteredCompanies.map(c => (
                   <tr key={c.company_id} onClick={() => { setSelectedId(c.company_id); setShowCreateForm(false); }}
                       className={selectedId === c.company_id ? 'is-selected' : ''}>
@@ -347,6 +362,13 @@ function CompanyManagementView() {
                     </td>
                     <td className="px-3 py-1.5"><div className="text-xs font-mono text-indigo-300/80">{c.ruc || '—'}</div></td>
                     <td className="px-3 py-1.5 text-center"><span className="text-[10px] font-bold text-slate-400 uppercase">{c.country_code}</span></td>
+                    <td className="px-3 py-1.5 text-center">
+                      {/* Selector por substring de clase (patrón de accessAdministration.css,
+                          badge de estado de cuenta): 'sky' = organización, sin clase extra = minera. */}
+                      <span className={c.company_type === 'organization' ? 'access-badge-sky' : 'access-badge-neutral'}>
+                        {c.company_type === 'organization' ? 'Organización' : 'Minera cliente'}
+                      </span>
+                    </td>
                     <td className="px-3 py-1.5 text-center">
                       <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-bold ${c.active ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
                         <div className={`w-1 h-1 rounded-full ${c.active ? 'bg-emerald-400' : 'bg-current'}`} />
@@ -399,6 +421,15 @@ function CompanyManagementView() {
                         <label className="text-[8px] font-black text-slate-500 uppercase mb-0.5 block">Domicilio Fiscal</label>
                         <input type="text" disabled={!canManage} className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] text-white disabled:opacity-60"
                           value={editForm.domicilio_fiscal} onChange={e => setEditForm({ ...editForm, domicilio_fiscal: e.target.value })} />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="text-[8px] font-black text-slate-500 uppercase mb-0.5 block">Tipo de empresa</label>
+                        <select disabled={!canManage} className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] text-white disabled:opacity-60"
+                          value={editForm.company_type}
+                          onChange={e => setEditForm({ ...editForm, company_type: e.target.value as CompanyType })}>
+                          <option value="mining_client">Empresa minera (cliente)</option>
+                          <option value="organization">Empresa de organización (Beemetry/TimeTelemetry)</option>
+                        </select>
                       </div>
                     </div>
                     {canManage && (

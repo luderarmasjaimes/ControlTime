@@ -23,7 +23,7 @@ export interface ExportOptions {
 
 export interface ExportResult {
   success: boolean;
-  method?: 'server' | 'print-fallback' | 'client-fallback';
+  method?: 'server' | 'print-fallback' | 'client-fallback' | 'client';
   error?: string;
 }
 
@@ -77,35 +77,50 @@ export async function exportPDF(doc: any, options: ExportOptions = {}): Promise<
   }
 }
 
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 /**
- * Exporta como DOCX (OpenXML) vía servidor.
+ * Exporta como DOCX (OpenXML real) — pipeline cliente de alta fidelidad
+ * (`lib/docx/buildReportDocx.ts`): construye el documento DIRECTAMENTE desde
+ * el JSON del lienzo (texto/tabla/imagen/kpi/sensor/seismic-report/header/
+ * footer/toc quedan como contenido NATIVO editable de Word, posicionado
+ * absolutamente en su x/y/width/height exactos) y captura como imagen SOLO
+ * los bloques sin representación estática reconstruible (`chart`/
+ * `sensor_multi_chart`/fondo de `cover`, vía `captureRasterAssets.ts`).
+ *
+ * No hay `POST /api/export/docx` en el backend (a diferencia de PDF/PPTX) —
+ * este pipeline no depende de red ni de que el informe esté guardado, así
+ * que funciona también sobre un borrador en memoria. Si por lo que sea
+ * fallara (excepción irrecuperable), se conserva `exportDOCXClientFallback`
+ * como último recurso -- peor fidelidad, pero nunca deja al usuario sin
+ * ningún archivo.
  */
 export async function exportDOCX(doc: any, options: ExportOptions = {}): Promise<ExportResult> {
-  const payload = {
-    document: doc,
-    format: 'docx',
-    template: options.template || 'default',
-    includeStyles: true,
-    preserveLayout: true,
-    author: options.author || 'Beemetry Platform',
-  };
-
   try {
-    const response = await fetch(`${API_BASE}/export/docx`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      credentials: 'include',
-    });
+    const { buildReportDocx } = await import('./docx/buildReportDocx');
+    const { captureRasterAssets, resolveImageBytes } = await import('./docx/captureRasterAssets');
+    const { resolveReportImageSrc } = await import('./reportImageSrc');
 
-    if (!response.ok) throw new Error(`Server returned ${response.status}`);
+    const session = getSession() || {};
+    const imageAssets = new Map<string, Uint8Array>();
+    for (const page of doc.pages || []) {
+      for (const el of page.elements || []) {
+        if (el.type !== 'image') continue;
+        try {
+          const src = resolveReportImageSrc(el);
+          imageAssets.set(el.id, await resolveImageBytes(src));
+        } catch (imgErr) {
+          log.warn('[EXPORT][DOCX] No se pudo resolver una imagen, se omite del .docx:', el.id, imgErr);
+        }
+      }
+    }
+    const rasterAssets = await captureRasterAssets(doc, { tenant_id: (session as any)?.tenantId });
 
-    const blob = await response.blob();
-    downloadBlob(blob, generateFilename(doc, 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    return { success: true, method: 'server' };
+    const blob = await buildReportDocx(doc, { session: session as any, imageAssets, rasterAssets });
+    downloadBlob(blob, generateFilename(doc, 'docx'), DOCX_MIME);
+    return { success: true, method: 'client' };
   } catch (err) {
-    log.warn('[EXPORT] DOCX server export failed:', err);
-    // Client-side fallback: generate basic HTML-based DOCX
+    log.warn('[EXPORT][DOCX] Pipeline cliente de alta fidelidad falló, usando fallback HTML básico:', err);
     return exportDOCXClientFallback(doc, options);
   }
 }
@@ -220,11 +235,17 @@ function exportDOCXClientFallback(doc: any, options: ExportOptions = {}): Export
           // y la vista de solo lectura sí muestran el gráfico real (ver
           // ReadOnlyViewer.tsx).
           const chartTypeLabels: Record<string, string> = {
-            line: 'Líneas', bar: 'Barras', area: 'Área apilada', scatter: 'Dispersión', step: 'Escalón',
+            line: 'Líneas', bar: 'Columnas', barh: 'Barras', combo: 'Combinado', area: 'Áreas', scatter: 'Dispersión (XY)', step: 'Escalón',
+            radar: 'Radial', pie: 'Circular', donut: 'Anillo', heatmap: 'Mapa de calor', boxplot: 'Cajas y bigotes',
+            candlestick: 'Cotizaciones', treemap: 'Rectángulos', sunburst: 'Proyección solar', histogram: 'Histograma',
+            waterfall: 'Cascada', funnel: 'Embudo', geomap: 'Mapa', surface: 'Superficie (3D)',
           };
           const selections: any[] = Array.isArray(el.props?.selections) ? el.props.selections : [];
           const sensorNames = selections.map((s) => s.name || s.code).filter(Boolean).join(', ') || 'sin sensores configurados';
-          const chartTypeLabel = chartTypeLabels[el.props?.chartType] || el.props?.chartType || '—';
+          const typesArr: string[] = Array.isArray(el.props?.chartTypes) && el.props.chartTypes.length
+            ? el.props.chartTypes
+            : [el.props?.chartType].filter(Boolean);
+          const chartTypeLabel = typesArr.map((t) => chartTypeLabels[t] || t).join(', ') || '—';
           const fromLabel = el.props?.from ? new Date(el.props.from).toLocaleString('es-PE') : '—';
           const toLabel = el.props?.to ? new Date(el.props.to).toLocaleString('es-PE') : '—';
           htmlParts.push(

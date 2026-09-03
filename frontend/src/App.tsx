@@ -26,6 +26,7 @@ import {
     MessageCircle,
     LifeBuoy,
     UserSearch,
+    Gauge,
 } from 'lucide-react'
 import { log } from './lib/logger';
     // Hubspot is removed as it is not available in lucide-react
@@ -67,6 +68,7 @@ const AdvancedSensors = React.lazy(() => import('./components/Dashboard/Advanced
 const KpiOperationsView = React.lazy(() => import('./components/Dashboard/KpiOperationsView'))
 const AlarmCenter = React.lazy(() => import('./components/Dashboard/AlarmCenter'))
 const TelemetryDashboard = React.lazy(() => import('./components/Dashboard/TelemetryDashboard'))
+const SimulationMonitor = React.lazy(() => import('./components/Dashboard/SimulationMonitor'))
 const GeotechWorkbench = React.lazy(() => import('./components/Dashboard/GeotechWorkbench'))
 const ReportStudioV2 = React.lazy(() => import('./components/ReportStudioV2/App'))
 const FormulaEngineEmbed = React.lazy(() => import('./components/Formula/FormulaEngineEmbed'))
@@ -97,8 +99,8 @@ const ViewLoader = ({ label }: { label: string }) => (
 import { PlatformBrandDashboardBlock } from './brand/PlatformBrandMark'
 import { ensureCompanyUsers } from './components/ReportStudioV2/lib/userBootstrap'
 import { purgeOfflineCacheOnLogout } from './components/ReportStudioV2/lib/offlineSqlite'
-import { getSession, createSession, type Session } from './auth/authStorage'
-import { fetchMyAvatarHd, logout as logoutApi } from './auth/authApi'
+import { getSession, createSession, clearSession, type Session } from './auth/authStorage'
+import { fetchMyAvatarHd, logout as logoutApi, refreshAccessToken } from './auth/authApi'
 import { usePermissions, invalidatePermissionsCache } from './auth/usePermissions'
 import { telemetryTenantIdFromSession } from './auth/telemetryTenant'
 import { useI18n } from './i18n/I18nProvider'
@@ -578,6 +580,17 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
             tip: t('nav.openModule', { name: t('nav.telemetry') })
         },
         {
+            // ADR-136: monitor de la simulación de 1h (telemetry_fact vs
+            // telemetry_fact_calc), mismo grupo/gate que el resto de
+            // 'monitoreo' -- no requiere permiso nuevo.
+            name: 'SimulationMonitor',
+            label: t('nav.simulation'),
+            icon: Gauge,
+            glyph: 'SIM',
+            badge: 'Live',
+            tip: t('nav.openModule', { name: t('nav.simulation') })
+        },
+        {
             name: 'Formula',
             label: t('nav.calculation'),
             icon: Sigma,
@@ -711,7 +724,7 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
             title: t('nav.control'),
             icon: Activity,
             tip: t('nav.openModule', { name: t('nav.control') }),
-            items: ['Dashboard', 'Sensores Técnicos', 'KPIs Operación', 'Alarmas', 'Surveillance', 'Telemetría'],
+            items: ['Dashboard', 'Sensores Técnicos', 'KPIs Operación', 'Alarmas', 'Surveillance', 'Telemetría', 'SimulationMonitor'],
             navTag: 'LIVE',
         },
         {
@@ -1121,6 +1134,9 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
                             {activeTab === 'Telemetría' && (
                                 <TelemetryDashboard telemetryTenantId={telemetryScope.telemetryTenantId} />
                             )}
+                            {activeTab === 'SimulationMonitor' && (
+                                <SimulationMonitor telemetryTenantId={telemetryScope.telemetryTenantId} />
+                            )}
                             {activeTab === 'Displacement Cumulative' && (
                                 <GeotechWorkbench tabKey="Displacement Cumulative">
                                     <DisplacementCharts xRange={xRange} yRange={yRange} />
@@ -1408,6 +1424,54 @@ const App = () => {
     const [session, setSession] = useState<AppSession | null>(() => {
         return getSession()
     })
+    // Migración a Bearer-en-memoria: el access token vive SOLO en una
+    // variable de módulo (authStorage.ts), que se pierde en cada recarga de
+    // página a propósito (nunca se persiste en disco). Si `getSession()`
+    // encuentra una sesión guardada (localStorage, sin el token), esta
+    // pestaña recién montada NO tiene todavía un Bearer válido en memoria --
+    // antes de confiar en esa sesión y renderizar el dashboard, hay que
+    // pedir uno nuevo vía /api/auth/refresh (que sí sigue funcionando solo
+    // con la cookie HttpOnly `beemetry_refresh_token`, invisible a JS). Sin
+    // este paso, la primera llamada protegida de la pantalla inicial saldría
+    // sin Authorization y dependería de que la cookie de acceso siga siendo
+    // válida -- exactamente la vía de respaldo que se quiere dejar de
+    // necesitar para no pisarse con otro frontend en el mismo host.
+    const [restoringSession, setRestoringSession] = useState<boolean>(() => !!getSession())
+
+    useEffect(() => {
+        if (!session) {
+            setRestoringSession(false)
+            return
+        }
+        let cancelled = false
+        refreshAccessToken().then((token) => {
+            if (cancelled) return
+            if (!token) {
+                // La cookie de refresh no existe/venció/fue revocada -- no hay
+                // forma de recuperar la sesión sin volver a autenticarse.
+                clearSession()
+                setSession(null)
+            }
+            setRestoringSession(false)
+        })
+        return () => {
+            cancelled = true
+        }
+        // Solo debe correr una vez al montar (o cuando session pasa de null a
+        // un valor, tras un login) -- no en cada cambio de campo de session.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [!!session])
+
+    if (restoringSession) {
+        // Pantalla mínima: evita que el dashboard llegue a montar (y disparar
+        // llamadas protegidas sin Bearer todavía) mientras se resuelve el
+        // refresh silencioso -- solo se ve un instante en una recarga normal.
+        return (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0f172a', color: '#94a3b8', fontSize: '0.85rem' }}>
+                Restaurando sesión…
+            </div>
+        )
+    }
 
     if (!session) {
         return <AuthGateway onAuthenticated={setSession} />

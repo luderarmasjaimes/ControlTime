@@ -9,6 +9,7 @@
 #include "../biometric/face_analysis.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
+#include "../security/validators.hpp"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -160,7 +161,31 @@ handleListMyTenants(const http::request<http::string_body> &req,
             {"tenant_name", PQgetvalue(res.get(), i, 1)},
             {"role", role},
             {"is_default", std::string(PQgetvalue(res.get(), i, 3)) == "t"},
-            {"active", tenantId == session->tenantId}});
+            {"active", tenantId == session->tenantId},
+            {"via", "membership"}});
+      }
+    }
+    // db_scripts/72: concesiones de acceso cruzado (personal de organización
+    // operando en tenants mineros) -- se listan aparte con via="org_grant"
+    // para que TenantSwitcher.tsx pueda distinguirlas visualmente; nunca se
+    // mezclan con auth_user_tenant (esa sigue siendo "membresía real").
+    storage::PgResult orgRes{PQexecParams(
+        conn,
+        "SELECT t.tenant_id::text, t.tenant_name, oa.role "
+        "FROM org_tenant_access oa JOIN tenants t ON t.tenant_id = oa.tenant_id "
+        "WHERE oa.user_id = $1::uuid AND oa.active = TRUE AND oa.revoked_at IS NULL "
+        "ORDER BY t.tenant_name",
+        1, nullptr, p, nullptr, nullptr, 0)};
+    if (orgRes.okTuples()) {
+      for (int i = 0; i < PQntuples(orgRes.get()); ++i) {
+        const std::string tenantId = PQgetvalue(orgRes.get(), i, 0);
+        items.push_back(json::object{
+            {"tenant_id", tenantId},
+            {"tenant_name", PQgetvalue(orgRes.get(), i, 1)},
+            {"role", PQgetvalue(orgRes.get(), i, 2)},
+            {"is_default", false},
+            {"active", tenantId == session->tenantId},
+            {"via", "org_grant"}});
       }
     }
   }
@@ -173,7 +198,8 @@ handleListMyTenants(const http::request<http::string_body> &req,
                                  {"tenant_name", session->company},
                                  {"role", session->role},
                                  {"is_default", true},
-                                 {"active", true}});
+                                 {"active", true},
+                                 {"via", "membership"}});
   }
   return makeJsonResponse(http::status::ok, json::object{{"tenants", items}});
 #else
@@ -224,18 +250,35 @@ handleSwitchTenant(const http::request<http::string_body> &req,
         "SELECT role FROM auth_user_tenant "
         "WHERE user_id = $1::uuid AND tenant_id = $2::uuid",
         2, nullptr, p, nullptr, nullptr, 0)};
-    const bool isMember = res.okTuples() && PQntuples(res.get()) > 0;
+    bool isMember = res.okTuples() && PQntuples(res.get()) > 0;
+    if (isMember && !PQgetisnull(res.get(), 0, 0))
+      tenantRole = PQgetvalue(res.get(), 0, 0);
+    // db_scripts/72: sin membresía real, ¿tiene una concesión de acceso
+    // cruzado activa (personal de organización operando en este tenant
+    // minero)? Misma verificación anti-IDOR que arriba, solo que contra
+    // org_tenant_access en vez de auth_user_tenant.
+    if (!isMember) {
+      storage::PgResult org{PQexecParams(
+          conn,
+          "SELECT role FROM org_tenant_access "
+          "WHERE user_id = $1::uuid AND tenant_id = $2::uuid AND active = TRUE "
+          "AND revoked_at IS NULL",
+          2, nullptr, p, nullptr, nullptr, 0)};
+      if (org.okTuples() && PQntuples(org.get()) > 0) {
+        isMember = true;
+        tenantRole = PQgetvalue(org.get(), 0, 0);
+      }
+    }
     // Compatibilidad: si el usuario no tiene NINGUNA fila en auth_user_tenant
-    // (login tradicional por nombre de empresa), permitir "cambiar" solo a
-    // su propio tenant actual — no abre ninguna puerta nueva.
+    // ni org_tenant_access (login tradicional por nombre de empresa),
+    // permitir "cambiar" solo a su propio tenant actual — no abre ninguna
+    // puerta nueva.
     const bool selfNoMembership =
         !isMember && targetTenant == session->tenantId;
     if (!isMember && !selfNoMembership) {
       return makeJsonResponse(http::status::forbidden,
                               json::object{{"error", "no_pertenece_al_tenant"}});
     }
-    if (isMember && !PQgetisnull(res.get(), 0, 0))
-      tenantRole = PQgetvalue(res.get(), 0, 0);
   }
 
   auto user = findUserByIdPg(cfg.gDatabaseUrl, session->userId);
@@ -338,6 +381,11 @@ handleAdminCreateUser(const http::request<http::string_body> &req,
     return makeJsonResponse(http::status::bad_request,
                             json::object{{"error", "password_minimo_8_caracteres"}});
   }
+  if (!security::Validator::isValidDisplayName(firstName) ||
+      !security::Validator::isValidDisplayName(lastName)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "first_name_o_last_name_invalido"}});
+  }
   std::string email, phone, mobile;
   if (const auto *v = obj.if_contains("email"))  if (v->is_string()) email  = json::value_to<std::string>(*v);
   if (const auto *v = obj.if_contains("phone"))  if (v->is_string()) phone  = json::value_to<std::string>(*v);
@@ -359,7 +407,7 @@ handleAdminCreateUser(const http::request<http::string_body> &req,
 
   auto &cfg = AppConfig::instance();
   std::string dbError;
-  if (!registerUserPg(cfg.gDatabaseUrl, created, dbError)) {
+  if (!registerUserPg(cfg.gDatabaseUrl, created, dbError, http_utils::getClientIp(req))) {
     const bool duplicate = dbError.find("exists") != std::string::npos;
     return makeJsonResponse(duplicate ? http::status::conflict : http::status::internal_server_error,
                             json::object{{"error", duplicate ? "dni_ya_existe" : "creacion_fallida"},
@@ -452,7 +500,29 @@ handleListUserTenants(const http::request<http::string_body> &req,
             {"tenant_id", PQgetvalue(res.get(), i, 0)},
             {"tenant_name", PQgetvalue(res.get(), i, 1)},
             {"role", PQgetisnull(res.get(), i, 2) ? json::value(nullptr) : json::value(PQgetvalue(res.get(), i, 2))},
-            {"is_default", std::string(PQgetvalue(res.get(), i, 3)) == "t"}});
+            {"is_default", std::string(PQgetvalue(res.get(), i, 3)) == "t"},
+            {"via", "membership"}});
+    // db_scripts/72: concesiones de acceso cruzado del usuario objetivo (si
+    // el operador que consulta es de un tenant de organización con
+    // org.cross_tenant.manage, ver UserManagementView.tsx). Se listan aparte
+    // con via="org_grant" -- nunca se mezclan con auth_user_tenant.
+    storage::PgResult orgRes{PQexecParams(
+        conn,
+        "SELECT t.tenant_id::text, t.tenant_name, oa.role "
+        "FROM org_tenant_access oa "
+        "JOIN tenants t ON t.tenant_id = oa.tenant_id "
+        "JOIN auth_users u ON u.id = oa.user_id "
+        "WHERE u.username = $1 AND oa.active = TRUE AND oa.revoked_at IS NULL "
+        "ORDER BY t.tenant_name",
+        1, nullptr, p, nullptr, nullptr, 0)};
+    if (orgRes.okTuples())
+      for (int i = 0; i < PQntuples(orgRes.get()); ++i)
+        items.push_back(json::object{
+            {"tenant_id", PQgetvalue(orgRes.get(), i, 0)},
+            {"tenant_name", PQgetvalue(orgRes.get(), i, 1)},
+            {"role", PQgetvalue(orgRes.get(), i, 2)},
+            {"is_default", false},
+            {"via", "org_grant"}});
   }
   return makeJsonResponse(http::status::ok, json::object{{"tenants", items}});
 #else
@@ -757,7 +827,8 @@ json::object companyRecordToJsonValue(const AuthCompanyRecord &c) {
                       {"updated_by", c.updatedBy},
                       {"latitude", c.latitude ? json::value(*c.latitude) : json::value(nullptr)},
                       {"longitude", c.longitude ? json::value(*c.longitude) : json::value(nullptr)},
-                      {"location_zoom", c.locationZoom ? json::value(*c.locationZoom) : json::value(nullptr)}};
+                      {"location_zoom", c.locationZoom ? json::value(*c.locationZoom) : json::value(nullptr)},
+                      {"company_type", c.companyType}};
 }
 
 void registerRoutes(router::Router &r) {
@@ -862,7 +933,8 @@ void registerRoutes(router::Router &r) {
              }
              const std::string name =
                  trimAuthParam(json::value_to<std::string>(*nameValue));
-             if (name.size() < 2 || name.size() > 180) {
+             if (name.size() < 2 || name.size() > 180 ||
+                 !security::Validator::isValidDisplayName(name, 180)) {
                return makeJsonResponse(
                    http::status::bad_request,
                    json::object{{"error", "company_name_invalid"}});
@@ -880,6 +952,17 @@ void registerRoutes(router::Router &r) {
              std::string domicilioFiscal;
              if (const auto *v = obj.if_contains("domicilio_fiscal"))
                if (v->is_string()) domicilioFiscal = json::value_to<std::string>(*v);
+
+             // db_scripts/72: clasificación minera/organización -- default
+             // 'mining_client' si no viene o viene con un valor no reconocido
+             // (nunca se rechaza el alta por esto, es un dato de clasificación,
+             // no un campo de seguridad en sí mismo).
+             std::string companyType = "mining_client";
+             if (const auto *v = obj.if_contains("company_type"))
+               if (v->is_string()) {
+                 const std::string ct = json::value_to<std::string>(*v);
+                 if (ct == "organization") companyType = "organization";
+               }
 
              // ADR-121: latitude/longitude viajan juntas o ninguna -- no tiene
              // sentido persistir solo una mitad de una coordenada.
@@ -917,7 +1000,8 @@ void registerRoutes(router::Router &r) {
              if (!createCompanyPg(cfg.gDatabaseUrl, name, ruc, country,
                                   domicilioFiscal, latitude, longitude,
                                   locationZoom, session->userId,
-                                  session->role, created, createError)) {
+                                  session->role, created, createError,
+                                  companyType)) {
                if (createError == "company_already_exists" ||
                    createError == "ruc_already_exists") {
                  return makeJsonResponse(
@@ -934,12 +1018,15 @@ void registerRoutes(router::Router &r) {
              PGconn *conn = lease.get();
              if (PQstatus(conn) == CONNECTION_OK) {
                appendAuthAuditLogPg(conn, "company_create", session->company,
-                                    session->username, true, name);
+                                    session->username, true, name,
+                                    std::nullopt, std::nullopt, std::nullopt,
+                                    http_utils::getClientIp(req));
              }
              return makeJsonResponse(http::status::created,
                                      json::object{{"company", created.name},
                                                   {"tenant_id", created.tenantId},
-                                                  {"active", created.active}});
+                                                  {"active", created.active},
+                                                  {"company_type", created.companyType}});
            } catch (const std::exception &) {
              return makeJsonResponse(
                  http::status::bad_request,
@@ -1040,6 +1127,15 @@ void registerRoutes(router::Router &r) {
             if (const auto *v = obj.if_contains("domicilio_fiscal"))
               if (v->is_string()) domicilioFiscal = json::value_to<std::string>(*v);
 
+            // db_scripts/72: vacío == "no cambiar" (preserva el valor actual
+            // del tenant vinculado, ver updateCompanyPg).
+            std::string companyType;
+            if (const auto *v = obj.if_contains("company_type"))
+              if (v->is_string()) {
+                const std::string ct = json::value_to<std::string>(*v);
+                if (ct == "organization" || ct == "mining_client") companyType = ct;
+              }
+
             // ADR-121: si no vienen en el body, se preserva el valor actual
             // (mismo criterio que ruc/country/domicilio_fiscal arriba).
             std::optional<double> latitude = current.latitude;
@@ -1075,7 +1171,7 @@ void registerRoutes(router::Router &r) {
             if (!updateCompanyPg(cfg.gDatabaseUrl, companyId, ruc, country,
                                  domicilioFiscal, latitude, longitude,
                                  locationZoom, session->userId, updated,
-                                 updateError)) {
+                                 updateError, companyType)) {
               return makeJsonResponse(
                   updateError == "company_not_found" ? http::status::not_found
                                                       : http::status::internal_server_error,
@@ -1085,7 +1181,9 @@ void registerRoutes(router::Router &r) {
             PGconn *conn = lease.get();
             if (PQstatus(conn) == CONNECTION_OK) {
               appendAuthAuditLogPg(conn, "company_update", session->company,
-                                   session->username, true, updated.name);
+                                   session->username, true, updated.name,
+                                   std::nullopt, std::nullopt, std::nullopt,
+                                   http_utils::getClientIp(req));
             }
             return makeJsonResponse(http::status::ok, companyRecordToJsonValue(updated));
           } catch (const std::exception &) {
@@ -1137,7 +1235,9 @@ void registerRoutes(router::Router &r) {
           if (PQstatus(conn) == CONNECTION_OK) {
             appendAuthAuditLogPg(conn,
                                  reactivate ? "company_reactivate" : "company_deactivate",
-                                 session->company, session->username, true, companyId);
+                                 session->company, session->username, true, companyId,
+                                 std::nullopt, std::nullopt, std::nullopt,
+                                 http_utils::getClientIp(req));
           }
           return makeJsonResponse(
               http::status::ok,

@@ -14,8 +14,11 @@
 # Orden recomendado en la máquina nueva:
 #   1. Copiar .env, certs/, dermalog-sdk/, biometric-models/, data/ (manual).
 #   2. .\scripts\import-stack.ps1 -ImportDir <carpeta del export>
-#   3. bash scripts/provision-dashboard-ro.sh   (o pedir la versión .ps1)
-#   4. docker compose up -d
+#      -- con IncludeDb (default), esto YA hace `docker compose up -d`
+#      completo, levanta db_replica y provisiona el rol dashboard_ro
+#      (2026-09-02: antes eran los pasos 3-4 manuales de acá, fáciles de
+#      saltarse -- sin ellos, los endpoints que leen de la réplica fallan
+#      con 500 "db_unavailable" sin dejar rastro en logs).
 #
 # Requiere: Docker Desktop corriendo, docker.exe accesible (PATH o la ruta
 #   default de instalación), y que el nombre de carpeta del repo destino
@@ -99,6 +102,38 @@ Write-Host "[import] origen: $ImportDir"
 Write-Host "[import] manifiesto:"
 Get-Content $ManifestPath | ForEach-Object { Write-Host "[import]   $_" }
 
+# --- 0. Verificación de integridad (ADR-111) --------------------------------
+# Falla ANTES de tocar Docker/BD si algún archivo cambió desde el export --
+# un dump corrupto detectado a mitad de pg_restore ya dejó el volumen en
+# estado intermedio; acá se corta antes de empezar.
+$ChecksumFile = Join-Path $ImportDir "checksums.sha256"
+if (Test-Path $ChecksumFile) {
+    Write-Host "[import] verificando checksums.sha256..."
+    $bad = @()
+    $missing = @()
+    foreach ($line in (Get-Content $ChecksumFile)) {
+        if ($line -notmatch '^([0-9a-fA-F]{64})\s{2}(.+)$') { continue }
+        $expected = $Matches[1].ToLower()
+        $relPath = $Matches[2] -replace '/', '\'
+        $fullPath = Join-Path $ImportDir $relPath
+        if (-not (Test-Path $fullPath)) {
+            $missing += $relPath
+            continue
+        }
+        $actual = (Get-FileHash -Path $fullPath -Algorithm SHA256).Hash.ToLower()
+        if ($actual -ne $expected) { $bad += $relPath }
+    }
+    if ($missing.Count -gt 0) {
+        Write-Warning "[import] archivos listados en checksums.sha256 pero ausentes (¿export parcial con -Include...:`$false?): $($missing -join ', ')"
+    }
+    if ($bad.Count -gt 0) {
+        throw "[import] VERIFICACION DE INTEGRIDAD FALLO -- archivo(s) modificado(s) o corrupto(s) desde el export: $($bad -join ', '). Import abortado antes de tocar Docker/BD."
+    }
+    Write-Host "[import] checksums OK."
+} else {
+    Write-Warning "[import] no hay checksums.sha256 en $ImportDir (export generado antes de este cambio, o -IncludeImages/-IncludeVolumes/-IncludeDb en $false para todo) -- se importa SIN verificar integridad."
+}
+
 # --- 1. Imagenes -----------------------------------------------------------
 # `docker load -i` lee el archivo directo del disco (soporta .tar.gz) --
 # nunca por pipe de PowerShell, que corrompe binarios.
@@ -121,12 +156,21 @@ if ($IncludeVolumes -and (Test-Path $VolumesDir)) {
         $fullVol = "${ProjectName}_${volName}"
         Write-Host "[import] restaurando volumen $fullVol desde $($_.Name) ..."
         & $Docker volume create $fullVol | Out-Null
-        $volumesDirUnix = $VolumesDir -replace '\\', '/'
-        & $Docker run --rm `
-            -v "${fullVol}:/to" `
-            -v "${volumesDirUnix}:/from:ro" `
-            alpine sh -c "rm -rf /to/* /to/..?* /to/.[!.]* 2>/dev/null; tar xzf /from/$($_.Name) -C /to"
-        if ($LASTEXITCODE -ne 0) { throw "restauración del volumen $fullVol falló" }
+        # El .tar.gz se copia PRIMERO adentro del contenedor con `docker cp`
+        # (transferencia atómica, no streaming) y recién ahí se extrae --
+        # nunca leyendo directo desde la carpeta del host vía bind mount:
+        # con archivos grandes (ollama_data) el puente WSL2<->Windows puede
+        # cortarse a mitad de camino. Mismo criterio que export-stack.ps1.
+        $helperName = "beemetry-import-$volName-$PID"
+        & $Docker create --name $helperName -v "${fullVol}:/to" alpine sh -c "rm -rf /to/* /to/..?* /to/.[!.]* 2>/dev/null; tar xzf /tmp/$($_.Name) -C /to" | Out-Null
+        & $Docker cp $_.FullName "${helperName}:/tmp/$($_.Name)"
+        $restoreExit = $LASTEXITCODE
+        if ($restoreExit -eq 0) {
+            & $Docker start -a $helperName
+            $restoreExit = $LASTEXITCODE
+        }
+        & $Docker rm -f $helperName | Out-Null
+        if ($restoreExit -ne 0) { throw "restauración del volumen $fullVol falló" }
     }
 } else {
     Write-Host "[import] saltando volumenes (IncludeVolumes=`$false o carpeta ausente)."
@@ -186,6 +230,68 @@ if ($IncludeDb -and (Test-Path $DbDir)) {
             & $Docker exec $FormulaDbContainer pg_restore -U formula -d formula --clean --if-exists /tmp/formula_db.dump
             & $Docker exec $FormulaDbContainer rm -f /tmp/formula_db.dump
         }
+
+        # --- 4. Levantar el resto del stack (incl. db_replica) y provisionar
+        #     dashboard_ro -- confirmado en vivo 2026-09-02: sin esto, el rol
+        #     dashboard_ro no existe en el destino (los roles son objetos de
+        #     CLUSTER, no de base de datos -- pg_dump/pg_restore de sensors_db
+        #     NUNCA los incluye), BEEMETRY_REPLICA_DATABASE_URL falla el login
+        #     contra db_replica, y los endpoints que leen de la réplica
+        #     (wizard de telemetría, KPIs) devuelven 500 "db_unavailable" SIN
+        #     dejar ningún rastro en logs (es un return controlado en el
+        #     handler, no una excepción). Antes esto quedaba como paso manual
+        #     "3" separado (fácil de saltarse); ahora es parte del import.
+        Write-Host "[import] levantando el resto del stack (incl. db_replica)..."
+        & $Docker compose up -d
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "[import] 'docker compose up -d' devolvió errores -- revisá la salida arriba."
+        }
+
+        Write-Host "[import] esperando a que db_replica esté healthy..."
+        $replicaCid = (& $Docker compose ps -q db_replica).Trim()
+        if ($replicaCid) {
+            $replicaStatus = ""
+            for ($i = 0; $i -lt 40; $i++) {
+                $replicaStatus = (& $Docker inspect --format='{{.State.Health.Status}}' $replicaCid 2>$null)
+                if ($replicaStatus -eq "healthy") { break }
+                Start-Sleep -Seconds 3
+            }
+            if ($replicaStatus -ne "healthy") {
+                Write-Warning "[import] db_replica no llegó a 'healthy' tras 2 min -- dashboard_ro puede tardar en poder leer de ahí (o revisar 'docker compose ps')."
+            }
+        } else {
+            Write-Warning "[import] no encuentro el contenedor db_replica -- saltando provisión de dashboard_ro, correr scripts/provision-dashboard-ro.sh a mano cuando esté arriba."
+        }
+
+        if ($replicaCid) {
+            $roPassword = $env:BEEMETRY_DASHBOARD_RO_PASSWORD
+            if (-not $roPassword) {
+                $envFile = Join-Path $RepoRoot ".env"
+                if (Test-Path $envFile) {
+                    $envLine = Get-Content $envFile | Where-Object { $_ -match '^BEEMETRY_DASHBOARD_RO_PASSWORD=' } | Select-Object -First 1
+                    if ($envLine) { $roPassword = $envLine -replace '^BEEMETRY_DASHBOARD_RO_PASSWORD=', '' }
+                }
+            }
+            $sqlPath = Join-Path $RepoRoot "db_scripts\40_dashboard_ro_role.sql"
+            if (-not $roPassword) {
+                Write-Warning "[import] BEEMETRY_DASHBOARD_RO_PASSWORD no definido (ni en entorno ni en .env) -- saltando provisión de dashboard_ro. Correr scripts/provision-dashboard-ro.sh a mano."
+            } elseif (-not (Test-Path $sqlPath)) {
+                Write-Warning "[import] no encuentro $sqlPath -- saltando provisión de dashboard_ro."
+            } else {
+                Write-Host "[import] provisionando rol dashboard_ro (lectura de réplica)..."
+                # `<` de redirección no existe en PowerShell (operador
+                # reservado) -- el SQL es texto plano (no binario como
+                # pg_dump/gzip), así que pipearlo por Get-Content es seguro acá.
+                $escapedPassword = $roPassword -replace "'", "''"
+                Get-Content -Raw $sqlPath | & $Docker exec -i $DbContainer psql -U sensors -d sensors_db -v "ro_password='$escapedPassword'" -v ON_ERROR_STOP=1
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warning "[import] provisión de dashboard_ro falló -- correr scripts/provision-dashboard-ro.sh a mano y revisar la salida."
+                } else {
+                    Write-Host "[import] dashboard_ro OK. Reiniciando 'web' para que tome la réplica..."
+                    & $Docker compose up -d --force-recreate web
+                }
+            }
+        }
     } finally {
         Pop-Location
     }
@@ -194,6 +300,4 @@ if ($IncludeDb -and (Test-Path $DbDir)) {
 }
 
 Write-Host "[import] Listo."
-Write-Host "[import] Siguiente: provisionar dashboard_ro y levantar todo:"
-Write-Host "[import]   docker compose up -d"
 Write-Host "[import] Verificar: docker compose exec db psql -U sensors -d sensors_db -c `"SELECT * FROM auth_password_algo_status;`""

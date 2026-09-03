@@ -7,7 +7,9 @@
   "variable": [
     { "key": "baseUrl", "value": "http://127.0.0.1:8082" },
     { "key": "adminToken", "value": "" },
-    { "key": "operatorToken", "value": "" }
+    { "key": "operatorToken", "value": "" },
+    { "key": "orgAdminToken", "value": "" },
+    { "key": "orgAdminNote", "value": "TC-ORGACCESS-03+: llenar a mano logueando como admin de un tenant company_type=organization (Beemetry/TimeTelemetry, ver ADR-130) -- la suite fija (Alpayana) no tiene una cuenta de ese tipo." }
   ],
   "item": [
     {
@@ -207,6 +209,55 @@
       "request": { "method": "GET", "url": "{{baseUrl}}/api/jobs/00000000-0000-0000-0000-000000000000" },
       "event": [{ "listen": "test", "script": { "exec": [
         "pm.test('401', () => pm.response.to.have.status(401));"
+      ]}}]
+    },
+    {
+      "name": "TC-ORGACCESS-01 — Candidates sin sesión",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/auth/org-access/candidates" },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('401', () => pm.response.to.have.status(401));"
+      ]}}]
+    },
+    {
+      "name": "TC-ORGACCESS-02 — Grant desde tenant NO organización (guardia ADR-130, admin de Alpayana)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\"username\":\"qa_operator_test\",\"tenant_id\":\"00000000-0000-0000-0000-000000000000\",\"role\":\"viewer\"}" },
+        "url": "{{baseUrl}}/api/auth/org-access/grant"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('403 forbidden -- Alpayana es company_type=mining_client, el guardia isOrganizationTenant lo bloquea aunque admin tuviera el permission_code', () => pm.response.to.have.status(403));",
+        "pm.test('need=org.cross_tenant.manage', () => pm.expect(pm.response.json().need).to.eql('org.cross_tenant.manage'));"
+      ]}}]
+    },
+    {
+      "name": "TC-ORGACCESS-03 — Candidates desde tenant de organización (requiere orgAdminToken manual, ver variable orgAdminNote)",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{orgAdminToken}}" }],
+        "url": "{{baseUrl}}/api/auth/org-access/candidates"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "if (!pm.collectionVariables.get('orgAdminToken')) { console.warn('orgAdminToken vacío -- ver variable orgAdminNote, test omitido'); } else { pm.test('200 y tenants array', () => { pm.response.to.have.status(200); pm.expect(pm.response.json()).to.have.property('tenants'); }); }"
+      ]}}]
+    },
+    {
+      "name": "TC-ORGACCESS-04 — Grant a un tenant que NO es mining_client (requiere orgAdminToken, apuntar tenant_id a otra organización)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{orgAdminToken}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\"username\":\"qa_operator_test\",\"tenant_id\":\"<tenant_id de otra empresa organization>\",\"role\":\"viewer\"}" },
+        "url": "{{baseUrl}}/api/auth/org-access/grant"
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "if (!pm.collectionVariables.get('orgAdminToken')) { console.warn('orgAdminToken vacío -- test omitido'); } else { pm.test('400 tenant_destino_no_es_minera_cliente', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error).to.eql('tenant_destino_no_es_minera_cliente'); }); }"
       ]}}]
     }
   ]

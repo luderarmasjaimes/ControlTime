@@ -26,6 +26,254 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Auditoría 2026-09-02: 137 → 139 ADRs de archivo.** A pedido explícito del
+> developer de investigar a fondo el estado del proyecto, qué ADR faltan por
+> actualizar, qué decisiones siguen pendientes y qué se puede cerrar para
+> avanzar más rápido, sin introducir conflictos con el log vigente. Hallazgos,
+> de mayor a menor impacto:
+>
+> 1. **ADR-139 nuevo** (`exportacion-docx-nativa-cliente`, ámbito `reports`):
+>    pipeline completo de exportación a `.docx` real (OpenXML vía librería
+>    `docx`+`jszip`, 5 archivos en `frontend/.../lib/docx/`) existía sin ADR —
+>    100% client-side, sin endpoint backend nuevo, divergencia consciente del
+>    patrón "export server-side canónico" de ADR-016. Verificado con su propio
+>    test unitario: `buildReportDocx.test.ts` **9/9 tests passed** (corrido
+>    junto con `reportShareLink.test.ts` y `sensorMultiChartLayout.test.ts` en
+>    el mismo lote). Sin verificación E2E de apertura en Word/LibreOffice real
+>    — queda documentado como pendiente en el propio ADR.
+> 2. **ADR-109 recibe un bloque de actualización** (no se edita el texto
+>    original): la prueba anti-IDOR que la Decisión §6 declaraba pendiente ya
+>    existe (`backend/tests/test_sensor_anti_idor.cpp`, nuevo); el catálogo de
+>    gráficos del widget multiserie creció a mapa geográfico (Leaflet),
+>    superficie 3D (`@react-three/fiber`) y combinado línea+barra con eje
+>    secundario — los tres cableados de punta a punta (`ChartTypePicker.tsx`,
+>    `SensorMultiChartInspector.tsx`, `App.tsx`), lo que **contradice
+>    directamente** la frase original "no se declara todavía exportación 3D
+>    dentro del documento". Ninguno de los tres tiene verificación en vivo de
+>    render/export con datos reales todavía.
+> 3. **Regresión real de `tsc` encontrada y parcialmente cerrada**: `npx tsc
+>    --noEmit` sobre el árbol actual arroja 3 errores — 2 nuevos en
+>    `SensorSurface3DPanel.tsx` y 1 preexistente (no introducido en esta
+>    sesión) en `Viewer3D.tsx`, los tres por una duplicación real de
+>    `@types/three` (`0.183.1` top-level vs. `0.185.4` resuelto vía `.pnpm/`
+>    — el árbol tiene una mezcla real de instalación npm+pnpm,
+>    `pnpm-workspace.yaml` nuevo sin commitear). `npx vite build` (Rolldown)
+>    compila igual — mismo patrón exacto que ADR-093 ya cerró una vez
+>    (gap esbuild/Rolldown-vs-`tsc`), reabierto acá en archivos distintos; no
+>    corregido en esta pasada porque requiere decidir versión objetivo de
+>    `@types/three` o consolidar en un solo gestor de paquetes (npm o pnpm,
+>    no ambos a la vez) — decisión de tooling, no de arquitectura, se deja
+>    para quien mantenga el toolchain de `frontend/`. De paso, investigando
+>    este hallazgo, se encontró y **corrigió** un bug real independiente en
+>    `GeocatminWorkbench.tsx` (ADR-121): leía `remote.location_zoom` y
+>    `remote.company_name`, campos que `GET /api/map/company-location` nunca
+>    devuelve (el campo real es `zoom`, sin `company_name`) — el zoom
+>    configurado por el admin para la mina del tenant nunca se aplicaba
+>    dentro del Geoportal, siempre caía al valor por defecto `14`. Corregido a
+>    `remote.zoom`; verificado que los 2 errores de `tsc` de ese archivo
+>    desaparecen y que `company_name` no era necesario (ya existía
+>    `activeCompanyName` como fuente correcta).
+> 4. **El bug del `Cutoff` hardcodeado de `scripts/project-status-metrics.ps1`
+>    (señalado en la auditoría 2026-08-30 de abajo) ya está corregido** en el
+>    árbol de trabajo actual (usa `Get-Date` dinámico, sin commitear todavía).
+>    Corrido hoy: **113/200 = 56,5%** (antes 106/196 = 54,1% al 18/30-ago) —
+>    avance real de +7 tareas/+4 al total en los `specs/*/tasks.md` de 003,
+>    004, 006, 008, 009, 011, 013 y 021 (todos modificados sin commitear). Las
+>    specs 014 (offline+reconciliación de campo), 015 (DR/continuidad), 016
+>    (alertas por umbral, tabla `alert_rules`/SSE — **distinta** del sistema
+>    de alarmas de dispositivo ya implementado en `alarm_notifier.cpp`/
+>    `device_alarm_routes.cpp`, no verificado si son redundantes o
+>    complementarias), 017 (EPP, diferida por diseño desde ADR-025) y 018
+>    (dictado por voz) siguen en 0%; 022 (offline+ERP) sigue en 0%,
+>    consistente con ADR-110 `proposed`.
+> 5. **No se encontraron conflictos de decisión incompatible** entre ADR-130 a
+>    139 y el resto del log vigente — mismo resultado que ya reportó la
+>    auditoría 2026-08-30 de abajo, ahora extendido a incluir 138/139. Los
+>    `db_scripts/72` a `88` sin commitear se verificaron contra sus ADR
+>    citados (72→130, 74-79→131, 81→135, 86→137, 87→136, 88→138); `73` y
+>    `80`-`85` son hallazgos operativos/seeds de datos ya autodocumentados en
+>    su propio encabezado SQL, no decisiones de arquitectura nuevas.
+>
+> **Auditoría 2026-09-02 (segunda pasada, mismo día): ejecución del plan de
+> cierre acordado con el developer.** Dos verificaciones reales, no solo
+> lectura de código:
+> 1. **Build de verificación del backend, nunca corrido antes sobre este
+>    árbol**: `docker build -f backend/Dockerfile.verify --no-cache` (contexto
+>    `backend/`) compiló limpio — target completo `beemetry_backend` (todos
+>    los módulos nuevos sin commitear: `mfa_routes`, `org_access_routes`,
+>    `totp`, `simulation_status_routes`, `report_share_links`,
+>    `security_alerts`) y `beemetry_backend_tests` (Catch2): **742
+>    aserciones en 50 test cases, 100% passed**. Confirma con evidencia de
+>    build real (no solo lectura) que ADR-130, 133-138 y la actualización de
+>    109 se apoyan en código que efectivamente compila junto.
+> 2. **Prueba anti-IDOR de SPEC-021 T7 cerrada**: `resolveAllowedSensorTenant`
+>    se extrajo de `sensor_service.cpp` a `sensor_tenant_resolver.cpp` (unidad
+>    de compilación propia, ver actualización de ADR-109) para que
+>    `test_sensor_anti_idor.cpp` compile en el target liviano de tests sin
+>    arrastrar la cadena OpenCV/ONNX que había bloqueado el intento del
+>    2026-08-30. Las 742 aserciones de arriba ya incluyen sus 4 casos.
+> 3. **Auditoría de checkboxes canónicos** (los que sí cuenta
+>    `scripts/project-status-metrics.ps1`, no las tablas T1-T20 con "☐") sobre
+>    11 specs con avance intermedio (003, 004, 005, 007, 008, 009, 011, 012,
+>    013, 021, 023), hecha con 3 pasadas independientes evidencia-primero: se
+>    cerró **1** checkbox real (spec 007, T12/T13 — editor Tiptap/Konva ya
+>    implementado, ADR-010/013, y autoguardado real vía `autosaveEngine.ts`) +
+>    el T7 de spec 021 ya contado en el punto 2. El resto de los ítems
+>    abiertos revisados (specs 003, 004, 005, 008, 009, 011, 012, 013, 023) se
+>    confirmaron genuinamente abiertos con evidencia negativa específica por
+>    ítem (sin inferencia) — ver el detalle en cada `tasks.md`. Hallazgo
+>    notable sin resolver unilateralmente: spec 005 (`push-sse-tiempo-real`)
+>    exige HTTP 503 ante réplica caída, pero el código real
+>    (`handleLiveKpiSse`, `main.cpp`) hace fallback a la primaria con
+>    `degraded:true` — el mismo patrón que spec 002 ya acepta como cerrado
+>    para su ítem equivalente. Posible inconsistencia de texto entre specs
+>    002/005, no de código; queda para quien decida si se homologa el texto o
+>    se exige 503 literal.
+> 4. Métrica recalculada tras estos cierres:
+>    `scripts/project-status-metrics.ps1` — **115/200 (57,5%)**, subiendo
+>    desde 113/200 (56,5%) al inicio de esta pasada.
+>
+> **Auditoría 2026-09-02 (tercera pasada, mismo día): Fase C/D del plan de
+> cierre acordado con el developer — motor de alarmas de SPEC-016.**
+> **ADR-034 recibe un bloque de actualización** reconciliando su motor de
+> alarmas ya implementado con el diseño que SPEC-016 describía (evaluación
+> embebida en Kafka + SSE, nunca construido tal cual) contra la arquitectura
+> real (hilo de fondo por polling + push WebSocket). Se agrega **ADR-140**
+> (`alertas-umbral-cache-tasa-debounce-sensor`, ámbito `core-iot`/
+> `plataforma`) cerrando 5 de las 6 brechas reales que quedaban: cache de
+> reglas con TTL 60s (T3/T12), condición por tasa de cambio (T4),
+> debounce por ventana de tiempo (T5, complementa — no reemplaza — el índice
+> único parcial ya existente), `PUT /api/mining/alarms/rules/{id}` (T9), y
+> paginación + filtro de severidad en `GET /api/mining/alarms` (T10).
+> Verificado con `docker build -f backend/Dockerfile.verify` limpio: **762
+> aserciones en 59 test cases, 100% passed** (subiendo de 742/50 tras Fase A
+> — incluye `test_alarm_rule_evaluator.cpp`, nuevo, cubriendo los 5
+> operadores de umbral, fail-closed ante operador desconocido, cálculo de
+> tasa y las 4 combinaciones de la ventana de debounce). El canal SSE
+> dedicado que SPEC-016 pedía (T7/T8) se documenta como decisión consciente
+> de NO construirse — el push real ya es WebSocket, duplicarlo no tiene
+> pedido de negocio. `specs/016-alertas-umbrales-sensores/tasks.md` se
+> actualiza en su tabla completa (11/12 de T1-T12, el resto T7/T8) y su
+> Definition of Done sube de 0/5 a 1/5 (el ADR ya está registrado; los
+> ítems de evidencia con medición en vivo — CA-1 latencia, CA-3 tiempo
+> real, demo de Gate R5 — quedan honestamente sin marcar, requieren un
+> entorno con Postgres/stack corriendo, no ejecutado en esta pasada). Métrica
+> recalculada: **116/200 (58,0%)**.
+>
+> **Auditoría 2026-09-02 (cuarta pasada, mismo día): Fase E — deduplicación
+> npm/pnpm.** El árbol de `frontend/` tenía una instalación mixta real (
+> `package-lock.json` trackeado, pero `node_modules` con estructura `.pnpm/`
+> de una instalación pnpm posterior, `pnpm-workspace.yaml` nuevo sin
+> commitear) — causa raíz de los 3 errores de `tsc` que la segunda pasada de
+> hoy documentó (2 en `SensorSurface3DPanel.tsx`, 1 preexistente en
+> `Viewer3D.tsx`). Se borró `node_modules` + `pnpm-workspace.yaml` (ninguno
+> commiteado, nada que perder) y se reinstaló limpio con `npm install`
+> (735 paquetes, único gestor). Verificado: `npx tsc --noEmit` → **0
+> errores** (antes 3); `npx vite build` → verde; 4 suites de Vitest
+> (`buildReportDocx`, `reportShareLink`, `sensorMultiChartLayout`,
+> `authApi`) → **24/24 tests passed**. No cambia el % de checkboxes
+> (tooling, no producto).
+>
+> **Auditoría 2026-09-02 (quinta pasada, mismo día): Fase F — verificación
+> E2E en vivo contra el stack real.** `docker compose build web` + redeploy
+> de `beemetry-api` con TODO el código de esta sesión (Fases A-D incluidas);
+> arrancó sin errores, `[ALARM-ENGINE] Evaluador iniciado` en el log. Se
+> aplicó a mano `db_scripts/89` (no se auto-aplica sobre un volumen ya
+> corriendo, patrón conocido de este proyecto). Con sesiones reales de dos
+> tenants demo (`db_scripts/51`) se verificó en vivo: CRUD completo de
+> reglas de alarma (incl. `condition_type`/`debounce_secs` nuevos), un ciclo
+> real del evaluador creando una alarma a partir de un valor real en BD, ack
+> real, paginación real, y **aislamiento multitenant con dos usuarios
+> reales** (un tenant no ve ni puede borrar la regla del otro — 404, no
+> 200/403). Detalle completo en la actualización de ADR-140. Hallazgo real
+> encontrado (no corregido, documentado): la SLA "<2s" que SPEC-016 pedía
+> para CA-1 es estructuralmente incompatible con el intervalo de polling de
+> 10s que ADR-034 ya había decidido deliberadamente — queda para Gerencia
+> decidir si se baja el intervalo o se redefine la métrica. No se probaron
+> ADR-137 (4 canales de notificación — requiere credenciales reales de
+> WhatsApp Business/SMTP que no están disponibles en este entorno) ni
+> ADR-139 (abrir el `.docx` en un lector real — requiere flujo de navegador
+> completo con un informe real, no ejecutado por presupuesto de tiempo de
+> esta pasada). Métrica sin cambios respecto a la pasada anterior: **116/200
+> (58,0%)** — la verificación en vivo confirmó evidencia real pero no marcó
+> checkboxes nuevos que ya no estuvieran justificados por diseño.
+>
+> **Auditoría 2026-09-02 (sexta pasada, mismo día): evaluación de alarmas en
+> tiempo real — a pedido explícito del developer.** El hallazgo de la pasada
+> anterior (SLA "<2s" de CA-1 incompatible con el polling de 10s de
+> ADR-034) se cerró implementando la opción de evaluación por evento que
+> SPEC-016 pedía originalmente: `TelemetryIngestor::copyBatch()`
+> (`telemetry_ingest.hpp/cpp`) gana un hook `setOnBatchCommitted()`,
+> invocado justo después del `COMMIT` de cada lote (nunca antes, para no
+> generar alarmas fantasma de un lote que pudiera hacer rollback),
+> envuelto en `try/catch` para que nunca pueda tumbar la ingesta de 25k/s.
+> `device_alarm_routes.cpp` registra el nuevo camino, que evalúa reglas de
+> `sensor_id` real contra el valor ya en memoria del lote (sin volver a leer
+> Postgres) usando la MISMA función que ya usaba el polling (extraída como
+> pieza compartida, `evaluateRuleAgainstValue`). El polling de 10s sigue
+> intacto como red de seguridad y como única vía para reglas de
+> `mining_sensor_id` (el dashboard de simulación no pasa por
+> `TelemetryIngestor`). Se encontró y corrigió, en la misma pasada, un bug
+> real de la primera versión: el índice `sensor_id → reglas` no se
+> refrescaba antes de mirarlo, así que una regla recién creada no era
+> visible hasta el próximo ciclo de polling — exactamente la latencia que
+> se quería eliminar. **Verificado en vivo con timestamps exactos** (no
+> aproximados): regla creada → lectura real empujada 1s después → alarma
+> con `triggered_at` **179ms** después del push, contra `beemetry-api`/
+> `beemetry-db` reales tras rebuild y redeploy completos. Build de
+> verificación limpio en las 3 iteraciones de esta pasada (762 aserciones,
+> 100% passed, sin cambios en el conteo — el cambio no agregó tests nuevos
+> propios, reutiliza la cobertura ya existente). `specs/016/tasks.md`
+> actualizado: T15 cierra con evidencia real; el ítem "CA-1..6 demostrados"
+> del Definition of Done pasa a solo depender de CA-6 (prueba de carga real,
+> T20, sin hacer). Métrica de checkboxes sin cambios: **116/200 (58,0%)**
+> (T15 es una tarea de la tabla, no del Definition of Done contado por el
+> script).
+>
+> **Auditoría 2026-09-02 (séptima pasada, mismo día): cierre de 4 ítems más,
+> a elección explícita del developer entre las opciones restantes del plan.**
+> Con el stack real corriendo (backend redesplegado con el código de hoy) y
+> sesiones reales de los tenants demo:
+> 1. **ADR-130 cierra su E2E pendiente**: grant/revoke de acceso cruzado
+>    probado con dos tenants `organization` reales, un tenant `mining_client`
+>    real, y un guardia negativo confirmado (`403` a un tenant minero que
+>    intenta auto-otorgarse la capacidad). Ver actualización en el ADR.
+> 2. **SPEC-016 T20 cierra**: prueba de carga real, 100 lecturas
+>    concurrentes cruzando el umbral en 1.31s → exactamente 1 alarma
+>    (debounce + índice único trabajando juntos bajo carga real, no solo en
+>    el test unitario). Con esto, el Definition of Done "CA-1..6
+>    demostrados" de SPEC-016 se marca completo (CA-3 excepción de diseño
+>    documentada, sin canal SSE). Métrica: **117/200 (58,5%)**.
+> 3. **ADR-139 cierra su E2E pendiente**: export DOCX real interceptado
+>    desde el navegador (`URL.createObjectURL` parcheado) y validado
+>    estructuralmente EN EL NAVEGADOR (sin relayar el binario por texto, que
+>    resultó frágil para ~11KB de base64) — ZIP + 26 partes OOXML reales +
+>    `word/document.xml` descomprimido con `DecompressionStream` nativo y
+>    XML bien formado. No se abrió en una instalación real de Word (no
+>    disponible en este entorno), pero la validación estructural completa es
+>    una prueba más fuerte que una apertura visual sin inspección de
+>    contenido.
+> 4. **ADR-137 sube de 0/4 a 2/4 canales verificados en vivo**: `in_app` y
+>    `email` confirmados con filas reales en `notification_dispatch_log`
+>    (`status=sent` en ambos) — el hallazgo de que había SMTP real
+>    configurado en este entorno fue una sorpresa, no algo asumido de
+>    antemano. `whatsapp` falló por falta de teléfono en el usuario de
+>    prueba (dato, no necesariamente credenciales); `sms` confirmado
+>    genuinamente sin proveedor configurado (con evidencia de una fila
+>    histórica del 2026-08-29). Ninguno de los dos se declara cerrado.
+>
+> Sin cambios de código en esta pasada — las cuatro verificaciones fueron
+> puramente de investigación/prueba en vivo contra código y ADR ya
+> existentes. Métrica final de la sesión: **117/200 (58,5%)**.
+>
+> Pendientes de decisión de Gerencia que siguen abiertos sin cambios en esta
+> pasada (no se resuelven unilateralmente aquí): pentest externo sin agendar,
+> dominio de producción para `BEEMETRY_CORS_ALLOWED_ORIGIN`, notificación
+> retroactiva a tenants preexistentes al fix crítico de ADR-134, sprint/SPEC
+> formal para el ámbito `soporte` completo (SPEC-025), y si el cómputo de
+> `telemetry_fact_calc` (ADR-136) migra al backend C++ cuando deje de ser un
+> script interino.
+
 > **Auditoría 2026-08-20: 119 → 120 ADRs.** Brecha de trazabilidad real
 > encontrada al analizar el árbol de trabajo actual (proyecto minero +
 > sistema de soporte de campo): **ADR-103, 106 y 112-118** existían como
@@ -300,6 +548,144 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > real en navegador (no por lectura de código ni de la documentación misma).
 > No se dejó ningún hallazgo de esta pasada sin cerrar en su propio ADR.
 >
+> **Auditoría 2026-08-30: 123 (tablas) → 137 ADRs de archivo (000-136, sin
+> huecos).** A pedido explícito del developer de actualizar todos los ADR,
+> incluidos los pendientes de definición/respuesta/actualización, para
+> sustentar el cronograma ante Gerencia TI/General: **ADR-129 a 136**
+> existían como archivos completos (redactados entre 2026-08-21 y
+> 2026-08-29) sin fila en este índice — se agregan abajo. Se encontraron y
+> corrigieron además dos problemas reales que no son decisiones nuevas:
+> **(1)** el archivo **ADR-013** estaba corrompido en el árbol de trabajo —
+> la palabra "Konva" había sido borrada por algún proceso automatizado en
+> las 11 apariciones del texto (`react-konva` → `react-`, "Konva para
+> layout" → " para layout", etc.), dejando frases rotas; restaurado desde
+> `HEAD` sin pérdida de contenido real (el archivo no tenía cambios
+> intencionales pendientes). **(2)** `scripts/project-status-metrics.ps1`
+> tiene el campo `Cutoff` hardcodeado a `'2026-08-18'` — no se actualizó en
+> las auditorías del 21 ni del 30 de agosto pese a que el script sí
+> recalcula `Done`/`Total` en vivo desde los checkboxes reales de
+> `specs/*/tasks.md`. Corrido hoy: **el resultado es idéntico al del
+> 18-ago (106/196 = 54,1%)** — en los 12 días transcurridos, con 7 ADR
+> nuevos (130-136) todos `implemented`/verificados, **ningún checkbox de
+> `tasks.md` se marcó**. No es una regresión de código; es una brecha real
+> entre "se implementó y se verificó en vivo" (lo que dicen los ADR) y "se
+> marcó como tarea cerrada" (lo que cuenta el gate de release) — ver el
+> informe de estado del 30-ago para el detalle gerencial.
+>
+> Los 7 ADR nuevos son, en su mayoría, ámbito `plataforma`/`datos`/
+> `core-iot` (a diferencia de la tanda 112-129, mayormente `soporte`/`ia`):
+> **130** (`rbac-empresas-minera-organizacion-acceso-cruzado`, plataforma,
+> 2026-08-23) formaliza acceso cruzado empresa minera vs. empresa de
+> organización, extiende ADR-036/063/085/086; pendiente de verificación E2E
+> con datos reales. **131**
+> (`consolidacion-modelo-telemetria-unificado`, datos/core-iot, 2026-08-23)
+> consolida `dim_*`/`telemetry_fact*` para sostener 25k/s continuos y 5-10
+> años de crecimiento — fases 0-5/9-10 aplicadas contra `beemetry-db` local;
+> fases 6-8/13 (dual-write, cutover de lecturas, retiro de tablas legacy)
+> **pendientes de deploy backend C++**, fuera de alcance de esa sesión. **132**
+> (`bearer-en-memoria-cookies-namespaced-aislamiento-multifrontend`,
+> plataforma, 2026-08-27) aísla frontends en el mismo host, verificado E2E
+> en vivo. **133**
+> (`endurecimiento-post-red-team-csp-cookie-cross-site-validacion-entrada`,
+> plataforma, 2026-08-26) cierra hallazgos de un ejercicio de red-team
+> propio (CSP, cookie cross-site, validación de entrada), verificado en
+> vivo. **134**
+> (`fix-critico-escalada-privilegios-autoregistro-empresa-existente`,
+> plataforma, 2026-08-26) — **severidad CRÍTICA, el hallazgo más grave de la
+> sesión**: `POST /api/auth/register` (público, sin sesión previa) aceptaba
+> `"role": "admin"` en el body contra una empresa **ya existente con
+> usuarios reales** (verificado en vivo contra "Minera Raura") y devolvía
+> una sesión admin completa con permisos `org.cross_tenant.manage` sobre el
+> tenant real de esa empresa — cerrado y verificado contra el stack
+> corriendo. Al ser una vulnerabilidad de escalada de privilegios ya
+> corregida pero potencialmente explotable antes del fix, **queda pendiente
+> de decisión de Gerencia si corresponde notificación/auditoría retroactiva**
+> a los tenants que existían antes del 2026-08-26. **135**
+> (`mfa-totp-alertas-seguridad-ruc-bootstrap`, plataforma, 2026-08-27) agrega
+> MFA/TOTP, alertas de seguridad y RUC obligatorio en el bootstrap de admin,
+> verificado E2E de punta a punta. **136**
+> (`telemetria-calculada-dashboard-simulacion`, datos/core-iot/frontend,
+> 2026-08-29) agrega `telemetry_fact_calc` (métrica derivada por lectura de
+> sensor) y un panel de monitoreo de la simulación de 1h contra
+> `board.beemetry.com`; el cómputo lo puebla un **script externo interino**,
+> decisión explícita para no agregar un scheduler al backend sin pedido de
+> negocio — **pendiente decidir si el cómputo migra al backend C++** si deja
+> de ser interino. Ningún conflicto de decisión incompatible encontrado
+> entre los 7 ADR nuevos y el resto del log vigente.
+>
+> **Auditoría 2026-08-30 (segunda pasada, mismo día): "cerrar todo lo
+> cerrable", a pedido explícito del developer.** Con el stack real
+> corriendo (`docker ps` verificado, todos los servicios `healthy`), se hizo
+> una pasada de verificación EN VIVO (no solo lectura) sobre los pendientes
+> documentados y se buscó explícitamente "ADR pendiente"/"sin ADR" en todo
+> el código modificado del árbol actual. Resultado, de mayor a menor
+> impacto:
+>
+> 1. **ADR-137 nuevo** (`envio-informes-notificaciones-multicanal`, ámbito
+>    `reports`/`plataforma`): el código de `report_routes.cpp` llevaba
+>    literalmente el comentario `// ADR pendiente` sobre una feature ya
+>    implementada, commiteable y verificada por build — envío de informes a
+>    otros usuarios (reemplaza un mock que no tocaba el backend) + un
+>    servicio de notificación multi-canal (`in_app`/`email`/`whatsapp`/`sms`)
+>    reutilizable, con trazabilidad completa en `notification_dispatch_log`.
+>    De paso cierra un bug real independiente: `reports.created_by` nunca se
+>    llenaba, así que el propio autor de un borrador nunca podía reabrirlo
+>    para editar. Deja documentado un pendiente real sin resolver
+>    unilateralmente: el guardia de aislamiento de
+>    `POST /api/notifications/send` filtra por `company_name`, no por
+>    `tenant_id` (que ADR-039 estableció como la única clave autoritativa) —
+>    posible divergencia, no corregida a ciegas porque ADR-130 (acceso
+>    cruzado empresa minera/organización) puede hacer de esa restricción una
+>    elección consciente, no un bug; queda para quien mantenga ADR-039/130.
+> 2. **ADR-115 sube de `accepted` a `implemented`**: los 3 pendientes que el
+>    propio ADR documentaba el 2026-08-19 (bot sin manejar `rrhh`, RBAC de
+>    ticket status/contact-numbers sin la alternativa por departamento)
+>    estaban cerrados en el código real pero el ADR nunca se actualizó — y
+>    se encontró y cerró en la misma pasada un cuarto gap real que ningún
+>    ADR había señalado: `handleListContactNumbers` exigía `soporte.manage`
+>    estricto sin la alternativa `soporte.view`/`department` de sus
+>    contrapartes de escritura, dejando a un agente de RRHH
+>    departamentalizado sin forma de VER el número que sí podía editar.
+>    Corregido y verificado con `docker build -f backend/Dockerfile.verify`
+>    (build limpio, CTest 1/1).
+> 3. **ADR-131 recibe un bloque de actualización**: `GET
+>    /api/platform/archive/query` (lectura on-demand del tier frío
+>    Parquet/MinIO vía DuckDB, con guardia anti-IDOR) ya existe en el código
+>    citando "ADR-131" en su propio comentario, pero el ADR nunca documentó
+>    esta decisión — cerrado por lectura directa de código, no verificado en
+>    vivo contra datos reales archivados en esta pasada.
+> 4. **ADR-111 cierra su sub-pendiente de checksum**: los 4 scripts de
+>    export/import del stack ahora generan y verifican `checksums.sha256`
+>    (fail-closed, aborta antes de tocar Docker/BD ante cualquier archivo
+>    modificado) — verificado en vivo con export real contra `sensors_db`/
+>    `formula` y una prueba de corrupción deliberada que el import detecta y
+>    rechaza correctamente. Cifrado, restore limpio en host nuevo y CI/CD
+>    siguen sin resolver — no se atacaron, requieren decisión de gestión de
+>    claves.
+> 5. **ADR-082 recibe fila nueva en el índice** (nunca la tuvo, pese a estar
+>    "formalizado" según la nota de auditoría del 2026-08-03) y un bloque de
+>    actualización que lo cruza con ADR-132, que lo revisita conscientemente
+>    — brecha de trazabilidad del mismo patrón que este log viene
+>    encontrando desde julio, ahora en un ADR de seguridad central que
+>    llevaba 4 semanas sin fila.
+> 6. **ADR-013 restaurado**: el archivo estaba corrompido en el árbol de
+>    trabajo (la palabra "Konva" borrada en las 11 apariciones del texto por
+>    algún proceso ajeno a este log, sin relación con ninguna decisión) —
+>    recuperado desde `HEAD` sin pérdida de contenido real.
+> 7. **No se encontraron conflictos de decisión incompatible** entre ningún
+>    par de ADR revisados en esta pasada (130-137 contra el resto del log
+>    vigente) — ADR-132 documenta su propia revisión consciente de ADR-082,
+>    y es el único caso de "una decisión reabre otra" encontrado; el resto
+>    son extensiones aditivas sin contradicción.
+> 8. **No cambia el 54,1% de avance de ejecución**
+>    (`scripts/project-status-metrics.ps1`, corrido de nuevo tras esta
+>    pasada): ningún cierre de ADR de esta lista marca un checkbox de
+>    `specs/*/tasks.md` — la separación de criterio de este proyecto ("los
+>    ADR miden decisión, no producto") sigue aplicando incluso cuando el ADR
+>    se cierra con evidencia de código real y build verificado. Ver el
+>    informe de estado del 30-ago para el detalle gerencial de esta
+>    distinción.
+>
 > **Actualización 2026-07-27**: 74 → **75 ADRs**. Se agregó **074**
 > (`avatar-biometrico-local-hd-bajo-demanda`, ámbito `ia`): avatar generado
 > localmente, miniatura de sesión separada del maestro 4K, endpoint
@@ -539,6 +925,7 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 078 | `alta-administrada-empresa-tenant-deduplicada` | ✅ implemented · probado · desplegado | POST admin, deduplicación de razón social, tenant real y auditoría; smoke E2E aprobado el 2026-07-29. |
 | 079 | `rbac-workflow-informes-inmutabilidad-firma` | ✅ implemented (backend), 2026-08-02 *(fila agregada 2026-08-05 — el ADR ya existía sin fila en esta tabla, ver nota de auditoría arriba)* | Permiso por transición de workflow en `/api/reports/*` (`draft`/`rejected` → `informes.edit`; `in_review`/`approved` → `informes.sign`), resuelto bajo el mismo lock de fila que la máquina de estados; inmutabilidad absoluta de `signed`/`archived` sin excepción de rol (ni `admin`); hook `usePermissions()` reutilizable en frontend. Cierra el hallazgo donde cualquier rol autenticado (incluido `viewer`) podía aprobar, firmar o eliminar un informe técnico minero. |
 | 081 | `cors-multiorigen-frontend-externo` | ✅ implemented (2026-08-02) | `BEEMETRY_CORS_ALLOWED_ORIGIN` admite lista separada por comas; `router::Router::dispatch()` refleja por request el origen que matchea. Habilita una segunda app frontend (repo propio) contra el mismo backend, sin tocar cookies/CSRF (despliegue same-site). |
+| 082 | `autenticacion-cookie-httponly-csrf-double-submit` | ✅ implemented, revisitado por ADR-132 *(fila agregada 2026-08-30 — el ADR ya existía "formalizado" desde 2026-08-03 según la nota de auditoría de esa fecha, pero nunca tuvo fila en esta tabla)* | Access token en cookie `HttpOnly`, protección CSRF double-submit. ADR-132 (2026-08-27) revisita conscientemente la parte del access token por un hallazgo real de colisión de cookies entre frontends en el mismo host; el refresh token sigue exclusivamente en cookie `HttpOnly` sin cambios. |
 | 085 | `crud-empresas-y-pantalla-administracion` | ✅ implemented (2026-08-05) | `PUT`/`DELETE` (soft delete) sobre `/api/auth/companies/{id}`, campo RUC, `company_id` surrogate, pantalla `CompanyManagementView.tsx` — cierra la mitad de G2 (ADR-061) que ADR-078 había dejado pendiente. |
 | 086 | `rbac-granular-empresas-view-manage` | ✅ implemented (2026-08-05) | Permisos `empresas.view`/`empresas.manage` reemplazan el `role=="admin"` hardcodeado de ADR-078; propagación a tenants con matriz de permisos propia. |
 | 087 | `validacion-ruc-registro-externo-opcional` | ✅ implemented (2026-08-05) | Checksum de RUC extraído a módulo reutilizable + fix de bug real (nombre de empresa nunca se comparaba); consulta externa opcional al padrón SUNAT documentada como excepción explícita y acotada a ADR-001 (apagada por defecto, sin proveedor contratado aún). |
@@ -550,17 +937,29 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 102 | `validacion-fiscal-ecuador-chile-costa-rica-fallback` | ✅ implemented, verificado (2026-08-09) | RUC Ecuador (13 dígitos, algoritmo SRI real) y RUT Chile (módulo 11, incluida `K`) con dígito verificador real; cédula jurídica Costa Rica y el resto del catálogo (~24 países) con fallback estructural — antes rechazaban siempre el registro. Motivado por proyectos activos en Ecuador/Chile y un proveedor de Costa Rica que no podían registrarse. 625/625 aserciones passed. |
 | 106 | `accesibilidad-contraste-formularios-ui` | ✅ implemented, aprobado (2026-08-14) *(fila agregada 2026-08-20 — el ADR ya existía sin fila en esta tabla, ver auditoría arriba)* | Estándares de contraste y accesibilidad para formularios y UI en todo el frontend (ReportStudio, Dashboard, todas las vistas). |
 | 107 | `geolocalizacion-cliente-login-contrasena` | ✅ implemented (2026-08-17) | Campo opcional `location` (lat/lon del dispositivo cliente, vía `navigator.geolocation`, nunca IP/servidor) extendido a `POST /api/auth/login/password` — ya existía solo en `login/face`, sin ADR ni documentación. Helper de parseo compartido entre ambos handlers; página de prueba HTTP/HTTPS y guía de integración externa actualizadas. |
+| 130 | `rbac-empresas-minera-organizacion-acceso-cruzado` | ✅ implemented, verificado E2E en vivo (2026-09-02) | Formaliza acceso cruzado empresa minera vs. empresa de organización, caso que ADR-029 anticipó y descartó por falta de necesidad de negocio; extiende ADR-036/063 (7 roles) y ADR-085/086 (CRUD empresas/RBAC granular). Grant/revoke/guardia/switch probados en vivo con tenants reales. |
+| 132 | `bearer-en-memoria-cookies-namespaced-aislamiento-multifrontend` | ✅ implemented, verificado E2E en vivo (2026-08-27) | Bearer token en memoria (no `localStorage`) + cookies namespaced por frontend; aísla sesiones entre múltiples apps frontend en el mismo host, verificado con build Docker real + login por navegador. |
+| 133 | `endurecimiento-post-red-team-csp-cookie-cross-site-validacion-entrada` | ✅ implemented, verificado en vivo (2026-08-26) | Cierra hallazgos de un ejercicio de red-team propio: CSP, cookie cross-site y validación de entrada endurecidas; re-ejecución exacta de los ataques probados, verificado contra build Docker real. |
+| 134 | `fix-critico-escalada-privilegios-autoregistro-empresa-existente` | ✅ implemented, verificado en vivo (2026-08-26) — **CRÍTICA** | `POST /api/auth/register` (público) aceptaba `"role": "admin"` contra una empresa **ya existente con usuarios reales** (explotado en vivo contra "Minera Raura") y devolvía sesión admin completa con `org.cross_tenant.manage` sobre el tenant real. El hallazgo más grave del ejercicio de seguridad de esta sesión; cerrado y verificado. Pendiente decisión de Gerencia sobre notificación/auditoría retroactiva a tenants preexistentes al fix. |
+| 135 | `mfa-totp-alertas-seguridad-ruc-bootstrap` | ✅ implemented, verificado E2E de punta a punta (2026-08-27) | MFA/TOTP, alertas de seguridad y RUC obligatorio en el bootstrap del primer admin de una empresa nueva; verificado API + navegador real. |
 
-**Ámbito `plataforma`: 40/42 implemented, 1 partial, 1 proposed** (recalculado 2026-08-20 tras agregar la fila de ADR-106, ya implementado sin fila hasta ahora; ADR-033 sigue partial deliberadamente, ADR-035 sigue proposed a la espera de decisión de negocio — ver ADRs individuales).
+**Ámbito `plataforma`: 46/48 implemented/verified, 1 partial, 1 proposed** (recalculado 2026-09-02 tras el cierre E2E de ADR-130; ADR-033 sigue partial deliberadamente, ADR-035 sigue proposed a la espera de decisión de negocio — ver ADRs individuales).
 
 ### Decisiones transversales agregadas el 2026-08-18
 
 | # | Slug | Status | Resumen |
 |---|---|---|---|
 | 108 | `capacidad-telemetria-25k-topologia-escalamiento` | ✅ implemented a 25k; 100k no aprobado | Fija evidencia 1,5M/1,5M, p99 149,8 ms, recuperación y replay; exige nueva arquitectura/soak antes de reclamar 100k. |
-| 109 | `catalogo-zonas-sensores-graficos-multiserie` | 🟡 código implementado; aceptación integrada pendiente | Catálogo tipo/zona/dispositivo, consulta histórica acotada y diez gráficos insertables; faltan anti-IDOR, render/export y contrato CI. |
+| 109 | `catalogo-zonas-sensores-graficos-multiserie` | 🟡 código implementado; aceptación integrada pendiente (actualizado 2026-09-02: prueba anti-IDOR (SPEC-021 T7) cerrada y verificada por build limpio — 742/742 aserciones; catálogo creció a 13 tipos con geo/3D/combo, ver actualización en el ADR) | Catálogo tipo/zona/dispositivo, consulta histórica acotada y trece gráficos insertables (los 10 originales + mapa geográfico, superficie 3D y combinado línea/barra); falta render/export con datos reales y contrato CI. |
 | 110 | `operaciones-campo-offline-integracion-erp` | 📋 proposed | Separa fuentes autoritativas ERP/Beemetry, cliente offline con outbox y artefactos auditables; requiere aprobación y reprogramación. |
 | 111 | `portabilidad-stack-export-import-perfil-telemetria` | 🟡 utilidad implementada; aceptación operativa pendiente | Export/import multiplataforma y perfil de telemetría; faltan checksum, cifrado, restore limpio, RTO/RPO y CI/CD. |
+
+### Decisiones transversales agregadas el 2026-08-30
+
+| # | Slug | Status | Resumen |
+|---|---|---|---|
+| 131 | `consolidacion-modelo-telemetria-unificado` | 🟡 implemented (fases 0-5, 9-10); fases 6-8/13 pendientes de deploy backend | Consolida `dim_tenant`/`dim_site`/`dim_sensor`/`telemetry_fact*` para sostener 25k/s continuos, históricos de hasta 5 años y arquitectura a 10 años; extiende ADR-006/007/008/108/009/034. Dual-write, cutover de lecturas y retiro de tablas legacy quedan fuera de alcance de esta sesión. |
+| 136 | `telemetria-calculada-dashboard-simulacion` | ✅ implemented (esquema + endpoint de lectura); cómputo vía script externo interino | Nueva hypertable `telemetry_fact_calc` (métrica derivada por lectura de sensor: nivel de alerta, tasa de cambio, delta vs. umbral) + endpoint anti-IDOR de solo lectura + panel `SimulationMonitor.tsx` para observar en vivo la simulación de 1h contra `board.beemetry.com`. El cómputo lo puebla un script externo por decisión explícita del developer (no un scheduler nuevo en el backend); pendiente decidir si migra al backend C++ si deja de ser interino. |
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
 | # | Slug | Status | Resumen |
@@ -569,12 +968,13 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 007 | `ingesta-telemetria-etapa1-libpq` | ✅ implemented (2026-07-06) | Etapa 1: gateway TLS C++ + libpq directo (simulación 10k). |
 | 008 | `bus-eventos-redpanda-etapa2` | ✅ implemented (2026-07-07) | Etapa 2: Redpanda + librdkafka + COPY binario para 10k/seg. |
 | 027 | `opencv-procesamiento-imagenes` | ✅ implemented, alcance v0.1 (2026-07-06) | OpenCV en v0.1 = imágenes de informe + captura de mapa; EPP diferida (por diseño). |
-| 034 | `core-plataforma-iot-reemplazo-thingsboard` | ✅ implemented (actualizado 2026-07-13) | Core C++ = plataforma IoT propia: ingesta + fórmulas + gestión de dispositivos + alarmas + adaptadores MQTT/Modbus/OPC-UA (los adaptadores, dados por diferidos el 2026-07-09, se confirmaron implementados y corriendo el 2026-07-13). |
-| 054 | `sync-thingsboard-legacy-aws` | ✅ implemented (2026-07-17) | Conector backfill REST + tiempo real WS que sincroniza el ThingsBoard legacy (hoy AWS) hacia la plataforma propia durante la transición de ADR-034; probado con 6M puntos/10min a 10k/seg. |
+| 034 | `core-plataforma-iot-reemplazo-thingsboard` | ✅ implemented (actualizado 2026-09-02) | Core C++ = plataforma IoT propia: ingesta + fórmulas + gestión de dispositivos + alarmas + adaptadores MQTT/Modbus/OPC-UA (los adaptadores, dados por diferidos el 2026-07-09, se confirmaron implementados y corriendo el 2026-07-13). Motor de alarmas reconciliado con SPEC-016 (WS real, no SSE) — ver ADR-140. |
+| 054 | `sync-thingsboard-legacy-aws` | ✅ implemented (2026-07-17); sync persistente activo contra `board.beemetry.com` desde 2026-08-30 (ver actualización — descrito como réplica, no confirmado si es el AWS real del cliente) | Conector backfill REST + tiempo real WS que sincroniza el ThingsBoard legacy (hoy AWS) hacia la plataforma propia durante la transición de ADR-034; probado con 6M puntos/10min a 10k/seg. |
 | 103 | `integracion-rp-timetelemetry-replica-xmlrpc` | ✅ implemented (2026-08-10) *(fila agregada 2026-08-20 — el ADR ya existía sin fila en esta tabla, ver auditoría arriba)* | Réplica local RP (TimeTelemetry/Odoo) reusando el patrón ETL de ADR-034, escritura de vuelta por XML-RPC, `http_client` compartido nuevo y push realtime por WS para el frontend externo. |
 | 120 | `lote-lineas-lectura-tls-mining-gateway` | ✅ implemented (2026-08-20) | `MiningSession::read_line` agrupa hasta `max_lines_per_read` (256) líneas por `async_write` en la sesión TLS cruda del gateway, reduciendo E/S por sesión bajo ráfaga sin cambiar el protocolo de línea; opera por debajo de la topología de consumidores de ADR-108, sin modificarla. |
+| 140 | `alertas-umbral-cache-tasa-debounce-sensor` | ✅ implemented, verificado E2E en vivo (2026-09-02) | Reconcilia SPEC-016 con el motor de alarmas real de ADR-034: cache de reglas TTL 60s, condición por tasa de cambio, debounce por ventana (complementa el índice único parcial existente), `PUT` de reglas, paginación del historial, y evaluación EN TIEMPO REAL vía hook en `TelemetryIngestor::copyBatch()` (179ms medido en vivo, reemplaza la dependencia exclusiva del polling de 10s para reglas de `sensor_id`). Canal SSE que SPEC-016 pedía, no construido a propósito — el push real ya es WebSocket. |
 
-**Ámbito `core-iot`: 8/8 implemented.**
+**Ámbito `core-iot`: 9/9 implemented.**
 
 > ADR-108 es transversal `core-iot/datos/resiliencia`: la cifra comercial
 > aprobada es 25.000 eventos/s por edge en la topología ensayada; 100.000/s
@@ -631,8 +1031,11 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 092 | `plantilla-corporativa-timetelemetry-referencia-diseno` | ✅ accepted (2026-08-07) | Registro de referencia de diseño (no una decisión de arquitectura): colores, tipografía (Roboto, no Aptos), estilo de tabla e inventario de 26 layouts extraídos de `Plantilla Telemetry.potx` (entregada por Gerencia). Insumo directo para una futura generación de PPTX con identidad visual oficial (ADR-083/084). |
 | 127 | `aislamiento-cache-offline-sqlite-por-usuario` | ✅ implemented (2026-08-20, ADR redactado 2026-08-21) | Caché offline SQLite del navegador (Cache API) aislado por `userId`+`tenantId` en vez de un único nombre global compartido por todo el origen; migración de una sola vez del caché legado; purga en logout salvo cambios `dirty=1` sin sincronizar. Corrige exposición real de datos entre técnicos que comparten tablet de campo. |
 | 128 | `plantillas-documento-tipo-presentacion` | ✅ implemented (2026-08-20, ADR redactado 2026-08-21) | `docType: 'presentation'` en el catálogo de plantillas — autoría nativa de presentaciones 16:9 (`forceNewSlide`, sin TOC) desde el wizard, distinto de exportar un informe ya existente a PPTX (ADR-083/084). |
+| 137 | `envio-informes-notificaciones-multicanal` | 🟡 implemented, verificado E2E en vivo para in_app/email (2/4 canales); WhatsApp/SMS bloqueados por infraestructura externa (2026-09-02) | `POST /api/reports/{id}/share` reemplaza un mock que no tocaba el backend; servicio `notify::dispatch()` reutilizable (`in_app`/`email`/`whatsapp`/`sms`) con traza en `notification_dispatch_log`. Cierra de paso un bug real: `reports.created_by` nunca se llenaba, bloqueando al propio autor de reabrir su borrador. Pendiente documentado: guardia de `/api/notifications/send` filtra por `company_name`, no `tenant_id` (ADR-039) — posible divergencia, no resuelta unilateralmente. |
+| 138 | `enlace-directo-pdf-qr-sin-password` | ✅ implemented, verificado en vivo (export real + QR decodificado con lector independiente + PDF abierto con la contraseña resultante) (2026-08-31) | Segundo mecanismo de QR, complementario a ADR-080 (no lo reemplaza): `report_pdf_share_links` (token opaco, expira 48h) + `GET /api/reports/share/{token}/pdf` sin sesión (mintea una sesión interna efímera solo para el render) sirve el PDF SIN cifrar con `Content-Disposition: inline` — logra "escanear y se abre solo". Documenta por qué "QR que auto-completa la contraseña de un PDF cifrado" es imposible en cualquier lector (restricción de todos los sistemas operativos, no de esta app). |
+| 139 | `exportacion-docx-nativa-cliente` | ✅ implemented, verificado E2E en vivo (2026-09-02) | Pipeline de exportación a `.docx` (OpenXML real, librerías `docx`+`jszip`) 100% client-side, sin endpoint backend — diverge conscientemente del patrón server-side de ADR-016. Contenido nativo editable (texto/tabla/spans/TOC); solo `chart`/`sensor_multi_chart`/fondo de carátula se capturan como imagen. Verificado vía Browser pane: 26 partes OOXML reales validadas estructuralmente (ZIP+DEFLATE+XML), export real interceptado y parseado en el navegador. |
 
-**Ámbito `reports`: 35/36 implemented/accepted y 1 superseded** (ADR-019 pasó de partial a implemented el 2026-08-05, ver su actualización; ADR-079 es ámbito `plataforma`, no `reports` — su fila ya está reconciliada en la tabla de `plataforma` arriba). Ver "Progreso del proyecto de reportabilidad" abajo (cálculo no recalculado en esta pasada para 080/083/084 — cubre 010-073 + 019).
+**Ámbito `reports`: 37/39 implemented/accepted, 1 pendiente E2E y 1 superseded** (ADR-019 pasó de partial a implemented el 2026-08-05, ver su actualización; ADR-139 cerró su pendiente E2E el 2026-09-02; ADR-079 es ámbito `plataforma`, no `reports` — su fila ya está reconciliada en la tabla de `plataforma` arriba). Ver "Progreso del proyecto de reportabilidad" abajo (cálculo no recalculado en esta pasada para 080/083/084 — cubre 010-073 + 019).
 
 ### Ámbito `ia` — inteligencia artificial local
 | # | Slug | Status | Resumen |
@@ -687,16 +1090,17 @@ archivos completos sin sección propia en este índice — ver auditoría
 
 | # | Slug | Status | Resumen |
 |---|---|---|---|
-| 112 | `chatbot-whatsapp-menu-reclamos-plantillas` | ✅ implemented, verificado por build/tests; entrega real a un teléfono pendiente de credenciales de producción de Meta (2026-08-18) | Bot conversacional de WhatsApp Business (menú, reclamos, IA), `whatsapp_message_log` de auditoría cruda, y validación de firma HMAC-SHA256 (`whatsapp_signature.*`, `X-Hub-Signature-256`) fail-closed sobre el webhook entrante. |
+| 112 | `chatbot-whatsapp-menu-reclamos-plantillas` | ✅ implemented, verificado por build/tests; webhook de prueba reparado y verificado en vivo 2026-08-30 (túnel Cloudflare recreado, `403 verification_failed` confirmado extremo a extremo); entrega real a un teléfono sigue pendiente de registrar la URL nueva en Meta y de credenciales de producción (2026-08-18) | Bot conversacional de WhatsApp Business (menú, reclamos, IA), `whatsapp_message_log` de auditoría cruda, y validación de firma HMAC-SHA256 (`whatsapp_signature.*`, `X-Hub-Signature-256`) fail-closed sobre el webhook entrante. |
 | 113 | `whatsapp-multilinea-enrutamiento-por-area` | ✅ implemented, verificado por build/tests; segunda línea real pendiente de registro en la WABA de Meta (2026-08-19) | Enrutamiento multi-línea por `metadata.phone_number_id`, `defaultWhatsappLine()` como línea de respaldo. |
 | 114 | `whatsapp-bot-administracion-numeros-contacto` | ✅ implemented — tabla, allowlist, endpoints web, pantalla de administración y rama `kMenuAdmin` en producción (2026-08-19) | Administración en caliente (sin redeploy) de los números de contacto que el bot ofrece por menú. |
-| 115 | `departamento-usuario-rbac-rrhh` | 🟡 accepted; esquema y RBAC implementados y aplicados, wiring de bot/panel admin en curso (2026-08-19) | RRHH como quinta categoría de soporte; `department` de usuario + regla `soporte.view`/`soporte.manage` que acota por categoría/canal. |
+| 115 | `departamento-usuario-rbac-rrhh` | ✅ implemented (sube de accepted 2026-08-30 — wiring de bot/panel admin ya cerrado en código, ver actualización en el ADR); pendiente solo E2E con WhatsApp real | RRHH como quinta categoría de soporte; `department` de usuario + regla `soporte.view`/`soporte.manage` que acota por categoría/canal. |
 | 116 | `persistencia-chat-web-panel-admin-busqueda` | ✅ implemented (corregido 2026-08-20 — ver actualización en el propio ADR; el archivo original decía "accepted, pendiente") | Tabla `support_chat_message` (identidad por `tenant_id`/`user_id`, no por teléfono, a diferencia de `whatsapp_message_log`); `persistChatMessagePg` conectado en `main.cpp`/`support_routes.cpp`; endpoints `GET /api/support/admin/tickets` y `GET /api/support/admin/chat-messages` con paginación al estilo `AuditFilter`. |
 | 117 | `canal-chatbot-homeminero-movilminero` | 🟡 partial *(actualizado 2026-08-21 — ver nota de auditoría arriba: backend ya lee/valida/persiste `channel`, verificado por grep sobre `support_routes.cpp`; sigue sin existir la app MovilMinero)* | Columna `channel` (`CHECK` explícito) en `support_chat_message`; `POST /api/support/chat/message`/`stream` ya aceptan, validan (`HomeMinero`\|`MovilMinero`) y persisten el campo. Falta solo la app MovilMinero en sí — sección "Diferencias esperadas" del ADR sigue siendo prospectiva. |
 | 118 | `chatbot-aceleracion-gpu-ollama` | ✅ implemented (2026-08-19) | Aceleración GPU para Ollama, reduce la latencia del chatbot de soporte. |
 | 122 | `cv-postulantes-whatsapp-ia-local-scoring` | 🟡 implemented, pendiente E2E *(fila agregada 2026-08-21 — el ADR ya existía sin fila en esta tabla)* | Postulaciones de CV por WhatsApp: descarga de media, extracción de texto (`ai_engine::/extract_cv_text`, sin LLM), extracción de campos + score 0-100 vía Ollama (`qwen2.5:7b`) con guarda anti-alucinación (`looksPresentInSource`), correo con adjunto MIME multipart, panel admin RRHH. Retención: indefinida por decisión explícita del developer (2026-08-21, ver actualización en el ADR), sin purga automática. Pendiente: aplicar `db_scripts/69_*.sql` a la BD en ejecución y prueba E2E con WhatsApp Business real. |
+| 129 | `widget-chat-menu-whatsapp-adjuntos-cv-web` | 🟡 implemented, verificado por build/tests; E2E contra WhatsApp real pendiente de credenciales de producción de Meta (2026-08-21) | Menú real de WhatsApp en el widget de chat web, adjuntos (docx/pptx/pdf/jpg/png), CV desde la web y lectura QR/OCR de imágenes — mismo bloqueo de credenciales Meta que ya afectaba a ADR-112/113. Sin SPEC ni sprint asignado en el cronograma v36 (ver informe de estado). |
 
-**Ámbito `soporte`: 6/8 implemented (1 pendiente E2E), 1 accepted (wiring en curso), 1 partial.**
+**Ámbito `soporte`: 8/9 implemented (3 pendientes de E2E), 1 partial. Todo el ámbito sigue sin SPEC/sprint formal en el cronograma v36 — decisión pendiente de Gerencia (SPEC-025).**
 
 ### Ámbitos futuros (componentes por venir)
 - *(otros componentes se agregan acá a medida que surgen)*

@@ -116,20 +116,34 @@ void AppConfig::loadFromEnv() {
                   << std::endl;
     }
     try {
-        // Default subido de 15 a 60 min (2026-08-19): el frontend ya hace
-        // refresh silencioso transparente (authApi.ts), pero un TTL tan corto
-        // multiplicaba las renovaciones y la percepcion de sesion fragil --
-        // ver addendum "Actualizacion 2026-08-19" en el ADR de JWT/sesion.
+        // Vuelve de 60 a 15 min (migración a Bearer-en-memoria): el TTL se
+        // había subido a 60 el 2026-08-19 porque el refresh silencioso ya era
+        // transparente y 15 min "sentía" la sesión frágil -- razonamiento
+        // válido mientras el access token vivía SOLO en una cookie HttpOnly
+        // (invisible a JS). Con el cambio a Bearer en memoria (necesario para
+        // que la plataforma conviva sin pisarse con otros frontends en el
+        // mismo host), un XSS que capture el token de memoria lo tendría
+        // usable por 60 min en vez de 15 -- la ventana de exposición importa
+        // más que la frecuencia de renovación, que sigue siendo transparente
+        // para el usuario (refresh proactivo + reintento en 401).
         gJwtAccessTtlMinutes = std::clamp(
-            std::stoi(getenvOr("BEEMETRY_JWT_ACCESS_TTL_MINUTES", "60")), 1, 120);
+            std::stoi(getenvOr("BEEMETRY_JWT_ACCESS_TTL_MINUTES", "15")), 1, 120);
     } catch (...) {
-        gJwtAccessTtlMinutes = 60;
+        gJwtAccessTtlMinutes = 15;
     }
     try {
         gJwtRefreshTtlDays = std::clamp(
             std::stoi(getenvOr("BEEMETRY_JWT_REFRESH_TTL_DAYS", "7")), 1, 90);
     } catch (...) {
         gJwtRefreshTtlDays = 7;
+    }
+    try {
+        // Techo de 480 min (8h): generoso para incluso un export de miles de
+        // páginas, sin dejar el token "vivo para siempre" si algo se cuelga.
+        gJwtExportTtlMinutes = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_JWT_EXPORT_TTL_MINUTES", "120")), 15, 480);
+    } catch (...) {
+        gJwtExportTtlMinutes = 120;
     }
     gAuthCookieSecure =
         toLowerCopy(getenvOr("BEEMETRY_AUTH_COOKIE_SECURE", "true")) == "true";
@@ -190,15 +204,24 @@ void AppConfig::loadFromEnv() {
     gPdfExportUrl = getenvOr("BEEMETRY_PDF_EXPORT_URL", "");
     gFrontendInternalOrigin = getenvOr("BEEMETRY_FRONTEND_INTERNAL_ORIGIN", "http://frontend");
     try {
+        // Clamp máximo antes 120000 (2 min) -- el sidecar espera CADA
+        // widget/gráfico individual (`data-export-ready`) antes de capturar,
+        // así que un informe de cientos de páginas con más de mil gráficos de
+        // sensor en vivo (prueba exhaustiva 56 sensores × 20 tipos de
+        // gráfico) tarda varios minutos reales en terminar de renderizar --
+        // con el clamp viejo, incluso subiendo la env var, el backend se
+        // rendía esperando al sidecar mucho antes de que este terminara
+        // (reproducido en vivo: 502 con un informe de 378 páginas). 900000
+        // (15 min) iguala el techo ya usado para video export.
         gPdfExportTimeoutMs = std::clamp(
-            std::stoi(getenvOr("BEEMETRY_PDF_EXPORT_TIMEOUT_MS", "45000")), 1000, 120000);
+            std::stoi(getenvOr("BEEMETRY_PDF_EXPORT_TIMEOUT_MS", "45000")), 1000, 900000);
     } catch (...) {
         gPdfExportTimeoutMs = 45000;
     }
     gExportDataRoot = getenvOr("BEEMETRY_EXPORT_DATA_ROOT", "");
     try {
         gPptxExportTimeoutMs = std::clamp(
-            std::stoi(getenvOr("BEEMETRY_PPTX_EXPORT_TIMEOUT_MS", "60000")), 1000, 300000);
+            std::stoi(getenvOr("BEEMETRY_PPTX_EXPORT_TIMEOUT_MS", "60000")), 1000, 900000);
     } catch (...) {
         gPptxExportTimeoutMs = 60000;
     }
@@ -207,6 +230,13 @@ void AppConfig::loadFromEnv() {
             std::stoi(getenvOr("BEEMETRY_VIDEO_EXPORT_TIMEOUT_MS", "180000")), 1000, 900000);
     } catch (...) {
         gVideoExportTimeoutMs = 180000;
+    }
+    try {
+        // Mismo motivo que gPdfExportTimeoutMs arriba (clamp antes 300000).
+        gDocxExportTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_DOCX_EXPORT_TIMEOUT_MS", "60000")), 1000, 900000);
+    } catch (...) {
+        gDocxExportTimeoutMs = 60000;
     }
     gTaxRegistryEnabled =
         toLowerCopy(getenvOr("BEEMETRY_TAX_REGISTRY_ENABLED", "false")) == "true";

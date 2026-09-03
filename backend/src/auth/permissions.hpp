@@ -60,4 +60,15 @@ bool userBelongsToTenant(const std::string& userId, const std::string& sessionTe
  * de honrar la creación/edición de un informe. */
 bool userHasRealTenantMembership(const std::string& userId, const std::string& tenantId);
 
+/** @brief true si `tenantId` es de tipo `company_type = 'organization'`
+ * (Beemetry/TimeTelemetry) — ver db_scripts/72. Es el guardia que cierra la
+ * tensión documentada en ADR-086 ("permiso de plataforma evaluado contra un
+ * tenant_id de tenant"): cualquier endpoint que otorgue/revoque acceso
+ * cruzado (org_tenant_access) debe exigir ESTO además de
+ * `hasPermission(..., "org.cross_tenant.manage")` — así, aunque un tenant
+ * minero se autoinserte ese permission_code en su propia matriz (posible por
+ * el diseño de override completo por tenant, db_scripts/42), el chequeo de
+ * tipo de tenant bloquea su uso igual. */
+bool isOrganizationTenant(const std::string& tenantId);
+
 } // namespace auth

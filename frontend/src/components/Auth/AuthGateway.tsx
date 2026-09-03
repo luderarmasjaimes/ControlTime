@@ -31,6 +31,7 @@ import {
     fetchCompanies,
     loginWithFace,
     loginWithPassword,
+    loginWithMfaCode,
     processBiometricFrame,
     fetchBiometricStatus,
     registerUser,
@@ -259,6 +260,13 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const [loginSessionSecondsLeft, setLoginSessionSecondsLeft] = useState<number | null>(null)
     const [isProcessing, setIsProcessing] = useState(false)
     const [companies, setCompanies] = useState<string[]>(DEFAULT_COMPANIES)
+    /** MFA/TOTP (ADR-135): distinto de `null` cuando password/biometría ya
+     * fueron correctos pero la cuenta exige segundo factor -- el login queda
+     * en este paso intermedio hasta un código válido o hasta que el usuario
+     * cancele (vuelve al formulario normal). */
+    const [mfaPending, setMfaPending] = useState<{ token: string } | null>(null)
+    const [mfaCode, setMfaCode] = useState('')
+    const [mfaError, setMfaError] = useState('')
     const [showDniScan, setShowDniScan] = useState(false)
 
     const handleDniScanSuccess = (result: DniScanResult) => {
@@ -2044,6 +2052,15 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 imageBase64,
                 location,
             })
+            // MFA/TOTP (ADR-135): mismo gate que el login por contraseña --
+            // la biometría es un factor fuerte, pero si la cuenta además
+            // activó TOTP, se exige igual.
+            if (result?.status === 'mfa_required' && result?.mfa_token) {
+                setMfaPending({ token: result.mfa_token })
+                setMfaError('')
+                setMfaCode('')
+                return
+            }
             const user = result.user
             const score = result.score || 0
             log.info('[AUTH_FACE_UI] login success', {
@@ -2087,6 +2104,15 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 ? await pendingPasswordLocationRef.current.catch(() => null)
                 : null
             const result = await loginWithPassword({ ...loginForm, location })
+            // MFA/TOTP (ADR-135): password correcto, pero la cuenta exige un
+            // segundo factor -- todavía no hay sesión, se pasa al paso de
+            // código en vez de autenticar.
+            if (result?.status === 'mfa_required' && result?.mfa_token) {
+                setMfaPending({ token: result.mfa_token })
+                setMfaError('')
+                setMfaCode('')
+                return
+            }
             const session = createSession(result.user, loginTab)
             setMessage(t('message.passwordAuthorized'))
             onAuthenticated(session)
@@ -2095,6 +2121,34 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         } finally {
             setIsProcessing(false)
         }
+    }
+
+    const handleMfaCodeSubmit = async () => {
+        if (!mfaPending) return
+        if (!/^\d{6}$/.test(mfaCode.trim())) {
+            setMfaError('Ingrese el código de 6 dígitos.')
+            return
+        }
+        setIsProcessing(true)
+        setMfaError('')
+        try {
+            const result = await loginWithMfaCode(mfaPending.token, mfaCode.trim())
+            const session = createSession(result.user, loginTab)
+            setMfaPending(null)
+            setMfaCode('')
+            setMessage(t('message.passwordAuthorized'))
+            onAuthenticated(session)
+        } catch (err: any) {
+            setMfaError(localizeMessage(err.message))
+        } finally {
+            setIsProcessing(false)
+        }
+    }
+
+    const handleMfaCancel = () => {
+        setMfaPending(null)
+        setMfaCode('')
+        setMfaError('')
     }
 
     const handleCaptureForRegistration = async () => {
@@ -3664,6 +3718,78 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 onClose={() => setShowDniScan(false)}
                 onSuccess={handleDniScanSuccess}
             />
+            {mfaPending && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    style={{
+                        position: 'fixed', inset: 0, zIndex: 1000,
+                        background: 'rgba(2, 6, 23, 0.75)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                >
+                    <div style={{
+                        background: '#0f172a', border: '1px solid rgba(148, 163, 184, 0.25)',
+                        borderRadius: 12, padding: '1.75rem', width: '90%', maxWidth: 360,
+                        boxShadow: '0 20px 40px -12px rgba(0,0,0,0.6)',
+                    }}>
+                        <h3 style={{ color: '#e2e8f0', fontSize: '1.05rem', margin: '0 0 0.5rem' }}>
+                            Verificación en dos pasos
+                        </h3>
+                        <p style={{ color: '#94a3b8', fontSize: '0.85rem', margin: '0 0 1rem' }}>
+                            Ingrese el código de 6 dígitos de su aplicación de autenticación.
+                        </p>
+                        <input
+                            type="text"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            maxLength={6}
+                            value={mfaCode}
+                            onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleMfaCodeSubmit() }}
+                            placeholder="000000"
+                            autoFocus
+                            style={{
+                                width: '100%', boxSizing: 'border-box', fontSize: '1.4rem',
+                                letterSpacing: '0.4em', textAlign: 'center', padding: '0.6rem',
+                                borderRadius: 8, border: '1px solid rgba(148, 163, 184, 0.35)',
+                                background: '#020617', color: '#e2e8f0', marginBottom: '0.75rem',
+                            }}
+                        />
+                        {mfaError && (
+                            <div className="auth-message error" style={{ marginBottom: '0.75rem' }}>
+                                <AlertTriangle size={15} /> {mfaError}
+                            </div>
+                        )}
+                        <div style={{ display: 'flex', gap: '0.6rem' }}>
+                            <button
+                                type="button"
+                                onClick={handleMfaCancel}
+                                disabled={isProcessing}
+                                style={{
+                                    flex: 1, padding: '0.55rem', borderRadius: 8, cursor: 'pointer',
+                                    background: 'transparent', color: '#94a3b8',
+                                    border: '1px solid rgba(148, 163, 184, 0.35)',
+                                }}
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleMfaCodeSubmit}
+                                disabled={isProcessing || mfaCode.length !== 6}
+                                style={{
+                                    flex: 1, padding: '0.55rem', borderRadius: 8, cursor: 'pointer',
+                                    background: '#f07e41', color: '#0f172a', fontWeight: 600,
+                                    border: 'none', opacity: (isProcessing || mfaCode.length !== 6) ? 0.6 : 1,
+                                }}
+                            >
+                                Verificar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }

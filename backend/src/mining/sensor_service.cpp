@@ -29,38 +29,10 @@ using auth::resolveAuthSession;
 
 namespace mining {
 
-/**
- * Resuelve el tenant efectivo de una lectura de sensores/telemetría a prueba
- * de IDOR — mismo criterio que resolveAllowedReportTenant (report_routes.cpp)
- * y que surveillance_service.cpp. Auditoría de seguridad 2026-07-19:
- * `handleGetSensorData` y `handleGetTelemetrySummary` (a) devolvían datos
- * GLOBALES sin scope cuando la petición no traía `tenant_id` (fuga del
- * inventario de sensores de TODOS los tenants a cualquiera con sesión, o
- * incluso sin ella en el caso de sensors/data), y (b) confiaban ciegamente
- * en el `tenant_id` del cliente sin verificar que perteneciera a la sesión
- * (IDOR horizontal: un usuario del tenant A podía pedir `?tenant_id=<B>` y
- * leer los sensores del tenant B). El tenant efectivo SIEMPRE se deriva de
- * la sesión; solo se acepta un tenant distinto si `userBelongsToTenant` lo
- * autoriza (rol admin multi-tenant). `ok=false` → 403.
- *
- * Declarada en sensor_service.hpp (no en un namespace anónimo) para que
- * sensor_telemetry_wizard.cpp reutilice el mismo guard en vez de duplicar
- * lógica de seguridad.
- */
-std::string resolveAllowedSensorTenant(
-    const auth::AuthSession &session,
-    const std::unordered_map<std::string, std::string> &query, bool &ok) {
-  ok = true;
-  auto it = query.find("tenant_id");
-  if (it == query.end() || it->second.empty() || it->second == session.tenantId) {
-    return session.tenantId;
-  }
-  if (auth::userBelongsToTenant(session.userId, session.tenantId, it->second)) {
-    return it->second;
-  }
-  ok = false;
-  return session.tenantId;
-}
+// resolveAllowedSensorTenant se movió a sensor_tenant_resolver.cpp (2026-09-02)
+// -- ver ese archivo para el comentario completo del guard anti-IDOR. Sigue
+// declarada en sensor_service.hpp sin cambios, así que ningún caller
+// (incluido sensor_telemetry_wizard.cpp) necesitó tocarse.
 
 http::response<http::string_body>
 handleGetSensorData(const http::request<http::string_body>& req,
@@ -132,13 +104,25 @@ handleGetSensorData(const http::request<http::string_body>& req,
                    "LEFT JOIN mining_sensor_zones z ON z.id = s.zone_id AND "
                    "z.tenant_id = s.tenant_id "
                    "ORDER BY s.id ASC";
+      // ADR-131: mining_sensor_history -> telemetry_fact_demo (vía dim_sensor,
+      // legacy_mining_sensor_id). Mismo layout de salida (sensor_id, value,
+      // timestamp) — mining_sensor_history no tenía ingesta activa (342 filas
+      // legacy), el swap es de bajo riesgo. Ventana de 7 días en resolución
+      // cruda (no se usa el continuous aggregate aquí: volumen bajo, no
+      // amerita la latencia de refresh del rollup).
       const std::string sqlHistory =
-          scoped ? ("SELECT h.sensor_id, h.value, h.timestamp FROM mining_sensor_history h "
-                    "INNER JOIN mining_sensors s ON s.id = h.sensor_id "
-                    "WHERE h.timestamp > NOW() - INTERVAL '7 DAYS' " +
-                    scopeWhere + "ORDER BY h.sensor_id ASC, h.timestamp ASC")
-                 : "SELECT sensor_id, value, timestamp FROM mining_sensor_history WHERE timestamp > "
-                   "NOW() - INTERVAL '7 DAYS' ORDER BY sensor_id ASC, timestamp ASC";
+          scoped ? ("SELECT s.id AS sensor_id, tf.value_numeric AS value, tf.captured_at AS timestamp "
+                    "FROM mining_sensors s "
+                    "INNER JOIN dim_sensor ds ON ds.legacy_mining_sensor_id = s.id "
+                    "INNER JOIN telemetry_fact_demo tf ON tf.sensor_id_sk = ds.sensor_id_sk AND tf.channel_id = 0 "
+                    "WHERE tf.captured_at > NOW() - INTERVAL '7 DAYS' " +
+                    scopeWhere + "ORDER BY s.id ASC, tf.captured_at ASC")
+                 : "SELECT s.id AS sensor_id, tf.value_numeric AS value, tf.captured_at AS timestamp "
+                   "FROM mining_sensors s "
+                   "INNER JOIN dim_sensor ds ON ds.legacy_mining_sensor_id = s.id "
+                   "INNER JOIN telemetry_fact_demo tf ON tf.sensor_id_sk = ds.sensor_id_sk AND tf.channel_id = 0 "
+                   "WHERE tf.captured_at > NOW() - INTERVAL '7 DAYS' "
+                   "ORDER BY s.id ASC, tf.captured_at ASC";
 
       storage::PgResult res_cat{runScoped(sqlCategories)};
       json::array categories;
@@ -263,10 +247,18 @@ handleGetTelemetrySummary(const http::request<http::string_body>& req,
         return PQexecParams(conn, q.c_str(), 1, nullptr, p, nullptr, nullptr, 0);
       };
 
-      // Un renglón por sensor IoT activo: metadatos + última lectura (LATERAL
-      // con LIMIT 1 sobre el índice por sensor) + muestras dentro de la
-      // ventana. Se excluyen los sensores de prueba de carga (load_test) —
-      // ruido del stress test ADR-054, no instrumentación real.
+      // ADR-131: última lectura sigue viniendo de telemetry_fact cruda (plano
+      // HOT, resolución exacta — un rollup no sirve para "último valor").
+      // samples_window ahora suma telemetry_fact_hourly.sample_count en vez
+      // de un COUNT(*) sobre la hypertable cruda completa: a 25k/s un COUNT
+      // directo sobre una ventana de hasta 720h escanearía cientos de
+      // millones de filas; el rollup ya las tiene precontadas por hora.
+      // Trade-off aceptado: telemetry_fact_hourly tiene end_offset=1h (ver
+      // 76_telemetry_fact_continuous_aggregates.sql), así que samples_window
+      // puede subestimar en hasta ~1h de muestras muy recientes hasta el
+      // próximo refresh — aceptable para un contador indicativo de UI, no
+      // para facturación. Se excluyen los sensores de prueba de carga
+      // (load_test) — ruido del stress test ADR-054, no instrumentación real.
       const std::string sqlSensors =
           "SELECT s.sensor_id::text, s.sensor_code, s.sensor_name, s.sensor_type, "
           "COALESCE(s.unit,'') AS unit, s.protocol, s.connection_status, "
@@ -274,11 +266,13 @@ handleGetTelemetrySummary(const http::request<http::string_body>& req,
           "last.v AS last_value, COALESCE(last.at::text,'') AS last_at, "
           "COALESCE(win.n,0) AS samples_window "
           "FROM sensors s "
-          "LEFT JOIN LATERAL (SELECT tr.value_numeric AS v, tr.captured_at AS at "
-          "  FROM telemetry_raw tr WHERE tr.sensor_id = s.sensor_id "
-          "  ORDER BY tr.captured_at DESC LIMIT 1) last ON true "
-          "LEFT JOIN LATERAL (SELECT COUNT(*) AS n FROM telemetry_raw tr "
-          "  WHERE tr.sensor_id = s.sensor_id AND tr.captured_at > NOW() - INTERVAL '" + windowLit + " hours') win ON true "
+          "LEFT JOIN dim_sensor ds ON ds.sensor_id = s.sensor_id "
+          "LEFT JOIN LATERAL (SELECT tf.value_numeric AS v, tf.captured_at AS at "
+          "  FROM telemetry_fact tf WHERE tf.sensor_id_sk = ds.sensor_id_sk AND tf.channel_id = 0 "
+          "  ORDER BY tf.captured_at DESC LIMIT 1) last ON ds.sensor_id_sk IS NOT NULL "
+          "LEFT JOIN LATERAL (SELECT SUM(h.sample_count)::bigint AS n FROM telemetry_fact_hourly h "
+          "  WHERE h.sensor_id_sk = ds.sensor_id_sk AND h.channel_id = 0 "
+          "  AND h.bucket > NOW() - INTERVAL '" + windowLit + " hours') win ON ds.sensor_id_sk IS NOT NULL "
           "WHERE s.is_active AND s.sensor_type <> 'load_test'" + scopeWhere +
           " ORDER BY s.sensor_type ASC, s.sensor_code ASC";
 
@@ -304,16 +298,20 @@ handleGetTelemetrySummary(const http::request<http::string_body>& req,
         }
       }
 
-      // Serie horaria promedio por sensor dentro de la ventana — dirigida
-      // por la lista de sensores (nestloop sobre el índice por sensor), no
-      // por un filtro temporal suelto que barrería toda la hypertable.
+      // ADR-131: serie horaria leída directo de telemetry_fact_hourly (ya
+      // materializada por TimescaleDB) en vez de un GROUP BY date_trunc
+      // sobre la hypertable cruda — la agregación ya está pagada, no hace
+      // falta recalcularla en cada request. Mismo trade-off de end_offset=1h
+      // que samples_window arriba (la última hora puede faltar hasta el
+      // próximo refresh).
       const std::string sqlSeries =
-          "SELECT s.sensor_id::text, date_trunc('hour', tr.captured_at)::text AS h, "
-          "AVG(tr.value_numeric) AS v "
-          "FROM sensors s JOIN telemetry_raw tr ON tr.sensor_id = s.sensor_id "
+          "SELECT s.sensor_id::text, h.bucket::text AS h, h.avg_value AS v "
+          "FROM sensors s "
+          "JOIN dim_sensor ds ON ds.sensor_id = s.sensor_id "
+          "JOIN telemetry_fact_hourly h ON h.sensor_id_sk = ds.sensor_id_sk AND h.channel_id = 0 "
           "WHERE s.is_active AND s.sensor_type <> 'load_test' "
-          "AND tr.captured_at > NOW() - INTERVAL '" + windowLit + " hours'" + scopeWhere +
-          " GROUP BY 1, 2 ORDER BY 1 ASC, 2 ASC";
+          "AND h.bucket > NOW() - INTERVAL '" + windowLit + " hours'" + scopeWhere +
+          " ORDER BY 1 ASC, 2 ASC";
 
       storage::PgResult resSeries{runScoped(sqlSeries)};
       json::array series;

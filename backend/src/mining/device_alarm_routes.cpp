@@ -6,6 +6,7 @@
 #include "../auth/permissions.hpp"
 #include "telemetry_ingest.hpp"
 #include "alarm_notifier.hpp"
+#include "alarm_rule_evaluator.hpp"
 
 // HAS_LIBPQ no se propaga entre translation units (se define localmente por
 // archivo, ver el mismo bloque en auth_storage_pg.hpp). El propio
@@ -24,13 +25,18 @@
 #include "storage/pg_pool.hpp"
 #include "storage/pg_result.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
 using http_utils::makeJsonResponse;
 using config::AppConfig;
@@ -69,6 +75,12 @@ bool jsonToDoubleSafe(const json::value &v, double &out) {
   }
   return false;
 }
+
+// Forward declaration -- definida junto al resto de la infraestructura del
+// cache de reglas (SPEC-016 T3/T12), más abajo en este archivo, pero los
+// handlers CRUD de reglas (arriba en el orden del archivo) necesitan
+// invalidarlo al escribir.
+void invalidateRuleCache();
 
 // ---------------------------------------------------------------------------
 // Device management (ADR-034: identidad/credenciales, sobre la tabla
@@ -422,6 +434,25 @@ handleCreateAlarmRule(const http::request<http::string_body> &req,
   const std::string miningSensorId = obj.if_contains("mining_sensor_id")
                                          ? jsonToStringSafe(obj.at("mining_sensor_id"))
                                          : std::string();
+  // SPEC-016 T1/T4/T5 (db_scripts/89): condition_type 'value' (default,
+  // comportamiento original) o 'rate' (compara la tasa de cambio, no el
+  // valor absoluto); debounce_secs opcional, 0 = desactivado.
+  const std::string conditionType = obj.if_contains("condition_type")
+                                        ? jsonToStringSafe(obj.at("condition_type"))
+                                        : std::string("value");
+  if (conditionType != "value" && conditionType != "rate") {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "condition_type_invalido"}});
+  }
+  int debounceSecs = 0;
+  if (obj.if_contains("debounce_secs")) {
+    double d = 0;
+    if (!jsonToDoubleSafe(obj.at("debounce_secs"), d) || d < 0) {
+      return makeJsonResponse(http::status::bad_request,
+                              json::object{{"error", "debounce_secs_invalido"}});
+    }
+    debounceSecs = static_cast<int>(d);
+  }
 
   auto &cfg = AppConfig::instance();
   auto lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
@@ -433,22 +464,26 @@ handleCreateAlarmRule(const http::request<http::string_body> &req,
   std::ostringstream thresholdStr;
   thresholdStr << threshold;
   const std::string thresholdString = thresholdStr.str();
-  const char *params[7] = {
+  const std::string debounceString = std::to_string(debounceSecs);
+  const char *params[9] = {
       session->tenantId.c_str(),
       hasSensorId ? sensorId.c_str() : nullptr,
       hasSensorId ? nullptr : miningSensorId.c_str(),
-      ruleName.c_str(), op.c_str(), thresholdString.c_str(), severity.c_str()};
+      ruleName.c_str(), op.c_str(), thresholdString.c_str(), severity.c_str(),
+      conditionType.c_str(), debounceString.c_str()};
   storage::PgResult res{PQexecParams(
       conn,
       "INSERT INTO platform_alarm_rules "
-      "(tenant_id, sensor_id, mining_sensor_id, rule_name, operator, threshold, severity) "
-      "VALUES ($1::uuid, $2::uuid, $3::int, $4, $5, $6::double precision, $7) "
+      "(tenant_id, sensor_id, mining_sensor_id, rule_name, operator, threshold, severity, "
+      "condition_type, debounce_secs) "
+      "VALUES ($1::uuid, $2::uuid, $3::int, $4, $5, $6::double precision, $7, $8, $9::int) "
       "RETURNING id",
-      7, nullptr, params, nullptr, nullptr, 0)};
+      9, nullptr, params, nullptr, nullptr, 0)};
   if (!res.okTuples() || PQntuples(res.get()) == 0) {
     return makeJsonResponse(http::status::internal_server_error,
                             json::object{{"error", "insert_failed"}});
   }
+  invalidateRuleCache(); // T12: la próxima corrida del evaluador ve la regla nueva sin esperar el TTL
   return makeJsonResponse(http::status::created,
                           json::object{{"id", PQgetvalue(res.get(), 0, 0)}});
 #else
@@ -475,7 +510,8 @@ handleListAlarmRules(const http::request<http::string_body> &req,
     storage::PgResult res{PQexecParams(
         conn,
         "SELECT id, sensor_id, mining_sensor_id, rule_name, operator, "
-        "threshold, severity, enabled FROM platform_alarm_rules "
+        "threshold, severity, enabled, condition_type, debounce_secs "
+        "FROM platform_alarm_rules "
         "WHERE tenant_id = $1::uuid ORDER BY id DESC",
         1, nullptr, params, nullptr, nullptr, 0)};
     if (res.okTuples()) {
@@ -488,7 +524,9 @@ handleListAlarmRules(const http::request<http::string_body> &req,
             {"operator", PQgetvalue(res.get(), i, 4)},
             {"threshold", std::atof(PQgetvalue(res.get(), i, 5))},
             {"severity", PQgetvalue(res.get(), i, 6)},
-            {"enabled", std::string(PQgetvalue(res.get(), i, 7)) == "t"}};
+            {"enabled", std::string(PQgetvalue(res.get(), i, 7)) == "t"},
+            {"condition_type", PQgetvalue(res.get(), i, 8)},
+            {"debounce_secs", std::atoi(PQgetvalue(res.get(), i, 9))}};
         items.push_back(std::move(o));
       }
     }
@@ -496,6 +534,130 @@ handleListAlarmRules(const http::request<http::string_body> &req,
   return makeJsonResponse(http::status::ok, json::object{{"rules", items}});
 #else
   return makeJsonResponse(http::status::ok, json::object{{"rules", json::array()}});
+#endif
+}
+
+// SPEC-016 T9: reemplazo completo de la regla (PUT, no PATCH parcial —
+// mismo criterio simple que el resto de este archivo, sin merge parcial de
+// campos). `enabled` es el único campo antes solo alcanzable borrando y
+// recreando la regla; ahora se puede pausar/reactivar sin perder su
+// historial de alarmas (`platform_alarms.rule_id` sigue apuntando a la
+// misma fila).
+http::response<http::string_body>
+handleUpdateAlarmRule(const http::request<http::string_body> &req,
+                      const std::unordered_map<std::string, std::string> &query) {
+  const auto session = auth::resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+  if (!auth::hasPermission(session->userId, session->tenantId, session->role,
+                          "alarmas.manage")) {
+    return makeJsonResponse(http::status::forbidden,
+                            json::object{{"error", "forbidden"}, {"need", "alarmas.manage"}});
+  }
+#if HAS_LIBPQ
+  std::string rawTarget(req.target());
+  static const std::string kPrefix = "/api/mining/alarms/rules/";
+  std::string ruleId;
+  {
+    auto idStr = rawTarget.substr(kPrefix.size());
+    auto q = idStr.find('?');
+    ruleId = q != std::string::npos ? idStr.substr(0, q) : idStr;
+  }
+  if (ruleId.empty()) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_rule_id"}});
+  }
+  json::value body;
+  try { body = json::parse(req.body()); } catch (...) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_json"}});
+  }
+  if (!body.is_object()) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_json"}});
+  }
+  const auto &obj = body.as_object();
+  static const std::set<std::string> kOps = {"gt", "gte", "lt", "lte", "eq"};
+  if (!obj.if_contains("rule_name") || !obj.if_contains("operator") ||
+      !obj.if_contains("threshold")) {
+    return makeJsonResponse(
+        http::status::bad_request,
+        json::object{{"error", "rule_name, operator y threshold son requeridos"}});
+  }
+  const std::string ruleName = jsonToStringSafe(obj.at("rule_name"));
+  const std::string op = jsonToStringSafe(obj.at("operator"));
+  if (kOps.find(op) == kOps.end()) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "operator_invalido"}});
+  }
+  double threshold = 0.0;
+  if (!jsonToDoubleSafe(obj.at("threshold"), threshold)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "threshold_invalido"}});
+  }
+  const std::string severity = obj.if_contains("severity")
+                                   ? jsonToStringSafe(obj.at("severity"))
+                                   : std::string("warning");
+  bool enabled = true;
+  if (obj.if_contains("enabled")) {
+    if (!obj.at("enabled").is_bool()) {
+      return makeJsonResponse(http::status::bad_request,
+                              json::object{{"error", "enabled_invalido"}});
+    }
+    enabled = obj.at("enabled").as_bool();
+  }
+  const std::string conditionType = obj.if_contains("condition_type")
+                                        ? jsonToStringSafe(obj.at("condition_type"))
+                                        : std::string("value");
+  if (conditionType != "value" && conditionType != "rate") {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "condition_type_invalido"}});
+  }
+  int debounceSecs = 0;
+  if (obj.if_contains("debounce_secs")) {
+    double d = 0;
+    if (!jsonToDoubleSafe(obj.at("debounce_secs"), d) || d < 0) {
+      return makeJsonResponse(http::status::bad_request,
+                              json::object{{"error", "debounce_secs_invalido"}});
+    }
+    debounceSecs = static_cast<int>(d);
+  }
+
+  auto &cfg = AppConfig::instance();
+  auto lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    return makeJsonResponse(http::status::internal_server_error,
+                            json::object{{"error", "db_unavailable"}});
+  }
+  std::ostringstream thresholdStr;
+  thresholdStr << threshold;
+  const std::string thresholdString = thresholdStr.str();
+  const std::string debounceString = std::to_string(debounceSecs);
+  const std::string enabledString = enabled ? "true" : "false";
+  const char *params[9] = {
+      ruleId.c_str(), session->tenantId.c_str(), ruleName.c_str(), op.c_str(),
+      thresholdString.c_str(), severity.c_str(), conditionType.c_str(),
+      debounceString.c_str(), enabledString.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "UPDATE platform_alarm_rules SET rule_name = $3, operator = $4, "
+      "threshold = $5::double precision, severity = $6, condition_type = $7, "
+      "debounce_secs = $8::int, enabled = $9::boolean "
+      "WHERE id = $1::bigint AND tenant_id = $2::uuid",
+      9, nullptr, params, nullptr, nullptr, 0)};
+  const bool ok = res.okCommand() && std::string(PQcmdTuples(res.get())) != "0";
+  if (!ok) {
+    return makeJsonResponse(http::status::not_found,
+                            json::object{{"error", "rule_not_found"}});
+  }
+  invalidateRuleCache(); // T12
+  return makeJsonResponse(http::status::ok, json::object{{"status", "updated"}});
+#else
+  return makeJsonResponse(http::status::internal_server_error,
+                          json::object{{"error", "db_unavailable"}});
 #endif
 }
 
@@ -538,6 +700,7 @@ handleDeleteAlarmRule(const http::request<http::string_body> &req,
     return makeJsonResponse(http::status::not_found,
                             json::object{{"error", "rule_not_found"}});
   }
+  invalidateRuleCache(); // T12
   return makeJsonResponse(http::status::ok, json::object{{"status", "deleted"}});
 #else
   return makeJsonResponse(http::status::internal_server_error,
@@ -545,6 +708,12 @@ handleDeleteAlarmRule(const http::request<http::string_body> &req,
 #endif
 }
 
+// SPEC-016 T10: paginación real (antes `LIMIT 200` fijo, sin offset ni
+// forma de saber si había más) + filtro por severidad. `open`/`sensor_id`/
+// `mining_sensor_id` siguen sin filtro dedicado (fuera de alcance de este
+// cierre puntual) -- severidad era el filtro que la Capa 5 de QA (T19/T20)
+// necesitaba para poder pedir "solo criticas" sin traer las 200 más
+// recientes de cualquier severidad.
 http::response<http::string_body>
 handleListAlarms(const http::request<http::string_body> &req,
                  const std::unordered_map<std::string, std::string> &query) {
@@ -558,23 +727,47 @@ handleListAlarms(const http::request<http::string_body> &req,
   auto lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
   PGconn *conn = lease.get();
   json::array items;
+  long long total = 0;
   if (PQstatus(conn) == CONNECTION_OK) {
     const bool onlyOpen = query.count("open") && query.at("open") == "true";
-    const char *params[1] = {session->tenantId.c_str()};
+    static const std::set<std::string> kSeverities = {"info", "warning", "critical"};
+    const bool hasSeverity =
+        query.count("severity") && kSeverities.count(query.at("severity")) > 0;
+
+    int limit = 50;
+    if (query.count("limit")) {
+      try { limit = std::stoi(query.at("limit")); } catch (...) {}
+    }
+    limit = std::max(1, std::min(limit, 500));
+    int offset = 0;
+    if (query.count("offset")) {
+      try { offset = std::stoi(query.at("offset")); } catch (...) {}
+    }
+    offset = std::max(0, offset);
+    const std::string limitStr = std::to_string(limit);
+    const std::string offsetStr = std::to_string(offset);
+
+    std::string whereClause = "a.tenant_id = $1::uuid";
+    if (onlyOpen) whereClause += " AND a.resolved_at IS NULL";
+    if (hasSeverity) whereClause += " AND a.severity = $2";
+
+    std::vector<const char *> params;
+    params.push_back(session->tenantId.c_str());
+    if (hasSeverity) params.push_back(query.at("severity").c_str());
+    const int filterParamCount = static_cast<int>(params.size());
+    params.push_back(limitStr.c_str());
+    params.push_back(offsetStr.c_str());
+
+    const std::string listSql =
+        "SELECT a.id, a.rule_id, r.rule_name, a.triggered_at, "
+        "a.observed_value, a.severity, a.message, a.acknowledged, a.resolved_at "
+        "FROM platform_alarms a JOIN platform_alarm_rules r ON r.id = a.rule_id "
+        "WHERE " + whereClause +
+        " ORDER BY a.triggered_at DESC LIMIT $" + std::to_string(filterParamCount + 1) +
+        " OFFSET $" + std::to_string(filterParamCount + 2);
     storage::PgResult res{PQexecParams(
-        conn,
-        onlyOpen
-            ? "SELECT a.id, a.rule_id, r.rule_name, a.triggered_at, "
-              "a.observed_value, a.severity, a.message, a.acknowledged, a.resolved_at "
-              "FROM platform_alarms a JOIN platform_alarm_rules r ON r.id = a.rule_id "
-              "WHERE a.tenant_id = $1::uuid AND a.resolved_at IS NULL "
-              "ORDER BY a.triggered_at DESC LIMIT 200"
-            : "SELECT a.id, a.rule_id, r.rule_name, a.triggered_at, "
-              "a.observed_value, a.severity, a.message, a.acknowledged, a.resolved_at "
-              "FROM platform_alarms a JOIN platform_alarm_rules r ON r.id = a.rule_id "
-              "WHERE a.tenant_id = $1::uuid "
-              "ORDER BY a.triggered_at DESC LIMIT 200",
-        1, nullptr, params, nullptr, nullptr, 0)};
+        conn, listSql.c_str(), static_cast<int>(params.size()), nullptr,
+        params.data(), nullptr, nullptr, 0)};
     if (res.okTuples()) {
       for (int i = 0; i < PQntuples(res.get()); ++i) {
         json::object o{
@@ -590,10 +783,31 @@ handleListAlarms(const http::request<http::string_body> &req,
         items.push_back(std::move(o));
       }
     }
+
+    // Total con el mismo filtro (sin LIMIT/OFFSET) -- para que el cliente
+    // sepa si hay más páginas sin tener que sumar de a 500.
+    std::vector<const char *> countParams(params.begin(),
+                                          params.begin() + filterParamCount);
+    const std::string countSql =
+        "SELECT COUNT(*) FROM platform_alarms a WHERE " + whereClause;
+    storage::PgResult countRes{PQexecParams(
+        conn, countSql.c_str(), filterParamCount, nullptr, countParams.data(),
+        nullptr, nullptr, 0)};
+    if (countRes.okTuples() && PQntuples(countRes.get()) > 0) {
+      total = std::atoll(PQgetvalue(countRes.get(), 0, 0));
+    }
+
+    return makeJsonResponse(
+        http::status::ok,
+        json::object{{"alarms", items},
+                     {"total", total},
+                     {"limit", limit},
+                     {"offset", offset}});
   }
-  return makeJsonResponse(http::status::ok, json::object{{"alarms", items}});
+  return makeJsonResponse(http::status::ok,
+                          json::object{{"alarms", items}, {"total", 0}});
 #else
-  return makeJsonResponse(http::status::ok, json::object{{"alarms", json::array()}});
+  return makeJsonResponse(http::status::ok, json::object{{"alarms", json::array()}, {"total", 0}});
 #endif
 }
 
@@ -643,71 +857,216 @@ handleAcknowledgeAlarm(const http::request<http::string_body> &req,
 }
 
 // ---------------------------------------------------------------------------
-// Evaluador de reglas (hilo de fondo). Semántica: near-real-time por
-// polling (no un trigger síncrono en el hot path de ingesta, ver
-// razonamiento en ADR-034 — evita meter lógica de reglas en
-// telemetry_ingest.cpp::copyBatch(), que debe seguir optimizado para
-// 10K/seg). Cada ciclo: evalúa reglas contra el valor cacheado más
-// reciente del sensor; abre una alarma si no hay una ya abierta para esa
-// regla (índice único parcial en la tabla evita duplicados); resuelve
-// (resolved_at) la alarma abierta si la condición deja de cumplirse.
+// Cache de reglas (SPEC-016 T3) + estado en memoria por regla (T4 rate_of_
+// change, T5 debounce). Un solo hilo (evaluatorLoop) es el único lector real
+// de estas estructuras en el ciclo de evaluación; el mutex protege contra la
+// escritura concurrente de gRuleCacheDirty desde los handlers HTTP
+// (create/update/delete, hilos del pool del servidor) que invalidan el
+// cache al escribir (T12). No es una cache "LRU" clásica en el sentido
+// estricto (no hay entradas individuales que desalojar por uso): es TTL de
+// 60s sobre el único conjunto cacheable (todas las reglas habilitadas), que
+// es lo que el ciclo del evaluador necesita — ver ADR-016-1..5 para la nota
+// de por qué el nombre del ticket original ("LRU") no aplica literalmente.
 // ---------------------------------------------------------------------------
+struct AlarmRuleRow {
+  std::string id;
+  std::string tenantId;
+  bool hasSensorId{false};
+  std::string sensorId;
+  std::string miningSensorId;
+  std::string op;
+  double threshold{0.0};
+  std::string severity;
+  std::string ruleName;
+  std::string conditionType; // 'value' | 'rate' (db_scripts/89)
+  int debounceSecs{0};
+};
+
+struct RuleRuntimeState {
+  bool hasLastValue{false};
+  double lastValue{0.0};
+  std::chrono::steady_clock::time_point lastValueAt;
+  std::optional<std::chrono::steady_clock::time_point> lastTriggeredAt;
+};
+
+std::mutex gRuleCacheMutex;
+std::vector<AlarmRuleRow> gRuleCache;
+// Índice sensor_id (uuid texto) -> reglas de esa regla con `sensor_id` real
+// (NO `mining_sensor_id`) -- alimenta el camino en tiempo real (ver más
+// abajo, `handleRealtimeTelemetryBatch`). Reconstruido junto con
+// `gRuleCache` en cada refresh, mismo mutex.
+std::unordered_map<std::string, std::vector<AlarmRuleRow>> gSensorIdToRules;
+std::chrono::steady_clock::time_point gRuleCacheFetchedAt;
+bool gRuleCacheHasFetched = false;
+std::atomic<bool> gRuleCacheDirty{true};
+constexpr int kRuleCacheTtlSeconds = 60;
+
+std::mutex gRuleRuntimeMutex;
+std::unordered_map<std::string, RuleRuntimeState> gRuleRuntimeState;
+
+/** @brief Marca el cache de reglas como obsoleto -- llamar desde cualquier
+ * handler que cree/edite/borre una regla (T12). El próximo ciclo del
+ * evaluador vuelve a consultar `platform_alarm_rules` sin esperar el TTL. */
+void invalidateRuleCache() { gRuleCacheDirty.store(true); }
+
 #if HAS_LIBPQ
-void evaluateRulesOnce(PGconn *conn) {
+/** @brief `true` si el cache sigue vigente (sin invalidar, dentro del TTL) --
+ * sin efectos secundarios, no toca Postgres. Usado por el camino en tiempo
+ * real para decidir SIN abrir conexión si hace falta refrescar antes de
+ * mirar el índice por sensor (ver `handleRealtimeTelemetryBatch`). */
+bool ruleCacheIsFresh() {
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lk(gRuleCacheMutex);
+  return gRuleCacheHasFetched &&
+      (now - gRuleCacheFetchedAt) < std::chrono::seconds(kRuleCacheTtlSeconds) &&
+      !gRuleCacheDirty.load();
+}
+
+/** @brief Devuelve las reglas habilitadas, sirviendo del cache (T3) si sigue
+ * vigente (sin invalidar y dentro de `kRuleCacheTtlSeconds`) o refrescando
+ * desde Postgres si no. */
+std::vector<AlarmRuleRow> getCachedEnabledRules(PGconn *conn) {
+  const auto now = std::chrono::steady_clock::now();
+  if (ruleCacheIsFresh()) {
+    std::lock_guard<std::mutex> lk(gRuleCacheMutex);
+    return gRuleCache; // copia -- barata (reglas son pocas por diseño, no telemetría)
+  }
+
   storage::PgResult rules{PQexec(
       conn,
       "SELECT id, tenant_id, sensor_id, mining_sensor_id, operator, "
-      "threshold, severity, rule_name FROM platform_alarm_rules WHERE enabled = TRUE")};
-  if (!rules.okTuples()) return;
+      "threshold, severity, rule_name, condition_type, debounce_secs "
+      "FROM platform_alarm_rules WHERE enabled = TRUE")};
+  std::vector<AlarmRuleRow> fresh;
+  if (rules.okTuples()) {
+    fresh.reserve(PQntuples(rules.get()));
+    for (int i = 0; i < PQntuples(rules.get()); ++i) {
+      AlarmRuleRow row;
+      row.id = PQgetvalue(rules.get(), i, 0);
+      row.tenantId = PQgetvalue(rules.get(), i, 1);
+      row.hasSensorId = !PQgetisnull(rules.get(), i, 2);
+      row.sensorId = row.hasSensorId ? PQgetvalue(rules.get(), i, 2) : "";
+      row.miningSensorId = row.hasSensorId ? "" : PQgetvalue(rules.get(), i, 3);
+      row.op = PQgetvalue(rules.get(), i, 4);
+      row.threshold = std::atof(PQgetvalue(rules.get(), i, 5));
+      row.severity = PQgetvalue(rules.get(), i, 6);
+      row.ruleName = PQgetvalue(rules.get(), i, 7);
+      row.conditionType = PQgetvalue(rules.get(), i, 8);
+      row.debounceSecs = std::atoi(PQgetvalue(rules.get(), i, 9));
+      fresh.push_back(std::move(row));
+    }
+  }
 
-  for (int i = 0; i < PQntuples(rules.get()); ++i) {
-    const std::string ruleId = PQgetvalue(rules.get(), i, 0);
-    const std::string tenantId = PQgetvalue(rules.get(), i, 1);
-    const bool hasSensorId = !PQgetisnull(rules.get(), i, 2);
-    const std::string sensorId = hasSensorId ? PQgetvalue(rules.get(), i, 2) : "";
-    const std::string miningSensorId = hasSensorId ? "" : PQgetvalue(rules.get(), i, 3);
-    const std::string op = PQgetvalue(rules.get(), i, 4);
-    const double threshold = std::atof(PQgetvalue(rules.get(), i, 5));
-    const std::string severity = PQgetvalue(rules.get(), i, 6);
-    const std::string ruleName = PQgetvalue(rules.get(), i, 7);
+  std::unordered_map<std::string, std::vector<AlarmRuleRow>> freshIndex;
+  for (const auto &r : fresh) {
+    if (r.hasSensorId) freshIndex[r.sensorId].push_back(r);
+  }
 
-    bool hasValue = false;
-    double currentValue = 0.0;
-    if (hasSensorId) {
-      const char *p[1] = {sensorId.c_str()};
-      storage::PgResult vres{PQexecParams(
-          conn,
-          "SELECT value_numeric FROM telemetry_raw WHERE sensor_id = $1::uuid "
-          "AND value_numeric IS NOT NULL ORDER BY captured_at DESC LIMIT 1",
-          1, nullptr, p, nullptr, nullptr, 0)};
-      if (vres.okTuples() && PQntuples(vres.get()) > 0) {
-        currentValue = std::atof(PQgetvalue(vres.get(), 0, 0));
-        hasValue = true;
+  std::lock_guard<std::mutex> lk(gRuleCacheMutex);
+  gRuleCache = fresh;
+  gSensorIdToRules = std::move(freshIndex);
+  gRuleCacheFetchedAt = now;
+  gRuleCacheHasFetched = true;
+  gRuleCacheDirty.store(false);
+  return gRuleCache;
+}
+
+/** @brief Reglas con `sensor_id` real que aplican a un sensor puntual, del
+ * mismo cache que `getCachedEnabledRules()` (mismo TTL/invalidación) --
+ * usado por el camino en tiempo real, que no puede darse el lujo de una
+ * query a Postgres por cada fila de cada lote de ingesta. Si el cache nunca
+ * se pobló todavía (arranque en frío antes del primer ciclo del evaluador
+ * periódico), devuelve vacío -- el evaluador periódico lo cubre en su
+ * siguiente ciclo igual, esto es solo una mejora de latencia, no la única
+ * vía de disparo. */
+std::vector<AlarmRuleRow> getCachedRulesForSensor(const std::string &sensorId) {
+  std::lock_guard<std::mutex> lk(gRuleCacheMutex);
+  auto it = gSensorIdToRules.find(sensorId);
+  return it != gSensorIdToRules.end() ? it->second : std::vector<AlarmRuleRow>{};
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// Evaluación de una regla contra un valor ya conocido. Compartida por DOS
+// caminos (ADR-140, actualización 2026-09-02 -- evaluación en tiempo real):
+//   1. `evaluateRulesOnce()` (hilo de fondo, polling periódico) -- sigue
+//      existiendo como red de seguridad y como ÚNICA vía para reglas de
+//      `mining_sensor_id` (dashboard de simulación, sin telemetría real de
+//      ingesta detrás).
+//   2. `handleRealtimeTelemetryBatch()` (más abajo) -- se dispara desde
+//      `TelemetryIngestor::copyBatch()` apenas un lote de telemetría REAL
+//      queda COMMIT-eado, con el valor ya en memoria (sin volver a leer la
+//      BD). Esta es la vía que baja la latencia de "lectura cruza umbral"
+//      de ~10s (intervalo de polling) a milisegundos para reglas de
+//      `sensor_id` real -- decisión explícita del developer del 2026-09-02
+//      de priorizar latencia real sobre la simplicidad de un solo camino de
+//      evaluación (que es lo que ADR-034 había elegido originalmente, ver
+//      su propia actualización). El costo por lote es marginal: una consulta
+//      hash por sensor del lote contra el índice de reglas en memoria
+//      (`getCachedRulesForSensor`), sin tocar Postgres salvo que una regla
+//      realmente dispare -- eso sigue siendo el caso raro, no el común.
+// ---------------------------------------------------------------------------
+#if HAS_LIBPQ
+void evaluateRuleAgainstValue(PGconn *conn, const AlarmRuleRow &rule,
+                              double currentValue,
+                              std::chrono::steady_clock::time_point evalNow) {
+    const std::string &ruleId = rule.id;
+    const std::string &tenantId = rule.tenantId;
+    const std::string &op = rule.op;
+    const double threshold = rule.threshold;
+    const std::string &severity = rule.severity;
+    const std::string &ruleName = rule.ruleName;
+
+    // T4: condición por valor (comportamiento original) o por tasa de
+    // cambio (rate_of_change) -- ver alarm_rule_evaluator.hpp. El estado
+    // por regla (último valor + timestamp, último disparo) vive en memoria
+    // de proceso, separado del cache de reglas de arriba (T3). Compartido
+    // entre los dos caminos de disparo (protegido por `gRuleRuntimeMutex`,
+    // ya no "un solo hilo escritor" desde que el camino en tiempo real
+    // también puede escribir aquí concurrentemente con el polling).
+    double comparisonValue = currentValue;
+    bool canEvaluate = true;
+    bool debounced = false;
+    {
+      std::lock_guard<std::mutex> lk(gRuleRuntimeMutex);
+      auto &state = gRuleRuntimeState[ruleId];
+      if (rule.conditionType == "rate") {
+        if (!state.hasLastValue) {
+          // Primera lectura de esta regla en este proceso: no hay ventana
+          // todavía para calcular una tasa real -- se guarda como base y se
+          // difiere la evaluación al siguiente ciclo (evita un falso disparo
+          // "0 unidades/min" o un valor inventado en el primer ciclo).
+          canEvaluate = false;
+        } else {
+          const double deltaSeconds = std::chrono::duration<double>(
+                                           evalNow - state.lastValueAt)
+                                           .count();
+          comparisonValue = computeRatePerMinute(state.lastValue, currentValue, deltaSeconds);
+        }
+        state.hasLastValue = true;
+        state.lastValue = currentValue;
+        state.lastValueAt = evalNow;
       }
-    } else {
-      const char *p[1] = {miningSensorId.c_str()};
-      storage::PgResult vres{PQexecParams(
-          conn,
-          "SELECT current_value FROM mining_sensors WHERE id = $1::int "
-          "AND current_value IS NOT NULL",
-          1, nullptr, p, nullptr, nullptr, 0)};
-      if (vres.okTuples() && PQntuples(vres.get()) > 0) {
-        currentValue = std::atof(PQgetvalue(vres.get(), 0, 0));
-        hasValue = true;
+      if (canEvaluate && evaluateThresholdCondition(op, comparisonValue, threshold)) {
+        debounced = isWithinDebounceWindow(state.lastTriggeredAt, rule.debounceSecs, evalNow);
+        // lastTriggeredAt se actualiza recién si el INSERT de abajo
+        // realmente crea una fila nueva -- no acá, para no arrancar la
+        // ventana de debounce por un ciclo que ni siquiera insertó nada
+        // (p.ej. porque ya había una alarma abierta para esta regla).
+      } else {
+        canEvaluate = false; // reusa la bandera para saltar el bloque `triggered` de abajo
       }
     }
-    if (!hasValue) continue;
 
-    bool triggered = false;
-    if (op == "gt") triggered = currentValue > threshold;
-    else if (op == "gte") triggered = currentValue >= threshold;
-    else if (op == "lt") triggered = currentValue < threshold;
-    else if (op == "lte") triggered = currentValue <= threshold;
-    else if (op == "eq") triggered = currentValue == threshold;
+    const bool triggered = canEvaluate;
 
     if (triggered) {
+      if (debounced) return; // T5: dentro de la ventana -- ni insert ni notify.
+
       std::ostringstream msg;
-      msg << ruleName << ": valor " << currentValue << " " << op << " " << threshold;
+      msg << ruleName << ": valor " << currentValue;
+      if (rule.conditionType == "rate") msg << " (tasa " << comparisonValue << "/min)";
+      msg << " " << op << " " << threshold;
       const std::string msgStr = msg.str();
       std::ostringstream valStr;
       valStr << currentValue;
@@ -726,6 +1085,10 @@ void evaluateRulesOnce(PGconn *conn) {
       if (!ins.okTuples()) {
         std::cerr << "[ALARM-ENGINE] insert de alarma falló: " << PQresultErrorMessage(ins.get()) << "\n";
       } else if (PQntuples(ins.get()) > 0) {
+        {
+          std::lock_guard<std::mutex> lk(gRuleRuntimeMutex);
+          gRuleRuntimeState[ruleId].lastTriggeredAt = evalNow;
+        }
         const std::string alarmId = PQgetvalue(ins.get(), 0, 0);
         const char *auditParams[3] = {tenantId.c_str(), alarmId.c_str(), msgStr.c_str()};
         storage::PgResult auditRes{PQexecParams(
@@ -761,6 +1124,110 @@ void evaluateRulesOnce(PGconn *conn) {
               "resolved", PQgetvalue(res.get(), k, 2),
               PQgetvalue(res.get(), k, 3), currentValue);
         }
+    }
+}
+
+/** @brief Camino de polling (red de seguridad + única vía para reglas de
+ * `mining_sensor_id`, ver comentario de arriba). Sigue leyendo el valor
+ * actual de Postgres por cada regla -- eso ya era así antes de esta
+ * actualización, no es nuevo; lo nuevo es que ya no es la ÚNICA vía para
+ * reglas de `sensor_id`. */
+void evaluateRulesOnce(PGconn *conn) {
+  const std::vector<AlarmRuleRow> rules = getCachedEnabledRules(conn);
+  const auto evalNow = std::chrono::steady_clock::now();
+
+  for (const auto &rule : rules) {
+    const bool hasSensorId = rule.hasSensorId;
+    const std::string &sensorId = rule.sensorId;
+    const std::string &miningSensorId = rule.miningSensorId;
+
+    bool hasValue = false;
+    double currentValue = 0.0;
+    if (hasSensorId) {
+      const char *p[1] = {sensorId.c_str()};
+      // ADR-131: último valor vía telemetry_fact (dim_sensor resuelve el
+      // UUID a sensor_id_sk) -- solo esta lectura puntual, platform_alarm_
+      // rules/platform_alarms y su CHECK XOR sensor_id/mining_sensor_id
+      // quedan sin tocar (fuera de alcance deliberado, ver ADR-131).
+      storage::PgResult vres{PQexecParams(
+          conn,
+          "SELECT tf.value_numeric FROM telemetry_fact tf "
+          "JOIN dim_sensor ds ON ds.sensor_id_sk = tf.sensor_id_sk "
+          "WHERE ds.sensor_id = $1::uuid AND tf.channel_id = 0 "
+          "AND tf.value_numeric IS NOT NULL ORDER BY tf.captured_at DESC LIMIT 1",
+          1, nullptr, p, nullptr, nullptr, 0)};
+      if (vres.okTuples() && PQntuples(vres.get()) > 0) {
+        currentValue = std::atof(PQgetvalue(vres.get(), 0, 0));
+        hasValue = true;
+      }
+    } else {
+      const char *p[1] = {miningSensorId.c_str()};
+      storage::PgResult vres{PQexecParams(
+          conn,
+          "SELECT current_value FROM mining_sensors WHERE id = $1::int "
+          "AND current_value IS NOT NULL",
+          1, nullptr, p, nullptr, nullptr, 0)};
+      if (vres.okTuples() && PQntuples(vres.get()) > 0) {
+        currentValue = std::atof(PQgetvalue(vres.get(), 0, 0));
+        hasValue = true;
+      }
+    }
+    if (!hasValue) continue;
+
+    evaluateRuleAgainstValue(conn, rule, currentValue, evalNow);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Camino en tiempo real (ADR-140, actualización 2026-09-02): registrado como
+// callback de `TelemetryIngestor` (ver `startAlarmEvaluator()` más abajo).
+// Se ejecuta EN el hilo de flush/consumo de telemetría, nunca en una request
+// HTTP -- debe ser barato en el caso común. Solo cubre reglas de
+// `sensor_id` real (las de `mining_sensor_id` siguen dependiendo
+// exclusivamente del polling, ver `evaluateRulesOnce`, porque
+// `mining_sensors.current_value` no pasa por `TelemetryIngestor`).
+// ---------------------------------------------------------------------------
+void handleRealtimeTelemetryBatch(const std::vector<mining::TelemetryRow> &batch) {
+  storage::PgPool::Lease lease;
+  PGconn *conn = nullptr;
+
+  // Si el cache está obsoleto o fue invalidado (p.ej. una regla se acaba de
+  // crear/editar/borrar, T12), hay que refrescarlo ANTES de mirar el índice
+  // por sensor -- si no, un evento en tiempo real justo después de crear
+  // una regla nunca la vería (el índice seguiría reflejando el estado
+  // anterior hasta que el polling periódico lo refresque, hasta 10s
+  // después) y esta vía dejaría de cumplir su propósito. Caso común (cache
+  // fresco, sin cambios de reglas recientes): sin esto, cero conexiones.
+  if (!ruleCacheIsFresh()) {
+    auto &cfg = AppConfig::instance();
+    lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+    conn = lease.get();
+    if (PQstatus(conn) == CONNECTION_OK) {
+      getCachedEnabledRules(conn); // fuerza el refresh; el resultado en sí no se usa, solo el índice que deja actualizado
+    }
+  }
+
+  bool anyCandidate = false;
+  for (const auto &row : batch) {
+    if (!getCachedRulesForSensor(row.sensor_id).empty()) {
+      anyCandidate = true;
+      break;
+    }
+  }
+  if (!anyCandidate) return;
+
+  if (!conn || PQstatus(conn) != CONNECTION_OK) {
+    auto &cfg = AppConfig::instance();
+    lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+    conn = lease.get();
+    if (PQstatus(conn) != CONNECTION_OK) return;  // el polling lo cubre en su próximo ciclo
+  }
+
+  const auto evalNow = std::chrono::steady_clock::now();
+  for (const auto &row : batch) {
+    const auto matchingRules = getCachedRulesForSensor(row.sensor_id);
+    for (const auto &rule : matchingRules) {
+      evaluateRuleAgainstValue(conn, rule, row.value_numeric, evalNow);
     }
   }
 }
@@ -809,6 +1276,13 @@ void startAlarmEvaluator() {
   gEvaluatorStopRequested.store(false);
   gEvaluatorThread = std::thread(evaluatorLoop);
   gEvaluatorThread.detach();
+  // ADR-140 (actualización 2026-09-02): registrar el camino en tiempo real
+  // ANTES de que main.cpp llame a TelemetryIngestor::instance().start() —
+  // mismo orden que ya exige configureKafka(). Si por algún motivo se
+  // llamara después de start(), el peor caso es perder el disparo en
+  // tiempo real de los primeros lotes (el polling los cubre igual en su
+  // siguiente ciclo) — nunca una pérdida de datos.
+  mining::TelemetryIngestor::instance().setOnBatchCommitted(handleRealtimeTelemetryBatch);
 #endif
 }
 
@@ -824,6 +1298,7 @@ void registerRoutes(router::Router &r) {
 
   r.post("/api/mining/alarms/rules", handleCreateAlarmRule);
   r.get("/api/mining/alarms/rules", handleListAlarmRules);
+  r.put("/api/mining/alarms/rules/", handleUpdateAlarmRule);
   r.del("/api/mining/alarms/rules/", handleDeleteAlarmRule);
 
   r.get("/api/mining/alarms", handleListAlarms);

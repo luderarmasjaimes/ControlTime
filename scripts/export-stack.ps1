@@ -66,6 +66,19 @@ function Find-RepoRoot {
     return $null
 }
 
+function Add-Checksum {
+    # SHA-256 del archivo recién escrito, en formato compatible con
+    # `sha256sum -c` (HASH<dos espacios>ruta-relativa-con-/). Se acumula en
+    # memoria y se escribe una sola vez al final (checksums.sha256) para que
+    # import-stack.ps1 pueda verificar integridad ANTES de restaurar nada.
+    param([string]$FilePath, [string]$ExportRoot)
+    $hash = (Get-FileHash -Path $FilePath -Algorithm SHA256).Hash.ToLower()
+    $fullFile = [System.IO.Path]::GetFullPath($FilePath)
+    $fullRoot = [System.IO.Path]::GetFullPath($ExportRoot)
+    $rel = $fullFile.Substring($fullRoot.Length).TrimStart('\', '/') -replace '\\', '/'
+    return "$hash  $rel"
+}
+
 $Docker = Find-Docker
 
 if ($RepoRoot -eq "") {
@@ -81,7 +94,7 @@ if ($ProjectName -eq "") {
     $ProjectName = (Split-Path -Leaf $RepoRoot).ToLower()
 }
 
-$Timestamp = Get-Date -AsUTC -Format "yyyyMMddTHHmmssZ"
+$Timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
 if ($ExportDir -eq "") {
     $ExportDir = Join-Path $RepoRoot "stack_export\$Timestamp"
 }
@@ -94,6 +107,8 @@ New-Item -ItemType Directory -Force -Path $ImagesDir, $VolumesDir, $DbDir | Out-
 Write-Host "[export] docker: $Docker"
 Write-Host "[export] destino: $ExportDir"
 
+$ChecksumLines = @()
+
 # --- 1. Bases de datos -------------------------------------------------------
 # pg_dump escribe DENTRO del contenedor y se trae el archivo con `docker cp`
 # -- nunca por pipe de PowerShell, que decodifica/re-codifica texto y
@@ -104,6 +119,7 @@ if ($IncludeDb) {
     if ($LASTEXITCODE -ne 0) { throw "pg_dump sensors_db falló" }
     & $Docker cp "${DbContainer}:/tmp/sensors_db.dump" (Join-Path $DbDir "sensors_db.dump")
     & $Docker exec $DbContainer rm -f /tmp/sensors_db.dump
+    $ChecksumLines += Add-Checksum -FilePath (Join-Path $DbDir "sensors_db.dump") -ExportRoot $ExportDir
 
     $formulaRunning = (& $Docker ps --format '{{.Names}}') -contains $FormulaDbContainer
     if ($formulaRunning) {
@@ -112,6 +128,7 @@ if ($IncludeDb) {
         if ($LASTEXITCODE -ne 0) { throw "pg_dump formula falló" }
         & $Docker cp "${FormulaDbContainer}:/tmp/formula_db.dump" (Join-Path $DbDir "formula_db.dump")
         & $Docker exec $FormulaDbContainer rm -f /tmp/formula_db.dump
+        $ChecksumLines += Add-Checksum -FilePath (Join-Path $DbDir "formula_db.dump") -ExportRoot $ExportDir
     } else {
         Write-Warning "$FormulaDbContainer no está corriendo, se salta."
     }
@@ -132,12 +149,24 @@ if ($IncludeVolumes) {
             continue
         }
         Write-Host "[export] volumen $fullVol -> volumes/$vol.tar.gz ..."
-        $volumesDirUnix = $VolumesDir -replace '\\', '/'
-        & $Docker run --rm `
-            -v "${fullVol}:/from:ro" `
-            -v "${volumesDirUnix}:/to" `
-            alpine sh -c "tar czf /to/$vol.tar.gz -C /from ."
-        if ($LASTEXITCODE -ne 0) { throw "export del volumen $fullVol falló" }
+        # tar+gzip DENTRO del contenedor (su propia capa de escritura, sobre
+        # el disco nativo de Docker Desktop) y se trae el archivo terminado
+        # con `docker cp` -- nunca escribiendo directo a la carpeta del host
+        # vía bind mount: con volúmenes grandes (ollama_data) el puente de
+        # archivos WSL2<->Windows puede cortar la escritura a mitad de
+        # camino ("I/O error"/"Broken pipe"), sobre todo si el antivirus
+        # escanea el archivo mientras se escribe. Mismo criterio que ya usa
+        # el pg_dump de arriba.
+        $helperName = "beemetry-export-$vol-$PID"
+        & $Docker run --name $helperName -v "${fullVol}:/from:ro" alpine sh -c "tar czf /tmp/$vol.tar.gz -C /from ."
+        $tarExit = $LASTEXITCODE
+        if ($tarExit -eq 0) {
+            & $Docker cp "${helperName}:/tmp/$vol.tar.gz" (Join-Path $VolumesDir "$vol.tar.gz")
+            $tarExit = $LASTEXITCODE
+        }
+        & $Docker rm -f $helperName | Out-Null
+        if ($tarExit -ne 0) { throw "export del volumen $fullVol falló" }
+        $ChecksumLines += Add-Checksum -FilePath (Join-Path $VolumesDir "$vol.tar.gz") -ExportRoot $ExportDir
     }
 } else {
     Write-Host "[export] IncludeVolumes=`$false, saltando volumenes."
@@ -162,9 +191,27 @@ if ($IncludeImages) {
         $tmpTar = Join-Path $ImagesDir "$safeName.tar"
         & $Docker save -o $tmpTar $img
         if ($LASTEXITCODE -ne 0) { throw "docker save falló para $img" }
-        # Comprimir y borrar el .tar sin comprimir (docker save no soporta gzip nativo en Windows).
-        & tar -czf "$tmpTar.gz" -C $ImagesDir (Split-Path -Leaf $tmpTar)
+        # Comprimir el .tar de `docker save` a gzip DIRECTO sobre sus bytes
+        # -- NUNCA con `tar -czf out.tar.gz -C dir archivo.tar`: eso no
+        # gzipea los bytes del .tar, los ENVUELVE como entrada de un tar
+        # nuevo y recién gzipea ESE (tar-dentro-de-tar). `docker load`
+        # descomprime bien pero no encuentra manifest.json en la raíz y
+        # falla con "unrecognized image format" -- bug real, confirmado
+        # reproducible en las 15 imágenes de un export. GZipStream de .NET
+        # opera sobre streams de archivo, nunca por el pipeline de
+        # PowerShell (que corrompe binarios, mismo criterio que pg_dump).
+        $inStream = [System.IO.File]::OpenRead($tmpTar)
+        $outStream = [System.IO.File]::Create("$tmpTar.gz")
+        $gzipStream = New-Object System.IO.Compression.GzipStream($outStream, [System.IO.Compression.CompressionLevel]::Optimal)
+        try {
+            $inStream.CopyTo($gzipStream)
+        } finally {
+            $gzipStream.Close()
+            $outStream.Close()
+            $inStream.Close()
+        }
         Remove-Item $tmpTar -Force
+        $ChecksumLines += Add-Checksum -FilePath "$tmpTar.gz" -ExportRoot $ExportDir
     }
 } else {
     Write-Host "[export] IncludeImages=`$false, saltando imagenes."
@@ -178,7 +225,7 @@ if (-not $gitBranch) { $gitBranch = "sin-git" }
 
 @"
 project=$ProjectName
-exported_at=$(Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
+exported_at=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))
 git_commit=$gitCommit
 git_branch=$gitBranch
 include_images=$([int]$IncludeImages)
@@ -186,6 +233,17 @@ include_volumes=$([int]$IncludeVolumes)
 include_db=$([int]$IncludeDb)
 include_redpanda=$([int]$IncludeRedpanda)
 "@ | Set-Content -Path (Join-Path $ExportDir "manifest.txt")
+
+if ($ChecksumLines.Count -gt 0) {
+    # LF explícito (no el CRLF por defecto de Set-Content en Windows) -- el
+    # export puede importarse en Linux/macOS con import-stack.sh, y
+    # `sha256sum -c` interpreta un \r final como parte del nombre de
+    # archivo y falla con "No such file or directory" aunque el contenido
+    # sea idéntico.
+    $checksumText = ($ChecksumLines -join "`n") + "`n"
+    [System.IO.File]::WriteAllText((Join-Path $ExportDir "checksums.sha256"), $checksumText, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "[export] checksums.sha256 escrito ($($ChecksumLines.Count) archivos) -- import-stack.ps1/.sh lo verifica antes de restaurar."
+}
 
 $totalSize = (Get-ChildItem -Path $ExportDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
 $totalSizeGb = [math]::Round($totalSize / 1GB, 2)

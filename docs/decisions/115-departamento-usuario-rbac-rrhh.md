@@ -1,7 +1,39 @@
 # ADR-115 — Departamento de usuario + RRHH como quinta categoría de soporte
 
-**Status**: accepted; esquema de datos y capa RBAC implementados y aplicados,
-wiring del bot/panel admin en curso (ver "Estado de implementación").
+> **Actualización 2026-08-30 (auditoría de trazabilidad, ver `README.md`)**:
+> verificado por grep directo sobre el código real que los 3 pendientes que
+> este ADR dejó documentados el 2026-08-19 (ver "Estado de implementación"
+> original abajo, sin editar) **ya están cerrados**, en un cambio posterior
+> a la fecha de este ADR que nunca actualizó su estado: (1)
+> `whatsapp_bot_engine.cpp` ahora sí maneja `rrhh`/`kMenuRrhh` de punta a
+> punta (`choice == kMenuRrhh` en `handleInboundMessage`,
+> `startCollectingFlow(..., "rrhh")`, resolución de contacto y flow
+> questions) — la opción 8 del menú ya es funcional, no solo visible. (2)
+> `handleUpdateTicketStatus` y `handleSetContactNumber`
+> (`support_routes.cpp`) ya implementan la alternativa "permiso global O
+> `department == category`" descrita en la Decisión de este ADR, con
+> comentario inline citando `ADR-115` explícitamente. (3) Los endpoints de
+> búsqueda de tickets/chat de ADR-116 ya distinguen `soporte.view` de
+> `soporte.manage` en su chequeo de autorización. El frontend
+> `SupportAdminView.tsx` también aplica el filtro `isDepartmentScoped`
+> correctamente. **Hallazgo nuevo, cerrado en la misma pasada** (mismo
+> criterio de ADR-063/079/093/137 de este log): `handleListContactNumbers`
+> (`GET`, lista los 3 números de contacto) seguía exigiendo
+> `soporte.manage` estricto sin la alternativa `soporte.view`/`department`
+> que sí tenían sus contrapartes de escritura — un agente de RRHH con
+> `department` seteado podía EDITAR su número de contacto vía
+> `handleSetContactNumber` pero no podía VERLO primero vía
+> `handleListContactNumbers`. Corregido: ahora acepta `soporte.view` O
+> `department == key` (devolviendo solo la fila del departamento propio si
+> no hay permiso global) — build verificado limpio (`Dockerfile.verify`,
+> CTest 1/1). Este ADR sube de `accepted` a `implemented` — no quedan
+> pendientes de código conocidos; solo la prueba E2E de punta a punta contra
+> WhatsApp Business real (bloqueada por credenciales de producción de Meta,
+> mismo bloqueo que ADR-112/113/129).
+
+**Status**: implemented (2026-08-30, ver actualización arriba); esquema de datos y capa RBAC
+implementados y aplicados, wiring del bot/panel admin cerrado — pendiente solo prueba E2E con
+WhatsApp Business real (credenciales de producción de Meta).
 
 **Fecha**: 2026-08-19
 

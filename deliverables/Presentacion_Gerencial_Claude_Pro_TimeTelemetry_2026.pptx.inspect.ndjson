@@ -1,0 +1,195 @@
+{"kind":"deck","id":"pr/n1s66c","name":"Deck"}
+{"kind":"layout","layoutId":"/ppt/slideMasters/slideMaster1.xml","name":"","type":"master"}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout1.xml","name":"DEFAULT"}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout2.xml","name":"Slide master 1"}
+{"kind":"slide","id":"sl/y90nupkv","slide":1,"title":"DECISIÓN GERENCIAL · AGOSTO 2026","textShapes":3}
+{"kind":"shape","id":"sh/k3yl0zql","slide":1,"name":"Shape 0","bbox":[412.09,159.65,175.45,27.97]}
+{"kind":"textbox","id":"sh/7qp4be9c","slide":1,"name":"Text 1","text":"DECISIÓN GERENCIAL · AGOSTO 2026","textPreview":"DECISIÓN GERENCIAL · AGOSTO 2026","textChars":32,"textLines":1,"bbox":[421.02,164.11,205.59,19.05]}
+{"kind":"textbox","id":"sh/65g3298r","slide":1,"name":"Text 2","text":"Claude Pro para acelerar la Plataforma Minera","textPreview":"Claude Pro para acelerar la Plataforma Minera","textChars":45,"textLines":1,"bbox":[412.09,193.57,495.83,93.02]}
+{"kind":"textbox","id":"sh/ts7md4r2","slide":1,"name":"Text 3","text":"Solicitud: aprobar USD 200/año por usuario para sostener desarrollo, pruebas e integraciones críticas de TimeTelemetry.","textPreview":"Solicitud: aprobar USD 200/año por usuario para sostener desarrollo, pruebas e integraciones críticas de TimeTelemetry.","textChars":119,"textLines":1,"bbox":[412.09,308.91,495.83,71.44]}
+{"kind":"image","id":"im/dkb2xcfy","slide":1,"name":"Image 0","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/y90nupkv","slide":1,"text":"[Sources]\n- D:\\InformeCliente\n- 1._Presentación_TMT.pdf\n- Plantilla Telemetry (2).potx"}
+{"kind":"slide","id":"sl/hwbqtkby","slide":2,"title":"Recomendación: aprobar ahora, con control y medición","textShapes":10}
+{"kind":"textbox","id":"sh/ozy1ofad","slide":2,"name":"Text 0","text":"Recomendación: aprobar ahora, con control y medición","textPreview":"Recomendación: aprobar ahora, con control y medición","textChars":52,"textLines":1,"bbox":[403.13,47.92,479.3,38.52]}
+{"kind":"textbox","id":"sh/b29kza94","slide":2,"name":"Text 1","text":"El costo es marginal frente al proyecto; el riesgo de detener trabajo crítico es material.","textPreview":"El costo es marginal frente al proyecto; el riesgo de detener trabajo crítico es material.","textChars":90,"textLines":1,"bbox":[403.13,101.74,513.73,36.05]}
+{"kind":"shape","id":"sh/a10jqpsj","slide":2,"name":"Shape 2","bbox":[403.13,149.27,513.73,87.06]}
+{"kind":"textbox","id":"sh/x4r21kru","slide":2,"name":"Text 3","text":"Desbloqueo inmediato","textPreview":"Desbloqueo inmediato","textChars":20,"textLines":1,"bbox":[415.95,162.09,154.06,19.26]}
+{"kind":"textbox","id":"sh/w3i1sfa9","slide":2,"name":"Text 4","text":"Una licencia Pro reduce esperas por cuota y mantiene continuidad en ingeniería.","textPreview":"Una licencia Pro reduce esperas por cuota y mantiene continuidad en ingeniería.","textChars":79,"textLines":1,"bbox":[415.95,187.46,488.09,36.05]}
+{"kind":"shape","id":"sh/r65knqtk","slide":2,"name":"Shape 5","bbox":[403.13,246.53,513.73,69.04]}
+{"kind":"textbox","id":"sh/q5wjelsz","slide":2,"name":"Text 6","text":"Uso con gobernanza","textPreview":"Uso con gobernanza","textChars":18,"textLines":1,"bbox":[415.95,259.35,192.87,19.26]}
+{"kind":"textbox","id":"sh/ove9o7yd","slide":2,"name":"Text 7","text":"Sin credenciales ni datos sensibles; revisión humana, SPEC/ADR y pruebas antes de integrar.","textPreview":"Sin credenciales ni datos sensibles; revisión humana, SPEC/ADR y pruebas antes de integrar.","textChars":91,"textLines":1,"bbox":[415.95,284.73,488.09,18.02]}
+{"kind":"shape","id":"sh/9wnqhczy","slide":2,"name":"Shape 8","bbox":[403.13,325.77,513.73,87.06]}
+{"kind":"textbox","id":"sh/mtwrmxg7","slide":2,"name":"Text 9","text":"KPI de 30 días","textPreview":"KPI de 30 días","textChars":14,"textLines":1,"bbox":[415.95,338.59,154.06,19.26]}
+{"kind":"textbox","id":"sh/nu58f2hs","slide":2,"name":"Text 10","text":"Horas evitadas, tareas cerradas, pruebas generadas y defectos detectados.","textPreview":"Horas evitadas, tareas cerradas, pruebas generadas y defectos detectados.","textChars":73,"textLines":1,"bbox":[415.95,363.97,488.09,36.05]}
+{"kind":"shape","id":"sh/wjy9sry9","slide":2,"name":"Shape 11","bbox":[403.13,423.04,513.73,69.04]}
+{"kind":"textbox","id":"sh/xk7qlczu","slide":2,"name":"Text 12","text":"Escalamiento por evidencia","textPreview":"Escalamiento por evidencia","textChars":26,"textLines":1,"bbox":[415.95,435.86,154.73,19.26]}
+{"kind":"textbox","id":"sh/ahwrqhgj","slide":2,"name":"Text 13","text":"Agregar licencias cuando la demanda concurrente y los límites semanales lo justifiquen.","textPreview":"Agregar licencias cuando la demanda concurrente y los límites semanales lo justifiquen.","textChars":87,"textLines":1,"bbox":[415.95,461.23,488.09,18.02]}
+{"kind":"image","id":"im/wved8fit","slide":2,"name":"Image 0","alt":"Operación minera digital TimeTelemetry","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/hwbqtkby","slide":2,"text":"[Sources]\n- Matriz_Costos_Cronograma_26_Semanas.md\n- https://claude.com/pricing\n- https://support.claude.com/en/articles/11049762-choose-a-claude-plan"}
+{"kind":"slide","id":"sl/ofy9wn61","slide":3,"title":"El cuello de botella ya es operativo, no hipotético","textShapes":10}
+{"kind":"textbox","id":"sh/d0jax03i","slide":3,"name":"Text 0","text":"El cuello de botella ya es operativo, no hipotético","textPreview":"El cuello de botella ya es operativo, no hipotético","textChars":51,"textLines":1,"bbox":[406.39,43.87,507.22,82.84]}
+{"kind":"textbox","id":"sh/298ryl4v","slide":3,"name":"Text 1","text":"La evidencia muestra consumo intensivo y límites que interrumpen sesiones justo cuando el proyecto entra en pruebas e integración.","textPreview":"La evidencia muestra consumo intensivo y límites que interrumpen sesiones justo cuando el proyecto entra en pruebas e integración.","textChars":130,"textLines":1,"bbox":[406.39,144.41,507.22,40.09]}
+{"kind":"shape","id":"sh/3ah8rqlg","slide":3,"name":"Shape 2","bbox":[406.39,197.79,507.22,298.34]}
+{"kind":"shape","id":"sh/obq90bml","slide":3,"name":"Shape 3","bbox":[406.89,198.29,506.22,74.34]}
+{"kind":"textbox","id":"sh/pcjqtg36","slide":3,"name":"Text 4","text":"77% de la sesión","textPreview":"77% de la sesión","textChars":16,"textLines":1,"bbox":[420.14,211.54,165.7,20.71]}
+{"kind":"textbox","id":"sh/m5cra54z","slide":3,"name":"Text 5","text":"Capacidad consumida; el reinicio ocurre horas después.","textPreview":"Capacidad consumida; el reinicio ocurre horas después.","textChars":54,"textLines":1,"bbox":[420.14,239.33,479.72,20.05]}
+{"kind":"shape","id":"sh/n6ls3alk","slide":3,"name":"Shape 6","bbox":[406.89,272.62,506.22,74.34]}
+{"kind":"shape","id":"sh/n2l4fq98","slide":3,"name":"Shape 7","bbox":[406.89,272.62,506.22,1.5]}
+{"kind":"textbox","id":"sh/m1c3mlsn","slide":3,"name":"Text 8","text":"Límite semanal","textPreview":"Límite semanal","textChars":14,"textLines":1,"bbox":[420.14,285.87,165.7,20.71]}
+{"kind":"textbox","id":"sh/943mhgre","slide":3,"name":"Text 9","text":"El plan aplica límites adicionales y la capacidad promocional es temporal.","textPreview":"El plan aplica límites adicionales y la capacidad promocional es temporal.","textChars":74,"textLines":1,"bbox":[420.14,313.66,479.72,20.05]}
+{"kind":"shape","id":"sh/83ulovat","slide":3,"name":"Shape 10","bbox":[406.89,346.96,506.22,74.34]}
+{"kind":"shape","id":"sh/v6l4jq94","slide":3,"name":"Shape 11","bbox":[406.89,346.96,506.22,1.5]}
+{"kind":"textbox","id":"sh/a5c3ql8z","slide":3,"name":"Text 12","text":"Impacto directo","textPreview":"Impacto directo","textChars":15,"textLines":1,"bbox":[420.14,360.21,165.7,20.71]}
+{"kind":"textbox","id":"sh/x8nml0ra","slide":3,"name":"Text 13","text":"Análisis, generación, revisión y depuración se detienen o cambian de herramienta.","textPreview":"Análisis, generación, revisión y depuración se detienen o cambian de herramienta.","textChars":81,"textLines":1,"bbox":[420.14,388,479.72,20.05]}
+{"kind":"shape","id":"sh/w7ulsvqp","slide":3,"name":"Shape 14","bbox":[406.89,421.3,506.22,74.34]}
+{"kind":"shape","id":"sh/ja54na9g","slide":3,"name":"Shape 15","bbox":[406.89,421.3,506.22,1.5]}
+{"kind":"textbox","id":"sh/i9w3u58v","slide":3,"name":"Text 16","text":"Riesgo de equipo","textPreview":"Riesgo de equipo","textChars":16,"textLines":1,"bbox":[420.14,434.55,216.18,20.71]}
+{"kind":"textbox","id":"sh/e10f2twf","slide":3,"name":"Text 17","text":"Más personal implica demanda concurrente; una sola cuenta no escala.","textPreview":"Más personal implica demanda concurrente; una sola cuenta no escala.","textChars":68,"textLines":1,"bbox":[420.14,462.34,479.72,20.05]}
+{"kind":"image","id":"im/o32dw321","slide":3,"name":"Image 0","alt":"Captura de límites de uso de Claude Pro suministrada por el usuario","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/ofy9wn61","slide":3,"text":"[Sources]\n- Captura de límites suministrada por el usuario\n- https://support.claude.com/en/articles/11049762-choose-a-claude-plan"}
+{"kind":"slide","id":"sl/jyx0ra1s","slide":4,"title":"La plataforma cubre el ciclo completo sensor → decisión","textShapes":10}
+{"kind":"textbox","id":"sh/1cj2d8b6","slide":4,"name":"Text 0","text":"La plataforma cubre el ciclo completo sensor → decisión","textPreview":"La plataforma cubre el ciclo completo sensor → decisión","textChars":55,"textLines":1,"bbox":[102.91,31.1,727.4,34.16]}
+{"kind":"textbox","id":"sh/rm1k7yt4","slide":4,"name":"Text 1","text":"No es un editor de informes: conecta instrumentación, telemetría, datos, campo e IA con trazabilidad empresarial.","textPreview":"No es un editor de informes: conecta instrumentación, telemetría, datos, campo e IA con trazabilidad empresarial.","textChars":113,"textLines":1,"bbox":[610.95,205.59,246.63,60.66]}
+{"kind":"textbox","id":"sh/doj29oba","slide":4,"name":"Text 2","text":"Sensores y campo","textPreview":"Sensores y campo","textChars":16,"textLines":1,"bbox":[138.42,403.58,163.17,17.08]}
+{"kind":"textbox","id":"sh/sna103ap","slide":4,"name":"Text 3","text":"Instalación, calibración, mantenimiento y captura manual o automática.","textPreview":"Instalación, calibración, mantenimiento y captura manual o automática.","textChars":70,"textLines":1,"bbox":[138.42,425.47,336.55,15.16]}
+{"kind":"textbox","id":"sh/ih8ju9sn","slide":4,"name":"Text 4","text":"Core de telemetría","textPreview":"Core de telemetría","textChars":18,"textLines":1,"bbox":[520.52,403.58,136.62,17.08]}
+{"kind":"textbox","id":"sh/kbm987y5","slide":4,"name":"Text 5","text":"Ingesta durable, tiempo real, histórico, reglas y observabilidad.","textPreview":"Ingesta durable, tiempo real, histórico, reglas y observabilidad.","textChars":65,"textLines":1,"bbox":[520.52,425.47,336.56,15.16]}
+{"kind":"textbox","id":"sh/i94r6xgz","slide":4,"name":"Text 6","text":"Experiencia operativa","textPreview":"Experiencia operativa","textChars":21,"textLines":1,"bbox":[138.42,456.68,206.98,17.08]}
+{"kind":"textbox","id":"sh/jadsz2xk","slide":4,"name":"Text 7","text":"Mapas 2D/3D, radar, dashboards, CCTV, alertas e informes.","textPreview":"Mapas 2D/3D, radar, dashboards, CCTV, alertas e informes.","textChars":57,"textLines":1,"bbox":[138.42,478.57,336.55,15.16]}
+{"kind":"textbox","id":"sh/x8vaxsfe","slide":4,"name":"Text 8","text":"IA aplicada","textPreview":"IA aplicada","textChars":11,"textLines":1,"bbox":[520.52,456.68,302.95,17.08]}
+{"kind":"textbox","id":"sh/a5kr2xg3","slide":4,"name":"Text 9","text":"Predicción, anomalías, voz, visión EPP, asistencia y generación documental.","textPreview":"Predicción, anomalías, voz, visión EPP, asistencia y generación documental.","textChars":75,"textLines":1,"bbox":[520.52,478.57,336.56,30.33]}
+{"kind":"image","id":"im/sbm5cbix","slide":4,"name":"Image 0","alt":"Propuesta de valor TimeTelemetry: sensórica, servicios y plataforma","bbox":[102.91,86.32,299.21,299.21]}
+{"kind":"image","id":"im/b6xofahg","slide":4,"name":"Image 1","bbox":[107,403.92,16.39,16.39]}
+{"kind":"image","id":"im/q5onm50v","slide":4,"name":"Image 2","bbox":[489.1,403.92,16.39,16.39]}
+{"kind":"image","id":"im/m1s7e9k3","slide":4,"name":"Image 3","bbox":[107,457.02,16.39,16.39]}
+{"kind":"image","id":"im/n2187e1o","slide":4,"name":"Image 4","bbox":[489.1,457.02,16.39,16.39]}
+{"kind":"notes","id":"nt/jyx0ra1s","slide":4,"text":"[Sources]\n- 1._Presentación_TMT.pdf\n- specs/*/spec.md\n- frontend y backend del repositorio"}
+{"kind":"slide","id":"sl/i107q5of","slide":5,"title":"El avance es significativo, pero la mitad del checklist sigue abierta","textShapes":8}
+{"kind":"textbox","id":"sh/dgbulwnm","slide":5,"name":"Text 0","text":"El avance es significativo, pero la mitad del checklist sigue abierta","textPreview":"El avance es significativo, pero la mitad del checklist sigue abierta","textChars":69,"textLines":1,"bbox":[47.2,40.55,673.33,42.15]}
+{"kind":"textbox","id":"sh/z2tcnm5s","slide":5,"name":"Text 1","text":"Evidencia ejecutiva","textPreview":"Evidencia ejecutiva","textChars":19,"textLines":1,"bbox":[496.95,113.24,313.36,21.07]}
+{"kind":"textbox","id":"sh/l4bupwny","slide":5,"name":"Text 2","text":"25k/s verificados","textPreview":"25k/s verificados","textChars":17,"textLines":1,"bbox":[516.44,163.05,202.85,21.07]}
+{"kind":"textbox","id":"sh/032tgr6d","slide":5,"name":"Text 3","text":"1,5 M eventos en 60 s, p99 149,8 ms y recuperación de DB sin pérdida.","textPreview":"1,5 M eventos en 60 s, p99 149,8 ms y recuperación de DB sin pérdida.","textChars":69,"textLines":1,"bbox":[516.44,196.34,381.87,41.14]}
+{"kind":"textbox","id":"sh/m5kbi1oj","slide":5,"name":"Text 4","text":"100k/s aún no aprobado","textPreview":"100k/s aún no aprobado","textChars":22,"textLines":1,"bbox":[516.44,279.66,182.16,21.07]}
+{"kind":"textbox","id":"sh/w32dkbuh","slide":5,"name":"Text 5","text":"Faltan escalamiento, HA real y soak tests de 1 h/24 h.","textPreview":"Faltan escalamiento, HA real y soak tests de 1 h/24 h.","textChars":54,"textLines":1,"bbox":[516.44,312.95,381.87,41.14]}
+{"kind":"textbox","id":"sh/ahkvi1cb","slide":5,"name":"Text 6","text":"68 ítems abiertos","textPreview":"68 ítems abiertos","textChars":17,"textLines":1,"bbox":[516.44,396.28,250.1,21.07]}
+{"kind":"textbox","id":"sh/v2twb6dw","slide":5,"name":"Text 7","text":"Pendientes en 16 SPEC: DR, offline, alertas, EPP, voz, HA, RP y más.","textPreview":"Pendientes en 16 SPEC: DR, offline, alertas, EPP, voz, HA, RP y más.","textChars":68,"textLines":1,"bbox":[516.44,429.57,381.87,41.14]}
+{"kind":"chart","id":"ch/czq1obix","slide":5,"name":"","chartType":"bar","title":"Checklist abierto por frente (68)","bbox":[47.2,114.77,416.34,299.68]}
+{"kind":"image","id":"im/jmdw3qlg","slide":5,"name":"Image 0","alt":"Editable backlog chart placeholder","bbox":[47.2,114.77,416.34,299.68]}
+{"kind":"image","id":"im/ilkvul4v","slide":5,"name":"Image 1","bbox":[495.45,148.06,417.84,104.4]}
+{"kind":"image","id":"im/5ove5g3m","slide":5,"name":"Image 2","bbox":[495.45,264.68,417.84,104.4]}
+{"kind":"image","id":"im/4nmdwbm1","slide":5,"name":"Image 3","bbox":[495.45,381.3,417.84,104.4]}
+{"kind":"notes","id":"nt/i107q5of","slide":5,"text":"[Sources]\n- specs/*/tasks.md\n- PRUEBA_CAPACIDAD_TELEMETRIA_25K_2026-08-12.md\n- PRUEBA_CAPACIDAD_TELEMETRIA_100K_2026-08-11.md"}
+{"kind":"slide","id":"sl/x8f69ofe","slide":6,"title":"Pendientes críticos I: confiabilidad, pruebas y despliegue","textShapes":8}
+{"kind":"textbox","id":"sh/yhg7epsj","slide":6,"name":"Text 0","text":"Pendientes críticos I: confiabilidad, pruebas y despliegue","textPreview":"Pendientes críticos I: confiabilidad, pruebas y despliegue","textChars":58,"textLines":1,"bbox":[52.09,89.66,844.8,46.51]}
+{"kind":"textbox","id":"sh/zi98nu94","slide":6,"name":"Text 1","text":"La entrega empresarial exige cerrar capacidades que no se validan con una demo funcional.","textPreview":"La entrega empresarial exige cerrar capacidades que no se validan con una demo funcional.","textChars":89,"textLines":1,"bbox":[52.09,165.94,903.83,23.81]}
+{"kind":"textbox","id":"sh/98rqt4r6","slide":6,"name":"Text 2","text":"Resiliencia y DR","textPreview":"Resiliencia y DR","textChars":16,"textLines":1,"bbox":[52.09,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/ml07i9sv","slide":6,"name":"Text 3","text":"RTO <15 min, RPO≈0, backup/restore, failover, fencing y runbook ejecutado por otro operador.","textPreview":"RTO <15 min, RPO≈0, backup/restore, failover, fencing y runbook ejecutado por otro operador.","textChars":92,"textLines":1,"bbox":[52.09,355.09,272.87,95.25]}
+{"kind":"textbox","id":"sh/oryp8fah","slide":6,"name":"Text 4","text":"Pruebas de esfuerzo","textPreview":"Pruebas de esfuerzo","textChars":19,"textLines":1,"bbox":[343.56,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/pc76hkr2","slide":6,"name":"Text 5","text":"50k→75k→100k/s, soak 1 h/24 h, backpressure y fallas de DB/broker.","textPreview":"50k→75k→100k/s, soak 1 h/24 h, backpressure y fallas de DB/broker.","textChars":66,"textLines":1,"bbox":[343.56,355.09,272.87,71.44]}
+{"kind":"textbox","id":"sh/w32twb6l","slide":6,"name":"Text 6","text":"CI/CD y ciberseguridad","textPreview":"CI/CD y ciberseguridad","textChars":22,"textLines":1,"bbox":[635.04,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/v2tcn650","slide":6,"name":"Text 7","text":"Despliegue reproducible, rollback, TLS, SAST/DAST, pentest y evidencia de gates.","textPreview":"Despliegue reproducible, rollback, TLS, SAST/DAST, pentest y evidencia de gates.","textChars":80,"textLines":1,"bbox":[635.04,355.09,272.87,95.25]}
+{"kind":"image","id":"im/t03ulobq","slide":6,"name":"Image 0","alt":"Arquitectura de telemetría minera","bbox":[52.09,206.49,158.27,97.81]}
+{"kind":"image","id":"im/y9sbm9c3","slide":6,"name":"Image 1","alt":"Plataforma de gestión de telemetría","bbox":[343.56,206.49,158.27,97.81]}
+{"kind":"image","id":"im/ju1cfeto","slide":6,"name":"Image 2","alt":"Infraestructura y monitoreo TimeTelemetry","bbox":[635.04,206.49,158.27,97.81]}
+{"kind":"notes","id":"nt/x8f69ofe","slide":6,"text":"[Sources]\n- SPEC-015\n- Catalogo_Casos_Prueba_QA_2026-07-21.md\n- .github/workflows/ci.yml y ci-cd.yml"}
+{"kind":"slide","id":"sl/gnmp4jqx","slide":7,"title":"Pendientes críticos II: integración y automatización de campo","textShapes":8}
+{"kind":"textbox","id":"sh/cb2tkvap","slide":7,"name":"Text 0","text":"Pendientes críticos II: integración y automatización de campo","textPreview":"Pendientes críticos II: integración y automatización de campo","textChars":61,"textLines":1,"bbox":[52.09,89.66,844.8,46.51]}
+{"kind":"textbox","id":"sh/dcbud0ra","slide":7,"name":"Text 1","text":"El valor de negocio depende de conectar la plataforma con la operación real.","textPreview":"El valor de negocio depende de conectar la plataforma con la operación real.","textChars":76,"textLines":1,"bbox":[52.09,165.94,903.83,23.81]}
+{"kind":"textbox","id":"sh/zedcfa9g","slide":7,"name":"Text 2","text":"AWS / ThingsBoard","textPreview":"AWS / ThingsBoard","textChars":17,"textLines":1,"bbox":[52.09,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/kzmdova1","slide":7,"name":"Text 3","text":"Validar con el cliente: credenciales, TLS, deduplicación y degradación controlada.","textPreview":"Validar con el cliente: credenciales, TLS, deduplicación y degradación controlada.","textChars":82,"textLines":1,"bbox":[52.09,355.09,272.87,95.25]}
+{"kind":"textbox","id":"sh/eh0ba1sr","slide":7,"name":"Text 4","text":"RP TimeTelemetry / Odoo","textPreview":"RP TimeTelemetry / Odoo","textChars":23,"textLines":1,"bbox":[343.56,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/fi9c369c","slide":7,"name":"Text 5","text":"Build limpio y E2E real: réplica, outbox, XML-RPC, circuit breaker, permisos y WebSocket.","textPreview":"Build limpio y E2E real: réplica, outbox, XML-RPC, circuit breaker, permisos y WebSocket.","textChars":89,"textLines":1,"bbox":[343.56,355.09,272.87,71.44]}
+{"kind":"textbox","id":"sh/a9ojq5kz","slide":7,"name":"Text 6","text":"Sensores y personal de campo","textPreview":"Sensores y personal de campo","textChars":28,"textLines":1,"bbox":[635.04,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/xcz2l03q","slide":7,"name":"Text 7","text":"Onboarding, zonas, calibración, inventario, offline, movilidad entre minas y multi-país.","textPreview":"Onboarding, zonas, calibración, inventario, offline, movilidad entre minas y multi-país.","textChars":88,"textLines":1,"bbox":[635.04,355.09,272.87,95.25]}
+{"kind":"image","id":"im/byxwryh8","slide":7,"name":"Image 0","alt":"Integración de plataforma y datalogger","bbox":[52.09,206.49,158.27,97.81]}
+{"kind":"image","id":"im/k36xo3i5","slide":7,"name":"Image 1","alt":"Instrumentación geotécnica y sensores","bbox":[343.56,206.49,158.27,97.81]}
+{"kind":"image","id":"im/lozex8zq","slide":7,"name":"Image 2","alt":"Servicio e instrumentación de campo","bbox":[635.04,206.49,158.27,97.81]}
+{"kind":"notes","id":"nt/gnmp4jqx","slide":7,"text":"[Sources]\n- SPEC-019 y ADR-103\n- ADR-054\n- 1._Presentación_TMT.pdf"}
+{"kind":"slide","id":"sl/fu1gfa1s","slide":8,"title":"Pendientes críticos III: producto avanzado e IA operacional","textShapes":8}
+{"kind":"textbox","id":"sh/18byd4zy","slide":8,"name":"Text 0","text":"Pendientes críticos III: producto avanzado e IA operacional","textPreview":"Pendientes críticos III: producto avanzado e IA operacional","textChars":59,"textLines":1,"bbox":[52.09,89.66,844.8,46.51]}
+{"kind":"textbox","id":"sh/g72x4zyd","slide":8,"name":"Text 1","text":"Las bases existen; falta convertirlas en capacidades verificadas y sostenibles.","textPreview":"Las bases existen; falta convertirlas en capacidades verificadas y sostenibles.","textChars":79,"textLines":1,"bbox":[52.09,165.94,903.83,23.81]}
+{"kind":"textbox","id":"sh/6h0fypgb","slide":8,"name":"Text 2","text":"Visualización avanzada","textPreview":"Visualización avanzada","textChars":22,"textLines":1,"bbox":[52.09,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/tkby9kzm","slide":8,"name":"Text 3","text":"Radar, series, heatmaps, mapas 3D, geoespacial y dashboards configurables.","textPreview":"Radar, series, heatmaps, mapas 3D, geoespacial y dashboards configurables.","textChars":74,"textLines":1,"bbox":[52.09,355.09,272.87,95.25]}
+{"kind":"textbox","id":"sh/je9g3ahk","slide":8,"name":"Text 4","text":"Alarmas y predicción","textPreview":"Alarmas y predicción","textChars":20,"textLines":1,"bbox":[343.56,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/id0fu50z","slide":8,"name":"Text 5","text":"Reglas por sensor, debounce, anomalías, pronóstico, severidad y escalamiento multicanal.","textPreview":"Reglas por sensor, debounce, anomalías, pronóstico, severidad y escalamiento multicanal.","textChars":88,"textLines":1,"bbox":[343.56,355.09,272.87,71.44]}
+{"kind":"textbox","id":"sh/98rehwve","slide":8,"name":"Text 6","text":"IA en campo","textPreview":"IA en campo","textChars":11,"textLines":1,"bbox":[635.04,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/m5gvmhwn","slide":8,"name":"Text 7","text":"Visión EPP local, dictado con ruido, asistencia e informes predictivos con historial.","textPreview":"Visión EPP local, dictado con ruido, asistencia e informes predictivos con historial.","textChars":85,"textLines":1,"bbox":[635.04,355.09,272.87,95.25]}
+{"kind":"image","id":"im/c32pkj2x","slide":8,"name":"Image 0","alt":"Monitoreo de taludes y radar","bbox":[52.09,206.49,158.27,97.81]}
+{"kind":"image","id":"im/zqd8fe18","slide":8,"name":"Image 1","alt":"Mapas, gráficos y alertas de telemetría","bbox":[343.56,206.49,158.27,97.81]}
+{"kind":"image","id":"im/ep47m9kn","slide":8,"name":"Image 2","alt":"Aplicación de captura y operación de campo","bbox":[635.04,206.49,158.27,97.81]}
+{"kind":"notes","id":"nt/fu1gfa1s","slide":8,"text":"[Sources]\n- SPEC-016, SPEC-017 y SPEC-018\n- frontend/src\n- 1._Presentación_TMT.pdf"}
+{"kind":"slide","id":"sl/udsvah03","slide":9,"title":"Claude actúa como multiplicador transversal del equipo","textShapes":8}
+{"kind":"textbox","id":"sh/1cfmhgne","slide":9,"name":"Text 0","text":"Claude actúa como multiplicador transversal del equipo","textPreview":"Claude actúa como multiplicador transversal del equipo","textChars":54,"textLines":1,"bbox":[78.84,37.48,505.57,36.34]}
+{"kind":"textbox","id":"sh/nex4jq5k","slide":9,"name":"Text 1","text":"Ingeniería","textPreview":"Ingeniería","textChars":10,"textLines":1,"bbox":[666.54,132.57,177.48,22.19]}
+{"kind":"textbox","id":"sh/mdonql4z","slide":9,"name":"Text 2","text":"C++ · React · datos · IA","textPreview":"C++ · React · datos · IA","textChars":24,"textLines":1,"bbox":[666.54,161.06,195.62,47.4]}
+{"kind":"textbox","id":"sh/9gzml0nq","slide":9,"name":"Text 3","text":"Calidad","textPreview":"Calidad","textChars":7,"textLines":1,"bbox":[100.17,261.16,177.48,22.19]}
+{"kind":"textbox","id":"sh/ofq5svm5","slide":9,"name":"Text 4","text":"unitarias · API · E2E · carga","textPreview":"unitarias · API · E2E · carga","textChars":29,"textLines":1,"bbox":[97.81,289.65,179.85,31.6]}
+{"kind":"textbox","id":"sh/bih4na5w","slide":9,"name":"Text 5","text":"Operación y Gerencia","textPreview":"Operación y Gerencia","textChars":20,"textLines":1,"bbox":[666.54,323.47,177.48,22.19]}
+{"kind":"textbox","id":"sh/ah8nu54b","slide":9,"name":"Text 6","text":"runbooks · CI/CD · seguridad · SPEC/ADR · trazabilidad","textPreview":"runbooks · CI/CD · seguridad · SPEC/ADR · trazabilidad","textChars":54,"textLines":1,"bbox":[666.54,351.97,195.62,31.6]}
+{"kind":"textbox","id":"sh/oza1gfyh","slide":9,"name":"Text 7","text":"Acelera producción y verificación; no reemplaza revisión humana ni herramientas locales.","textPreview":"Acelera producción y verificación; no reemplaza revisión humana ni herramientas locales.","textChars":88,"textLines":1,"bbox":[78.84,469.38,802.32,33.13]}
+{"kind":"image","id":"im/u987u5cf","slide":9,"name":"Image 0","alt":"Claude Pro como nodo transversal del equipo","bbox":[78.84,91.98,802.32,367.18]}
+{"kind":"notes","id":"nt/udsvah03","slide":9,"text":"[Sources]\n- agents/registry.yaml\n- ai_platform/\n- specs/CONSTITUTION.md"}
+{"kind":"slide","id":"sl/m90b6t0r","slide":10,"title":"USD 200/año es una póliza de continuidad de costo marginal","textShapes":8}
+{"kind":"textbox","id":"sh/xc3mho32","slide":10,"name":"Text 0","text":"USD 200/año es una póliza de continuidad de costo marginal","textPreview":"USD 200/año es una póliza de continuidad de costo marginal","textChars":58,"textLines":1,"bbox":[47.2,40.55,673.33,42.15]}
+{"kind":"textbox","id":"sh/zelojyl8","slide":10,"name":"Text 1","text":"Escenarios de decisión","textPreview":"Escenarios de decisión","textChars":22,"textLines":1,"bbox":[496.95,113.24,313.36,21.07]}
+{"kind":"textbox","id":"sh/l036l83y","slide":10,"name":"Text 2","text":"1 asiento inmediato","textPreview":"1 asiento inmediato","textChars":19,"textLines":1,"bbox":[516.44,163.05,202.85,21.07]}
+{"kind":"textbox","id":"sh/kzu5c32t","slide":10,"name":"Text 3","text":"USD 200/año. Mínimo para evitar paradas y medir valor en 30 días.","textPreview":"USD 200/año. Mínimo para evitar paradas y medir valor en 30 días.","textChars":65,"textLines":1,"bbox":[516.44,196.34,381.87,41.14]}
+{"kind":"textbox","id":"sh/m1cnetkj","slide":10,"name":"Text 4","text":"Escala referencial","textPreview":"Escala referencial","textChars":18,"textLines":1,"bbox":[516.44,279.66,182.16,21.07]}
+{"kind":"textbox","id":"sh/s7yt4b21","slide":10,"name":"Text 5","text":"10 asientos Pro = USD 2.000/año, 0,93% del presupuesto del proyecto.","textPreview":"10 asientos Pro = USD 2.000/año, 0,93% del presupuesto del proyecto.","textChars":68,"textLines":1,"bbox":[516.44,312.95,381.87,41.14]}
+{"kind":"textbox","id":"sh/q5gb21kb","slide":10,"name":"Text 6","text":"Umbral de retorno","textPreview":"Umbral de retorno","textChars":17,"textLines":1,"bbox":[516.44,396.28,250.1,21.07]}
+{"kind":"textbox","id":"sh/r6pcv6lw","slide":10,"name":"Text 7","text":"A USD 25/h, recuperar 8 horas/año cubre una licencia; ROI aún no medido.","textPreview":"A USD 25/h, recuperar 8 horas/año cubre una licencia; ROI aún no medido.","textChars":72,"textLines":1,"bbox":[516.44,429.57,381.87,41.14]}
+{"kind":"chart","id":"ch/o3ul0bil","slide":10,"name":"","chartType":"doughnut","title":"10 licencias = 0,93% del proyecto","bbox":[47.2,114.77,416.34,299.68]}
+{"kind":"image","id":"im/7e50vel0","slide":10,"name":"Image 0","alt":"Editable cost chart placeholder","bbox":[47.2,114.77,416.34,299.68]}
+{"kind":"image","id":"im/6dwz29kf","slide":10,"name":"Image 1","bbox":[495.45,148.06,417.84,104.4]}
+{"kind":"image","id":"im/tg7ixo36","slide":10,"name":"Image 2","bbox":[495.45,264.68,417.84,104.4]}
+{"kind":"image","id":"im/sfeh4j2l","slide":10,"name":"Image 3","bbox":[495.45,381.3,417.84,104.4]}
+{"kind":"notes","id":"nt/m90b6t0r","slide":10,"text":"[Sources]\n- Matriz_Costos_Cronograma_26_Semanas.md\n- https://claude.com/pricing"}
+{"kind":"slide","id":"sl/jetc3ut0","slide":11,"title":"Adopción gobernada: aprobar, medir y escalar","textShapes":17}
+{"kind":"textbox","id":"sh/xcryxg7y","slide":11,"name":"Text 0","text":"Adopción gobernada: aprobar, medir y escalar","textPreview":"Adopción gobernada: aprobar, medir y escalar","textChars":44,"textLines":1,"bbox":[86.86,35.39,731.27,35.61]}
+{"kind":"shape","id":"sh/wbih4b6d","slide":11,"name":"Shape 1","bbox":[479.24,88.45,1.5,326.87]}
+{"kind":"shape","id":"sh/n69grmpw","slide":11,"name":"Shape 2","bbox":[434.5,100.51,34.18,1.5]}
+{"kind":"shape","id":"sh/250zy18b","slide":11,"name":"Shape 3","bbox":[467.18,88.45,25.63,25.63]}
+{"kind":"textbox","id":"sh/98rytw72","slide":11,"name":"Text 4","text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[471.45,90.58,17.09,21.36]}
+{"kind":"textbox","id":"sh/o7ih0r6h","slide":11,"name":"Text 5","text":"Hoy","textPreview":"Hoy","textChars":3,"textLines":1,"bbox":[280.58,92.36,142.44,17.8]}
+{"kind":"textbox","id":"sh/72t03qp0","slide":11,"name":"Text 6","text":"Aprobar 1 licencia Pro anual y asignar propietario.","textPreview":"Aprobar 1 licencia Pro anual y asignar propietario.","textChars":51,"textLines":1,"bbox":[86.86,115.39,336.16,32.19]}
+{"kind":"shape","id":"sh/61kzalof","slide":11,"name":"Shape 7","bbox":[491.31,163.53,34.18,1.5]}
+{"kind":"shape","id":"sh/ofqtgnyt","slide":11,"name":"Shape 8","bbox":[467.18,151.47,25.63,25.63]}
+{"kind":"textbox","id":"sh/9gza9sze","slide":11,"name":"Text 9","text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[471.45,153.6,17.09,21.36]}
+{"kind":"textbox","id":"sh/mdobedg3","slide":11,"name":"Text 10","text":"Semana 1","textPreview":"Semana 1","textChars":8,"textLines":1,"bbox":[536.97,155.38,142.44,17.8]}
+{"kind":"textbox","id":"sh/nehs7iho","slide":11,"name":"Text 11","text":"Política de uso: secretos, datos, revisión, repositorios y trazabilidad.","textPreview":"Política de uso: secretos, datos, revisión, repositorios y trazabilidad.","textChars":72,"textLines":1,"bbox":[536.97,178.41,336.16,32.19]}
+{"kind":"shape","id":"sh/0b6tc3yx","slide":11,"name":"Shape 12","bbox":[434.5,219.79,34.18,1.5]}
+{"kind":"shape","id":"sh/1cfa58zi","slide":11,"name":"Shape 13","bbox":[467.18,207.73,25.63,25.63]}
+{"kind":"textbox","id":"sh/epobatgr","slide":11,"name":"Text 14","text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[471.45,209.86,17.09,21.36]}
+{"kind":"textbox","id":"sh/zaxs3yhc","slide":11,"name":"Text 15","text":"Día 30","textPreview":"Día 30","textChars":6,"textLines":1,"bbox":[280.58,211.64,142.44,17.8]}
+{"kind":"textbox","id":"sh/cn6t83y1","slide":11,"name":"Text 16","text":"Medir horas evitadas, tareas cerradas, pruebas y defectos.","textPreview":"Medir horas evitadas, tareas cerradas, pruebas y defectos.","textChars":58,"textLines":1,"bbox":[86.86,234.67,336.16,32.19]}
+{"kind":"shape","id":"sh/dofa18z6","slide":11,"name":"Shape 17","bbox":[491.31,276.05,34.18,1.5]}
+{"kind":"shape","id":"sh/tsnip0ny","slide":11,"name":"Shape 18","bbox":[467.18,263.98,25.63,25.63]}
+{"kind":"textbox","id":"sh/87ehgv6d","slide":11,"name":"Text 19","text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[471.45,266.12,17.09,21.36]}
+{"kind":"textbox","id":"sh/7650nq5s","slide":11,"name":"Text 20","text":"Mes 2","textPreview":"Mes 2","textChars":5,"textLines":1,"bbox":[536.97,267.9,142.44,17.8]}
+{"kind":"textbox","id":"sh/65wzelo7","slide":11,"name":"Text 21","text":"Agregar asientos si hay demanda concurrente o límites recurrentes.","textPreview":"Agregar asientos si hay demanda concurrente o límites recurrentes.","textChars":66,"textLines":1,"bbox":[536.97,290.93,336.16,32.19]}
+{"kind":"shape","id":"sh/l43ilgn2","slide":11,"name":"Shape 22","bbox":[434.5,332.3,34.18,1.5]}
+{"kind":"shape","id":"sh/k3uhcb6h","slide":11,"name":"Shape 23","bbox":[467.18,320.24,25.63,25.63]}
+{"kind":"textbox","id":"sh/j2lgjq5w","slide":11,"name":"Text 24","text":"5","textPreview":"5","textChars":1,"textLines":1,"bbox":[471.45,322.38,17.09,21.36]}
+{"kind":"textbox","id":"sh/y1czalob","slide":11,"name":"Text 25","text":"Trimestre","textPreview":"Trimestre","textChars":9,"textLines":1,"bbox":[280.58,324.16,142.44,17.8]}
+{"kind":"textbox","id":"sh/p07ixkn6","slide":11,"name":"Text 26","text":"Evaluar Team/Enterprise, SSO y controles corporativos.","textPreview":"Evaluar Team/Enterprise, SSO y controles corporativos.","textChars":54,"textLines":1,"bbox":[86.86,347.19,336.16,32.19]}
+{"kind":"shape","id":"sh/4zyhofml","slide":11,"name":"Shape 27","bbox":[86.86,425.13,786.27,69.67]}
+{"kind":"textbox","id":"sh/n61wbmlo","slide":11,"name":"Text 28","text":"Criterio de éxito: continuidad sin omitir gates de seguridad, pruebas ni revisión humana.","textPreview":"Criterio de éxito: continuidad sin omitir gates de seguridad, pruebas ni revisión humana.","textChars":89,"textLines":1,"bbox":[123.88,435.82,737.86,48.28]}
+{"kind":"image","id":"im/3qhk7its","slide":11,"name":"Image 0","bbox":[98.25,440.39,14.24,11.39]}
+{"kind":"notes","id":"nt/jetc3ut0","slide":11,"text":"[Sources]\n- https://support.claude.com/en/articles/11049762-choose-a-claude-plan\n- specs/CONSTITUTION.md"}
+{"kind":"slide","id":"sl/8f2psfyx","slide":12,"title":"Decisión solicitada a Gerencia","textShapes":10}
+{"kind":"textbox","id":"sh/0f2lgnmp","slide":12,"name":"Text 0","text":"Decisión solicitada a Gerencia","textPreview":"Decisión solicitada a Gerencia","textChars":30,"textLines":1,"bbox":[403.13,47.92,479.3,38.52]}
+{"kind":"textbox","id":"sh/ra943il8","slide":12,"name":"Text 1","text":"La aprobación habilita continuidad inmediata y deja el escalamiento sujeto a evidencia.","textPreview":"La aprobación habilita continuidad inmediata y deja el escalamiento sujeto a evidencia.","textChars":87,"textLines":1,"bbox":[403.13,101.74,513.73,36.05]}
+{"kind":"shape","id":"sh/q903ad4n","slide":12,"name":"Shape 2","bbox":[403.13,149.27,513.73,87.06]}
+{"kind":"textbox","id":"sh/dcbm583y","slide":12,"name":"Text 3","text":"Aprobar","textPreview":"Aprobar","textChars":7,"textLines":1,"bbox":[415.95,162.09,154.06,19.26]}
+{"kind":"textbox","id":"sh/sb2lcnmd","slide":12,"name":"Text 4","text":"USD 200/año por 1 licencia Claude Pro para Plataforma Minera.","textPreview":"USD 200/año por 1 licencia Claude Pro para Plataforma Minera.","textChars":61,"textLines":1,"bbox":[415.95,187.46,488.09,36.05]}
+{"kind":"shape","id":"sh/b6d4f2lc","slide":12,"name":"Shape 5","bbox":[403.13,246.53,513.73,69.04]}
+{"kind":"textbox","id":"sh/a543mx4r","slide":12,"name":"Text 6","text":"Responsable","textPreview":"Responsable","textChars":11,"textLines":1,"bbox":[415.95,259.35,192.87,19.26]}
+{"kind":"textbox","id":"sh/wvupgz6t","slide":12,"name":"Text 7","text":"Líder Técnico / Gerencia TI: custodia de cuenta, política y reporte de uso.","textPreview":"Líder Técnico / Gerencia TI: custodia de cuenta, política y reporte de uso.","textChars":75,"textLines":1,"bbox":[415.95,284.73,488.09,18.02]}
+{"kind":"shape","id":"sh/xw3q94ne","slide":12,"name":"Shape 8","bbox":[403.13,325.77,513.73,87.06]}
+{"kind":"textbox","id":"sh/atc7epon","slide":12,"name":"Text 9","text":"Condición","textPreview":"Condición","textChars":9,"textLines":1,"bbox":[415.95,338.59,154.06,19.26]}
+{"kind":"textbox","id":"sh/bulo7u58","slide":12,"name":"Text 10","text":"Sin secretos ni datos sensibles; todo cambio pasa por CI, pruebas y revisión.","textPreview":"Sin secretos ni datos sensibles; todo cambio pasa por CI, pruebas y revisión.","textChars":77,"textLines":1,"bbox":[415.95,363.97,488.09,36.05]}
+{"kind":"shape","id":"sh/orapcf6h","slide":12,"name":"Shape 11","bbox":[403.13,423.04,513.73,69.04]}
+{"kind":"textbox","id":"sh/9sj65kn2","slide":12,"name":"Text 12","text":"Revisión","textPreview":"Revisión","textChars":8,"textLines":1,"bbox":[415.95,435.86,154.73,19.26]}
+{"kind":"textbox","id":"sh/mps7a5or","slide":12,"name":"Text 13","text":"Comité a 30 días para decidir nuevas licencias o plan empresarial.","textPreview":"Comité a 30 días para decidir nuevas licencias o plan empresarial.","textChars":66,"textLines":1,"bbox":[415.95,461.23,488.09,18.02]}
+{"kind":"image","id":"im/0vmp4vm9","slide":12,"name":"Image 0","alt":"TimeTelemetry: sensórica, servicios y plataforma","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/8f2psfyx","slide":12,"text":"[Sources]\n- https://claude.com/pricing\n- D:\\InformeCliente\n- Matriz_Costos_Cronograma_26_Semanas.md"}

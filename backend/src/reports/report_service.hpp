@@ -102,10 +102,11 @@ bool createExportJobPg(const std::string &databaseUrl, const std::string &report
 bool getExportJobPg(const std::string &databaseUrl, const std::string &jobId,
                     const std::string &tenantId, ExportJob &out, std::string &error);
 
-/** @brief Actualiza el estado de un job desde el worker (hilo detached de `report_export_jobs.cpp`). `storageUri`/`errorMessage` vacíos no sobreescriben el valor previo (COALESCE para storage_uri; error_message se limpia solo al pasar a un estado no-`failed`). `started_at`/`completed_at` se resuelven server-side según el `status` destino. */
+/** @brief Actualiza el estado de un job desde el worker (hilo detached de `report_export_jobs.cpp`). `storageUri`/`errorMessage` vacíos no sobreescriben el valor previo (COALESCE para storage_uri; error_message se limpia solo al pasar a un estado no-`failed`). `started_at`/`completed_at` se resuelven server-side según el `status` destino. `mergeOptions` (opcional, por defecto null = no tocar `options`): mergeado vía `options || mergeOptions` en JSONB -- usado por `runPdfExportJob` para guardar la contraseña de cifrado (ADR-080) generada recién al terminar el render, no disponible en `createExportJobPg`. */
 bool updateExportJobStatusPg(const std::string &databaseUrl, const std::string &jobId,
                              const std::string &status, const std::string &storageUri,
-                             const std::string &errorMessage, std::string &error);
+                             const std::string &errorMessage, std::string &error,
+                             const json::value &mergeOptions = json::value());
 
 // ── Narración por diapositiva (report_export_job_asset, Stage 4) ──────────
 

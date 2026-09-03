@@ -2,6 +2,7 @@ import React, { memo, useState, useEffect, useCallback } from 'react';
 import {
   FolderOpen, X, Search, RotateCcw, Eye, Pencil, Send, Trash2,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, FileText, Loader2, Users,
+  Presentation,
 } from 'lucide-react';
 import { getSession, authHeaders as sharedAuthHeaders } from '../../../../auth/authStorage';
 import { usePermissions } from '../../../../auth/usePermissions';
@@ -24,6 +25,21 @@ const STATUS_LABELS: Record<string, { label: string; color: string; text: string
   rejected:  { label: 'Rechazado',   color: '#fee2e2', text: '#991b1b' },
 };
 
+/** Fecha Y hora (HH:MM:SS, 24h) de guardado -- antes esta columna solo
+ * mostraba el día (`toLocaleDateString`), así que dos informes guardados el
+ * mismo día eran indistinguibles a simple vista en "Mis Informes" -- pedido
+ * explícito: "no solo se coloque la fecha sino que se añada la hora... para
+ * poder identificar fácilmente el reporte". El backend YA guarda el
+ * timestamp completo (con microsegundos incluso) — esto es puramente una
+ * corrección de presentación, no requiere ningún cambio de datos. */
+function formatReportTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const datePart = d.toLocaleDateString('es-PE');
+  const timePart = d.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  return `${datePart} ${timePart}`;
+}
+
 function StatusBadge({ status }: { status: string }) {
   const cfg = STATUS_LABELS[status] || STATUS_LABELS.draft;
   return (
@@ -33,6 +49,22 @@ function StatusBadge({ status }: { status: string }) {
       fontSize: '0.72rem', fontWeight: 700,
     }}>
       {cfg.label}
+    </span>
+  );
+}
+
+/** Icono distintivo Word (documento paginado) vs PowerPoint (presentación de
+ * diapositivas) según doc.meta.layoutMode -- colores calcados de los brandmarks
+ * de Office (#2b579a / #d24726) para que el tipo se reconozca de un vistazo,
+ * sin tener que abrir el informe para saber qué formato de exportación tendrá. */
+function DocTypeIcon({ layoutMode }: { layoutMode: string }) {
+  const isPresentation = layoutMode === 'presentation';
+  const Icon = isPresentation ? Presentation : FileText;
+  const color = isPresentation ? '#d24726' : '#2b579a';
+  const label = isPresentation ? 'Presentación (PowerPoint)' : 'Documento (Word)';
+  return (
+    <span title={label} style={{ display: 'inline-flex', color }}>
+      <Icon size={16} />
     </span>
   );
 }
@@ -53,6 +85,12 @@ interface ReportsAdminModalProps {
   onClose: () => void;
   onOpenRead: (report: any) => void;
   onOpenEdit: (report: any) => void;
+  /** Genera (dentro del editor real) y guarda un informe de referencia que
+   * recorre el 100% de tipos de sensor del tenant × el 100% de tipos de
+   * gráfico, en A4/A3 -- herramienta de QA para validar el motor de
+   * márgenes/anti-colisión. Opcional: modales de solo lectura (compartidos
+   * fuera de esta vista) no la pasan. */
+  onGenerateDemo?: () => void;
 }
 
 interface TenantOption { tenant_id: string; tenant_name: string; role: string; active: boolean }
@@ -64,7 +102,7 @@ function authHeadersRA(): Record<string, string> {
   return sharedAuthHeaders();
 }
 
-function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit }: ReportsAdminModalProps) {
+function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: ReportsAdminModalProps) {
   const session = getSession();
   const company = session?.company || '';
   const tenantId = session?.tenantId || '';
@@ -124,11 +162,10 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit }: ReportsAdminModa
   }, [fetchReportsData]);
 
   useEffect(() => {
-    // Note: getReportFilterUsers might need to be async too if fetching from DB
-    const users = getReportFilterUsers(company);
+    const users = getReportFilterUsers(reports);
     setCreatedByOptions(users.createdByOptions);
     setReviewedByOptions(users.reviewedByOptions);
-  }, [company, total]);
+  }, [reports]);
 
   // Reset page when filters change
   useEffect(() => { setPage(1); }, [applied]);
@@ -149,7 +186,7 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit }: ReportsAdminModa
     if (hasPermission('informes.sign')) return true;
     return (
       hasPermission('informes.edit') &&
-      report.createdBy === session.username &&
+      report.createdBy === session.userId &&
       report.status === 'draft'
     );
   };
@@ -176,6 +213,15 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit }: ReportsAdminModa
             </div>
           </div>
           <div className="ra-header-actions">
+            {onGenerateDemo && (
+              <button
+                className="ra-btn-ghost"
+                onClick={onGenerateDemo}
+                title="Genera y guarda un informe de referencia con el 100% de tipos de sensor x el 100% de tipos de gráfico, en A4/A3"
+              >
+                <FileText size={14} /> Generar Reporte Demo Completo
+              </button>
+            )}
             <button
               className="ra-btn-ghost"
               onClick={() => setShowUserMaintenance(true)}
@@ -304,6 +350,8 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit }: ReportsAdminModa
                   <th className="ra-sortable" onClick={() => handleSort('createdAt')}>
                     Fecha <SortIcon col="createdAt" sortBy={sortBy} sortDir={sortDir} />
                   </th>
+                  <th style={{ textAlign: 'center' }}>Tipo</th>
+                  <th style={{ textAlign: 'center' }}>Págs.</th>
                   <th>Ver.</th>
                 </tr>
               </thead>
@@ -324,8 +372,12 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit }: ReportsAdminModa
                     <td>{r.reviewedByName || r.reviewedBy || <span style={{ opacity: 0.4 }}>Sin revisar</span>}</td>
                     <td><StatusBadge status={r.status} /></td>
                     <td style={{ whiteSpace: 'nowrap', fontSize: '0.78rem' }}>
-                      {r.createdAt ? new Date(r.createdAt).toLocaleDateString('es-PE') : '—'}
+                      {r.createdAt ? formatReportTimestamp(r.createdAt) : '—'}
                     </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <DocTypeIcon layoutMode={r.layoutMode} />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>{r.pageCount || '—'}</td>
                     <td style={{ textAlign: 'center', color: '#6366f1', fontWeight: 700 }}>
                       v{r.versionNumber || 1}
                     </td>

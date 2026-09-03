@@ -2,6 +2,7 @@ import React, { memo, useRef, useState, useCallback, useEffect, useLayoutEffect 
 import { Plus, Minus, WandSparkles, X } from 'lucide-react';
 import { REPORT_COLOR_SWATCHES } from '../shared/ColorPalette';
 import { sanitizeRichHtml } from '../../lib/sanitizeHtml';
+import { toTrustedHtml } from '../../../../lib/trustedHtml';
 import { semanticStatusStyle } from '../../lib/semanticStatus';
 
 const MIN_COL_WIDTH = 48;
@@ -81,7 +82,7 @@ const TableCell = memo(function TableCell({
     // innerHTML defiende contra contenido ya envenenado por otro editor del
     // informe. Ver lib/sanitizeHtml.ts.
     const safe = sanitizeRichHtml(value ?? '');
-    if (el.innerHTML !== safe) el.innerHTML = safe;
+    if (el.innerHTML !== safe) el.innerHTML = toTrustedHtml(safe) as string;
   }, [value]);
 
   return (

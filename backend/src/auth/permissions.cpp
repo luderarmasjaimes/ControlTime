@@ -34,6 +34,17 @@ std::string effectiveRole(const std::string& userId, const std::string& tenantId
         2, nullptr, p, nullptr, nullptr, 0)};
     if (res.okTuples() && PQntuples(res.get()) == 1)
         return PQgetvalue(res.get(), 0, 0);
+    // Sin membresía real: ¿tiene una concesión de acceso cruzado activa
+    // (org_tenant_access, db_scripts/72 — personal de organización operando
+    // en un tenant minero)? Se consulta DESPUÉS de auth_user_tenant a
+    // propósito: una membresía real siempre gana sobre una concesión.
+    storage::PgResult org{PQexecParams(conn,
+        "SELECT role FROM org_tenant_access "
+        "WHERE user_id = $1::uuid AND tenant_id = $2::uuid AND active = TRUE "
+        "AND revoked_at IS NULL",
+        2, nullptr, p, nullptr, nullptr, 0)};
+    if (org.okTuples() && PQntuples(org.get()) == 1)
+        return PQgetvalue(org.get(), 0, 0);
 #endif
     return globalRole;
 }
@@ -129,6 +140,22 @@ bool userHasRealTenantMembership(const std::string& userId, const std::string& t
     storage::PgResult res{PQexecParams(conn,
         "SELECT 1 FROM auth_user_tenant WHERE user_id = $1::uuid AND tenant_id = $2::uuid LIMIT 1",
         2, nullptr, p, nullptr, nullptr, 0)};
+    return res.okTuples() && PQntuples(res.get()) > 0;
+#else
+    return false;
+#endif
+}
+
+bool isOrganizationTenant(const std::string& tenantId) {
+    if (tenantId.empty()) return false;
+#if HAS_LIBPQ
+    auto lease = storage::PgPool::instance().acquire(AppConfig::instance().gDatabaseUrl);
+    PGconn* conn = lease.get();
+    if (PQstatus(conn) != CONNECTION_OK) return false;
+    const char* p[1] = {tenantId.c_str()};
+    storage::PgResult res{PQexecParams(conn,
+        "SELECT 1 FROM tenants WHERE tenant_id = $1::uuid AND company_type = 'organization' LIMIT 1",
+        1, nullptr, p, nullptr, nullptr, 0)};
     return res.okTuples() && PQntuples(res.get()) > 0;
 #else
     return false;

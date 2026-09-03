@@ -74,6 +74,11 @@ inline constexpr std::size_t kUsernameMaxLength = 80;
 
 /// Longitud mínima de nombre de usuario.
 inline constexpr std::size_t kUsernameMinLength = 3;
+
+/// Longitud máxima de campos de nombre libre (first_name, last_name, company
+/// tal como llega en el registro -- el catálogo de empresas tiene su propio
+/// límite en auth_companies). Ver security::Validator::isValidDisplayName.
+inline constexpr std::size_t kDisplayNameMaxLength = 120;
 }  // namespace auth
 
 // ── Vigilancia / captura de snapshot de cámara ─────────────────────────────

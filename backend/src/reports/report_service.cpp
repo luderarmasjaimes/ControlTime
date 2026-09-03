@@ -53,13 +53,34 @@ std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::str
     return reps;
   }
   const char *listParams[1] = {tenantId.c_str()};
+  // created_by/reviewed_by/last_modified_by (columnas de
+  // db_scripts/05_reports_admin.sql) resueltas a nombre completo vía LEFT
+  // JOIN — antes esta consulta las ignoraba por completo, por lo que el
+  // frontend nunca recibía `createdBy` y `ReportsAdminModal.tsx::canEdit()`
+  // (que compara `report.createdBy === session.username`) quedaba siempre en
+  // false para el propio autor de un borrador (solo quien tenía
+  // 'informes.sign' podía reabrir el informe para editar).
   static const char *kListReportsSql =
-      "SELECT id, project_id, title, status, created_at, updated_at, "
-      "COALESCE(company_name,''), COALESCE(signed_by_name,''), "
-      "COALESCE(signed_by_role,''), COALESCE(signed_at::text,''), "
-      "COALESCE(tenant_id::text,'') "
-      "FROM reports WHERE deleted_at IS NULL AND tenant_id = $1::uuid "
-      "ORDER BY created_at DESC";
+      "SELECT r.id, r.project_id, r.title, r.status, r.created_at, r.updated_at, "
+      "COALESCE(r.company_name,''), COALESCE(r.signed_by_name,''), "
+      "COALESCE(r.signed_by_role,''), COALESCE(r.signed_at::text,''), "
+      "COALESCE(r.tenant_id::text,''), "
+      "COALESCE(r.created_by::text,''), COALESCE(NULLIF(TRIM(cu.first_name || ' ' || cu.last_name), ''), cu.username, ''), "
+      "COALESCE(r.reviewed_by::text,''), COALESCE(NULLIF(TRIM(ru.first_name || ' ' || ru.last_name), ''), ru.username, ''), "
+      "COALESCE(r.reviewed_at::text,''), "
+      "COALESCE(r.last_modified_by::text,''), COALESCE(NULLIF(TRIM(mu.first_name || ' ' || mu.last_name), ''), mu.username, ''), "
+      // Conteo de páginas y tipo de documento (Word/PowerPoint) leídos
+      // directo del jsonb con operadores nativos -- evita traer y parsear
+      // content_json completo (puede ser varios MB) solo para poblar dos
+      // columnas de la tabla de administración (ver Report::pageCount).
+      "COALESCE(jsonb_array_length(r.content_json->'pages'), 0), "
+      "COALESCE(r.content_json->'meta'->>'layoutMode', 'document') "
+      "FROM reports r "
+      "LEFT JOIN auth_users cu ON cu.id = r.created_by "
+      "LEFT JOIN auth_users ru ON ru.id = r.reviewed_by "
+      "LEFT JOIN auth_users mu ON mu.id = r.last_modified_by "
+      "WHERE r.deleted_at IS NULL AND r.tenant_id = $1::uuid "
+      "ORDER BY r.created_at DESC";
   storage::PgResult res{PQexecParams(conn, kListReportsSql, 1, nullptr, listParams,
                                      nullptr, nullptr, 0)};
   if (res.okTuples()) {
@@ -76,6 +97,15 @@ std::vector<Report> listReportsPg(const std::string &databaseUrl, const std::str
           r.signedByRole = PQgetvalue(res.get(), i, 8);
           r.signedAt = PQgetvalue(res.get(), i, 9);
           r.tenantId = PQgetvalue(res.get(), i, 10);
+          r.createdBy = PQgetvalue(res.get(), i, 11);
+          r.createdByName = PQgetvalue(res.get(), i, 12);
+          r.reviewedBy = PQgetvalue(res.get(), i, 13);
+          r.reviewedByName = PQgetvalue(res.get(), i, 14);
+          r.reviewedAt = PQgetvalue(res.get(), i, 15);
+          r.lastModifiedBy = PQgetvalue(res.get(), i, 16);
+          r.lastModifiedByName = PQgetvalue(res.get(), i, 17);
+          r.pageCount = std::atoi(PQgetvalue(res.get(), i, 18));
+          r.layoutMode = PQgetvalue(res.get(), i, 19);
           reps.push_back(std::move(r));
       }
   } else {
@@ -108,15 +138,23 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, cons
   // única fuente de verdad para "qué versión es esta" que el cliente debe
   // mostrar, en vez de su contador local de ediciones (document.meta.version).
   static const char *kGetReportSql =
-      "SELECT id, project_id::text, title, content_json::text, status, "
-      "created_at::text, updated_at::text, COALESCE(company_name,''), "
-      "COALESCE(signed_by_name,''), COALESCE(signed_by_role,''), "
-      "COALESCE(signed_at::text,''), "
+      "SELECT r.id, r.project_id::text, r.title, r.content_json::text, r.status, "
+      "r.created_at::text, r.updated_at::text, COALESCE(r.company_name,''), "
+      "COALESCE(r.signed_by_name,''), COALESCE(r.signed_by_role,''), "
+      "COALESCE(r.signed_at::text,''), "
       "COALESCE((SELECT MAX(version_number) FROM report_content_revision "
-      "WHERE report_id = reports.id), 1), "
-      "COALESCE(tenant_id::text,'') "
-      "FROM reports WHERE id = $1 AND tenant_id = $2::uuid "
-      "AND deleted_at IS NULL";
+      "WHERE report_id = r.id), 1), "
+      "COALESCE(r.tenant_id::text,''), "
+      "COALESCE(r.created_by::text,''), COALESCE(NULLIF(TRIM(cu.first_name || ' ' || cu.last_name), ''), cu.username, ''), "
+      "COALESCE(r.reviewed_by::text,''), COALESCE(NULLIF(TRIM(ru.first_name || ' ' || ru.last_name), ''), ru.username, ''), "
+      "COALESCE(r.reviewed_at::text,''), "
+      "COALESCE(r.last_modified_by::text,''), COALESCE(NULLIF(TRIM(mu.first_name || ' ' || mu.last_name), ''), mu.username, '') "
+      "FROM reports r "
+      "LEFT JOIN auth_users cu ON cu.id = r.created_by "
+      "LEFT JOIN auth_users ru ON ru.id = r.reviewed_by "
+      "LEFT JOIN auth_users mu ON mu.id = r.last_modified_by "
+      "WHERE r.id = $1 AND r.tenant_id = $2::uuid "
+      "AND r.deleted_at IS NULL";
   storage::PgResult res{PQexecParams(conn, kGetReportSql, 2, nullptr, getParams,
                                      nullptr, nullptr, 0)};
   if (!res.okTuples() || PQntuples(res.get()) < 1) {
@@ -143,6 +181,13 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, cons
   out.signedAt = PQgetvalue(res.get(), 0, 10);
   out.versionNumber = std::atoi(PQgetvalue(res.get(), 0, 11));
   out.tenantId = PQgetvalue(res.get(), 0, 12);
+  out.createdBy = PQgetvalue(res.get(), 0, 13);
+  out.createdByName = PQgetvalue(res.get(), 0, 14);
+  out.reviewedBy = PQgetvalue(res.get(), 0, 15);
+  out.reviewedByName = PQgetvalue(res.get(), 0, 16);
+  out.reviewedAt = PQgetvalue(res.get(), 0, 17);
+  out.lastModifiedBy = PQgetvalue(res.get(), 0, 18);
+  out.lastModifiedByName = PQgetvalue(res.get(), 0, 19);
   return true;
 #else
   error = "postgres support is not compiled";
@@ -199,17 +244,29 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
   // company_name se conserva solo como campo de display legacy (ya validado
   // arriba que tenant_id es real y obligatorio — ADR-039).
   std::string contentStr = json::serialize(r.contentJson);
-  const char *paramValues[6] = {
+  // created_by/last_modified_by (db_scripts/05_reports_admin.sql) resueltos
+  // al mismo auth_users que ya resuelve la revisión inicial de abajo —
+  // ANTES de este fix quedaban NULL para siempre porque el INSERT ni
+  // siquiera los mencionaba, así que ReportsAdminModal.tsx::canEdit() jamás
+  // veía coincidir `report.createdBy === session.username` (bug reportado:
+  // el dueño de un informe recién creado no podía volver a editarlo).
+  const char *paramValues[8] = {
       r.projectId.empty() ? nullptr : r.projectId.c_str(),
       r.title.c_str(),
       contentStr.c_str(),
       r.status.c_str(),
       r.company.c_str(),
-      r.tenantId.c_str()};
+      r.tenantId.c_str(),
+      auditUsername.c_str(),
+      auditCompany.c_str()};
   static const char *kInsertReportSql =
-      "INSERT INTO reports (project_id, title, content_json, status, company_name, tenant_id) "
-      "VALUES ($1, $2, $3, $4, $5, $6::uuid) RETURNING id::text";
-  storage::PgResult res{PQexecParams(conn, kInsertReportSql, 6, nullptr, paramValues,
+      "INSERT INTO reports (project_id, title, content_json, status, company_name, "
+      "tenant_id, created_by, last_modified_by) "
+      "VALUES ($1, $2, $3, $4, $5, $6::uuid, "
+      "(SELECT id FROM auth_users WHERE username = $7 AND company_name = $8 LIMIT 1), "
+      "(SELECT id FROM auth_users WHERE username = $7 AND company_name = $8 LIMIT 1)) "
+      "RETURNING id::text";
+  storage::PgResult res{PQexecParams(conn, kInsertReportSql, 8, nullptr, paramValues,
                                      nullptr, nullptr, 0)};
   if (!res) {
     error = PQerrorMessage(conn);
@@ -406,34 +463,54 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
   // display legacy, inmutable después de creado) — el filtro de aislamiento
   // es tenant_id. Cuando la transición es la firma real, se añaden las
   // columnas de firma documental (ADR-018) al mismo UPDATE atómico.
+  //
+  // last_modified_by/reviewed_by/reviewed_at (db_scripts/05_reports_admin.sql):
+  // ANTES de este fix el UPDATE ni las mencionaba, así que quedaban NULL para
+  // siempre — el mismo bug de fondo que en createReportPg (ver comentario ahí),
+  // y ADEMÁS la columna "Revisado por" de ReportsAdminModal.tsx mostraba
+  // "Sin revisar" incluso en informes ya aprobados/firmados. `reviewingNow`
+  // marca una transición ejercida bajo autoridad de revisión (mismo criterio
+  // que `requiredPermission == "informes.sign"` un poco más arriba: solo
+  // in_review→approved/rejected y approved→signed/in_review) — un simple
+  // resave de contenido sin cambio de estado NO debe pisar quién revisó por
+  // última vez.
+  const bool reviewingNow = statusChanged && requiredPermission == "informes.sign";
+  const std::string reviewingNowStr = reviewingNow ? "true" : "false";
   std::string contentStr = json::serialize(r.contentJson);
   bool ok;
   if (isSigningNow) {
     // signed_by (FK UUID) se resuelve por subquery de username+auditCompany
     // dentro del mismo UPDATE atómico; signed_by_name/signed_by_role quedan
     // desnormalizados para que la firma siga siendo legible aunque el
-    // usuario cambie de nombre/rol o sea desactivado después.
+    // usuario cambie de nombre/rol o sea desactivado después. La firma
+    // siempre ocurre bajo 'informes.sign' (approved→signed), así que
+    // reviewed_by/reviewed_at se fijan sin condicional aquí.
     static const char *kUpdateReportSignedSql =
         "UPDATE reports SET title = $1, content_json = $2, status = $3, "
         "signed_by = (SELECT id FROM auth_users WHERE username = $4 "
         "AND company_name = $5 LIMIT 1), "
-        "signed_by_name = $6, signed_by_role = $7, signed_at = NOW() "
+        "signed_by_name = $6, signed_by_role = $7, signed_at = NOW(), "
+        "last_modified_by = $10::uuid, reviewed_by = $10::uuid, reviewed_at = NOW() "
         "WHERE id = $8 AND tenant_id = $9::uuid AND deleted_at IS NULL";
-    const char *updParams[9] = {r.title.c_str(),        contentStr.c_str(),
-                                r.status.c_str(),        auditUsername.c_str(),
-                                auditCompany.c_str(),    signerName.c_str(),
-                                signerRole.c_str(),      id.c_str(),
-                                tenantId.c_str()};
-    storage::PgResult updRes{PQexecParams(conn, kUpdateReportSignedSql, 9, nullptr,
+    const char *updParams[10] = {r.title.c_str(),        contentStr.c_str(),
+                                 r.status.c_str(),        auditUsername.c_str(),
+                                 auditCompany.c_str(),    signerName.c_str(),
+                                 signerRole.c_str(),      id.c_str(),
+                                 tenantId.c_str(),        userId.c_str()};
+    storage::PgResult updRes{PQexecParams(conn, kUpdateReportSignedSql, 10, nullptr,
                                           updParams, nullptr, nullptr, 0)};
     ok = updRes.okCommand();
   } else {
     static const char *kUpdateReportSql =
-        "UPDATE reports SET title = $1, content_json = $2, status = $3 "
+        "UPDATE reports SET title = $1, content_json = $2, status = $3, "
+        "last_modified_by = $6::uuid, "
+        "reviewed_by = CASE WHEN $7::boolean THEN $6::uuid ELSE reviewed_by END, "
+        "reviewed_at = CASE WHEN $7::boolean THEN NOW() ELSE reviewed_at END "
         "WHERE id = $4 AND tenant_id = $5::uuid AND deleted_at IS NULL";
-    const char *updParams[5] = {r.title.c_str(), contentStr.c_str(),
-                                r.status.c_str(), id.c_str(), tenantId.c_str()};
-    storage::PgResult updRes{PQexecParams(conn, kUpdateReportSql, 5, nullptr,
+    const char *updParams[7] = {r.title.c_str(), contentStr.c_str(),
+                                r.status.c_str(), id.c_str(), tenantId.c_str(),
+                                userId.c_str(), reviewingNowStr.c_str()};
+    storage::PgResult updRes{PQexecParams(conn, kUpdateReportSql, 7, nullptr,
                                           updParams, nullptr, nullptr, 0)};
     ok = updRes.okCommand();
   }
@@ -736,7 +813,8 @@ bool getExportJobPg(const std::string &databaseUrl, const std::string &jobId,
 
 bool updateExportJobStatusPg(const std::string &databaseUrl, const std::string &jobId,
                              const std::string &status, const std::string &storageUri,
-                             const std::string &errorMessage, std::string &error) {
+                             const std::string &errorMessage, std::string &error,
+                             const json::value &mergeOptions) {
 #if HAS_LIBPQ
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
@@ -744,11 +822,17 @@ bool updateExportJobStatusPg(const std::string &databaseUrl, const std::string &
     error = PQerrorMessage(conn);
     return false;
   }
-  const char *params[4] = {
+  // `mergeOptions` null (default) => no tocar `options` -- se manda NULL al
+  // placeholder y el CASE de abajo lo deja intacto. Un `mergeOptions` no-null
+  // se serializa y se mergea vía `options || $5::jsonb` (Postgres JSONB),
+  // nunca reemplaza el objeto completo.
+  const std::string mergeOptionsJson = mergeOptions.is_null() ? "" : json::serialize(mergeOptions);
+  const char *params[5] = {
       jobId.c_str(),
       status.c_str(),
       storageUri.empty() ? nullptr : storageUri.c_str(),
       errorMessage.empty() ? nullptr : errorMessage.c_str(),
+      mergeOptionsJson.empty() ? nullptr : mergeOptionsJson.c_str(),
   };
   // started_at/completed_at se resuelven server-side a partir del status
   // destino, nunca los manda el caller: evita que un worker con reloj
@@ -758,12 +842,13 @@ bool updateExportJobStatusPg(const std::string &databaseUrl, const std::string &
       "status = $2, "
       "storage_uri = COALESCE($3, storage_uri), "
       "error_message = $4, "
+      "options = CASE WHEN $5::jsonb IS NOT NULL THEN options || $5::jsonb ELSE options END, "
       "started_at = CASE WHEN $2 = 'running' AND started_at IS NULL "
       "  THEN NOW() ELSE started_at END, "
       "completed_at = CASE WHEN $2 IN ('success','failed','cancelled') "
       "  THEN NOW() ELSE completed_at END "
       "WHERE job_id = $1::uuid";
-  storage::PgResult res{PQexecParams(conn, kUpdateJobSql, 4, nullptr, params,
+  storage::PgResult res{PQexecParams(conn, kUpdateJobSql, 5, nullptr, params,
                                      nullptr, nullptr, 0)};
   if (!res.okCommand()) {
     error = res ? res.error() : PQerrorMessage(conn);

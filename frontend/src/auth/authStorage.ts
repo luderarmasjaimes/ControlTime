@@ -1,5 +1,50 @@
 const SESSION_KEY = 'mining_auth_session_v1'
 
+/**
+ * Migración a Bearer-en-memoria (2026-08-27): el access token vuelve a viajar
+ * también como `Authorization: Bearer` en cada petición (además de la cookie
+ * HttpOnly de compatibilidad), guardado ÚNICAMENTE en esta variable de
+ * módulo -- nunca en `localStorage`, nunca en `sessionStorage`, nunca en el
+ * objeto `Session` persistido (ver `Session.token`, que se mantiene SIEMPRE
+ * en '""' a propósito, igual que antes de este cambio).
+ *
+ * Por qué se reintroduce Bearer si ADR-082 lo había eliminado por el riesgo
+ * de robo vía XSS: se detectó en pruebas reales que dos frontends distintos
+ * corriendo en el mismo host (aunque en puertos distintos -- p. ej. esta
+ * plataforma y otra app de un equipo/proveedor distinto probándose en la
+ * misma laptop) SE PISAN la cookie de sesión, porque las cookies HTTP se
+ * comparten por dominio, no por puerto (RFC 6265). Un login en la otra app
+ * deja a esta plataforma autenticada silenciosamente como la sesión de la
+ * otra app. Bearer-en-memoria es inmune a eso: cada pestaña/aplicación
+ * mantiene su propio token en su propio contexto de JS, sin depender de un
+ * cajón de cookies compartido por host.
+ *
+ * Mitigación del riesgo que esto reabre (XSS podría leer esta variable
+ * mientras la página sigue cargada -- nunca podría antes, con el token solo
+ * en cookie HttpOnly): el TTL del access token bajó de 60 a 15 min
+ * (`BEEMETRY_JWT_ACCESS_TTL_MINUTES`), el refresh token de larga vida (7
+ * días) SIGUE siendo exclusivamente una cookie HttpOnly namespaced
+ * (`beemetry_refresh_token`) -- nunca se expone por Bearer, así que un XSS
+ * que robe el access token de memoria solo gana una ventana de ~15 min, no
+ * la sesión completa. Ver ADR de esta migración.
+ */
+let inMemoryAccessToken = ''
+
+/** @brief Token de acceso actual en memoria (o cadena vacía si no hay uno). Nunca perzistido. */
+export function getInMemoryAccessToken(): string {
+    return inMemoryAccessToken
+}
+
+/** @brief Reemplaza el token de acceso en memoria (tras login/registro/refresh/switch-tenant exitoso). */
+export function setInMemoryAccessToken(token: string): void {
+    inMemoryAccessToken = typeof token === 'string' ? token : ''
+}
+
+/** @brief Limpia el token de acceso en memoria (logout, o refresh fallido). */
+export function clearInMemoryAccessToken(): void {
+    inMemoryAccessToken = ''
+}
+
 export interface Session {
     userId: string
     username: string
@@ -86,6 +131,7 @@ export function getSession(): Session | null {
 
 export function clearSession(): void {
     localStorage.removeItem(SESSION_KEY)
+    clearInMemoryAccessToken()
 }
 
 function computeExpiresAt(expiresInSeconds?: number): string | undefined {
@@ -98,28 +144,42 @@ function computeExpiresAt(expiresInSeconds?: number): string | undefined {
 /**
  * Cabeceras de autenticación para cualquier petición a la API.
  *
- * ADR-082: la credencial va en la cookie HttpOnly `access_token`, que el
- * navegador adjunta sola en peticiones al mismo origen. Lo que este helper
- * añade es el token CSRF del patrón double-submit: la cookie `csrf_token_v2`
- * SÍ es legible por JS a propósito, y repetir su valor en `X-CSRF-Token`
- * demuestra que la petición viene de código del propio origen. Un sitio de
- * terceros puede conseguir que el navegador mande la cookie, pero no puede
- * leerla para reproducir el header.
+ * Migración a Bearer-en-memoria: la credencial primaria vuelve a ser el
+ * header `Authorization: Bearer <token>` (token guardado SOLO en la variable
+ * de módulo `inMemoryAccessToken`, ver comentario arriba -- nunca en disco).
+ * La cookie HttpOnly `beemetry_access_token` (ADR-082) se sigue enviando por
+ * el navegador como respaldo/compatibilidad, pero el backend prioriza
+ * siempre el header sobre la cookie.
+ *
+ * También se agrega el token CSRF del patrón double-submit: la cookie
+ * `beemetry_csrf_token` SÍ es legible por JS a propósito, y repetir su valor
+ * en `X-CSRF-Token` demuestra que la petición viene de código del propio
+ * origen (necesario para /api/auth/refresh y /api/auth/logout, que dependen
+ * de la cookie de refresh, no del Bearer).
  *
  * Se envía también en GET (donde el backend no lo exige) para no obligar a
  * cada punto de llamada a saber si su método muta estado o no.
  */
 export function authHeaders(): Record<string, string> {
-    const csrf = readCookie('csrf_token_v2')
-    return csrf ? { 'X-CSRF-Token': csrf } : {}
+    const csrf = readCookie('beemetry_csrf_token')
+    const headers: Record<string, string> = csrf ? { 'X-CSRF-Token': csrf } : {}
+    if (inMemoryAccessToken) {
+        headers['Authorization'] = `Bearer ${inMemoryAccessToken}`
+    }
+    return headers
 }
 
 export function createSession(user: SessionUser, loginType = 'user'): Session {
     const role = typeof user.role === 'string' ? user.role.toLowerCase() : 'operator'
-    // ADR-082: el access_token que devuelve el backend NO se persiste — ya
-    // llegó como cookie HttpOnly en la misma respuesta. Se ignora aquí a
-    // propósito para que no acabe en localStorage por accidente.
+    // El access_token que devuelve el backend NUNCA se persiste en el objeto
+    // `Session` (localStorage) -- se guarda SOLO en la variable de módulo
+    // `inMemoryAccessToken` (ver comentario arriba de este archivo), que
+    // desaparece al recargar la pestaña. `session.token` se mantiene en ''
+    // a propósito, igual que antes de la migración a Bearer-en-memoria.
     const accessToken = ''
+    if (typeof user.access_token === 'string' && user.access_token) {
+        setInMemoryAccessToken(user.access_token)
+    }
     const session: Session = {
         userId: user.id,
         username: user.username,
@@ -146,19 +206,25 @@ export function createSession(user: SessionUser, loginType = 'user'): Session {
 
 /**
  * @brief Reemplaza el access token tras un refresh exitoso, preservando el
- * resto de la sesión. ADR-029, "Actualización 2026-07-19": ya no recibe
- * `refreshToken` -- ese token vive únicamente en la cookie HttpOnly que pone
- * el backend (invisible para este código, a propósito).
+ * resto de la sesión. El refresh token en sí sigue viviendo únicamente en la
+ * cookie HttpOnly que pone el backend (invisible para este código, a
+ * propósito) -- lo que cambia con la migración a Bearer-en-memoria es que el
+ * `accessToken` nuevo (recibido en el body de /api/auth/refresh) SÍ se
+ * guarda ahora, pero solo en la variable de módulo `inMemoryAccessToken`,
+ * nunca en `localStorage`.
  */
-export function updateSessionTokens(_accessToken: string, expiresInSeconds?: number): Session | null {
+export function updateSessionTokens(accessToken: string, expiresInSeconds?: number): Session | null {
     const session = getSession()
     if (!session) {
         return null
     }
-    // ADR-082: solo se refresca el vencimiento (lo usa
-    // `isAccessTokenExpiringSoon` para renovar de forma preventiva). El token
-    // en sí lo renovó el backend en la cookie HttpOnly de esta misma respuesta;
-    // guardarlo aquí reintroduciría justo el problema que el ADR elimina.
+    if (typeof accessToken === 'string' && accessToken) {
+        setInMemoryAccessToken(accessToken)
+    }
+    // `session.token` (el campo persistido) se mantiene SIEMPRE en '' -- solo
+    // se cachea el vencimiento (lo usa `isAccessTokenExpiringSoon` para
+    // renovar de forma preventiva). El valor real del token vive nada más
+    // que en memoria, ver `inMemoryAccessToken`.
     session.token = ''
     session.accessTokenExpiresAt = computeExpiresAt(expiresInSeconds)
     localStorage.setItem(SESSION_KEY, JSON.stringify(session))

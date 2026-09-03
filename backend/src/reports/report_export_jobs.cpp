@@ -109,8 +109,14 @@ SidecarResult postJsonToSidecar(const std::string &baseUrl, const std::string &p
   beast::flat_buffer buffer;
   http::response<http::string_body> res;
   http::read(stream, buffer, res, ec);
-  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-  if (ec && ec != beast::errc::not_connected) {
+  // Ver comentario del mismo patrón en report_pdf_export.cpp::exportReportPdf
+  // -- `shutdown()` NO debe reusar la `ec` que acaba de poner `http::read()`,
+  // o un error real de lectura queda enmascarado por el resultado (casi
+  // siempre benigno) del shutdown de un socket ya roto.
+  const bool readFailed = static_cast<bool>(ec) && ec != beast::errc::not_connected;
+  beast::error_code shutdownEc;
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdownEc);
+  if (readFailed) {
     result.error = "pptx_export_read_failed";
     return result;
   }
@@ -172,6 +178,97 @@ void runPptxExportJob(const std::string &jobId, const std::string &reportId,
   }
 
   updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "success", storagePath, "", statusError);
+}
+
+void runDocxExportJob(const std::string &jobId, const std::string &reportId,
+                      const std::string &sessionToken) {
+  auto &cfg = config::AppConfig::instance();
+  std::string statusError;
+  updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "running", "", "", statusError);
+
+  const std::string printUrl = cfg.gFrontendInternalOrigin + "/print-report.html?id=" +
+                               urlEncode(reportId) + "&token=" + urlEncode(sessionToken);
+
+  const auto sidecarResult =
+      postJsonToSidecar(cfg.gPdfExportUrl, "/render-docx",
+                        json::object{{"url", printUrl}, {"job_id", jobId}},
+                        cfg.gDocxExportTimeoutMs);
+
+  if (!sidecarResult.ok) {
+    updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "failed", "", sidecarResult.error,
+                            statusError);
+    return;
+  }
+
+  std::string storagePath;
+  if (sidecarResult.body.if_contains("storage_path") &&
+      sidecarResult.body.at("storage_path").is_string()) {
+    storagePath = json::value_to<std::string>(sidecarResult.body.at("storage_path"));
+  }
+  if (storagePath.empty()) {
+    updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "failed", "",
+                            "docx_export_missing_storage_path", statusError);
+    return;
+  }
+
+  updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "success", storagePath, "", statusError);
+}
+
+void runPdfExportJob(const std::string &jobId, const std::string &reportId,
+                     const std::string &sessionToken, const std::string &watermarkText) {
+  auto &cfg = config::AppConfig::instance();
+  std::string statusError;
+  updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "running", "", "", statusError);
+
+  const std::string printUrl = cfg.gFrontendInternalOrigin + "/print-report.html?id=" +
+                               urlEncode(reportId) + "&token=" + urlEncode(sessionToken);
+
+  // Endpoint DEDICADO del job async (`/render-pdf`, sidecar) -- separado del
+  // `/render` síncrono que sigue usando `exportReportPdf`
+  // (report_pdf_export.cpp) para informes chicos, sin cambios. Mismo
+  // criterio de cifrado (ADR-080, siempre activo) que el pipeline síncrono.
+  const auto sidecarResult = postJsonToSidecar(
+      cfg.gPdfExportUrl, "/render-pdf",
+      json::object{{"url", printUrl},
+                  {"job_id", jobId},
+                  {"watermark", json::object{{"text", watermarkText}}},
+                  {"encrypt", true}},
+      cfg.gPdfExportTimeoutMs);
+
+  if (!sidecarResult.ok) {
+    updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "failed", "", sidecarResult.error,
+                            statusError);
+    return;
+  }
+
+  std::string storagePath;
+  if (sidecarResult.body.if_contains("storage_path") &&
+      sidecarResult.body.at("storage_path").is_string()) {
+    storagePath = json::value_to<std::string>(sidecarResult.body.at("storage_path"));
+  }
+  if (storagePath.empty()) {
+    updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "failed", "",
+                            "pdf_export_missing_storage_path", statusError);
+    return;
+  }
+
+  // Contraseña de usuario (ADR-080) generada recién por el sidecar al
+  // cifrar -- no existía todavía cuando se creó el job, así que se guarda
+  // acá vía el merge de `options` de `updateExportJobStatusPg` (nunca pisa
+  // el resto del objeto). El endpoint de descarga (report_routes.cpp) la
+  // lee de ahí para devolverla igual que el pipeline síncrono
+  // (`X-Pdf-User-Password`).
+  std::string userPassword;
+  if (sidecarResult.body.if_contains("user_password") &&
+      sidecarResult.body.at("user_password").is_string()) {
+    userPassword = json::value_to<std::string>(sidecarResult.body.at("user_password"));
+  }
+  const json::value mergeOptions = userPassword.empty()
+      ? json::value()
+      : json::value(json::object{{"user_password", userPassword}});
+
+  updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "success", storagePath, "", statusError,
+                          mergeOptions);
 }
 
 void runVideoExportJob(const std::string &jobId, const std::string &pptxStoragePath,

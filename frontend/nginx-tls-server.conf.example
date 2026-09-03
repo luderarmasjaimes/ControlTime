@@ -1,0 +1,63 @@
+# ============================================================================
+# Plantilla de terminación TLS pública para el frontend (nginx) -- OPCIONAL.
+# ============================================================================
+# Por qué existe: el VPS de producción (Lima, Perú) va a recibir conexiones no
+# solo desde la LAN interna sino desde estaciones de clientes mineros externos
+# por internet. Los `docker-compose.yml`/`docker-compose.prod.yml` que corren
+# hoy NO tienen terminación TLS pública (solo el blueprint no desplegado
+# `docker-compose.scale.yml` la trae, vía Traefik) -- esta plantilla cierra
+# esa brecha sin adoptar la topología completa de "scale".
+#
+# CÓMO HABILITARLO (no se activa solo con este archivo):
+#   1. Obtener un certificado real (Let's Encrypt/certbot, o el de la CA que
+#      use la organización) para el dominio público del frontend.
+#   2. Copiar este archivo a ./nginx-tls-enabled/tls.conf (fuera del repo o
+#      en un volumen ignorado por git) y reemplazar las rutas de
+#      ssl_certificate/ssl_certificate_key por las reales.
+#   3. En docker-compose.prod.yml, agregar al servicio `frontend`:
+#        ports:
+#          - "443:443"
+#        volumes:
+#          - ./nginx-tls-enabled:/etc/nginx/tls-enabled:ro
+#          - ./certs-tls:/etc/nginx/certs-tls:ro
+#   4. `frontend/nginx.conf` ya incluye `/etc/nginx/tls-enabled/*.conf` al
+#      final (include con comodín -- no falla si el directorio no existe,
+#      así que el dev/local sin certificados sigue arrancando igual).
+#
+# Duplica las mismas locations/headers de seguridad que el `server { listen
+# 80; }` de nginx.conf -- mantenerlos sincronizados si se edita uno.
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/certs-tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs-tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    # Mismos security headers que nginx.conf (server 80) -- HSTS solo tiene
+    # sentido real aquí, donde la conexión ya es HTTPS.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Resto de locations (/api/, /api/auth/login/, /api/auth/org-access/,
+    # /ws, /tiles/, /formula-api/): copiar tal cual del server { listen 80; }
+    # de nginx.conf al activar este archivo -- se omiten aquí para no
+    # duplicar ~150 líneas que deben mantenerse idénticas; usar un `include`
+    # de un archivo común compartido entre ambos server{} es el fast-follow
+    # recomendado si este archivo se activa en producción.
+}

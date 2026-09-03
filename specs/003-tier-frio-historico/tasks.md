@@ -29,10 +29,21 @@
 | **T16** | **Test edge**: cortar red durante export → job falla antes de `drop_chunks` | edge | QA | — | ☐ |
 | **T17** | **Test edge**: Parquet corrompido → verificación detecta discrepancia → no drop | edge | QA | — | ☐ |
 | **T18** | Log de auditoría por ejecución (fecha, filas archivadas, tamaño, resultado) | Art.5 | BE3 | Sonnet | ☐ |
-| **T19** | Endpoint de consulta al tier frío (si se requiere desde frontend) | opcional | BE1 | Sonnet | ☐ |
+| **T19** | Endpoint de consulta al tier frío (si se requiere desde frontend) | opcional | BE1 | Sonnet | ☑ |
 
-> **Nota:** T1, T3-T8, T11, T13-T15 completadas en sesión 2026-06 (tier frío funcional,
-> compresión ~30× medida). T2, T9, T10, T12, T16-T18 pendientes de completar.
+> **Actualización 2026-08-30**: T19 verificado — `GET /api/platform/archive/query`
+> (`backend/src/platform/platform_routes.cpp::handleQueryArchive`, registrada
+> en `registerRoutes`) implementa exactamente esto: lectura on-demand del
+> tier frío (un sensor + rango de fechas, máx. 366 días) vía DuckDB `httpfs`
+> contra MinIO, con guardia anti-IDOR (`resolveAllowedSensorTenant`) y
+> validación estricta de UUID/rango en Postgres parametrizado antes de tocar
+> el shell. Build verificado limpio (`Dockerfile.verify`, CTest 1/1); no
+> probado en vivo contra un bucket con datos reales archivados en esta
+> pasada. Documentado también como actualización de ADR-131 (el código ya
+> citaba "ADR-131" en su comentario sin que el ADR lo reflejara).
+
+> **Nota:** T1, T3-T8, T11, T13-T15, T19 completadas (tier frío funcional,
+> compresión ~30× medida; T19 verificado 2026-08-30). T2, T9, T10, T12, T16-T18 pendientes de completar.
 
 ## Secuencia (dependencias)
 
@@ -58,6 +69,7 @@ T19 opcional (no bloquea nada)
 - [ ] CA-6 (versionado bucket) — **pendiente T2**
 - [ ] Tests edge (T16, T17) — **pendientes**
 - [ ] Cron + auditoría (T9, T18) — **pendientes**
+- [x] T19 endpoint de consulta al tier frío desde frontend — verificado 2026-08-30 (`GET /api/platform/archive/query`), ver actualización arriba
 - [ ] ADR-003-1..5 registrados.
 - [ ] Sin violar Constitución (Art. 2, 4, 9).
 

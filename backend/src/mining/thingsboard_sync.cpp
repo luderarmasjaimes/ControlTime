@@ -359,7 +359,8 @@ struct HistPoint { std::int64_t ts_ms; double value; };
 bool fetchHistoryPageMulti(const std::string& baseUrl, const std::string& jwt,
                             const std::string& device_uuid, const std::string& keysCsv,
                             std::int64_t start_ms, std::int64_t end_ms,
-                            std::unordered_map<std::string, std::vector<HistPoint>>& out) {
+                            std::unordered_map<std::string, std::vector<HistPoint>>& out,
+                            std::string* errorOut = nullptr) {
     std::ostringstream target;
     target << baseUrl << "/api/plugins/telemetry/DEVICE/" << device_uuid
            << "/values/timeseries?keys=" << keysCsv
@@ -369,7 +370,12 @@ bool fetchHistoryPageMulti(const std::string& baseUrl, const std::string& jwt,
     // Authorization estándar) — particularidad documentada de su API REST.
     const auto res = http_client::request(target.str(), http::verb::get, "",
                                            {{"X-Authorization", "Bearer " + jwt}}, 15000);
-    if (!res.ok) return false;
+    if (!res.ok) {
+        if (errorOut) {
+            *errorOut = "status=" + std::to_string(res.status) + " err=" + res.error;
+        }
+        return false;
+    }
     try {
         const auto payload = json::parse(res.body);
         if (!payload.is_object()) return true;  // sin datos, no es error
@@ -459,10 +465,13 @@ void backfillLoop(const std::string& db_url) {
                 }
 
                 std::unordered_map<std::string, std::vector<HistPoint>> pointsByKey;
+                std::string fetchError;
                 if (!fetchHistoryPageMulti(peer.base_url, session.jwt, deviceUuid, keysCsv,
-                                            batchStartMs + 1, nowMs, pointsByKey)) {
+                                            batchStartMs + 1, nowMs, pointsByKey, &fetchError)) {
                     m_backfill_errors.fetch_add(1, std::memory_order_relaxed);
                     anyError = true;
+                    std::cerr << "[TB_SYNC] backfill: fallo device=" << deviceUuid
+                              << " " << fetchError << std::endl;
                     continue;
                 }
 
@@ -550,38 +559,80 @@ void runWsSession(WsStream& ws,
     // con muchos widgets, no una particularidad de este cliente).
     constexpr std::size_t kMaxDevicesPerSubBatch = 40;
     std::unordered_map<int, std::string> cmdIdToDevice;
-    int cmdId = 1;
-    json::array batch;
-    auto flushBatch = [&]() {
-        if (batch.empty()) return;
-        json::object subMsg;
-        subMsg["tsSubCmds"] = batch;
-        subMsg["historyCmds"] = json::array{};
-        subMsg["attrSubCmds"] = json::array{};
-        ws.write(asio::buffer(json::serialize(subMsg)));
-        batch = json::array{};
-    };
-    for (const auto& kv : keysByDevice) {
-        json::object cmd;
-        cmd["entityType"] = "DEVICE";
-        cmd["entityId"] = kv.first;
-        // "keys" es un string separado por comas, NO un array JSON —
-        // verificado contra un ThingsBoard real (v4.3.1.3): con array
-        // el servidor acepta la suscripción (errorCode 0) pero nunca
-        // empuja datos; con string sí llegan los push en tiempo real.
-        std::string keysCsv;
-        for (std::size_t i = 0; i < kv.second.size(); ++i) {
-            if (i) keysCsv += ',';
-            keysCsv += kv.second[i];
+    std::vector<json::object> subCmds;
+    {
+        int cmdId = 1;
+        for (const auto& kv : keysByDevice) {
+            json::object cmd;
+            cmd["entityType"] = "DEVICE";
+            cmd["entityId"] = kv.first;
+            // "keys" es un string separado por comas, NO un array JSON —
+            // verificado contra un ThingsBoard real (v4.3.1.3): con array
+            // el servidor acepta la suscripción (errorCode 0) pero nunca
+            // empuja datos; con string sí llegan los push en tiempo real.
+            std::string keysCsv;
+            for (std::size_t i = 0; i < kv.second.size(); ++i) {
+                if (i) keysCsv += ',';
+                keysCsv += kv.second[i];
+            }
+            cmd["keys"] = keysCsv;
+            cmd["cmdId"] = cmdId;
+            cmdIdToDevice[cmdId] = kv.first;
+            ++cmdId;
+            subCmds.push_back(std::move(cmd));
         }
-        cmd["keys"] = keysCsv;
-        cmd["cmdId"] = cmdId;
-        cmdIdToDevice[cmdId] = kv.first;
-        ++cmdId;
-        batch.push_back(cmd);
-        if (batch.size() >= kMaxDevicesPerSubBatch) flushBatch();
     }
-    flushBatch();
+
+    std::mutex writeMutex;
+    auto sendAllBatches = [&]() {
+        std::lock_guard<std::mutex> lock(writeMutex);
+        json::array batch;
+        for (const auto& cmd : subCmds) {
+            batch.push_back(cmd);
+            if (batch.size() >= kMaxDevicesPerSubBatch) {
+                json::object subMsg;
+                subMsg["tsSubCmds"] = batch;
+                subMsg["historyCmds"] = json::array{};
+                subMsg["attrSubCmds"] = json::array{};
+                ws.write(asio::buffer(json::serialize(subMsg)));
+                batch = json::array{};
+            }
+        }
+        if (!batch.empty()) {
+            json::object subMsg;
+            subMsg["tsSubCmds"] = batch;
+            subMsg["historyCmds"] = json::array{};
+            subMsg["attrSubCmds"] = json::array{};
+            ws.write(asio::buffer(json::serialize(subMsg)));
+        }
+    };
+    sendAllBatches();  // suscripción inicial
+
+    // Hallazgo en prueba de carga sostenida (2026-08-29, 25k streams/seg
+    // durante 60 min): la suscripción puede "perderse" del lado de
+    // ThingsBoard SIN NINGÚN aviso — el socket queda sano (TCP establecido,
+    // sin datos en tránsito, sin retransmisiones) y ThingsBoard sigue
+    // persistiendo telemetría real fresca (confirmado vía REST, <1s de
+    // antigüedad, para dispositivos de todos los lotes), pero deja de
+    // empujar por este WS sin cerrar la sesión ni mandar ningún error.
+    // websocket::error::closed nunca dispara porque el servidor no cierra
+    // nada — simplemente deja de notificar. Mitigación defensiva: re-enviar
+    // la suscripción completa cada 45s mientras dure la sesión, sin esperar
+    // a un error que en este caso nunca llega.
+    std::atomic<bool> sessionAlive{true};
+    std::thread resubscribeThread([&]() {
+        while (sessionAlive.load() && g_running.load()) {
+            for (int waited = 0; waited < 45 && sessionAlive.load() && g_running.load(); ++waited) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            if (!sessionAlive.load() || !g_running.load()) break;
+            try {
+                sendAllBatches();
+            } catch (...) {
+                break;  // el hilo de lectura detecta y reporta el problema real
+            }
+        }
+    });
 
     beast::flat_buffer buffer;
     while (g_running.load()) {
@@ -634,6 +685,15 @@ void runWsSession(WsStream& ws,
                     if (!valOk) continue;
                     if (!isSaneCapturedAt(ts)) {
                         m_realtime_rejected_bad_ts.fetch_add(1, std::memory_order_relaxed);
+                        // Detalle a nivel dispositivo+key: sin esto, el contador
+                        // agregado no le sirve a nadie para ir a corregir el
+                        // dispositivo real que sigue mandando timestamps
+                        // corruptos en producción (hallazgo de ADR-054: RTC sin
+                        // sincronizar, unidad mal escalada, o timestamp fijo en
+                        // atributos de configuración).
+                        std::cerr << "[TB_SYNC] realtime: ts fuera de rango descartado device="
+                                  << (deviceUuid.empty() ? "?" : deviceUuid) << " key=" << key
+                                  << " ts_ms=" << ts << std::endl;
                         continue;
                     }
 
@@ -680,6 +740,8 @@ void runWsSession(WsStream& ws,
             m_realtime_errors.fetch_add(1, std::memory_order_relaxed);
         }
     }
+    sessionAlive.store(false);
+    resubscribeThread.join();
 }
 
 void realtimeLoop(const TbPeer& peer, const std::string& db_url) {

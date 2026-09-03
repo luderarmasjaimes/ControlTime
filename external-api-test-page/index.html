@@ -196,6 +196,72 @@
       <div class="row2" id="sessMeta">—</div>
     </div>
     <button class="secondary" id="btnLogout" type="button" style="margin-top:12px;">Cerrar sesión</button>
+    <button class="secondary small" id="btnRefreshToken" type="button" style="margin-top:8px;">Probar POST /api/auth/refresh</button>
+    <div id="refreshResult" class="result-box" style="display:none;"></div>
+  </section>
+
+  <!-- SESION / MULTITENANCY -->
+  <section class="panel" id="multitenancySection" style="display:none;">
+    <h2>Sesión / Multitenancy <span class="badge">GET/POST /api/auth/tenants*</span></h2>
+    <button class="secondary small" id="btnListTenants" type="button">Listar mis unidades (GET /api/auth/tenants)</button>
+    <div id="tenantsListResult" class="result-box" style="display:none;"></div>
+    <label for="switchTenantId" style="margin-top:12px;">Tenant ID destino (copiar de la lista de arriba)</label>
+    <input type="text" id="switchTenantId" placeholder="uuid del tenant al que cambiar">
+    <button class="secondary small" id="btnSwitchTenant" type="button" style="margin-top:8px;">Cambiar tenant activo (POST /api/auth/tenants/switch)</button>
+    <div id="switchTenantResult" class="result-box" style="display:none;"></div>
+    <div class="hint">Al cambiar de tenant, el <code>access_token</code> se reemite con el nuevo <code>tenant_id</code> —
+      esta página actualiza <code>state.accessToken</code> automáticamente, pero un frontend real debe recargar
+      todo su estado (permisos, datos scopeados a tenant) tras un switch exitoso.</div>
+  </section>
+
+  <!-- CONTROL DE ACCESOS / ORGANIZACION (ADR-130) -->
+  <section class="panel" id="accessControlSection" style="display:none;">
+    <h2>Control de Accesos / Organización <span class="badge">requiere sesión</span></h2>
+
+    <details open>
+      <summary>Empresas (<code>/api/auth/companies*</code>)</summary>
+      <button class="secondary small" id="btnListCompaniesManage" type="button" style="margin-top:10px;">Listar catálogo administrativo</button>
+      <label for="ccName" style="margin-top:12px;">Razón social (alta)</label>
+      <input type="text" id="ccName" placeholder="Minera Ejemplo S.A.">
+      <label for="ccType">Tipo de empresa</label>
+      <select id="ccType">
+        <option value="mining_client">Empresa minera (cliente)</option>
+        <option value="organization">Empresa de organización (Beemetry/TimeTelemetry)</option>
+      </select>
+      <button class="secondary small" id="btnCreateCompany" type="button" style="margin-top:8px;">Crear empresa</button>
+      <div id="companiesResult" class="result-box" style="display:none;"></div>
+    </details>
+
+    <details style="margin-top:14px;">
+      <summary>Matriz de permisos (<code>/api/auth/permissions/matrix</code>)</summary>
+      <button class="secondary small" id="btnMyPermissions" type="button" style="margin-top:10px;">Ver mis permisos (incluye is_organization_tenant)</button>
+      <button class="secondary small" id="btnPermMatrix" type="button" style="margin-top:8px;">Ver matriz completa del tenant activo</button>
+      <div id="permsResult" class="result-box" style="display:none;"></div>
+    </details>
+
+    <details style="margin-top:14px;">
+      <summary>Acceso cruzado de organización (<code>/api/auth/org-access/*</code>, ADR-130)</summary>
+      <button class="secondary small" id="btnOrgCandidates" type="button" style="margin-top:10px;">Listar empresas mineras candidatas</button>
+      <label for="oaUsername" style="margin-top:12px;">Usuario destino</label>
+      <input type="text" id="oaUsername" placeholder="jsmith">
+      <label for="oaTenantId">Tenant ID de la minera cliente</label>
+      <input type="text" id="oaTenantId" placeholder="uuid (ver candidatas arriba)">
+      <label for="oaRole">Rol a otorgar</label>
+      <select id="oaRole">
+        <option value="admin">admin</option><option value="manager">manager</option>
+        <option value="supervisor" selected>supervisor</option><option value="geologist">geologist</option>
+        <option value="safety">safety</option><option value="operator">operator</option><option value="viewer">viewer</option>
+      </select>
+      <div class="row" style="margin-top:8px;">
+        <button class="secondary small" id="btnOrgGrant" type="button">Otorgar</button>
+        <button class="secondary small" id="btnOrgRevoke" type="button">Revocar</button>
+      </div>
+      <button class="secondary small" id="btnOrgAudit" type="button" style="margin-top:8px;">Ver historial de concesiones</button>
+      <div id="orgAccessResult" class="result-box" style="display:none;"></div>
+      <div class="hint">Solo funciona si la sesión activa pertenece a un tenant <code>company_type='organization'</code> (Beemetry/TimeTelemetry)
+        y tiene el permiso <code>org.cross_tenant.manage</code> — el backend re-valida ambas condiciones en cada request. Ver
+        <code>docs/integration/ACCESS_CONTROL_API_GUIDE.md</code> §6.</div>
+    </details>
   </section>
 
   <!-- LOG -->
@@ -783,12 +849,143 @@
     $('sessMeta').textContent =
       `${user.company} · ${user.role} · tenant ${user.tenant_id} · vía ${method === 'face' ? 'biometría' : 'contraseña/PIN'}`;
     $('sessionSection').style.display = 'block';
+    $('multitenancySection').style.display = 'block';
+    $('accessControlSection').style.display = 'block';
   }
 
   $('btnLogout').addEventListener('click', async () => {
-    await apiFetch('/api/auth/logout', { method: 'POST' });
+    // El backend exige X-CSRF-Token en /api/auth/logout SIEMPRE que exista una
+    // cookie refresh_token que revocar (que el login ya dejó puesta, aunque
+    // esta página autentique las demás peticiones por Bearer) -- sin el
+    // header, el backend responde 403 csrf_token_mismatch y el token de
+    // sesión NUNCA queda revocado en el servidor. Hallazgo real (2026-08-26):
+    // esta página ocultaba el panel de sesión igual, dando una falsa
+    // impresión de "sesión cerrada" sin haberla revocado de verdad.
+    const csrfToken = readCookie('beemetry_csrf_token');
+    const r = await apiFetch('/api/auth/logout', {
+      method: 'POST',
+      headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {},
+    });
+    if (!r.ok) {
+      showError(`No se pudo cerrar sesión en el servidor (HTTP ${r.status}) -- el token sigue activo. Ver el log para el detalle.`);
+      return;
+    }
     state.accessToken = null;
     $('sessionSection').style.display = 'none';
+    $('multitenancySection').style.display = 'none';
+    $('accessControlSection').style.display = 'none';
+  });
+
+  // ---- Sesión: refresh + multitenancy (§6/§7 de LOGIN_API_COMPLETE_GUIDE.md) ----
+  // /api/auth/refresh opera sobre la cookie refresh_token (no el Bearer del
+  // login) y por eso SIEMPRE exige el header X-CSRF-Token con el valor de la
+  // cookie legible beemetry_csrf_token (patrón double-submit, ADR-082) -- se lee
+  // aquí en vez de en apiFetch() porque es el único endpoint de esta página
+  // que depende de la cookie en vez del Bearer token.
+  function readCookie(name) {
+    const match = document.cookie.match('(?:^|; )' + name + '=([^;]*)');
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  $('btnRefreshToken').addEventListener('click', async () => {
+    const csrfToken = readCookie('beemetry_csrf_token');
+    if (!csrfToken) {
+      showError('No hay cookie beemetry_csrf_token -- verifique que el backend esté en el mismo origen/puerto que esta página, o que las cookies no estén bloqueadas.');
+      return;
+    }
+    const r = await apiFetch('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrfToken },
+    });
+    showBox('refreshResult', r.body);
+    if (r.ok && r.body && r.body.access_token) {
+      state.accessToken = r.body.access_token;
+    }
+  });
+
+  $('btnListTenants').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/tenants');
+    showBox('tenantsListResult', r.body);
+  });
+
+  $('btnSwitchTenant').addEventListener('click', async () => {
+    const tenantId = $('switchTenantId').value.trim();
+    if (!tenantId) { showError('Indique el tenant_id destino (cópielo de la lista de arriba).'); return; }
+    const r = await apiFetch('/api/auth/tenants/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenant_id: tenantId }),
+    });
+    showBox('switchTenantResult', r.body);
+    if (r.ok && r.body && r.body.access_token) {
+      state.accessToken = r.body.access_token;
+      $('sessMeta').textContent = `${r.body.tenant_id} · ${r.body.role} · (tenant activo cambiado)`;
+    }
+  });
+
+  // ---- Control de Accesos / Organización (ADR-130) ---------------------------
+  // Bearer token (state.accessToken, seteado en onLoginSuccess) -- exento de
+  // CSRF (ver auth_session.cpp), así que estos botones no necesitan manejar
+  // el header X-CSRF-Token que sí exige el flujo de cookie del frontend real.
+
+  $('btnListCompaniesManage').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/companies/manage?include_inactive=true');
+    showBox('companiesResult', r.body);
+  });
+
+  $('btnCreateCompany').addEventListener('click', async () => {
+    const name = $('ccName').value.trim();
+    if (!name) { showError('Indique la razón social.'); return; }
+    const r = await apiFetch('/api/auth/companies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, company_type: $('ccType').value }),
+    });
+    showBox('companiesResult', r.body);
+  });
+
+  $('btnMyPermissions').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/permissions');
+    showBox('permsResult', r.body);
+  });
+
+  $('btnPermMatrix').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/permissions/matrix');
+    showBox('permsResult', r.body);
+  });
+
+  $('btnOrgCandidates').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/org-access/candidates');
+    showBox('orgAccessResult', r.body);
+  });
+
+  $('btnOrgGrant').addEventListener('click', async () => {
+    const username = $('oaUsername').value.trim();
+    const tenantId = $('oaTenantId').value.trim();
+    if (!username || !tenantId) { showError('Indique usuario destino y tenant_id de la minera cliente.'); return; }
+    const r = await apiFetch('/api/auth/org-access/grant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, tenant_id: tenantId, role: $('oaRole').value }),
+    });
+    showBox('orgAccessResult', r.body);
+  });
+
+  $('btnOrgRevoke').addEventListener('click', async () => {
+    const username = $('oaUsername').value.trim();
+    const tenantId = $('oaTenantId').value.trim();
+    if (!username || !tenantId) { showError('Indique usuario destino y tenant_id de la minera cliente.'); return; }
+    const r = await apiFetch('/api/auth/org-access/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, tenant_id: tenantId }),
+    });
+    showBox('orgAccessResult', r.body);
+  });
+
+  $('btnOrgAudit').addEventListener('click', async () => {
+    const r = await apiFetch('/api/auth/org-access/audit?limit=50');
+    showBox('orgAccessResult', r.body);
   });
 
 })();

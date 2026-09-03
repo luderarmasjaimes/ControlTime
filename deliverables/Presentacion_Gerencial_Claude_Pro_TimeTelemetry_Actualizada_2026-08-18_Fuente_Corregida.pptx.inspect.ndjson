@@ -1,0 +1,272 @@
+{"kind":"deck","id":"pr/edofjd","name":"Deck"}
+{"kind":"layout","layoutId":"/ppt/slideMasters/slideMaster1.xml","name":"","type":"master"}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout1.xml","name":"DEFAULT"}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout2.xml","name":"Slide master 1"}
+{"kind":"slide","id":"sl/y90nupkv","slide":1,"title":"DECISIÓN GERENCIAL · 18 AGOSTO 2026","textShapes":3}
+{"kind":"shape","id":"sh/k3yl0zql","slide":1,"name":"Shape 0","bbox":[412.09,159.65,175.45,27.97]}
+{"kind":"textbox","id":"sh/7qp4be9c","slide":1,"name":"Text 1","text":"DECISIÓN GERENCIAL · 18 AGOSTO 2026","textPreview":"DECISIÓN GERENCIAL · 18 AGOSTO 2026","textChars":35,"textLines":1,"bbox":[421.02,164.11,205.59,19.05]}
+{"kind":"textbox","id":"sh/65g3298r","slide":1,"name":"Text 2","text":"Claude Pro para cerrar la industrialización de Plataforma Minera","textPreview":"Claude Pro para cerrar la industrialización de Plataforma Minera","textChars":64,"textLines":1,"bbox":[412.09,193.57,495.83,93.02]}
+{"kind":"textbox","id":"sh/ts7md4r2","slide":1,"name":"Text 3","text":"Solicitud: aprobar una licencia anual de USD 200, con gobierno y métricas, para sostener ingeniería, pruebas, integraciones y documentación crítica.","textPreview":"Solicitud: aprobar una licencia anual de USD 200, con gobierno y métricas, para sostener ingeniería, pruebas, integraciones y documentaci...","textChars":148,"textLines":1,"bbox":[412.09,308.91,495.83,71.44]}
+{"kind":"image","id":"im/dkb2xcfy","slide":1,"name":"Image 0","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/y90nupkv","slide":1,"text":"[Sources]\n- D:/InformeCliente/docs_/01_Planificacion/Informe_Estado_Proyecto_Actualizado_2026-08-18.md\n- C:/Users/lenovo´/Downloads/1._Presentación_TMT.pdf\n- OpenAI ImageGen; prompt registrado en image-prompts.txt; activo normalizado a 7680x4320 px"}
+{"kind":"slide","id":"sl/hwbqtkby","slide":2,"title":"Aprobar USD 200 ahora; medir en 30 días","textShapes":10}
+{"kind":"textbox","id":"sh/ozy1ofad","slide":2,"name":"Text 0","text":"Aprobar USD 200 ahora; medir en 30 días","textPreview":"Aprobar USD 200 ahora; medir en 30 días","textChars":39,"textLines":1,"bbox":[403.13,47.92,535.43,38.52]}
+{"kind":"textbox","id":"sh/b29kza94","slide":2,"name":"Text 1","text":"Una licencia anual elimina una restricción evitable en el tramo más exigente del proyecto.","textPreview":"Una licencia anual elimina una restricción evitable en el tramo más exigente del proyecto.","textChars":90,"textLines":1,"bbox":[403.13,101.74,513.73,36.05]}
+{"kind":"shape","id":"sh/a10jqpsj","slide":2,"name":"Shape 2","bbox":[403.13,149.27,513.73,87.06]}
+{"kind":"textbox","id":"sh/x4r21kru","slide":2,"name":"Text 3","text":"Continuidad inmediata","textPreview":"Continuidad inmediata","textChars":21,"textLines":1,"bbox":[415.95,162.09,154.06,19.26]}
+{"kind":"textbox","id":"sh/w3i1sfa9","slide":2,"name":"Text 4","text":"Evita que una ventana agotada detenga análisis, código, pruebas y documentación.","textPreview":"Evita que una ventana agotada detenga análisis, código, pruebas y documentación.","textChars":80,"textLines":1,"bbox":[415.95,187.46,488.09,36.05]}
+{"kind":"shape","id":"sh/r65knqtk","slide":2,"name":"Shape 5","bbox":[403.13,246.53,513.73,69.04]}
+{"kind":"textbox","id":"sh/q5wjelsz","slide":2,"name":"Text 6","text":"Uso nominal y seguro","textPreview":"Uso nominal y seguro","textChars":20,"textLines":1,"bbox":[415.95,259.35,192.87,19.26]}
+{"kind":"textbox","id":"sh/ove9o7yd","slide":2,"name":"Text 7","text":"Una cuenta, un responsable; sin compartir credenciales ni datos sensibles.","textPreview":"Una cuenta, un responsable; sin compartir credenciales ni datos sensibles.","textChars":74,"textLines":1,"bbox":[415.95,284.73,488.09,18.02]}
+{"kind":"shape","id":"sh/9wnqhczy","slide":2,"name":"Shape 8","bbox":[403.13,325.77,513.73,87.06]}
+{"kind":"textbox","id":"sh/mtwrmxg7","slide":2,"name":"Text 9","text":"KPI de 30 días","textPreview":"KPI de 30 días","textChars":14,"textLines":1,"bbox":[415.95,338.59,154.06,19.26]}
+{"kind":"textbox","id":"sh/nu58f2hs","slide":2,"name":"Text 10","text":"Horas evitadas, CA cerrados, pruebas creadas y defectos detectados.","textPreview":"Horas evitadas, CA cerrados, pruebas creadas y defectos detectados.","textChars":67,"textLines":1,"bbox":[415.95,363.97,488.09,36.05]}
+{"kind":"shape","id":"sh/wjy9sry9","slide":2,"name":"Shape 11","bbox":[403.13,423.04,513.73,69.04]}
+{"kind":"textbox","id":"sh/xk7qlczu","slide":2,"name":"Text 12","text":"Escala por evidencia","textPreview":"Escala por evidencia","textChars":20,"textLines":1,"bbox":[415.95,435.86,154.73,19.26]}
+{"kind":"textbox","id":"sh/ahwrqhgj","slide":2,"name":"Text 13","text":"Agregar asientos solo cuando la concurrencia y los límites lo justifiquen.","textPreview":"Agregar asientos solo cuando la concurrencia y los límites lo justifiquen.","textChars":74,"textLines":1,"bbox":[415.95,461.23,488.09,18.02]}
+{"kind":"image","id":"im/wved8fit","slide":2,"name":"Image 0","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/hwbqtkby","slide":2,"text":"[Sources]\n- https://claude.com/pricing\n- https://support.claude.com/en/articles/11049762-choose-a-claude-plan\n- C:/Users/lenovo´/AppData/Local/Temp/codex-clipboard-743dc529-8a0c-43d0-878f-6db1ba69f57a.png"}
+{"kind":"slide","id":"sl/ofy9wn61","slide":3,"title":"La base existe, pero el producto completo está en 54,1%","textShapes":8}
+{"kind":"textbox","id":"sh/cza94vmx","slide":3,"name":"Text 0","text":"La base existe, pero el producto completo está en 54,1%","textPreview":"La base existe, pero el producto completo está en 54,1%","textChars":55,"textLines":1,"bbox":[47.2,40.55,673.33,42.15]}
+{"kind":"textbox","id":"sh/298ryl4v","slide":3,"name":"Text 1","text":"Lectura ejecutiva","textPreview":"Lectura ejecutiva","textChars":17,"textLines":1,"bbox":[496.95,113.24,313.36,21.07]}
+{"kind":"textbox","id":"sh/obq90bml","slide":3,"name":"Text 2","text":"106 tareas cerradas","textPreview":"106 tareas cerradas","textChars":19,"textLines":1,"bbox":[516.44,163.05,202.85,21.07]}
+{"kind":"textbox","id":"sh/pcjqtg36","slide":3,"name":"Text 3","text":"De 196 tareas canónicas; la cifra mide ejecución documentada, no aceptación productiva.","textPreview":"De 196 tareas canónicas; la cifra mide ejecución documentada, no aceptación productiva.","textChars":87,"textLines":1,"bbox":[516.44,196.34,381.87,41.14]}
+{"kind":"textbox","id":"sh/n6ls3alk","slide":3,"name":"Text 4","text":"90 tareas abiertas","textPreview":"90 tareas abiertas","textChars":18,"textLines":1,"bbox":[516.44,279.66,182.16,21.07]}
+{"kind":"textbox","id":"sh/n2l4fq98","slide":3,"name":"Text 5","text":"El pendiente se concentra en offline, alertas, DR, pruebas, integraciones y campo.","textPreview":"El pendiente se concentra en offline, alertas, DR, pruebas, integraciones y campo.","textChars":82,"textLines":1,"bbox":[516.44,312.95,381.87,41.14]}
+{"kind":"textbox","id":"sh/943mhgre","slide":3,"name":"Text 6","text":"R6: 4 de 10 controles","textPreview":"R6: 4 de 10 controles","textChars":21,"textLines":1,"bbox":[516.44,396.28,250.1,21.07]}
+{"kind":"textbox","id":"sh/83ulovat","slide":3,"name":"Text 7","text":"Sin pentest, DR, UAT, rollback y marcha blanca todavía no existe go-live.","textPreview":"Sin pentest, DR, UAT, rollback y marcha blanca todavía no existe go-live.","textChars":73,"textLines":1,"bbox":[516.44,429.57,381.87,41.14]}
+{"kind":"chart","id":"ch/3axkfi94","slide":3,"name":"Chart","chartType":"bar","title":"Ejecución documentada · 196 tareas (%)","bbox":[47.2,114.77,416.34,299.68]}
+{"kind":"image","id":"im/gne5cvel","slide":3,"name":"Image 0","bbox":[47.2,194.31,416.34,140.61]}
+{"kind":"image","id":"im/hon6lgv6","slide":3,"name":"Image 1","bbox":[495.45,148.06,417.84,104.4]}
+{"kind":"image","id":"im/ulcnalwf","slide":3,"name":"Image 2","bbox":[495.45,264.68,417.84,104.4]}
+{"kind":"image","id":"im/vmlojqd0","slide":3,"name":"Image 3","bbox":[495.45,381.3,417.84,104.4]}
+{"kind":"notes","id":"nt/ofy9wn61","slide":3,"text":"[Sources]\n- D:/InformeCliente/specs/BACKLOG.md\n- D:/InformeCliente/scripts/project-status-metrics.ps1\n- D:/InformeCliente/docs_/01_Planificacion/Informe_Estado_Proyecto_Actualizado_2026-08-18.md"}
+{"kind":"slide","id":"sl/jyx0ra1s","slide":4,"title":"El riesgo crece en los gates que todavía deben probar operación real","textShapes":8}
+{"kind":"textbox","id":"sh/1cj2d8b6","slide":4,"name":"Text 0","text":"El riesgo crece en los gates que todavía deben probar operación real","textPreview":"El riesgo crece en los gates que todavía deben probar operación real","textChars":68,"textLines":1,"bbox":[47.2,40.55,673.33,42.15]}
+{"kind":"textbox","id":"sh/rm1k7yt4","slide":4,"name":"Text 1","text":"Preparación al 18-ago","textPreview":"Preparación al 18-ago","textChars":21,"textLines":1,"bbox":[496.95,113.24,313.36,21.07]}
+{"kind":"textbox","id":"sh/doj29oba","slide":4,"name":"Text 2","text":"R3 · 75,8%","textPreview":"R3 · 75,8%","textChars":10,"textLines":1,"bbox":[516.44,163.05,202.85,21.07]}
+{"kind":"textbox","id":"sh/sna103ap","slide":4,"name":"Text 3","text":"Build y pruebas base verdes; falta cerrar aceptación integrada, regresión y evidencia.","textPreview":"Build y pruebas base verdes; falta cerrar aceptación integrada, regresión y evidencia.","textChars":86,"textLines":1,"bbox":[516.44,196.34,381.87,41.14]}
+{"kind":"textbox","id":"sh/ih8ju9sn","slide":4,"name":"Text 4","text":"R4 · 58,1%","textPreview":"R4 · 58,1%","textChars":10,"textLines":1,"bbox":[516.44,279.66,182.16,21.07]}
+{"kind":"textbox","id":"sh/kbm987y5","slide":4,"name":"Text 5","text":"Offline, alertas, AWS real, RP productivo y exportaciones concentran la brecha.","textPreview":"Offline, alertas, AWS real, RP productivo y exportaciones concentran la brecha.","textChars":79,"textLines":1,"bbox":[516.44,312.95,381.87,41.14]}
+{"kind":"textbox","id":"sh/i94r6xgz","slide":4,"name":"Text 6","text":"R5 · 37,7%","textPreview":"R5 · 37,7%","textChars":10,"textLines":1,"bbox":[516.44,396.28,250.1,21.07]}
+{"kind":"textbox","id":"sh/jadsz2xk","slide":4,"name":"Text 7","text":"DR, pentest, calibración biométrica y despliegue/restore aún no están aceptados.","textPreview":"DR, pentest, calibración biométrica y despliegue/restore aún no están aceptados.","textChars":80,"textLines":1,"bbox":[516.44,429.57,381.87,41.14]}
+{"kind":"chart","id":"ch/0n254zed","slide":4,"name":"Chart","chartType":"bar","title":"Readiness por gate al 18-ago (%)","bbox":[47.2,114.77,416.34,299.68]}
+{"kind":"image","id":"im/7ad43q1c","slide":4,"name":"Image 0","bbox":[47.2,194.31,416.34,140.61]}
+{"kind":"image","id":"im/694nal0r","slide":4,"name":"Image 1","bbox":[495.45,148.06,417.84,104.4]}
+{"kind":"image","id":"im/tcvm5gji","slide":4,"name":"Image 2","bbox":[495.45,264.68,417.84,104.4]}
+{"kind":"image","id":"im/sbm5cbix","slide":4,"name":"Image 3","bbox":[495.45,381.3,417.84,104.4]}
+{"kind":"notes","id":"nt/jyx0ra1s","slide":4,"text":"[Sources]\n- D:/InformeCliente/docs_/01_Planificacion/Informe_Estado_Proyecto_Actualizado_2026-08-18.md"}
+{"kind":"slide","id":"sl/i107q5of","slide":5,"title":"El pendiente crítico está en la industrialización, no solo en reportes","textShapes":8}
+{"kind":"textbox","id":"sh/dgbulwnm","slide":5,"name":"Text 0","text":"El pendiente crítico está en la industrialización, no solo en reportes","textPreview":"El pendiente crítico está en la industrialización, no solo en reportes","textChars":70,"textLines":1,"bbox":[52.09,89.66,844.8,46.51]}
+{"kind":"textbox","id":"sh/cf2tcr61","slide":5,"name":"Text 1","text":"La licencia acelera trabajo transversal que requiere ingeniería, verificación y trazabilidad.","textPreview":"La licencia acelera trabajo transversal que requiere ingeniería, verificación y trazabilidad.","textChars":93,"textLines":1,"bbox":[52.09,165.94,903.83,23.81]}
+{"kind":"textbox","id":"sh/yhkbe1o7","slide":5,"name":"Text 2","text":"Producto e IA","textPreview":"Producto e IA","textChars":13,"textLines":1,"bbox":[52.09,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/l4bupwny","slide":5,"name":"Text 3","text":"Offline 0/10, alertas 0/5, STT 0/7, documentos avanzados y analítica predictiva.","textPreview":"Offline 0/10, alertas 0/5, STT 0/7, documentos avanzados y analítica predictiva.","textChars":80,"textLines":1,"bbox":[52.09,355.09,272.87,95.25]}
+{"kind":"textbox","id":"sh/n6dcr65o","slide":5,"name":"Text 4","text":"Integraciones reales","textPreview":"Integraciones reales","textChars":20,"textLines":1,"bbox":[343.56,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/m5kbi1oj","slide":5,"name":"Text 5","text":"AWS, escritura RP/Odoo, sensores, zonas, ERP y contratos de datos con cliente.","textPreview":"AWS, escritura RP/Odoo, sensores, zonas, ERP y contratos de datos con cliente.","textChars":78,"textLines":1,"bbox":[343.56,355.09,272.87,71.44]}
+{"kind":"textbox","id":"sh/x4vedgvm","slide":5,"name":"Text 6","text":"Preparación de go-live","textPreview":"Preparación de go-live","textChars":22,"textLines":1,"bbox":[635.04,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/ahkvi1cb","slide":5,"name":"Text 7","text":"VPS, CI/CD, pentest, DR, UAT, capacitación, manuales y marcha blanca.","textPreview":"VPS, CI/CD, pentest, DR, UAT, capacitación, manuales y marcha blanca.","textChars":69,"textLines":1,"bbox":[635.04,355.09,272.87,95.25]}
+{"kind":"image","id":"im/srmx0vmd","slide":5,"name":"Image 0","bbox":[52.09,206.49,158.27,97.81]}
+{"kind":"image","id":"im/jmdw3qlg","slide":5,"name":"Image 1","bbox":[343.56,206.49,158.27,97.81]}
+{"kind":"image","id":"im/ilkvul4v","slide":5,"name":"Image 2","bbox":[635.04,206.49,158.27,97.81]}
+{"kind":"notes","id":"nt/i107q5of","slide":5,"text":"[Sources]\n- D:/InformeCliente/specs/BACKLOG.md\n- D:/InformeCliente/specs/REGISTRY.md"}
+{"kind":"slide","id":"sl/x8f69ofe","slide":6,"title":"VPS, ciberseguridad y resiliencia habilitan la operación","textShapes":8}
+{"kind":"textbox","id":"sh/yhg7epsj","slide":6,"name":"Text 0","text":"VPS, ciberseguridad y resiliencia habilitan la operación","textPreview":"VPS, ciberseguridad y resiliencia habilitan la operación","textChars":56,"textLines":1,"bbox":[52.09,89.66,844.8,46.51]}
+{"kind":"textbox","id":"sh/zi98nu94","slide":6,"name":"Text 1","text":"Portabilidad no equivale a despliegue aceptado ni a recuperación ante desastres.","textPreview":"Portabilidad no equivale a despliegue aceptado ni a recuperación ante desastres.","textChars":80,"textLines":1,"bbox":[52.09,165.94,903.83,23.81]}
+{"kind":"textbox","id":"sh/98rqt4r6","slide":6,"name":"Text 2","text":"VPS y CI/CD","textPreview":"VPS y CI/CD","textChars":11,"textLines":1,"bbox":[52.09,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/ml07i9sv","slide":6,"name":"Text 3","text":"IaC, secretos, imágenes firmadas, SBOM, despliegue progresivo y rollback probado.","textPreview":"IaC, secretos, imágenes firmadas, SBOM, despliegue progresivo y rollback probado.","textChars":81,"textLines":1,"bbox":[52.09,355.09,272.87,95.25]}
+{"kind":"textbox","id":"sh/oryp8fah","slide":6,"name":"Text 4","text":"Ciberseguridad","textPreview":"Ciberseguridad","textChars":14,"textLines":1,"bbox":[343.56,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/pc76hkr2","slide":6,"name":"Text 5","text":"SAST/DAST, tenant, dependencias, pentest y cierre P0/P1.","textPreview":"SAST/DAST, tenant, dependencias, pentest y cierre P0/P1.","textChars":56,"textLines":1,"bbox":[343.56,355.09,272.87,71.44]}
+{"kind":"textbox","id":"sh/w32twb6l","slide":6,"name":"Text 6","text":"Resiliencia y DR","textPreview":"Resiliencia y DR","textChars":16,"textLines":1,"bbox":[635.04,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/v2tcn650","slide":6,"name":"Text 7","text":"Backups cifrados, restore limpio, failover, RTO/RPO y fallas DB/broker/WAN/disco.","textPreview":"Backups cifrados, restore limpio, failover, RTO/RPO y fallas DB/broker/WAN/disco.","textChars":81,"textLines":1,"bbox":[635.04,355.09,272.87,95.25]}
+{"kind":"image","id":"im/t03ulobq","slide":6,"name":"Image 0","bbox":[52.09,206.49,158.27,97.81]}
+{"kind":"image","id":"im/y9sbm9c3","slide":6,"name":"Image 1","bbox":[343.56,206.49,158.27,97.81]}
+{"kind":"image","id":"im/ju1cfeto","slide":6,"name":"Image 2","bbox":[635.04,206.49,158.27,97.81]}
+{"kind":"notes","id":"nt/x8f69ofe","slide":6,"text":"[Sources]\n- D:/InformeCliente/specs/015-dr-respaldo-continuidad/spec.md\n- D:/InformeCliente/specs/023-portabilidad-despliegue-recuperacion/spec.md\n- D:/InformeCliente/docs/decisions/ADR-111-portabilidad-stack-export-import.md"}
+{"kind":"slide","id":"sl/gnmp4jqx","slide":7,"title":"AWS, RP y sensores deben integrarse","textShapes":10}
+{"kind":"textbox","id":"sh/dcbud0ra","slide":7,"name":"Text 0","text":"AWS, RP y sensores deben integrarse","textPreview":"AWS, RP y sensores deben integrarse","textChars":35,"textLines":1,"bbox":[403.13,47.92,479.3,38.52]}
+{"kind":"textbox","id":"sh/ydkbm5sv","slide":7,"name":"Text 1","text":"La mayor parte del riesgo restante está en validar datos, permisos y recuperación con sistemas reales.","textPreview":"La mayor parte del riesgo restante está en validar datos, permisos y recuperación con sistemas reales.","textChars":102,"textLines":1,"bbox":[403.13,101.74,513.73,36.05]}
+{"kind":"shape","id":"sh/zedcfa9g","slide":7,"name":"Shape 2","bbox":[403.13,149.27,513.73,87.06]}
+{"kind":"textbox","id":"sh/kzmdova1","slide":7,"name":"Text 3","text":"AWS / ThingsBoard","textPreview":"AWS / ThingsBoard","textChars":17,"textLines":1,"bbox":[415.95,162.09,154.06,19.26]}
+{"kind":"textbox","id":"sh/l0vuh0rm","slide":7,"name":"Text 4","text":"Conector y 6 M de puntos en entorno controlado; faltan credenciales y aceptación del cliente.","textPreview":"Conector y 6 M de puntos en entorno controlado; faltan credenciales y aceptación del cliente.","textChars":93,"textLines":1,"bbox":[415.95,187.46,488.09,36.05]}
+{"kind":"shape","id":"sh/eh0ba1sr","slide":7,"name":"Shape 5","bbox":[403.13,246.53,513.73,69.04]}
+{"kind":"textbox","id":"sh/fi9c369c","slide":7,"name":"Text 6","text":"RP TimeTelemetry / Odoo","textPreview":"RP TimeTelemetry / Odoo","textChars":23,"textLines":1,"bbox":[415.95,259.35,192.87,19.26]}
+{"kind":"textbox","id":"sh/baxkjqlk","slide":7,"name":"Text 7","text":"19/20 tareas y 2.108 equipos; falta create/write productivo en ventana autorizada.","textPreview":"19/20 tareas y 2.108 equipos; falta create/write productivo en ventana autorizada.","textChars":82,"textLines":1,"bbox":[415.95,284.73,488.09,18.02]}
+{"kind":"shape","id":"sh/a9ojq5kz","slide":7,"name":"Shape 8","bbox":[403.13,325.77,513.73,87.06]}
+{"kind":"textbox","id":"sh/xcz2l03q","slide":7,"name":"Text 9","text":"Sensores y zonas","textPreview":"Sensores y zonas","textChars":16,"textLines":1,"bbox":[415.95,338.59,154.06,19.26]}
+{"kind":"textbox","id":"sh/cbq1sv25","slide":7,"name":"Text 10","text":"Catálogo y 10 gráficos existen; faltan anti-IDOR, contrato API, export y CI.","textPreview":"Catálogo y 10 gráficos existen; faltan anti-IDOR, contrato API, export y CI.","textChars":76,"textLines":1,"bbox":[415.95,363.97,488.09,36.05]}
+{"kind":"shape","id":"sh/n6x0fqlo","slide":7,"name":"Shape 11","bbox":[403.13,423.04,513.73,69.04]}
+{"kind":"textbox","id":"sh/25ojml43","slide":7,"name":"Text 12","text":"Campo y ERP","textPreview":"Campo y ERP","textChars":11,"textLines":1,"bbox":[415.95,435.86,154.73,19.26]}
+{"kind":"textbox","id":"sh/p8fih03e","slide":7,"name":"Text 13","text":"Outbox offline, idempotencia, conflictos, evidencia y piloto todavía deben implementarse.","textPreview":"Outbox offline, idempotencia, conflictos, evidencia y piloto todavía deben implementarse.","textChars":89,"textLines":1,"bbox":[415.95,461.23,488.09,18.02]}
+{"kind":"image","id":"im/j2xwvyhk","slide":7,"name":"","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/gnmp4jqx","slide":7,"text":"[Sources]\n- D:/InformeCliente/specs/019-integracion-rp-timetelemetry/tasks.md\n- D:/InformeCliente/specs/021-analitica-multiserie-zonas-sensores/tasks.md\n- C:/Users/lenovo´/Downloads/1._Presentación_TMT.pdf\n- OpenAI ImageGen; prompt registrado en image-prompts.txt; activo normalizado a 7680x4320 px"}
+{"kind":"slide","id":"sl/fu1gfa1s","slide":8,"title":"Operaciones de campo abre un proyecto derivado: hoy está en 0/14","textShapes":10}
+{"kind":"textbox","id":"sh/g72x4zyd","slide":8,"name":"Text 0","text":"Operaciones de campo abre un proyecto derivado: hoy está en 0/14","textPreview":"Operaciones de campo abre un proyecto derivado: hoy está en 0/14","textChars":64,"textLines":1,"bbox":[403.13,47.92,479.3,38.52]}
+{"kind":"textbox","id":"sh/ri9g7uhw","slide":8,"name":"Text 1","text":"No debe absorberse en R6 sin recursos, fechas, PDA/MDM, privacidad y un piloto definido.","textPreview":"No debe absorberse en R6 sin recursos, fechas, PDA/MDM, privacidad y un piloto definido.","textChars":88,"textLines":1,"bbox":[403.13,101.74,513.73,36.05]}
+{"kind":"shape","id":"sh/6h0fypgb","slide":8,"name":"Shape 2","bbox":[403.13,149.27,513.73,87.06]}
+{"kind":"textbox","id":"sh/tkby9kzm","slide":8,"name":"Text 3","text":"Captura offline","textPreview":"Captura offline","textChars":15,"textLines":1,"bbox":[415.95,162.09,154.06,19.26]}
+{"kind":"textbox","id":"sh/sjix0zy1","slide":8,"name":"Text 4","text":"Formularios, fotos, firmas, geolocalización y sellos de tiempo con sincronización segura.","textPreview":"Formularios, fotos, firmas, geolocalización y sellos de tiempo con sincronización segura.","textChars":89,"textLines":1,"bbox":[415.95,187.46,488.09,36.05]}
+{"kind":"shape","id":"sh/je9g3ahk","slide":8,"name":"Shape 5","bbox":[403.13,246.53,513.73,69.04]}
+{"kind":"textbox","id":"sh/id0fu50z","slide":8,"name":"Text 6","text":"Evidencia y voz","textPreview":"Evidencia y voz","textChars":15,"textLines":1,"bbox":[415.95,259.35,192.87,19.26]}
+{"kind":"textbox","id":"sh/o7ydoret","slide":8,"name":"Text 7","text":"Dictado con ruido, checklists, incidentes e informes de instalación desde campo.","textPreview":"Dictado con ruido, checklists, incidentes e informes de instalación desde campo.","textChars":80,"textLines":1,"bbox":[415.95,284.73,488.09,18.02]}
+{"kind":"shape","id":"sh/98rehwve","slide":8,"name":"Shape 8","bbox":[403.13,325.77,513.73,87.06]}
+{"kind":"textbox","id":"sh/m5gvmhwn","slide":8,"name":"Text 9","text":"Conciliación ERP","textPreview":"Conciliación ERP","textChars":16,"textLines":1,"bbox":[415.95,338.59,154.06,19.26]}
+{"kind":"textbox","id":"sh/n6pwfmd8","slide":8,"name":"Text 10","text":"Outbox, idempotencia, conflictos, permisos y trazabilidad de cada operación.","textPreview":"Outbox, idempotencia, conflictos, permisos y trazabilidad de cada operación.","textChars":76,"textLines":1,"bbox":[415.95,363.97,488.09,36.05]}
+{"kind":"shape","id":"sh/0jydkreh","slide":8,"name":"Shape 11","bbox":[403.13,423.04,513.73,69.04]}
+{"kind":"textbox","id":"sh/1k7edwv2","slide":8,"name":"Text 12","text":"Adopción operativa","textPreview":"Adopción operativa","textChars":18,"textLines":1,"bbox":[415.95,435.86,154.73,19.26]}
+{"kind":"textbox","id":"sh/ehgvihwr","slide":8,"name":"Text 13","text":"Capacitación por rol, soporte en sitio, UAT, manuales y acompañamiento de arranque.","textPreview":"Capacitación por rol, soporte en sitio, UAT, manuales y acompañamiento de arranque.","textChars":83,"textLines":1,"bbox":[415.95,461.23,488.09,18.02]}
+{"kind":"image","id":"im/0rmpoj2t","slide":8,"name":"","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/fu1gfa1s","slide":8,"text":"[Sources]\n- D:/InformeCliente/specs/022-operaciones-campo-offline-erp/tasks.md\n- D:/InformeCliente/docs/decisions/ADR-110-operaciones-campo-offline-erp.md\n- OpenAI ImageGen; prompt registrado en image-prompts.txt; activo normalizado a 7680x4320 px"}
+{"kind":"slide","id":"sl/udsvah03","slide":9,"title":"La IA convierte evidencia de campo en documentos auditables","textShapes":10}
+{"kind":"textbox","id":"sh/0b65obm9","slide":9,"name":"Text 0","text":"La IA convierte evidencia de campo en documentos auditables","textPreview":"La IA convierte evidencia de campo en documentos auditables","textChars":59,"textLines":1,"bbox":[403.13,47.92,479.3,38.52]}
+{"kind":"textbox","id":"sh/nex4jq5k","slide":9,"name":"Text 1","text":"El objetivo no es solo redactar: es reducir retrabajo sin perder datos, versiones ni aprobación humana.","textPreview":"El objetivo no es solo redactar: es reducir retrabajo sin perder datos, versiones ni aprobación humana.","textChars":103,"textLines":1,"bbox":[403.13,101.74,513.73,36.05]}
+{"kind":"shape","id":"sh/mdonql4z","slide":9,"name":"Shape 2","bbox":[403.13,149.27,513.73,87.06]}
+{"kind":"textbox","id":"sh/9gzml0nq","slide":9,"name":"Text 3","text":"Corrección inteligente","textPreview":"Corrección inteligente","textChars":22,"textLines":1,"bbox":[415.95,162.09,154.06,19.26]}
+{"kind":"textbox","id":"sh/ofq5svm5","slide":9,"name":"Text 4","text":"Ortografía, sintaxis, contexto y terminología técnica antes de la generación final.","textPreview":"Ortografía, sintaxis, contexto y terminología técnica antes de la generación final.","textChars":83,"textLines":1,"bbox":[415.95,187.46,488.09,36.05]}
+{"kind":"shape","id":"sh/bih4na5w","slide":9,"name":"Shape 5","bbox":[403.13,246.53,513.73,69.04]}
+{"kind":"textbox","id":"sh/ah8nu54b","slide":9,"name":"Text 6","text":"Generación gobernada","textPreview":"Generación gobernada","textChars":20,"textLines":1,"bbox":[415.95,259.35,192.87,19.26]}
+{"kind":"textbox","id":"sh/oza1gfyh","slide":9,"name":"Text 7","text":"Plantillas, RAG, versionado, fuentes, cálculos, revisión y firma dentro del flujo.","textPreview":"Plantillas, RAG, versionado, fuentes, cálculos, revisión y firma dentro del flujo.","textChars":82,"textLines":1,"bbox":[415.95,284.73,488.09,18.02]}
+{"kind":"shape","id":"sh/p0ji9kf2","slide":9,"name":"Shape 8","bbox":[403.13,325.77,513.73,87.06]}
+{"kind":"textbox","id":"sh/2xsjepgb","slide":9,"name":"Text 9","text":"Catálogo prioritario","textPreview":"Catálogo prioritario","textChars":20,"textLines":1,"bbox":[415.95,338.59,154.06,19.26]}
+{"kind":"textbox","id":"sh/3y107axw","slide":9,"name":"Text 10","text":"Actas, cotizaciones, proformas, propuestas técnicas/económicas e informes de instalación.","textPreview":"Actas, cotizaciones, proformas, propuestas técnicas/económicas e informes de instalación.","textChars":89,"textLines":1,"bbox":[415.95,363.97,488.09,36.05]}
+{"kind":"shape","id":"sh/cnu1kzyd","slide":9,"name":"Shape 11","bbox":[403.13,423.04,513.73,69.04]}
+{"kind":"textbox","id":"sh/do3id4fy","slide":9,"name":"Text 12","text":"Salida verificable","textPreview":"Salida verificable","textChars":18,"textLines":1,"bbox":[415.95,435.86,154.73,19.26]}
+{"kind":"textbox","id":"sh/qlcjipgn","slide":9,"name":"Text 13","text":"PDF/Office, anexos, tablas, gráficos, mapas, trazabilidad y estado de aprobación.","textPreview":"PDF/Office, anexos, tablas, gráficos, mapas, trazabilidad y estado de aprobación.","textChars":81,"textLines":1,"bbox":[415.95,461.23,488.09,18.02]}
+{"kind":"image","id":"im/s76psvu9","slide":9,"name":"","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/udsvah03","slide":9,"text":"[Sources]\n- D:/InformeCliente/specs/007-editor-informes-reportstudio/spec.md\n- D:/InformeCliente/specs/011-ia-texto-local/spec.md\n- D:/InformeCliente/specs/018-dictado-voz-stt/spec.md\n- OpenAI ImageGen; prompt registrado en image-prompts.txt; activo normalizado a 7680x4320 px"}
+{"kind":"slide","id":"sl/m90b6t0r","slide":10,"title":"Biometría segura: pruebas pendientes","textShapes":10}
+{"kind":"textbox","id":"sh/cbu58j2h","slide":10,"name":"Text 0","text":"Biometría segura: pruebas pendientes","textPreview":"Biometría segura: pruebas pendientes","textChars":36,"textLines":1,"bbox":[403.13,47.92,479.3,38.52]}
+{"kind":"textbox","id":"sh/zelojyl8","slide":10,"name":"Text 1","text":"El cierre exige métricas, hardware real, liveness, privacidad y una ruta segura de contingencia.","textPreview":"El cierre exige métricas, hardware real, liveness, privacidad y una ruta segura de contingencia.","textChars":96,"textLines":1,"bbox":[403.13,101.74,513.73,36.05]}
+{"kind":"shape","id":"sh/ydcnatkn","slide":10,"name":"Shape 2","bbox":[403.13,149.27,513.73,87.06]}
+{"kind":"textbox","id":"sh/l036l83y","slide":10,"name":"Text 3","text":"Ruta principal","textPreview":"Ruta principal","textChars":14,"textLines":1,"bbox":[415.95,162.09,154.06,19.26]}
+{"kind":"textbox","id":"sh/kzu5c32t","slide":10,"name":"Text 4","text":"DeepFace + SilentFace es la decisión vigente para reconocimiento y liveness por defecto.","textPreview":"DeepFace + SilentFace es la decisión vigente para reconocimiento y liveness por defecto.","textChars":88,"textLines":1,"bbox":[415.95,187.46,488.09,36.05]}
+{"kind":"shape","id":"sh/725onyl4","slide":10,"name":"Shape 5","bbox":[403.13,246.53,513.73,69.04]}
+{"kind":"textbox","id":"sh/m1cnetkj","slide":10,"name":"Text 6","text":"Ruta secundaria","textPreview":"Ruta secundaria","textChars":15,"textLines":1,"bbox":[415.95,259.35,192.87,19.26]}
+{"kind":"textbox","id":"sh/s7yt4b21","slide":10,"name":"Text 7","text":"Dermalog queda como respaldo fail-closed; SeetaFace es solo rollback legado.","textPreview":"Dermalog queda como respaldo fail-closed; SeetaFace es solo rollback legado.","textChars":76,"textLines":1,"bbox":[415.95,284.73,488.09,18.02]}
+{"kind":"shape","id":"sh/d87uxg3m","slide":10,"name":"Shape 8","bbox":[403.13,325.77,513.73,87.06]}
+{"kind":"textbox","id":"sh/q5gb21kb","slide":10,"name":"Text 9","text":"Aceptación técnica","textPreview":"Aceptación técnica","textChars":18,"textLines":1,"bbox":[415.95,338.59,154.06,19.26]}
+{"kind":"textbox","id":"sh/r6pcv6lw","slide":10,"name":"Text 10","text":"FMR/FNMR, PAD, hardware, iluminación, reenrolamiento y pruebas de suplantación.","textPreview":"FMR/FNMR, PAD, hardware, iluminación, reenrolamiento y pruebas de suplantación.","textChars":79,"textLines":1,"bbox":[415.95,363.97,488.09,36.05]}
+{"kind":"shape","id":"sh/0bit8b2d","slide":10,"name":"Shape 11","bbox":[403.13,423.04,513.73,69.04]}
+{"kind":"textbox","id":"sh/1cru1g3y","slide":10,"name":"Text 12","text":"Gobierno de datos","textPreview":"Gobierno de datos","textChars":17,"textLines":1,"bbox":[415.95,435.86,154.73,19.26]}
+{"kind":"textbox","id":"sh/e9gb61k7","slide":10,"name":"Text 13","text":"DPIA, consentimiento/base legal, retención, acceso, auditoría y pentest.","textPreview":"DPIA, consentimiento/base legal, retención, acceso, auditoría y pentest.","textChars":72,"textLines":1,"bbox":[415.95,461.23,488.09,18.02]}
+{"kind":"image","id":"im/sfeh4j2l","slide":10,"name":"","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/m90b6t0r","slide":10,"text":"[Sources]\n- D:/InformeCliente/specs/008-biometria-facial-login/spec.md\n- D:/InformeCliente/specs/REGISTRY.md\n- D:/InformeCliente/docs_/01_Planificacion/Informe_Estado_Proyecto_Actualizado_2026-08-18.md\n- OpenAI ImageGen; prompt registrado en image-prompts.txt; activo normalizado a 7680x4320 px"}
+{"kind":"slide","id":"sl/jetc3ut0","slide":11,"title":"La salida a producción exige automatizar pruebas que hoy siguen separadas","textShapes":8}
+{"kind":"textbox","id":"sh/xcryxg7y","slide":11,"name":"Text 0","text":"La salida a producción exige automatizar pruebas que hoy siguen separadas","textPreview":"La salida a producción exige automatizar pruebas que hoy siguen separadas","textChars":73,"textLines":1,"bbox":[52.09,89.66,844.8,46.51]}
+{"kind":"textbox","id":"sh/wbih4b6d","slide":11,"name":"Text 1","text":"25k/s está demostrado; 100k/s, DR y E2E productivo todavía no están aprobados.","textPreview":"25k/s está demostrado; 100k/s, DR y E2E productivo todavía no están aprobados.","textChars":78,"textLines":1,"bbox":[52.09,165.94,903.83,23.81]}
+{"kind":"textbox","id":"sh/250zy18b","slide":11,"name":"Text 2","text":"Esfuerzo y capacidad","textPreview":"Esfuerzo y capacidad","textChars":20,"textLines":1,"bbox":[52.09,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/98rytw72","slide":11,"name":"Text 3","text":"25→50→75→100k/s, soak 1 h/24 h, pérdida cero, p99 y backpressure medidos.","textPreview":"25→50→75→100k/s, soak 1 h/24 h, pérdida cero, p99 y backpressure medidos.","textChars":73,"textLines":1,"bbox":[52.09,355.09,272.87,95.25]}
+{"kind":"textbox","id":"sh/72t03qp0","slide":11,"name":"Text 4","text":"Integración automática","textPreview":"Integración automática","textChars":22,"textLines":1,"bbox":[343.56,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/61kzalof","slide":11,"name":"Text 5","text":"Contrato/API/E2E para AWS, RP, sensores, offline, export, Playwright y CTest en CI.","textPreview":"Contrato/API/E2E para AWS, RP, sensores, offline, export, Playwright y CTest en CI.","textChars":83,"textLines":1,"bbox":[343.56,355.09,272.87,71.44]}
+{"kind":"textbox","id":"sh/9gza9sze","slide":11,"name":"Text 6","text":"Resiliencia y seguridad","textPreview":"Resiliencia y seguridad","textChars":23,"textLines":1,"bbox":[635.04,322.91,186.04,23.25]}
+{"kind":"textbox","id":"sh/mdobedg3","slide":11,"name":"Text 7","text":"Fallas DB/broker/WAN/disco, replay, restore, rollback, SAST/DAST y pentest.","textPreview":"Fallas DB/broker/WAN/disco, replay, restore, rollback, SAST/DAST y pentest.","textChars":75,"textLines":1,"bbox":[635.04,355.09,272.87,95.25]}
+{"kind":"image","id":"im/cre5or2h","slide":11,"name":"Image 0","bbox":[52.09,206.49,158.27,97.81]}
+{"kind":"image","id":"im/3m5orml0","slide":11,"name":"Image 1","bbox":[343.56,206.49,158.27,97.81]}
+{"kind":"image","id":"im/21cnihkf","slide":11,"name":"Image 2","bbox":[635.04,206.49,158.27,97.81]}
+{"kind":"notes","id":"nt/jetc3ut0","slide":11,"text":"[Sources]\n- D:/InformeCliente/docs/PRUEBA_CAPACIDAD_TELEMETRIA_25K_2026-08-12.md\n- D:/InformeCliente/docs/PRUEBA_CAPACIDAD_TELEMETRIA_100K_2026-08-11.md\n- D:/InformeCliente/docs_/01_Planificacion/Informe_Estado_Proyecto_Actualizado_2026-08-18.md"}
+{"kind":"slide","id":"sl/8f2psfyx","slide":12,"title":"Claude multiplica seis frentes; no reemplaza controles","textShapes":8}
+{"kind":"textbox","id":"sh/1gbm9s3a","slide":12,"name":"Text 0","text":"Claude multiplica seis frentes; no reemplaza controles","textPreview":"Claude multiplica seis frentes; no reemplaza controles","textChars":54,"textLines":1,"bbox":[78.84,37.48,505.57,36.34]}
+{"kind":"textbox","id":"sh/ra943il8","slide":12,"name":"Text 1","text":"Ingeniería","textPreview":"Ingeniería","textChars":10,"textLines":1,"bbox":[666.54,132.57,177.48,22.19]}
+{"kind":"textbox","id":"sh/q903ad4n","slide":12,"name":"Text 2","text":"arquitectura · código · refactor · integraciones","textPreview":"arquitectura · código · refactor · integraciones","textChars":48,"textLines":1,"bbox":[666.54,161.06,195.62,47.4]}
+{"kind":"textbox","id":"sh/dcbm583y","slide":12,"name":"Text 3","text":"Calidad y seguridad","textPreview":"Calidad y seguridad","textChars":19,"textLines":1,"bbox":[100.17,261.16,177.48,22.19]}
+{"kind":"textbox","id":"sh/sb2lcnmd","slide":12,"name":"Text 4","text":"pruebas · amenazas · defectos · remediación","textPreview":"pruebas · amenazas · defectos · remediación","textChars":43,"textLines":1,"bbox":[97.81,289.65,179.85,31.6]}
+{"kind":"textbox","id":"sh/b6d4f2lc","slide":12,"name":"Text 5","text":"Operación y gestión","textPreview":"Operación y gestión","textChars":19,"textLines":1,"bbox":[666.54,323.47,177.48,22.19]}
+{"kind":"textbox","id":"sh/a543mx4r","slide":12,"name":"Text 6","text":"runbooks · capacitación · documentos · reportes","textPreview":"runbooks · capacitación · documentos · reportes","textChars":47,"textLines":1,"bbox":[666.54,351.97,195.62,31.6]}
+{"kind":"textbox","id":"sh/wvupgz6t","slide":12,"name":"Text 7","text":"La revisión humana, CI, ADR/SPEC y los modelos predictivos especializados siguen siendo obligatorios.","textPreview":"La revisión humana, CI, ADR/SPEC y los modelos predictivos especializados siguen siendo obligatorios.","textChars":101,"textLines":1,"bbox":[78.84,469.38,802.32,33.13]}
+{"kind":"image","id":"im/qp47yl47","slide":12,"name":"Image 0","bbox":[78.84,91.98,802.32,367.18]}
+{"kind":"notes","id":"nt/8f2psfyx","slide":12,"text":"[Sources]\n- D:/InformeCliente/agents/registry.yaml\n- D:/InformeCliente/ai_platform/\n- D:/InformeCliente/specs/CONSTITUTION.md"}
+{"kind":"slide","id":"sl/hgzapcr6","slide":13,"title":"Una licencia se paga con minutos, no con promesas de ROI","textShapes":8}
+{"kind":"textbox","id":"sh/q50nydsj","slide":13,"name":"Text 0","text":"Una licencia se paga con minutos, no con promesas de ROI","textPreview":"Una licencia se paga con minutos, no con promesas de ROI","textChars":56,"textLines":1,"bbox":[47.2,40.55,673.33,42.15]}
+{"kind":"textbox","id":"sh/o3i5w3ad","slide":13,"name":"Text 1","text":"Caso económico verificable","textPreview":"Caso económico verificable","textChars":26,"textLines":1,"bbox":[496.95,113.24,313.36,21.07]}
+{"kind":"textbox","id":"sh/21gnuts7","slide":13,"name":"Text 2","text":"Inversión acotada","textPreview":"Inversión acotada","textChars":17,"textLines":1,"bbox":[516.44,163.05,202.85,21.07]}
+{"kind":"textbox","id":"sh/32ponyts","slide":13,"name":"Text 3","text":"Claude Pro: USD 200 al año, facturados por adelantado; plan individual y con límites.","textPreview":"Claude Pro: USD 200 al año, facturados por adelantado; plan individual y con límites.","textChars":85,"textLines":1,"bbox":[516.44,196.34,381.87,41.14]}
+{"kind":"textbox","id":"sh/1076lobm","slide":13,"name":"Text 4","text":"Punto de equilibrio","textPreview":"Punto de equilibrio","textChars":19,"textLines":1,"bbox":[516.44,279.66,182.16,21.07]}
+{"kind":"textbox","id":"sh/hcfy9k3u","slide":13,"name":"Text 5","text":"A USD 25/h, basta recuperar 8 horas/año: aproximadamente 40 minutos al mes.","textPreview":"A USD 25/h, basta recuperar 8 horas/año: aproximadamente 40 minutos al mes.","textChars":75,"textLines":1,"bbox":[516.44,312.95,381.87,41.14]}
+{"kind":"textbox","id":"sh/vaxg7ulo","slide":13,"name":"Text 6","text":"Regla de decisión","textPreview":"Regla de decisión","textChars":17,"textLines":1,"bbox":[516.44,396.28,250.1,21.07]}
+{"kind":"textbox","id":"sh/u9ofyp43","slide":13,"name":"Text 7","text":"Aprobar el piloto, medir 30 días y no declarar porcentajes de ROI sin evidencia.","textPreview":"Aprobar el piloto, medir 30 días y no declarar porcentajes de ROI sin evidencia.","textChars":80,"textLines":1,"bbox":[516.44,429.57,381.87,41.14]}
+{"kind":"chart","id":"ch/1cvuhs3y","slide":13,"name":"Chart","chartType":"bar","title":"Horas/año para recuperar USD 200","bbox":[47.2,114.77,416.34,299.68]}
+{"kind":"image","id":"im/m98jmlcv","slide":13,"name":"Image 0","bbox":[47.2,194.31,416.34,140.61]}
+{"kind":"image","id":"im/nah0vqt0","slide":13,"name":"Image 1","bbox":[495.45,148.06,417.84,104.4]}
+{"kind":"image","id":"im/8bq1ovul","slide":13,"name":"Image 2","bbox":[495.45,264.68,417.84,104.4]}
+{"kind":"image","id":"im/9czix0b6","slide":13,"name":"Image 3","bbox":[495.45,381.3,417.84,104.4]}
+{"kind":"notes","id":"nt/hgzapcr6","slide":13,"text":"[Sources]\n- https://claude.com/pricing\n- https://support.claude.com/en/articles/11049762-choose-a-claude-plan\n- Cálculo: USD 200 / tarifa horaria; escenarios ilustrativos, sustituibles por costo cargado real de TimeTelemetry"}
+{"kind":"slide","id":"sl/6lsnupw7","slide":14,"title":"Adopción gobernada: aprobar, medir y escalar","textShapes":17}
+{"kind":"textbox","id":"sh/xc7eds76","slide":14,"name":"Text 0","text":"Adopción gobernada: aprobar, medir y escalar","textPreview":"Adopción gobernada: aprobar, medir y escalar","textChars":44,"textLines":1,"bbox":[86.86,35.39,731.27,35.61]}
+{"kind":"shape","id":"sh/wbydknq1","slide":14,"name":"Shape 1","bbox":[479.24,88.45,1.5,326.87]}
+{"kind":"shape","id":"sh/jepwf2pc","slide":14,"name":"Shape 2","bbox":[434.5,100.51,34.18,1.5]}
+{"kind":"shape","id":"sh/idgvmx8r","slide":14,"name":"Shape 3","bbox":[467.18,88.45,25.63,25.63]}
+{"kind":"textbox","id":"sh/5grehs7i","slide":14,"name":"Text 4","text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[471.45,90.58,17.09,21.36]}
+{"kind":"textbox","id":"sh/kfidonqx","slide":14,"name":"Text 5","text":"Hoy","textPreview":"Hoy","textChars":3,"textLines":1,"bbox":[280.58,92.36,142.44,17.8]}
+{"kind":"textbox","id":"sh/zi5c3y98","slide":14,"name":"Text 6","text":"Aprobar 1 licencia Pro anual y designar propietario nominal.","textPreview":"Aprobar 1 licencia Pro anual y designar propietario nominal.","textChars":60,"textLines":1,"bbox":[86.86,115.39,336.16,32.19]}
+{"kind":"shape","id":"sh/ehwvat8n","slide":14,"name":"Shape 7","bbox":[491.31,163.53,34.18,1.5]}
+{"kind":"shape","id":"sh/c3e1gjyd","slide":14,"name":"Shape 8","bbox":[467.18,151.47,25.63,25.63]}
+{"kind":"textbox","id":"sh/x4ni9ofy","slide":14,"name":"Text 9","text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[471.45,153.6,17.09,21.36]}
+{"kind":"textbox","id":"sh/a1wze9g7","slide":14,"name":"Text 10","text":"Semana 1","textPreview":"Semana 1","textChars":8,"textLines":1,"bbox":[536.97,155.38,142.44,17.8]}
+{"kind":"textbox","id":"sh/b2507exs","slide":14,"name":"Text 11","text":"Política, clasificación de datos, onboarding, repositorios y trazabilidad.","textPreview":"Política, clasificación de datos, onboarding, repositorios y trazabilidad.","textChars":74,"textLines":1,"bbox":[536.97,178.41,336.16,32.19]}
+{"kind":"shape","id":"sh/kre1k3y9","slide":14,"name":"Shape 12","bbox":[434.5,219.79,34.18,1.5]}
+{"kind":"shape","id":"sh/ls7idofu","slide":14,"name":"Shape 13","bbox":[467.18,207.73,25.63,25.63]}
+{"kind":"textbox","id":"sh/y5wjitgj","slide":14,"name":"Text 14","text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[471.45,209.86,17.09,21.36]}
+{"kind":"textbox","id":"sh/z650byxo","slide":14,"name":"Text 15","text":"Día 30","textPreview":"Día 30","textChars":6,"textLines":1,"bbox":[280.58,211.64,142.44,17.8]}
+{"kind":"textbox","id":"sh/0buh8zy5","slide":14,"name":"Text 16","text":"Medir horas evitadas, CA cerrados, pruebas creadas y defectos.","textPreview":"Medir horas evitadas, CA cerrados, pruebas creadas y defectos.","textChars":62,"textLines":1,"bbox":[86.86,234.67,336.16,32.19]}
+{"kind":"shape","id":"sh/1w3i14fq","slide":14,"name":"Shape 17","bbox":[491.31,276.05,34.18,1.5]}
+{"kind":"shape","id":"sh/hsvy50re","slide":14,"name":"Shape 18","bbox":[467.18,263.98,25.63,25.63]}
+{"kind":"textbox","id":"sh/grmxwvqt","slide":14,"name":"Text 19","text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[471.45,266.12,17.09,21.36]}
+{"kind":"textbox","id":"sh/fqdg3q98","slide":14,"name":"Text 20","text":"Mes 2","textPreview":"Mes 2","textChars":5,"textLines":1,"bbox":[536.97,267.9,142.44,17.8]}
+{"kind":"textbox","id":"sh/up4fal83","slide":14,"name":"Text 21","text":"Agregar cuentas nominales si hay concurrencia o límites recurrentes.","textPreview":"Agregar cuentas nominales si hay concurrencia o límites recurrentes.","textChars":68,"textLines":1,"bbox":[536.97,290.93,336.16,32.19]}
+{"kind":"shape","id":"sh/pwvy90rq","slide":14,"name":"Shape 22","bbox":[434.5,332.3,34.18,1.5]}
+{"kind":"shape","id":"sh/4vmh0vq5","slide":14,"name":"Shape 23","bbox":[467.18,320.24,25.63,25.63]}
+{"kind":"textbox","id":"sh/3udg7q9k","slide":14,"name":"Text 24","text":"5","textPreview":"5","textChars":1,"textLines":1,"bbox":[471.45,322.38,17.09,21.36]}
+{"kind":"textbox","id":"sh/2t4fyl8z","slide":14,"name":"Text 25","text":"Trimestre","textPreview":"Trimestre","textChars":9,"textLines":1,"bbox":[280.58,324.16,142.44,17.8]}
+{"kind":"textbox","id":"sh/d0fydk7m","slide":14,"name":"Text 26","text":"Evaluar Team/Enterprise si se requieren SSO, auditoría y administración central.","textPreview":"Evaluar Team/Enterprise si se requieren SSO, auditoría y administración central.","textChars":80,"textLines":1,"bbox":[86.86,347.19,336.16,32.19]}
+{"kind":"shape","id":"sh/cz6h4fq1","slide":14,"name":"Shape 27","bbox":[86.86,425.13,786.27,69.67]}
+{"kind":"textbox","id":"sh/bup4rils","slide":14,"name":"Text 28","text":"Éxito = continuidad demostrada sin compartir cuentas ni omitir seguridad, pruebas o revisión humana.","textPreview":"Éxito = continuidad demostrada sin compartir cuentas ni omitir seguridad, pruebas o revisión humana.","textChars":100,"textLines":1,"bbox":[123.88,435.82,737.86,48.28]}
+{"kind":"image","id":"im/rudsrm9o","slide":14,"name":"Image 0","bbox":[98.25,440.39,14.24,11.39]}
+{"kind":"notes","id":"nt/6lsnupw7","slide":14,"text":"[Sources]\n- https://claude.com/pricing\n- https://support.claude.com/en/articles/11049762-choose-a-claude-plan\n- D:/InformeCliente/specs/CONSTITUTION.md"}
+{"kind":"slide","id":"sl/vaxsvy10","slide":15,"title":"La licencia debe acelerar un plan de cierre, no crear actividad","textShapes":17}
+{"kind":"textbox","id":"sh/547mhg3m","slide":15,"name":"Text 0","text":"La licencia debe acelerar un plan de cierre, no crear actividad","textPreview":"La licencia debe acelerar un plan de cierre, no crear actividad","textChars":63,"textLines":1,"bbox":[86.86,35.39,731.27,35.61]}
+{"kind":"shape","id":"sh/k3y5ov21","slide":15,"name":"Shape 1","bbox":[479.24,88.45,1.5,326.87]}
+{"kind":"shape","id":"sh/76p4jqls","slide":15,"name":"Shape 2","bbox":[434.5,100.51,34.18,1.5]}
+{"kind":"shape","id":"sh/65gnqlk7","slide":15,"name":"Shape 3","bbox":[467.18,88.45,25.63,25.63]}
+{"kind":"textbox","id":"sh/t87ml0ji","slide":15,"name":"Text 4","text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[471.45,90.58,17.09,21.36]}
+{"kind":"textbox","id":"sh/s7y5sv2x","slide":15,"name":"Text 5","text":"0–30 días","textPreview":"0–30 días","textChars":9,"textLines":1,"bbox":[280.58,92.36,142.44,17.8]}
+{"kind":"textbox","id":"sh/na5476l8","slide":15,"name":"Text 6","text":"Cerrar R3: SPEC-021, regresión ReportStudio, CTest backend y Playwright crítico.","textPreview":"Cerrar R3: SPEC-021, regresión ReportStudio, CTest backend y Playwright crítico.","textChars":80,"textLines":1,"bbox":[86.86,115.39,336.16,32.19]}
+{"kind":"shape","id":"sh/m9c3e1kn","slide":15,"name":"Shape 7","bbox":[491.31,163.53,34.18,1.5]}
+{"kind":"shape","id":"sh/wrm9kvep","slide":15,"name":"Shape 8","bbox":[467.18,151.47,25.63,25.63]}
+{"kind":"textbox","id":"sh/hsvat0fa","slide":15,"name":"Text 9","text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[471.45,153.6,17.09,21.36]}
+{"kind":"textbox","id":"sh/upkrilwj","slide":15,"name":"Text 10","text":"31–45 días","textPreview":"31–45 días","textChars":10,"textLines":1,"bbox":[536.97,155.38,142.44,17.8]}
+{"kind":"textbox","id":"sh/vqdsrqx4","slide":15,"name":"Text 11","text":"R4 producto: offline, alertas, sensores, exportaciones y contratos API.","textPreview":"R4 producto: offline, alertas, sensores, exportaciones y contratos API.","textChars":71,"textLines":1,"bbox":[536.97,178.41,336.16,32.19]}
+{"kind":"shape","id":"sh/4vm9ovel","slide":15,"name":"Shape 12","bbox":[434.5,219.79,34.18,1.5]}
+{"kind":"shape","id":"sh/5wvax0f6","slide":15,"name":"Shape 13","bbox":[467.18,207.73,25.63,25.63]}
+{"kind":"textbox","id":"sh/it4rm5wv","slide":15,"name":"Text 14","text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[471.45,209.86,17.09,21.36]}
+{"kind":"textbox","id":"sh/judsvqxg","slide":15,"name":"Text 15","text":"46–60 días","textPreview":"46–60 días","textChars":10,"textLines":1,"bbox":[280.58,211.64,142.44,17.8]}
+{"kind":"textbox","id":"sh/0z29cbyh","slide":15,"name":"Text 16","text":"AWS real, CA-4 Odoo y contrato del piloto de operaciones de campo.","textPreview":"AWS real, CA-4 Odoo y contrato del piloto de operaciones de campo.","textChars":66,"textLines":1,"bbox":[86.86,234.67,336.16,32.19]}
+{"kind":"shape","id":"sh/l0bqlgf2","slide":15,"name":"Shape 17","bbox":[491.31,276.05,34.18,1.5]}
+{"kind":"shape","id":"sh/1kjyt83e","slide":15,"name":"Shape 18","bbox":[467.18,263.98,25.63,25.63]}
+{"kind":"textbox","id":"sh/gjax03m9","slide":15,"name":"Text 19","text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[471.45,266.12,17.09,21.36]}
+{"kind":"textbox","id":"sh/fi1grylo","slide":15,"name":"Text 20","text":"61–75 días","textPreview":"61–75 días","textChars":10,"textLines":1,"bbox":[536.97,267.9,142.44,17.8]}
+{"kind":"textbox","id":"sh/ehsfyt43","slide":15,"name":"Text 21","text":"VPS, despliegue/rollback, carga, resiliencia, backup y restore en host limpio.","textPreview":"VPS, despliegue/rollback, carga, resiliencia, backup y restore en host limpio.","textChars":78,"textLines":1,"bbox":[536.97,290.93,336.16,32.19]}
+{"kind":"shape","id":"sh/p8jyx83q","slide":15,"name":"Shape 22","bbox":[434.5,332.3,34.18,1.5]}
+{"kind":"shape","id":"sh/o7ah4nm5","slide":15,"name":"Shape 23","bbox":[467.18,320.24,25.63,25.63]}
+{"kind":"textbox","id":"sh/361gvilk","slide":15,"name":"Text 24","text":"5","textPreview":"5","textChars":1,"textLines":1,"bbox":[471.45,322.38,17.09,21.36]}
+{"kind":"textbox","id":"sh/25sf2d4z","slide":15,"name":"Text 25","text":"76–90 días","textPreview":"76–90 días","textChars":10,"textLines":1,"bbox":[280.58,324.16,142.44,17.8]}
+{"kind":"textbox","id":"sh/dc3y1s3m","slide":15,"name":"Text 26","text":"Pentest, DR, UAT, capacitación, manuales y decisión formal de go-live.","textPreview":"Pentest, DR, UAT, capacitación, manuales y decisión formal de go-live.","textChars":70,"textLines":1,"bbox":[86.86,347.19,336.16,32.19]}
+{"kind":"shape","id":"sh/cbuh8nmh","slide":15,"name":"Shape 27","bbox":[86.86,425.13,786.27,69.67]}
+{"kind":"textbox","id":"sh/vixcvu14","slide":15,"name":"Text 28","text":"Cada semana: evidencia por criterio de aceptación; cada mes: readiness actualizado y decisión de capacidad IA.","textPreview":"Cada semana: evidencia por criterio de aceptación; cada mes: readiness actualizado y decisión de capacidad IA.","textChars":110,"textLines":1,"bbox":[123.88,435.82,737.86,48.28]}
+{"kind":"image","id":"im/7yt83adg","slide":15,"name":"Image 0","bbox":[98.25,440.39,14.24,11.39]}
+{"kind":"notes","id":"nt/vaxsvy10","slide":15,"text":"[Sources]\n- D:/InformeCliente/docs_/01_Planificacion/Informe_Estado_Proyecto_Actualizado_2026-08-18.md"}
+{"kind":"slide","id":"sl/gny5sjyp","slide":16,"title":"Decisión solicitada: aprobar una licencia anual hoy","textShapes":10}
+{"kind":"textbox","id":"sh/9kby1g7m","slide":16,"name":"Text 0","text":"Decisión solicitada: aprobar una licencia anual hoy","textPreview":"Decisión solicitada: aprobar una licencia anual hoy","textChars":51,"textLines":1,"bbox":[403.13,47.92,479.3,38.52]}
+{"kind":"textbox","id":"sh/ytkf2h8j","slide":16,"name":"Text 1","text":"La inversión es acotada; el uso queda gobernado y el escalamiento depende de evidencia.","textPreview":"La inversión es acotada; el uso queda gobernado y el escalamiento depende de evidencia.","textChars":87,"textLines":1,"bbox":[403.13,101.74,513.73,36.05]}
+{"kind":"shape","id":"sh/zutgvm94","slide":16,"name":"Shape 2","bbox":[403.13,149.27,513.73,87.06]}
+{"kind":"textbox","id":"sh/kv2h4rqp","slide":16,"name":"Text 3","text":"Aprobar","textPreview":"Aprobar","textChars":7,"textLines":1,"bbox":[415.95,162.09,154.06,19.26]}
+{"kind":"textbox","id":"sh/lwbyxwra","slide":16,"name":"Text 4","text":"USD 200/año por 1 licencia nominal Claude Pro para Plataforma Minera.","textPreview":"USD 200/año por 1 licencia nominal Claude Pro para Plataforma Minera.","textChars":69,"textLines":1,"bbox":[415.95,187.46,488.09,36.05]}
+{"kind":"shape","id":"sh/ip4zel83","slide":16,"name":"Shape 5","bbox":[403.13,246.53,513.73,69.04]}
+{"kind":"textbox","id":"sh/3qdg7qpo","slide":16,"name":"Text 6","text":"Responsable","textPreview":"Responsable","textChars":11,"textLines":1,"bbox":[415.95,259.35,192.87,19.26]}
+{"kind":"textbox","id":"sh/fm1gzq5o","slide":16,"name":"Text 7","text":"Líder Técnico + Gerencia TI: cuenta, política, consumo y reporte de beneficios.","textPreview":"Líder Técnico + Gerencia TI: cuenta, política, consumo y reporte de beneficios.","textChars":79,"textLines":1,"bbox":[415.95,284.73,488.09,18.02]}
+{"kind":"shape","id":"sh/e1sf65o3","slide":16,"name":"Shape 8","bbox":[403.13,325.77,513.73,87.06]}
+{"kind":"textbox","id":"sh/1ojy10ne","slide":16,"name":"Text 9","text":"Condiciones","textPreview":"Condiciones","textChars":11,"textLines":1,"bbox":[415.95,338.59,154.06,19.26]}
+{"kind":"textbox","id":"sh/gnax8v6t","slide":16,"name":"Text 10","text":"Sin secretos; revisión humana; CI, pruebas y trazabilidad ADR/SPEC obligatorias.","textPreview":"Sin secretos; revisión humana; CI, pruebas y trazabilidad ADR/SPEC obligatorias.","textChars":80,"textLines":1,"bbox":[415.95,363.97,488.09,36.05]}
+{"kind":"shape","id":"sh/nqlg3a5k","slide":16,"name":"Shape 11","bbox":[403.13,423.04,513.73,69.04]}
+{"kind":"textbox","id":"sh/2pcfa5oz","slide":16,"name":"Text 12","text":"Revisión","textPreview":"Revisión","textChars":8,"textLines":1,"bbox":[415.95,435.86,154.73,19.26]}
+{"kind":"textbox","id":"sh/ps3y5knq","slide":16,"name":"Text 13","text":"Comité al día 30 para decidir nuevas licencias o un plan organizacional.","textPreview":"Comité al día 30 para decidir nuevas licencias o un plan organizacional.","textChars":72,"textLines":1,"bbox":[415.95,461.23,488.09,18.02]}
+{"kind":"image","id":"im/jy9s7a9k","slide":16,"name":"Image 0","bbox":[0,0,360,540]}
+{"kind":"notes","id":"nt/gny5sjyp","slide":16,"text":"[Sources]\n- https://claude.com/pricing\n- https://support.claude.com/en/articles/11049762-choose-a-claude-plan\n- D:/InformeCliente/docs_/01_Planificacion/Informe_Estado_Proyecto_Actualizado_2026-08-18.md"}

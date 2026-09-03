@@ -4,6 +4,7 @@
 #include "report_export_jobs.hpp"
 #include "report_document_settings.hpp"
 #include "report_portable.hpp"
+#include "report_share_links.hpp"
 #include "offline_template_data.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
@@ -11,6 +12,7 @@
 #include "../auth/auth_types.hpp"
 #include "../auth/auth_storage_pg.hpp"
 #include "../auth/permissions.hpp"
+#include "../notify/notify_service.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -35,12 +37,15 @@ using config::AppConfig;
 using http_utils::makeJsonResponse;
 using http_utils::makePdfResponse;
 using http_utils::makeOctetResponse;
+using http_utils::makeInlinePdfResponse;
 using http_utils::routePathOnly;
 using auth::resolveAuthSession;
 using auth::extractAuthTokenFromRequest;
 using auth::userBelongsToTenant;
 using auth::userHasRealTenantMembership;
 using auth::hasPermission;
+using auth::findUserByIdPg;
+using auth::issueEphemeralAccessToken;
 using auth::Report;
 using auth::Project;
 
@@ -116,7 +121,15 @@ handleGetReports(const http::request<http::string_body>& req,
           {"company_name", r.company}, {"tenant_id", r.tenantId},
           {"createdAt", r.createdAt}, {"updatedAt", r.updatedAt}, {"company", r.company},
           {"signed_by_name", r.signedByName}, {"signed_by_role", r.signedByRole},
-          {"signed_at", r.signedAt}
+          {"signed_at", r.signedAt},
+          // ADR-079 canEdit() en ReportsAdminModal.tsx compara esto contra
+          // session.username — sin created_by, el propio dueño de un
+          // borrador nunca podía reabrirlo para editar.
+          {"created_by", r.createdBy}, {"created_by_name", r.createdByName},
+          {"reviewed_by", r.reviewedBy}, {"reviewed_by_name", r.reviewedByName},
+          {"reviewed_at", r.reviewedAt},
+          {"last_modified_by", r.lastModifiedBy}, {"last_modified_by_name", r.lastModifiedByName},
+          {"page_count", r.pageCount}, {"layout_mode", r.layoutMode}
       });
   }
   return makeJsonResponse(http::status::ok, json::object{{"reports", arr}});
@@ -126,6 +139,69 @@ handleGetReports(const http::request<http::string_body>& req,
 static http::response<http::string_body>
 handleGetReportById(const http::request<http::string_body>& req,
                     const std::unordered_map<std::string, std::string>& query) {
+  const std::string target = std::string(req.target());
+  const std::string pathOnly = routePathOnly(target);
+  std::string rest = pathOnly.substr(std::string("/api/reports/").size());
+
+  // ── GET /api/reports/share/{token}/pdf — enlace de acceso directo
+  // (ADR-138), SIN sesión: el token en sí es la credencial. Se resuelve ANTES
+  // de resolveAuthSession a propósito — quien escanea el QR desde el celular
+  // no tiene (ni debe necesitar) una sesión logueada en esta app. ──────────
+  static const std::string kSharePrefix = "share/";
+  static const std::string kSharePdfSuffix = "/pdf";
+  if (rest.rfind(kSharePrefix, 0) == 0 && rest.size() > kSharePrefix.size() + kSharePdfSuffix.size() &&
+      rest.compare(rest.size() - kSharePdfSuffix.size(), kSharePdfSuffix.size(), kSharePdfSuffix) == 0) {
+    const std::string shareToken = rest.substr(
+        kSharePrefix.size(), rest.size() - kSharePrefix.size() - kSharePdfSuffix.size());
+    const auto link = resolveReportShareLinkPg(gDatabaseUrl, shareToken);
+    if (!link) {
+      return makeJsonResponse(http::status::not_found,
+                              json::object{{"error", "share_link_invalid_or_expired"}});
+    }
+    Report r;
+    std::string error;
+    if (!getReportByIdPg(gDatabaseUrl, link->reportId, link->tenantId, r, error)) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+    }
+    // Sesión interna de corta vida SOLO para que el sidecar (vía
+    // print-report.html) pueda leer el informe — nunca se devuelve al
+    // cliente que escaneó el QR, se descarta apenas termina este request.
+    auto internalUser = findUserByIdPg(gDatabaseUrl, link->createdByUserId);
+    if (!internalUser) {
+      return makeJsonResponse(http::status::internal_server_error,
+                              json::object{{"error", "share_link_owner_not_found"}});
+    }
+    internalUser->tenantId = link->tenantId;
+    const std::string internalAccessToken = issueEphemeralAccessToken(*internalUser);
+    const std::string watermarkText =
+        resolveWatermarkText(gDatabaseUrl, link->reportId, link->tenantId, link->createdByUsername);
+    // encrypt=false (ADR-138): el token ya validado arriba ES la protección
+    // -- este PDF sale sin contraseña propia para que el navegador del
+    // celular lo muestre directo, sin ningún diálogo.
+    auto pdfResult = exportReportPdf(link->reportId, internalAccessToken, watermarkText, /*encrypt=*/false);
+    if (!pdfResult.ok) {
+      return makeJsonResponse(http::status::bad_gateway, json::object{{"error", pdfResult.error}});
+    }
+    std::string safeName;
+    safeName.reserve(r.title.size());
+    for (char c : r.title) {
+      if (c == '"' || c == '\\' || c == '\r' || c == '\n') continue;
+      safeName += c;
+    }
+    if (safeName.empty()) safeName = "informe";
+#if HAS_LIBPQ
+    {
+      auto lease = storage::PgPool::instance().acquire(gDatabaseUrl);
+      if (PQstatus(lease.get()) == CONNECTION_OK) {
+        auth::appendAuthAuditLogPg(lease.get(), "report.export.pdf.share_link", r.company,
+                                   link->createdByUsername, true,
+                                   "report_id=" + link->reportId + " token_prefix=" + shareToken.substr(0, 8));
+      }
+    }
+#endif
+    return makeInlinePdfResponse(safeName + ".pdf", std::move(pdfResult.pdfBytes));
+  }
+
   const auto session = resolveAuthSession(req, query);
   if (!session)
     return makeJsonResponse(http::status::unauthorized,
@@ -146,9 +222,6 @@ handleGetReportById(const http::request<http::string_body>& req,
     return makeJsonResponse(http::status::forbidden,
                             json::object{{"error", "forbidden"}, {"need", "informes.view"}});
   }
-  const std::string target = std::string(req.target());
-  const std::string pathOnly = routePathOnly(target);
-  std::string rest = pathOnly.substr(std::string("/api/reports/").size());
   // ── GET /api/reports/{id}/revisions — historial de versiones (ADR-015) ──
   static const std::string kRevisionsSuffix = "/revisions";
   if (rest.size() > kRevisionsSuffix.size() &&
@@ -172,7 +245,11 @@ handleGetReportById(const http::request<http::string_body>& req,
     if (!getReportByIdPg(gDatabaseUrl, reportId, targetTenant, r, error)) {
       return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
     }
-    const std::string sessionToken = extractAuthTokenFromRequest(req, query);
+    // Token dedicado de vida larga para el sidecar (ver
+    // auth::issueExportAccessToken) -- no el access token normal del
+    // usuario (15 min), que puede expirar a mitad de un export grande.
+    const std::string sessionToken = auth::issueExportAccessToken(
+        session->userId, session->username, session->company, session->role, session->tenantId);
     // ADR-080: watermark resuelto server-side (tenant/usuario/fecha reales)
     // antes de pedirle al sidecar que renderice — el sidecar solo dibuja.
     const std::string watermarkText =
@@ -284,7 +361,29 @@ handleGetReportById(const http::request<http::string_body>& req,
                               json::object{{"error", "export_file_missing"}});
     }
     std::string bytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    const std::string ext = job.exportFormat == "mp4" ? ".mp4" : ".pptx";
+    // PDF (job async, `runPdfExportJob`): mismo `makePdfResponse` que ya usa
+    // el GET síncrono (ADR-016/080) -- Content-Type correcto + el header
+    // X-Pdf-Password si el sidecar cifró el archivo. La contraseña quedó
+    // guardada en `report_export_job.options` al terminar el job (ver
+    // comentario de `runPdfExportJob`, report_export_jobs.cpp), no existía
+    // todavía cuando se creó el job.
+    if (job.exportFormat == "pdf") {
+      std::string userPassword;
+      try {
+        if (job.options.is_object()) {
+          const auto &opts = job.options.as_object();
+          if (opts.if_contains("user_password") && opts.at("user_password").is_string()) {
+            userPassword = json::value_to<std::string>(opts.at("user_password"));
+          }
+        }
+      } catch (...) {
+        userPassword.clear();
+      }
+      return makePdfResponse("informe.pdf", std::move(bytes), userPassword);
+    }
+    const std::string ext = job.exportFormat == "mp4" ? ".mp4"
+                            : job.exportFormat == "docx" ? ".docx"
+                            : ".pptx";
     return makeOctetResponse("informe" + ext, std::move(bytes));
   }
   if (!rest.empty() && rest.find('/') == std::string::npos) {
@@ -310,7 +409,12 @@ handleGetReportById(const http::request<http::string_body>& req,
                        {"signed_by_name", r.signedByName},
                        {"signed_by_role", r.signedByRole},
                        {"signed_at", r.signedAt},
-                       {"version_number", r.versionNumber}});
+                       {"version_number", r.versionNumber},
+                       {"created_by", r.createdBy}, {"created_by_name", r.createdByName},
+                       {"reviewed_by", r.reviewedBy}, {"reviewed_by_name", r.reviewedByName},
+                       {"reviewed_at", r.reviewedAt},
+                       {"last_modified_by", r.lastModifiedBy},
+                       {"last_modified_by_name", r.lastModifiedByName}});
     }
     return makeJsonResponse(http::status::not_found,
                             json::object{{"error", error}});
@@ -583,6 +687,161 @@ handlePostReportSubAction(const http::request<http::string_body>& req,
   const std::string pathOnly = routePathOnly(target);
   std::string rest = pathOnly.substr(std::string("/api/reports/").size());
 
+  // ── POST /api/reports/{id}/share — enviar el informe a otro usuario de la
+  // empresa (ADR pendiente: antes ShareReportModal.tsx llamaba a un mock que
+  // ni siquiera tocaba el backend — `shareReportAsync` en reportsStorage.ts
+  // hacía un `setTimeout` y devolvía `true` sin persistir nada ni notificar
+  // a nadie). `report_shares` (db_scripts/05_reports_admin.sql) existía
+  // desde hace tiempo sin ningún endpoint que la usara. ─────────────────────
+  static const std::string kShareSuffix = "/share";
+  if (rest.size() > kShareSuffix.size() &&
+      rest.compare(rest.size() - kShareSuffix.size(), kShareSuffix.size(), kShareSuffix) == 0) {
+    const std::string reportId = rest.substr(0, rest.size() - kShareSuffix.size());
+    // Extra sobre el 'informes.view' genérico de arriba — mismo patrón que
+    // el bloque de narración más abajo (permiso adicional por acción, no
+    // solo el blanket de lectura).
+    if (!hasPermission(session->userId, session->tenantId, session->role, "informes.share")) {
+      return makeJsonResponse(http::status::forbidden,
+                              json::object{{"error", "forbidden"}, {"need", "informes.share"}});
+    }
+    std::string toUserId, message;
+    try {
+      const auto val = json::parse(req.body());
+      const auto &obj = val.as_object();
+      if (obj.contains("to_user_id")) toUserId = json::value_to<std::string>(obj.at("to_user_id"));
+      if (obj.contains("message")) message = json::value_to<std::string>(obj.at("message"));
+    } catch (const std::exception &ex) {
+      return makeJsonResponse(http::status::bad_request, json::object{{"error", ex.what()}});
+    }
+    if (toUserId.empty()) {
+      return makeJsonResponse(http::status::bad_request, json::object{{"error", "to_user_id_requerido"}});
+    }
+    std::string error;
+    Report r;
+    if (!getReportByIdPg(gDatabaseUrl, reportId, session->tenantId, r, error)) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+    }
+    // Rechazar en vez de truncar a ciegas: cortar un std::string en un byte
+    // arbitrario puede caer en medio de un carácter UTF-8 multibyte (tildes,
+    // ñ) y dejar bytes inválidos que Postgres rechaza en el INSERT. 2000
+    // bytes es margen generoso para el límite de 500 CARACTERES que ya
+    // impone el textarea del cliente (hasta 4 bytes/carácter en UTF-8).
+    if (message.size() > 2000) {
+      return makeJsonResponse(http::status::bad_request, json::object{{"error", "mensaje_muy_largo"}});
+    }
+#if HAS_LIBPQ
+    auto lease = storage::PgPool::instance().acquire(gDatabaseUrl);
+    PGconn *conn = lease.get();
+    if (PQstatus(conn) != CONNECTION_OK) {
+      return makeJsonResponse(http::status::internal_server_error, json::object{{"error", "db_unavailable"}});
+    }
+    // Guardia IDOR: el destinatario debe ser de la MISMA empresa que quien
+    // envía — sin esto, un to_user_id adivinado de otra empresa dejaría
+    // compartir (y notificar) a un desconocido fuera de la unidad.
+    const char *recipientParams[2] = {toUserId.c_str(), session->company.c_str()};
+    storage::PgResult recipientRes{PQexecParams(conn,
+        "SELECT COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), username), "
+        "COALESCE(email,''), COALESCE(phone,''), COALESCE(mobile,'') "
+        "FROM auth_users WHERE id = $1::uuid AND company_name = $2",
+        2, nullptr, recipientParams, nullptr, nullptr, 0)};
+    if (!recipientRes.okTuples() || PQntuples(recipientRes.get()) < 1) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", "destinatario_no_encontrado"}});
+    }
+    const std::string recipientName = PQgetvalue(recipientRes.get(), 0, 0);
+    const std::string recipientEmail = PQgetvalue(recipientRes.get(), 0, 1);
+    const std::string recipientPhone = PQgetvalue(recipientRes.get(), 0, 2);
+    const std::string recipientMobileRaw = PQgetvalue(recipientRes.get(), 0, 3);
+    const std::string recipientMobile = recipientMobileRaw.empty() ? recipientPhone : recipientMobileRaw;
+
+    const char *shareParams[4] = {reportId.c_str(), session->userId.c_str(), toUserId.c_str(),
+                                  message.empty() ? nullptr : message.c_str()};
+    storage::PgResult shareRes{PQexecParams(conn,
+        "INSERT INTO report_shares (report_id, sent_by, sent_to, message) "
+        "VALUES ($1::uuid, $2::uuid, $3::uuid, $4)",
+        4, nullptr, shareParams, nullptr, nullptr, 0)};
+    if (!shareRes.okCommand()) {
+      return makeJsonResponse(http::status::internal_server_error,
+                              json::object{{"error", "share_insert_fallo"},
+                                           {"detail", PQresultErrorMessage(shareRes.get())}});
+    }
+
+    notify::NotifyRequest nreq;
+    nreq.recipientUserId = toUserId;
+    nreq.recipientEmail = recipientEmail;
+    nreq.recipientPhoneE164 = recipientPhone;
+    nreq.recipientMobileE164 = recipientMobile;
+    nreq.title = "Informe compartido: " + r.title;
+    nreq.body = session->username + " te compartió el informe «" + r.title + "»" +
+               (message.empty() ? "" : (": " + message));
+    nreq.channels = {"in_app", "email", "whatsapp", "sms"};
+    nreq.sourceApp = "reports";
+    nreq.relatedType = "report";
+    nreq.relatedId = reportId;
+    const auto results = notify::dispatch(gDatabaseUrl, nreq);
+    json::array channelResults;
+    for (const auto &cr : results)
+      channelResults.push_back(json::object{{"channel", cr.channel}, {"ok", cr.ok}, {"detail", cr.detail}});
+
+    return makeJsonResponse(http::status::ok,
+                            json::object{{"status", "shared"},
+                                         {"recipient_name", recipientName},
+                                         {"channels", channelResults}});
+#else
+    return makeJsonResponse(http::status::internal_server_error, json::object{{"error", "db_unavailable"}});
+#endif
+  }
+
+  // ── POST /api/reports/{id}/share-link — enlace de acceso directo a PDF
+  // (ADR-138): a diferencia de /export/pdf (ADR-080, PDF cifrado con una
+  // contraseña que el usuario tiene que pegar a mano) esto genera un token
+  // opaco con expiración; el QR de ese link abre el PDF directo al
+  // escanearlo, sin ningún cuadro de diálogo -- la protección pasa a ser el
+  // token en sí (largo, aleatorio, vence), no el archivo. ─────────────────
+  static const std::string kShareLinkSuffix = "/share-link";
+  if (rest.size() > kShareLinkSuffix.size() &&
+      rest.compare(rest.size() - kShareLinkSuffix.size(), kShareLinkSuffix.size(), kShareLinkSuffix) == 0) {
+    const std::string reportId = rest.substr(0, rest.size() - kShareLinkSuffix.size());
+    // Mismo permiso que /share (compartir HACIA AFUERA, no solo ver) --
+    // extra sobre el 'informes.view' genérico ya verificado arriba.
+    if (!hasPermission(session->userId, session->tenantId, session->role, "informes.share")) {
+      return makeJsonResponse(http::status::forbidden,
+                              json::object{{"error", "forbidden"}, {"need", "informes.share"}});
+    }
+    std::string error;
+    Report r;
+    if (!getReportByIdPg(gDatabaseUrl, reportId, session->tenantId, r, error)) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+    }
+    // Ventana fija de 48h -- suficiente para el flujo real (exportar,
+    // enviar por WhatsApp/correo, que lo abran) sin quedar circulando
+    // indefinidamente. Sin UI de configuración todavía.
+    constexpr int kShareLinkTtlHours = 48;
+    const std::string token = createReportShareLinkPg(gDatabaseUrl, reportId, session->tenantId,
+                                                       session->userId, session->username,
+                                                       kShareLinkTtlHours, error);
+    if (token.empty()) {
+      return makeJsonResponse(http::status::internal_server_error,
+                              json::object{{"error", "share_link_create_failed"}, {"detail", error}});
+    }
+    // Respuesta deliberadamente same-origin y relativa. El frontend la
+    // convierte a absoluta usando window.location.origin antes de crear el
+    // QR. No usar corsAllowedOrigin(): en despliegues LAN suele conservar el
+    // default localhost y el celular terminaria intentando abrir SU propio
+    // localhost, no el servidor que genero el QR.
+    const std::string url = "/api/reports/share/" + token + "/pdf";
+#if HAS_LIBPQ
+    {
+      auto lease = storage::PgPool::instance().acquire(gDatabaseUrl);
+      if (PQstatus(lease.get()) == CONNECTION_OK) {
+        auth::appendAuthAuditLogPg(lease.get(), "report.export.pdf.share_link.create", session->company,
+                                   session->username, true, "report_id=" + reportId);
+      }
+    }
+#endif
+    return makeJsonResponse(http::status::created,
+                            json::object{{"url", url}, {"expires_in_hours", kShareLinkTtlHours}});
+  }
+
   static const std::string kExportPptxSuffix = "/export/pptx";
   if (rest.size() > kExportPptxSuffix.size() &&
       rest.compare(rest.size() - kExportPptxSuffix.size(), kExportPptxSuffix.size(),
@@ -597,9 +856,49 @@ handlePostReportSubAction(const http::request<http::string_body>& req,
     if (!getReportByIdPg(gDatabaseUrl, reportId, session->tenantId, r, error)) {
       return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
     }
-    // El PPTX solo tiene sentido sobre el lienzo 16:9 de modo presentación
-    // (reportLayoutMetrics.ts) — en modo documento cada página es una hoja
-    // A4/A3 que no fue diseñada como diapositiva.
+    // Antes el PPTX se rechazaba fuera del lienzo 16:9 de modo presentación
+    // (reportLayoutMetrics.ts) -- ya no: /render-pptx (pdf-export-service)
+    // ahora arma el tamaño del deck a partir del papel real del informe
+    // (A4/A3, retrato/paisaje) cuando layoutMode es 'document', igual que ya
+    // hace /render-docx, así que cualquier informe puede exportarse a PPTX
+    // sin importar su modo de lienzo.
+    // Token dedicado de vida larga para el sidecar (ver
+    // auth::issueExportAccessToken) -- no el access token normal del
+    // usuario (15 min), que puede expirar a mitad de un export grande.
+    const std::string sessionToken = auth::issueExportAccessToken(
+        session->userId, session->username, session->company, session->role, session->tenantId);
+    std::string jobId;
+    if (!createExportJobPg(gDatabaseUrl, reportId, session->tenantId, "pptx", json::object{},
+                           session->userId, /*contentRevisionId=*/"", jobId, error)) {
+      return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
+    }
+    std::thread(runPptxExportJob, jobId, reportId, sessionToken).detach();
+    return makeJsonResponse(http::status::accepted,
+                            json::object{{"job_id", jobId}, {"status", "queued"}});
+  }
+
+  // ── POST /api/reports/{id}/export/docx ─────────────────────────────
+  // Mismo patrón asíncrono que /export/pptx arriba. DOCX sigue exclusivo de
+  // layoutMode 'document' (A4/A3) -- a diferencia de PPTX (que ya acepta
+  // ambos modos, ver comentario arriba), un informe en modo presentación
+  // (16:9) no tiene páginas A4/A3 que mapear a secciones de Word. Pipeline
+  // "servidor" del export DOCX (alternativa al pipeline 100% cliente de
+  // exportEngine.ts::exportDOCX, que no depende de esta ruta ni de que el
+  // informe esté guardado).
+  static const std::string kExportDocxSuffix = "/export/docx";
+  if (rest.size() > kExportDocxSuffix.size() &&
+      rest.compare(rest.size() - kExportDocxSuffix.size(), kExportDocxSuffix.size(),
+                  kExportDocxSuffix) == 0) {
+    const std::string reportId = rest.substr(0, rest.size() - kExportDocxSuffix.size());
+    if (AppConfig::instance().gPdfExportUrl.empty()) {
+      return makeJsonResponse(http::status::service_unavailable,
+                              json::object{{"error", "docx_export_disabled"}});
+    }
+    std::string error;
+    Report r;
+    if (!getReportByIdPg(gDatabaseUrl, reportId, session->tenantId, r, error)) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+    }
     std::string layoutMode;
     try {
       if (r.contentJson.is_object()) {
@@ -614,18 +913,72 @@ handlePostReportSubAction(const http::request<http::string_body>& req,
     } catch (...) {
       layoutMode.clear();
     }
-    if (layoutMode != "presentation") {
+    if (layoutMode == "presentation") {
       return makeJsonResponse(http::status::bad_request,
-                              json::object{{"error", "layout_mode_not_presentation"}});
+                              json::object{{"error", "layout_mode_not_document"}});
     }
 
-    const std::string sessionToken = extractAuthTokenFromRequest(req, query);
+    // Token dedicado de vida larga para el sidecar (ver
+    // auth::issueExportAccessToken) -- no el access token normal del
+    // usuario (15 min), que puede expirar a mitad de un export grande.
+    const std::string sessionToken = auth::issueExportAccessToken(
+        session->userId, session->username, session->company, session->role, session->tenantId);
     std::string jobId;
-    if (!createExportJobPg(gDatabaseUrl, reportId, session->tenantId, "pptx", json::object{},
+    if (!createExportJobPg(gDatabaseUrl, reportId, session->tenantId, "docx", json::object{},
                            session->userId, /*contentRevisionId=*/"", jobId, error)) {
       return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
     }
-    std::thread(runPptxExportJob, jobId, reportId, sessionToken).detach();
+    std::thread(runDocxExportJob, jobId, reportId, sessionToken).detach();
+    return makeJsonResponse(http::status::accepted,
+                            json::object{{"job_id", jobId}, {"status", "queued"}});
+  }
+
+  // ── POST /api/reports/{id}/export/pdf ──────────────────────────────
+  // Mismo patrón asíncrono que /export/pptx y /export/docx arriba --
+  // variante de job del PDF, que sigue teniendo además su GET síncrono
+  // (ADR-016, arriba en handleGetReportSubAction) para informes chicos
+  // donde el render entra sobrado en el presupuesto de un request HTTP.
+  // Para documentos de miles de páginas ese presupuesto no alcanza aunque
+  // el render termine bien -- de ahí este endpoint, que delega en
+  // `runPdfExportJob` (llama al sidecar en `/render-pdf`, NO `/render`) y
+  // se consulta/descarga vía el mismo `GET /export/jobs/{jobId}[/download]`
+  // que ya usan PPTX/DOCX. Watermark (ADR-080) resuelto server-side igual
+  // que el GET síncrono -- el cifrado queda siempre activo, la contraseña
+  // vuelve en `report_export_job.options` (ver `runPdfExportJob`) y el
+  // download la expone vía el mismo header `X-Pdf-User-Password` de siempre.
+  static const std::string kExportPdfJobSuffix = "/export/pdf";
+  if (rest.size() > kExportPdfJobSuffix.size() &&
+      rest.compare(rest.size() - kExportPdfJobSuffix.size(), kExportPdfJobSuffix.size(),
+                  kExportPdfJobSuffix) == 0) {
+    const std::string reportId = rest.substr(0, rest.size() - kExportPdfJobSuffix.size());
+    if (AppConfig::instance().gPdfExportUrl.empty()) {
+      return makeJsonResponse(http::status::service_unavailable,
+                              json::object{{"error", "pdf_export_disabled"}});
+    }
+    std::string error;
+    Report r;
+    if (!getReportByIdPg(gDatabaseUrl, reportId, session->tenantId, r, error)) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+    }
+    const std::string sessionToken = auth::issueExportAccessToken(
+        session->userId, session->username, session->company, session->role, session->tenantId);
+    const std::string watermarkText =
+        resolveWatermarkText(gDatabaseUrl, reportId, session->tenantId, session->username);
+    std::string jobId;
+    if (!createExportJobPg(gDatabaseUrl, reportId, session->tenantId, "pdf", json::object{},
+                           session->userId, /*contentRevisionId=*/"", jobId, error)) {
+      return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
+    }
+    std::thread(runPdfExportJob, jobId, reportId, sessionToken, watermarkText).detach();
+#if HAS_LIBPQ
+    {
+      auto lease = storage::PgPool::instance().acquire(gDatabaseUrl);
+      if (PQstatus(lease.get()) == CONNECTION_OK) {
+        auth::appendAuthAuditLogPg(lease.get(), "report.export.pdf.job.create", session->company,
+                                   session->username, true, "report_id=" + reportId);
+      }
+    }
+#endif
     return makeJsonResponse(http::status::accepted,
                             json::object{{"job_id", jobId}, {"status", "queued"}});
   }

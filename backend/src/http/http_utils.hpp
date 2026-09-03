@@ -110,27 +110,46 @@ http::response<http::string_body> makeJsonResponse(http::status status,
 std::string extractCookie(const http::request<http::string_body> &req,
                           const std::string &name);
 
+/** @brief IP real del cliente para auditoría (ADR-130): el backend nunca ve
+ * la IP real en la conexión TCP (nginx siempre está delante, ver
+ * frontend/nginx.conf) — se lee de `X-Real-IP` (que nginx ya reenvía en toda
+ * location `/api/`), con `X-Forwarded-For` (primer salto) como respaldo.
+ * @return La IP, o cadena vacía si ninguno de los dos headers está presente
+ * (p. ej. una petición directa al puerto de loopback sin pasar por nginx). */
+std::string getClientIp(const http::request<http::string_body> &req);
+
 /**
  * @brief Agrega a `res` las dos cookies de la sesión de refresh (ADR-029,
- * "Actualización 2026-07-19"): `refresh_token` (HttpOnly, ilegible por JS —
- * mitiga robo vía XSS) y `csrf_token_v2` (legible por JS a propósito — patrón
- * double-submit cookie: el cliente debe repetirlo en el header
- * `X-CSRF-Token` al llamar /api/auth/refresh o /api/auth/logout). Ambas con
- * `Secure` (según `AppConfig::gAuthCookieSecure`), `SameSite=Strict` y
- * `refresh_token` usa `Path=/api/auth`; `csrf_token_v2` usa `Path=/` para que
- * la SPA pueda leerla desde cualquier ruta y enviarla en `X-CSRF-Token`.
+ * "Actualización 2026-07-19"; renombradas a `beemetry_*` en la migración a
+ * Bearer-en-memoria, ver ADR de esa migración): `beemetry_refresh_token`
+ * (HttpOnly, ilegible por JS — mitiga robo vía XSS) y `beemetry_csrf_token`
+ * (legible por JS a propósito — patrón double-submit cookie: el cliente debe
+ * repetirlo en el header `X-CSRF-Token` al llamar /api/auth/refresh o
+ * /api/auth/logout). Ambas con `Secure` (según `AppConfig::gAuthCookieSecure`),
+ * `SameSite=Strict` y `beemetry_refresh_token` usa `Path=/api/auth`;
+ * `beemetry_csrf_token` usa `Path=/` para que la SPA pueda leerla desde
+ * cualquier ruta y enviarla en `X-CSRF-Token`. Los nombres namespaced
+ * "beemetry_*" (no genéricos) evitan colisión de cookies con otro frontend
+ * distinto que corra en el mismo host/laptop durante pruebas.
  */
 void setAuthCookies(http::response<http::string_body> &res,
                     const std::string &refreshToken, const std::string &csrfToken,
                     int maxAgeSeconds);
 
 /**
- * @brief Agrega a `res` la cookie `access_token` (HttpOnly, `Path=/`).
+ * @brief Agrega a `res` la cookie `beemetry_access_token` (HttpOnly, `Path=/`).
  *
  * ADR-082 (auditoría 2026-08-02): el access token deja de guardarse en
  * `localStorage`, donde cualquier XSS podía leerlo y exfiltrarlo para
  * reutilizar la sesión desde fuera. `maxAgeSeconds` debe ser el TTL del access
  * token (no el del refresh): la cookie caduca con él.
+ *
+ * Nota (migración a Bearer-en-memoria): el frontend real de la plataforma ya
+ * NO depende de esta cookie para autorizar sus propias peticiones (usa
+ * `Authorization: Bearer` con el token guardado en memoria de JS, nunca en
+ * disco) — esta cookie se sigue emitiendo por compatibilidad con integraciones
+ * que aún la lean, pero no es la fuente de verdad de la sesión del frontend
+ * propio.
  */
 void setAccessTokenCookie(http::response<http::string_body> &res,
                           const std::string &accessToken, int maxAgeSeconds);
@@ -154,5 +173,15 @@ http::response<http::string_body> makePdfResponse(const std::string &filename,
  * deben tener un Content-Type reconocible/abrible por otra herramienta. */
 http::response<http::string_body> makeOctetResponse(const std::string &filename,
                                                      std::string bytes);
+
+/** @brief Respuesta 200 con Content-Type application/pdf y Content-Disposition
+ * INLINE (ADR-138, enlaces de acceso directo): a diferencia de makePdfResponse
+ * (attachment, fuerza descarga), esta hace que el navegador muestre el PDF
+ * directamente al navegar la URL — necesario para que escanear el QR del
+ * enlace abra el informe sin ningún paso adicional. Nunca lleva
+ * X-Pdf-Password: el PDF que sirve este helper siempre viene sin cifrar
+ * (ver exportReportPdf(..., encrypt=false)). */
+http::response<http::string_body> makeInlinePdfResponse(const std::string &filename,
+                                                         std::string pdfBytes);
 
 } // namespace http_utils

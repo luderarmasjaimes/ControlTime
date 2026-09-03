@@ -340,14 +340,26 @@ int safeStoi(const char *value, int fallback) {
 }
 
 std::string csvEscape(const std::string &v) {
-    bool mustQuote = v.find(',') != std::string::npos ||
-                     v.find('"') != std::string::npos ||
-                     v.find('\n') != std::string::npos;
+    // Inyección de fórmulas CSV: ver el mismo fix, con el razonamiento
+    // completo, en auth_storage_file.cpp::csvEscape (la copia realmente en
+    // uso hoy para el export de auditoría). Esta función gemela vive en el
+    // header público sin caller activo actualmente -- se endurece igual por
+    // si algún export CSV futuro la reutiliza.
+    std::string value = v;
+    if (!value.empty()) {
+        const char c0 = value[0];
+        if (c0 == '=' || c0 == '+' || c0 == '-' || c0 == '@' || c0 == '\t' || c0 == '\r') {
+            value.insert(value.begin(), '\'');
+        }
+    }
+    bool mustQuote = value.find(',') != std::string::npos ||
+                     value.find('"') != std::string::npos ||
+                     value.find('\n') != std::string::npos;
     if (!mustQuote) {
-        return v;
+        return value;
     }
     std::string out = "\"";
-    for (char c : v) {
+    for (char c : value) {
         if (c == '"') out += "\"\"";
         else out.push_back(c);
     }
@@ -383,6 +395,20 @@ std::string extractCookie(const http::request<http::string_body> &req,
             break;
         }
         pos = sep + 1;
+    }
+    return {};
+}
+
+std::string getClientIp(const http::request<http::string_body> &req) {
+    if (const auto it = req.find("X-Real-IP"); it != req.end()) {
+        return std::string(it->value());
+    }
+    if (const auto it = req.find(http::field::x_forwarded_for); it != req.end()) {
+        const std::string value(it->value());
+        const auto comma = value.find(',');
+        const std::string first = value.substr(0, comma);
+        const auto start = first.find_first_not_of(' ');
+        return start == std::string::npos ? std::string() : first.substr(start);
     }
     return {};
 }
@@ -445,8 +471,18 @@ void setAccessTokenCookie(http::response<http::string_body> &res,
     //
     // Path=/ (no /api/auth como refresh_token): la cookie tiene que
     // acompañar a TODA petición autenticada de la API, no solo a las de auth.
+    //
+    // Nombre namespaced "beemetry_*" (no genérico "access_token"): las
+    // cookies HTTP se comparten por dominio+path+nombre, NUNCA por puerto --
+    // si esta plataforma y otro frontend distinto (de otro equipo/proveedor)
+    // corrieran ambos sobre el mismo host mientras se prueban en la misma
+    // laptop, un nombre genérico como "access_token" colisionaría entre
+    // ambos (el login más reciente pisa la cookie del otro). Un nombre
+    // propio de la plataforma hace esa colisión accidental extremadamente
+    // improbable. Ver ADR de esta migración (Bearer en memoria + cookies
+    // namespaced) para el resto del rediseño.
     res.insert(http::field::set_cookie,
-               buildCookieHeader("access_token", accessToken, maxAgeSeconds, true, "/"));
+               buildCookieHeader("beemetry_access_token", accessToken, maxAgeSeconds, true, "/"));
 }
 
 void setAuthCookies(http::response<http::string_body> &res,
@@ -463,27 +499,32 @@ void setAuthCookies(http::response<http::string_body> &res,
     // token de 15 min vencía, forzando un logout silencioso repetido
     // ("Sesión expirada...") pese a que el usuario seguía autenticado.
     res.insert(http::field::set_cookie,
-              buildCookieHeader("refresh_token", refreshToken, maxAgeSeconds, true, "/api/auth"));
-    // "csrf_token_v2": ver comentario en csrfHeaderMatchesCookie (main.cpp) --
-    // nombre nuevo a propósito, no solo Path nuevo, para que sesiones activas
-    // desde antes de este fix (con la cookie vieja `csrf_token` Path=/api/auth
-    // aún viva hasta 7 días) se autoreparen de inmediato sin esperar a que esa
-    // cookie expire ni requerir un logout manual.
+              buildCookieHeader("beemetry_refresh_token", refreshToken, maxAgeSeconds, true, "/api/auth"));
+    // "beemetry_csrf_token": ver comentario en csrfHeaderMatchesCookie (main.cpp) --
+    // nombre namespaced a propósito (mismo motivo que beemetry_access_token
+    // arriba: evitar colisión con una cookie genérica de otro frontend en el
+    // mismo host), no solo Path nuevo, para que sesiones activas desde antes
+    // de esta migración (con la cookie vieja `csrf_token_v2` aún viva hasta
+    // 7 días) se autoreparen de inmediato sin esperar a que esa cookie
+    // expire ni requerir un logout manual.
     res.insert(http::field::set_cookie,
-              buildCookieHeader("csrf_token_v2", csrfToken, maxAgeSeconds, false, "/"));
+              buildCookieHeader("beemetry_csrf_token", csrfToken, maxAgeSeconds, false, "/"));
 }
 
 void clearAuthCookies(http::response<http::string_body> &res) {
     // El Path debe coincidir EXACTO con el usado al setear cada cookie --
     // un navegador no borra una cookie si el Path de este Set-Cookie no
     // calza con el original (son cookies "distintas" a efectos de borrado).
+    res.insert(http::field::set_cookie, buildCookieHeader("beemetry_access_token", "", 0, true, "/"));
+    res.insert(http::field::set_cookie, buildCookieHeader("beemetry_refresh_token", "", 0, true, "/api/auth"));
+    res.insert(http::field::set_cookie, buildCookieHeader("beemetry_csrf_token", "", 0, false, "/"));
+    // Limpieza de higiene de los nombres viejos (pre-migración a cookies
+    // namespaced): ya no los lee nadie, pero un logout es buen momento para
+    // purgarlos si siguen vivos en el navegador de una sesión iniciada antes
+    // de este cambio.
     res.insert(http::field::set_cookie, buildCookieHeader("access_token", "", 0, true, "/"));
     res.insert(http::field::set_cookie, buildCookieHeader("refresh_token", "", 0, true, "/api/auth"));
     res.insert(http::field::set_cookie, buildCookieHeader("csrf_token_v2", "", 0, false, "/"));
-    // Limpieza de higiene del nombre/Path viejo (`csrf_token`, Path=/api/auth
-    // — bug corregido hoy, ver csrfHeaderMatchesCookie): ya no lo lee nadie,
-    // pero un logout es buen momento para purgarlo si aún sigue vivo en el
-    // navegador de una sesión iniciada antes del fix.
     res.insert(http::field::set_cookie, buildCookieHeader("csrf_token", "", 0, false, "/api/auth"));
 }
 
@@ -536,6 +577,18 @@ http::response<http::string_body> makeOctetResponse(const std::string &filename,
             "attachment; filename=\"" + filename + "\"");
     res.set("X-Content-Type-Options", "nosniff");
     res.body() = std::move(bytes);
+    res.prepare_payload();
+    return res;
+}
+
+http::response<http::string_body> makeInlinePdfResponse(const std::string &filename,
+                                                         std::string pdfBytes) {
+    http::response<http::string_body> res{http::status::ok, 11};
+    res.set(http::field::content_type, "application/pdf");
+    applyCorsHeaders(res);
+    res.set(http::field::content_disposition,
+            "inline; filename=\"" + filename + "\"");
+    res.body() = std::move(pdfBytes);
     res.prepare_payload();
     return res;
 }

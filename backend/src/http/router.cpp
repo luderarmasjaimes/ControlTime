@@ -111,8 +111,37 @@ namespace {
 //     VideoInsertModal.tsx inserta como data URL base64. Ver la misma nota,
 //     más detallada, en frontend/nginx.conf (el CSP que realmente aplica el
 //     navegador sobre el HTML servido).
-//   - connect-src: 'self' + ws/wss (mismo origen; el WS de la app siempre
-//     pasa por el proxy de nginx, nunca a un host externo).
+//   - connect-src: SOLO 'self' (sin comentar-lo-de-más: 'self' YA cubre el
+//     equivalente ws/wss del propio origen -- un WebSocket a
+//     wss://mismo-host coincide con 'self' igual que un fetch a
+//     https://mismo-host, no hace falta listar ws:/wss: aparte). El WS de la
+//     app siempre pasa por el proxy de nginx al mismo origen (MapViewer.tsx,
+//     alarmStream.ts: `${protocol}//${location.host}/ws`), nunca a un host
+//     externo.
+//     Hallazgo de red-team (2026-08-26): la versión anterior tenía
+//     "connect-src 'self' ws: wss:" -- los tokens de esquema DESNUDOS
+//     "ws:"/"wss:" no son "same-origin", son "cualquier host con ese
+//     esquema": permitían que un XSS abriera un WebSocket a
+//     wss://servidor-del-atacante y exfiltrara datos por ahí sin que la CSP
+//     lo bloqueara (confirmado en vivo: la conexión se intentaba sin disparar
+//     securitypolicyviolation). Quitar esos dos tokens cierra ese canal sin
+//     afectar el WS legítimo, que sigue siendo estrictamente same-origin.
+//   - require-trusted-types-for 'script' + trusted-types beemetry-html:
+//     PROBADO EN VIVO (2026-08-26) y REVERTIDO -- ver ADR-134. ECharts
+//     (vendor-echarts, usado por MiningDashboard y varias vistas del
+//     dashboard) escribe innerHTML crudo en su propio código interno de
+//     inicialización, sin pasar por ninguna política nombrada; con la
+//     directiva activa, el navegador bloqueaba esa escritura
+//     ("This document requires 'TrustedHTML' assignment") y el chart
+//     entero crasheaba ("Cannot read properties of undefined (reading
+//     'setOption')"), tumbando la vista completa (capturado por el
+//     ErrorBoundary, pero la función quedaba inutilizable). Los 3 sinks
+//     reales de código PROPIO (MiningDashboard.tsx, ReadOnlyViewer.tsx,
+//     TableBlock.tsx) se dejan pasando por `toTrustedHtml()`
+//     (frontend/src/lib/trustedHtml.ts) de todas formas -- es un no-op
+//     transparente sin esta directiva activa, listo para reactivarse si en
+//     el futuro se resuelve la incompatibilidad con ECharts (upstream
+//     agrega soporte, o se aísla el chart en un iframe/Shadow DOM propio).
 static const char *kCspValue =
     "default-src 'self'; "
     "script-src 'self' 'wasm-unsafe-eval' https://cdn.tailwindcss.com; "
@@ -120,11 +149,12 @@ static const char *kCspValue =
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: blob: https:; "
     "media-src 'self' data: blob:; "
-    "connect-src 'self' ws: wss:; "
+    "connect-src 'self'; "
     "object-src 'none'; "
     "base-uri 'self'; "
     "frame-ancestors 'self'; "
-    "form-action 'self'";
+    "form-action 'self'; "
+    "report-uri /api/security/csp-report";
 
 void applySecurityHeaders(http::response<http::string_body> &res) {
     res.set("X-Content-Type-Options", "nosniff");

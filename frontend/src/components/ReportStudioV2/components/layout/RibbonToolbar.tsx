@@ -121,6 +121,7 @@ function RibbonGroup({ title, children }: { title: string; children?: React.Reac
 interface RibbonToolbarProps {
   // Existing TopToolbar props
   onExportPdf?: () => void;
+  onGenerateShareLink?: () => void;
   onExportVideo?: () => void;
   onPrint?: () => void;
   onReviewDocument?: () => void;
@@ -207,7 +208,7 @@ interface RibbonToolbarProps {
 }
 
 export default function RibbonToolbar({
-  onExportPdf, onExportVideo, onPrint, onReviewDocument, onOptimizeDocument,
+  onExportPdf, onGenerateShareLink, onExportVideo, onPrint, onReviewDocument, onOptimizeDocument,
   onZoomIn, onZoomOut, onZoomSet, gridEnabled, snapEnabled, onToggleGrid, onToggleSnap,
   isOptimizing, zoomPercent, onOpenReportsAdmin, onSaveReport,
   isSaving, saveLabel, onOpenFormulaAnalysis, onSyncMiningKpis, isSyncingKpis,
@@ -788,6 +789,11 @@ export default function RibbonToolbar({
                 <RibbonBtn icon={Download} label="PDF" onClick={onExportPdf} variant="primary" title="Exportar el informe como archivo PDF" />
                 <RibbonBtn icon={FileText} label="DOCX" onClick={onExportDocx} title="Exportar el informe como documento Word (DOCX)" />
                 <RibbonBtn icon={Layers} label="PPTX" onClick={onExportPptx} title="Exportar el informe como presentación PowerPoint" />
+              </RibbonGroup>
+
+              <RibbonGroup title="Acceso directo">
+                <RibbonBtn icon={Link2} label="Enlace + QR" onClick={onGenerateShareLink}
+                  title="Generar un enlace/QR que abre el PDF directo al escanearlo, sin contraseña (vence en 48h)" />
               </RibbonGroup>
 
               <RibbonGroup title="Impresión">

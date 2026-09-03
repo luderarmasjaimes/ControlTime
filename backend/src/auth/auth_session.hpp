@@ -76,6 +76,33 @@ std::string makeSessionToken();
 AuthTokenPair issueAuthSession(const AuthUser &user);
 
 /**
+ * @brief Emite solo un access token JWT de corta vida, sin crear ni persistir
+ * refresh token. Uso interno para trabajos efimeros (p.ej. el render del PDF
+ * de un enlace ADR-138): la credencial nunca se entrega al navegador y deja
+ * de ser valida por expiracion natural.
+ */
+std::string issueEphemeralAccessToken(const AuthUser &user);
+
+/**
+ * @brief Emite un access token JWT de vida más larga
+ * (config::AppConfig::gJwtExportTtlMinutes, default 120 min) para el sidecar
+ * de export server-side (pdf-export-service: /render, /render-pptx,
+ * /render-docx). Ese Chromium headless no tiene cookies (ADR-082) y recibe
+ * el token por URL; reusar el access token normal del usuario (TTL de 15
+ * min, `issueAccessToken`) causaba 401 a mitad de un export grande (144+
+ * páginas puede tardar más de 15 min) en cada fetch de telemetría del
+ * propio informe -- reproducido en vivo, ver comentario de
+ * `gJwtExportTtlMinutes`. Mismos claims que un access token normal (mismo
+ * usuario/rol/tenant, ningún privilegio adicional), nunca se persiste ni se
+ * entrega al navegador -- solo cambia el TTL. Toma los campos ya resueltos
+ * de `AuthSession` en vez de un `AuthUser` completo para no requerir un
+ * refetch a la base de datos en el hot path de cada request de export.
+ */
+std::string issueExportAccessToken(const std::string &userId, const std::string &username,
+                                   const std::string &company, const std::string &role,
+                                   const std::string &tenantId);
+
+/**
  * @brief Intercambia un refresh token vigente por un par de tokens nuevo
  * (rotación estricta: el refresh token usado queda revocado de inmediato).
  * @return El par nuevo si el refresh token era válido; `std::nullopt` si no
@@ -105,5 +132,28 @@ void pruneExpiredAuthSessions();
 std::optional<AuthSession>
 resolveAuthSession(const http::request<http::string_body> &req,
                    const std::unordered_map<std::string, std::string> &query);
+
+/**
+ * @brief MFA/TOTP (ADR-135): guarda un `AuthUser` que YA pasó password/
+ * biometría pero cuya cuenta tiene TOTP activo -- el login normal NO emite
+ * sesión todavía, emite este token opaco de corta vida (5 min) que solo
+ * sirve para el siguiente paso (`POST /api/auth/login/mfa`). Deliberadamente
+ * NO es un JWT: usa un mapa en memoria totalmente separado del de sesiones
+ * reales, así que aunque alguien lo capturara no hay forma de que
+ * `resolveAuthSession`/`jwt::verify` lo acepten en ningún endpoint normal —
+ * su único uso posible es consumirlo en el endpoint de MFA.
+ * @return Token opaco a devolver al cliente como `mfa_token`.
+ */
+std::string createMfaPendingToken(const AuthUser &user);
+
+/**
+ * @brief Consume (uso único) un `mfa_token` de `createMfaPendingToken`.
+ * @return El `AuthUser` original si el token existe y no expiró; `std::nullopt`
+ * en otro caso (inválido, ya usado, o expirada la ventana de 5 min).
+ */
+std::optional<AuthUser> consumeMfaPendingToken(const std::string &mfaToken);
+
+/** @brief Invalida un `mfa_token` tras su uso exitoso (uso único real, ver consumeMfaPendingToken). */
+void invalidateMfaPendingToken(const std::string &mfaToken);
 
 } // namespace auth

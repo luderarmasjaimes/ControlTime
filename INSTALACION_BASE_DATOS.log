@@ -1,0 +1,61 @@
+﻿**********************
+Inicio de la transcripción de Windows PowerShell
+Hora de inicio: 20260813155532
+Nombre de usuario: DESKTOP-ATRC0UU\lenovo´
+Usuario RunAs: DESKTOP-ATRC0UU\lenovo´
+Nombre de la configuración: 
+Máquina: DESKTOP-ATRC0UU (Microsoft Windows NT 10.0.26200.0)
+Aplicación host: powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\InformeCliente\Levantar-y-Verificar-Base-Datos.ps1
+Id. de proceso: 25232
+PSVersion: 5.1.26100.6584
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.6584
+BuildVersion: 10.0.26100.6584
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+La transcripción ha comenzado. El archivo de salida es C:\InformeCliente\INSTALACION_BASE_DATOS.log
+Docker: C:\Users\lenovo´\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe
+Proyecto: C:\InformeCliente
+Validando Docker Compose y variables del proyecto...
+
+Volumenes existentes antes del arranque:
+informecliente_db_data
+informecliente_db_replica_data
+informecliente_formula_db_data
+informecliente_insightface_models
+informecliente_minio_data
+informecliente_ollama_data
+informecliente_redpanda_data
+Descargando PostgreSQL 15 y TimescaleDB compatibles...
+[+] pull 17/17
+ ✔ Image postgres:15                       Pulled                                                                 380.8s
+ ✔ Image timescale/timescaledb:latest-pg15 Pulled                                                                   3.0s
+Levantando db y formula_db sin eliminar volumenes existentes...
+[+] up 2/2
+ ✔ Container beemetry-db         Started                                                                            2.0s
+ ✔ Container beemetry-formula-db Started                                                                            2.0s
+Consultas de verificacion en sensors_db:
+ current_database | current_user |                                         version
+
+------------------+--------------+--------------------------------------------------------------------------------------
+----
+ sensors_db       | sensors      | PostgreSQL 15.18 on x86_64-pc-linux-musl, compiled by gcc (Alpine 14.2.0) 14.2.0, 64-
+bit
+(1 row)
+
+
+Consultas de verificacion en formula_db:
+
+
+Estado final:
+
+
+Las dos bases estan encendidas y aceptan consultas.
+Registro: C:\InformeCliente\INSTALACION_BASE_DATOS.log
+**********************
+Fin de la transcripción de Windows PowerShell
+Hora de finalización: 20260813160205
+**********************

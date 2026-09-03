@@ -68,8 +68,8 @@ T15 (EPP, Etapa 2)
 - [x] CA-4 parcial: rtmp:// rechazado; falta placeholder para error general.
 - [x] T5 — placeholder JPEG: JFIF 1×1 gris embebido como fallback + `SURVEILLANCE_OFFLINE_PLACEHOLDER` para imagen personalizable (implementado 2026-06-24).
 - [x] T6-T7-T17 — CRUD de cámaras (POST/PUT/DELETE) — implementado 2026-06-24.
-- [ ] T9-T10 — frontend grid.
-- [ ] T16 — timeout Python.
+- [ ] T9-T10 — frontend grid (grid/offline existen en `VideoDiagram.tsx` con datos reales, pero sin auto-refresh configurable ni timestamp explícito por cámara — no se marca por no cumplir la redacción literal de la tarea, ver auditoría 2026-08-30).
+- [x] T16 — timeout Python: contradicción interna del propio archivo corregida — la tabla de arriba y la nota "T5/T16 implementados 2026-06-24 v3" ya lo daban por hecho (`SURVEILLANCE_SNAPSHOT_TIMEOUT_S`, `timeout N python3 script.py`); solo este checklist quedó desactualizado.
 - [ ] T15 — integración EPP (Etapa 2).
 
 ---

@@ -4,6 +4,7 @@
 #include "cv_storage_pg.hpp"
 #include "cv_extraction_client.hpp"
 #include "image_analysis_client.hpp"
+#include "whatsapp_client.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
 #include "../auth/auth_session.hpp"
@@ -12,8 +13,10 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <iostream>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -192,6 +195,47 @@ const std::unordered_map<std::string, std::string> &allowedCvExtensions() {
   return kMap;
 }
 
+/** @brief Arma el resumen legible (correo + WhatsApp a RRHH) de un CV
+ * subido desde el widget web -- mismo criterio de campos que cvSummaryText
+ * (whatsapp_bot_engine.cpp) pero identificando al postulante por su sesión
+ * de la plataforma en vez de por número de WhatsApp, y con más campos de
+ * postulación (edad, años de experiencia, pretensión económica) porque acá
+ * SÍ hay espacio en el correo -- 2026-08-21: el score/evaluación IA es
+ * información solo para RRHH, nunca se le muestra al postulante (ver
+ * profile_preview más abajo, que deliberadamente no incluye score). */
+std::string webCvSummaryText(const std::string &filename, const std::string &tenantId,
+                             const std::string &username,
+                             const std::optional<support::CvCandidateProfile> &profile) {
+  std::ostringstream out;
+  out << "📥 Nueva postulación de CV (portal web)\n";
+  out << "Usuario de la plataforma: " << username << " (tenant " << tenantId << ")\n";
+  out << "Archivo: " << filename << "\n\n";
+  if (!profile.has_value()) {
+    out << "⚠️ No se pudo procesar automáticamente este CV con IA -- revisar el archivo "
+           "adjunto manualmente.";
+    return out.str();
+  }
+  const auto &p = *profile;
+  auto line = [&](const char *label, const std::string &v) {
+    if (!v.empty()) out << label << ": " << v << "\n";
+  };
+  line("Nombres", p.nombres);
+  line("Apellidos", p.apellidos);
+  line("Celular", p.celular);
+  line("WhatsApp", p.whatsapp);
+  if (p.edad) out << "Edad: " << *p.edad << "\n";
+  line("Lugar de residencia", p.lugarResidencia);
+  line("Cargo al que postula", p.cargoPostulado);
+  if (p.aniosExperiencia) out << "Años de experiencia: " << *p.aniosExperiencia << "\n";
+  line("Pretensiones económicas", p.pretensionesEconomicas);
+  line("Centro de estudios", p.centroEstudios);
+  if (p.score) out << "\nPuntuación IA (triaje 0-100): " << *p.score << "/100\n";
+  if (!p.scoreRationale.empty()) out << "Motivo: " << p.scoreRationale << "\n";
+  out << "\n_Puntaje generado por IA como apoyo de priorización -- revisa siempre el CV "
+         "original antes de decidir._";
+  return out.str();
+}
+
 // POST /api/support/cv/submit -- adjunta un CV (docx/pptx/pdf) desde el
 // widget de chat (flujo Recursos Humanos, ADR-129), reusando el mismo
 // pipeline que ya procesa los CV recibidos por WhatsApp (ADR-122): guarda el
@@ -256,6 +300,7 @@ handleSubmitWebCv(const http::request<http::string_body> &req,
   // función). El mismo criterio de "ninguna postulación se pierde en
   // silencio" que processCvSubmission (whatsapp_bot_engine.cpp).
   json::value profileJson = json::value(nullptr);
+  std::optional<support::CvCandidateProfile> profile;
   const auto textResult = support::extractCvTextFromAiEngine(fileBytes, safeFilename, extIt->second);
   support::updateCvSubmissionTextPg(cfg.gDatabaseUrl, submission.id,
                                     textResult.ok ? textResult.text : "",
@@ -267,28 +312,51 @@ handleSubmitWebCv(const http::request<http::string_body> &req,
       if (support::insertCvCandidateProfilePg(cfg.gDatabaseUrl, submission.id, fieldsResult.profile,
                                               profErr)) {
         support::updateCvSubmissionStatusPg(cfg.gDatabaseUrl, submission.id, "scored");
+        profile = fieldsResult.profile;
+        // El score de triaje IA es solo para RRHH (va en el correo/WhatsApp
+        // de notificación abajo) -- nunca se lo mostramos al postulante en
+        // la respuesta del widget.
         json::object p;
         p["cargo_postulado"] = fieldsResult.profile.cargoPostulado;
-        p["score"] = fieldsResult.profile.score.has_value() ? json::value(*fieldsResult.profile.score)
-                                                             : json::value(nullptr);
         profileJson = p;
       }
     }
   }
 
+  // Fan-out de notificación a RRHH -- correo (con adjunto) y WhatsApp, mismo
+  // criterio que processCvSubmission (whatsapp_bot_engine.cpp) para el CV
+  // recibido por WhatsApp: acá antes solo se mandaba el correo, nunca el
+  // WhatsApp (2026-08-21, reporte del usuario "no me llega nada al
+  // celular" -- el código simplemente no lo intentaba).
+  const std::string summary =
+      webCvSummaryText(safeFilename, session->tenantId, session->username, profile);
+  bool anyNotifyOk = false;
+
   if (!cfg.gHrCvEmailTo.empty()) {
     std::string emailDetail;
     const std::string subject = "Nueva postulación de CV (web) -- " + safeFilename;
-    const std::string bodyText = "Postulante autenticado en la plataforma (tenant " +
-                                 session->tenantId + ", usuario " + session->username +
-                                 ") adjuntó un CV vía el widget de soporte.\nArchivo: " +
-                                 safeFilename;
-    bool emailOk = mining_iot::sendEmailWithAttachment(cfg.gHrCvEmailTo, subject, bodyText,
+    bool emailOk = mining_iot::sendEmailWithAttachment(cfg.gHrCvEmailTo, subject, summary,
                                                        safeFilename, extIt->second, fileBytes,
                                                        emailDetail);
-    support::updateCvSubmissionStatusPg(cfg.gDatabaseUrl, submission.id,
-                                        emailOk ? "notified" : "notify_failed");
+    anyNotifyOk = anyNotifyOk || emailOk;
+    if (!emailOk) {
+      std::cerr << "[SUPPORT] correo de postulación de CV (web) falló (" << submission.id
+                << "): " << emailDetail << std::endl;
+    }
   }
+  if (!cfg.gWhatsappRrhhToE164.empty()) {
+    const auto *line = cfg.defaultWhatsappLine();
+    if (line != nullptr) {
+      const auto waResult = support::sendWhatsappTextMessage(*line, cfg.gWhatsappRrhhToE164, summary);
+      anyNotifyOk = anyNotifyOk || waResult.ok;
+      if (!waResult.ok) {
+        std::cerr << "[SUPPORT] WhatsApp de postulación de CV (web) falló (" << submission.id
+                  << "): status=" << waResult.httpStatus << " " << waResult.error << std::endl;
+      }
+    }
+  }
+  support::updateCvSubmissionStatusPg(cfg.gDatabaseUrl, submission.id,
+                                      anyNotifyOk ? "notified" : "notify_failed");
 
   return makeJsonResponse(http::status::created,
                           json::object{{"submission_id", submission.id},
@@ -501,7 +569,17 @@ handleListContactNumbers(const http::request<http::string_body> &req,
   if (!session) {
     return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
   }
-  if (!auth::hasPermission(session->userId, session->tenantId, session->role, "soporte.manage")) {
+  // Alternativa (ADR-115): igual que handleUpdateTicketStatus/handleSetContactNumber,
+  // un agente sin permiso global puede ver (no editar) SU PROPIO número de
+  // departamento con soporte.view, o operar sobre él con department == key.
+  // Hallazgo cerrado en esta misma pasada: antes solo soporte.manage podía
+  // listar, dejando a un agente de RRHH con department seteado sin forma de
+  // ver el número que handleSetContactNumber ya lo dejaba editar.
+  const bool hasGlobal =
+      auth::hasPermission(session->userId, session->tenantId, session->role, "soporte.manage") ||
+      auth::hasPermission(session->userId, session->tenantId, session->role, "soporte.view");
+  const auto dept = auth::effectiveDepartment(session->userId, session->tenantId);
+  if (!hasGlobal && !dept) {
     return makeJsonResponse(http::status::forbidden,
                             json::object{{"error", "forbidden"}, {"need", "soporte.manage"}});
   }
@@ -513,6 +591,9 @@ handleListContactNumbers(const http::request<http::string_body> &req,
   };
   json::array items;
   for (const auto &known : kKnown) {
+    if (!hasGlobal && (!dept || *dept != known.key)) {
+      continue;  // department-scoped sin permiso global: solo su propia fila
+    }
     const auto row = support::getContactNumberPg(cfg.gDatabaseUrl, known.key);
     if (row && !row->phoneE164.empty()) {
       items.push_back(contactNumberToJson(known.key, row->label.empty() ? known.label : row->label,

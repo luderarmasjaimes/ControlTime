@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { Image as ImageIcon, X, Check, AlertCircle, RefreshCw, Images } from 'lucide-react';
+import { Image as ImageIcon, X, Check, AlertCircle, RefreshCw, Images, MonitorPlay } from 'lucide-react';
 import CctvStreamVideo from '../../../Special/CctvStreamVideo';
 import { getSession, authHeaders as sharedAuthHeaders } from '../../../../auth/authStorage';
 import { TELEMETRY_DEFAULT_TENANT_ID } from '../../../../auth/telemetryTenant';
@@ -66,6 +66,17 @@ function ImageInsertModal({
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [selectedNetworkId, setSelectedNetworkId] = useState('');
   const [networkSnapshotBusy, setNetworkSnapshotBusy] = useState(false);
+
+  // Pestaña "Pantalla" -- captura de foto de la PC (getDisplayMedia), pedido
+  // explícito junto a la webcam ya existente arriba (pestaña "camera"): a
+  // diferencia de esa, requiere un clic explícito para compartir pantalla/
+  // ventana (el navegador no permite disparar el selector nativo solo con
+  // cambiar de pestaña, y tampoco conviene pedirlo sin que el usuario lo
+  // busque).
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [screenError, setScreenError] = useState<string | null>(null);
 
   // Estable ([] deps): detener el stream NO debe cambiar la identidad de este
   // callback, o el efecto de arranque de cámara se re-ejecutaría en bucle.
@@ -166,6 +177,54 @@ function ImageInsertModal({
       videoRef.current.srcObject = stream;
     }
   }, [stream]);
+
+  const stopScreenShare = useCallback(() => {
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current = null;
+    setScreenStream(null);
+  }, []);
+
+  const startScreenShare = useCallback(async () => {
+    setScreenError(null);
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setScreenError('Captura de pantalla no disponible en este navegador.');
+      return;
+    }
+    try {
+      const ms = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: false });
+      screenStreamRef.current = ms;
+      setScreenStream(ms);
+      if (screenVideoRef.current) screenVideoRef.current.srcObject = ms;
+      // Si el usuario detiene el compartir desde el control nativo del
+      // navegador (no desde nuestro botón "Detener"), el track termina solo.
+      ms.getVideoTracks()[0]?.addEventListener('ended', () => {
+        screenStreamRef.current = null;
+        setScreenStream(null);
+      });
+    } catch {
+      setScreenError('No se pudo iniciar la captura de pantalla (permiso denegado o cancelado).');
+    }
+  }, []);
+
+  const captureScreenPhoto = useCallback(() => {
+    const v = screenVideoRef.current;
+    if (!v || !v.videoWidth) return;
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+    c.getContext('2d')!.drawImage(v, 0, 0);
+    const dataUrl = c.toDataURL('image/png');
+    stopScreenShare();
+    onComplete(dataUrl);
+    onClose();
+  }, [onComplete, onClose, stopScreenShare]);
+
+  // Deja de compartir al salir de la pestaña o cerrar el modal -- mismo
+  // criterio que `stopStream` (webcam) al cambiar de pestaña.
+  useEffect(() => {
+    if (tab !== 'screen') stopScreenShare();
+  }, [tab, stopScreenShare]);
+  useEffect(() => () => stopScreenShare(), [stopScreenShare]);
 
   const loadNetworkCameras = useCallback(async () => {
     setNetworkError(null);
@@ -309,9 +368,9 @@ function ImageInsertModal({
         </div>
 
         <div className="flex gap-6 px-6 border-b border-slate-100">
-          {['file', 'gallery', 'camera', 'network'].map(t => (
+          {['file', 'gallery', 'camera', 'screen', 'network'].map(t => (
             <button key={t} onClick={() => setTab(t)} className={`py-3 text-sm font-bold border-b-2 transition-all ${tab === t ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
-              {t === 'file' ? 'Local' : t === 'gallery' ? 'Galería' : t === 'camera' ? 'Webcam' : 'Cámara Red'}
+              {t === 'file' ? 'Local' : t === 'gallery' ? 'Galería' : t === 'camera' ? 'Webcam' : t === 'screen' ? 'Pantalla' : 'Cámara Red'}
             </button>
           ))}
         </div>
@@ -395,6 +454,34 @@ function ImageInsertModal({
                  const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
                  c.getContext('2d')!.drawImage(v, 0, 0); onComplete(c.toDataURL('image/jpeg', 0.9)); onClose();
                }} disabled={!stream} className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-bold text-sm shadow-xl shadow-emerald-50 hover:bg-emerald-700 active:scale-[0.98] transition-all disabled:opacity-30">Capturar e Insertar</button>
+            </div>
+          )}
+
+          {tab === 'screen' && (
+            <div className="space-y-4 max-w-xl mx-auto">
+              {screenError && (
+                <div className="p-3 bg-amber-50 border border-amber-100 text-amber-800 text-sm rounded-2xl flex items-center gap-2">
+                  <AlertCircle size={16} className="text-amber-600 shrink-0" /> <span>{screenError}</span>
+                </div>
+              )}
+              <div className="aspect-video bg-slate-900 rounded-3xl overflow-hidden shadow-inner border border-slate-200 flex items-center justify-center">
+                {screenStream ? (
+                  <video ref={screenVideoRef} className="w-full h-full object-contain" autoPlay muted playsInline />
+                ) : (
+                  <div className="text-center px-6">
+                    <MonitorPlay size={40} className="text-slate-600 mb-3 mx-auto" />
+                    <p className="text-sm text-slate-400">Comparta una ventana, pestaña o pantalla completa para capturarla.</p>
+                  </div>
+                )}
+              </div>
+              {screenStream ? (
+                <div className="flex gap-2">
+                  <button onClick={stopScreenShare} className="flex-1 bg-slate-100 text-slate-600 py-4 rounded-2xl font-bold text-sm hover:bg-slate-200 transition-all">Detener</button>
+                  <button onClick={captureScreenPhoto} className="flex-1 bg-emerald-600 text-white py-4 rounded-2xl font-bold text-sm shadow-xl shadow-emerald-50 hover:bg-emerald-700 active:scale-[0.98] transition-all">Capturar e Insertar</button>
+                </div>
+              ) : (
+                <button onClick={startScreenShare} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold text-sm shadow-xl shadow-indigo-100 hover:bg-indigo-700 active:scale-[0.98] transition-all">Compartir pantalla/ventana</button>
+              )}
             </div>
           )}
 

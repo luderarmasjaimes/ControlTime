@@ -22,9 +22,12 @@ interface PermissionsData {
   role: string
   isAdmin: boolean
   permissions: Set<string>
+  /** db_scripts/72: true si el tenant ACTIVO de la sesión es `company_type='organization'`
+   * (Beemetry/TimeTelemetry). Gatea el panel de acceso cruzado en UserManagementView.tsx. */
+  isOrganizationTenant: boolean
 }
 
-const EMPTY: PermissionsData = { role: '', isAdmin: false, permissions: new Set() }
+const EMPTY: PermissionsData = { role: '', isAdmin: false, permissions: new Set(), isOrganizationTenant: false }
 
 interface CacheEntry {
   key: string
@@ -53,6 +56,7 @@ async function loadPermissions(key: string): Promise<PermissionsData> {
         role: typeof payload?.role === 'string' ? payload.role : '',
         isAdmin: payload?.is_admin === true,
         permissions: new Set(Array.isArray(payload?.permissions) ? payload.permissions : []),
+        isOrganizationTenant: payload?.is_organization_tenant === true,
       }
       cache = { key, data }
       listeners.forEach((notify) => notify())
@@ -79,6 +83,8 @@ export interface UsePermissionsResult {
   hasPermission: (code: string) => boolean
   /** true mientras se resuelve el primer fetch de la sesión/tenant activos — evita parpadeo de acciones antes de conocer el permiso real. */
   loading: boolean
+  /** db_scripts/72: true si el tenant activo es de organización (Beemetry/TimeTelemetry). */
+  isOrganizationTenant: boolean
 }
 
 export function usePermissions(): UsePermissionsResult {
@@ -127,5 +133,11 @@ export function usePermissions(): UsePermissionsResult {
     [data],
   )
 
-  return { role: data.role, isAdmin: data.isAdmin, hasPermission, loading }
+  return {
+    role: data.role,
+    isAdmin: data.isAdmin,
+    hasPermission,
+    loading,
+    isOrganizationTenant: data.isOrganizationTenant,
+  }
 }

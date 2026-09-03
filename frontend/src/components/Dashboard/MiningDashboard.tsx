@@ -2,6 +2,7 @@ import React, { memo, useState, useEffect, useMemo, useRef } from 'react'
 import ReactECharts from 'echarts-for-react'
 import MiningWorkbenchHeader from './MiningWorkbenchHeader'
 import { fetchWithAuthRetry } from '../../lib/fetchWithAuth'
+import { toTrustedHtml } from '../../lib/trustedHtml'
 
 import { log } from '../../lib/logger';
 
@@ -423,7 +424,7 @@ const MiningDashboard = () => {
 
     return (
         <div className="mining-dashboard-root box-border w-full max-w-full min-w-0 bg-[#020617] px-3 py-3 pb-12 text-slate-200 sm:px-4 sm:py-4">
-            <style dangerouslySetInnerHTML={{__html: `
+            <style dangerouslySetInnerHTML={{__html: toTrustedHtml(`
                 .mining-dashboard-root .premium-glass {
                     background: linear-gradient(145deg, rgba(30, 41, 59, 0.72), rgba(15, 23, 42, 0.96));
                     border: 1px solid rgba(148, 163, 184, 0.28);
@@ -442,7 +443,7 @@ const MiningDashboard = () => {
                 .mining-dashboard-root .glow-text-blue { text-shadow: 0 0 12px rgba(59, 130, 246, 0.45); }
                 .mining-dashboard-root .glow-text-emerald { text-shadow: 0 0 12px rgba(16, 185, 129, 0.45); }
                 .mining-dashboard-root .glow-text-rose { text-shadow: 0 0 12px rgba(244, 63, 94, 0.45); }
-            `}} />
+            `)}} />
 
             <MiningWorkbenchHeader
                 title="Centro de control operacional"

@@ -2,6 +2,7 @@
 #include "kpi_service.hpp"
 #include "sensor_service.hpp"
 #include "sensor_telemetry_wizard.hpp"
+#include "simulation_status_routes.hpp"
 #include "surveillance_service.hpp"
 #include "igp_seismic_client.hpp"
 #include "../config/app_config.hpp"
@@ -326,6 +327,7 @@ void registerRoutes(router::Router& r) {
   r.get("/api/mining/telemetry/summary", handleGetTelemetrySummary);
   r.get("/api/mining/telemetry/wizard/catalog", handleGetTelemetryWizardCatalog);
   r.get("/api/mining/telemetry/wizard/query", handleQueryTelemetrySeries);
+  r.get("/api/mining/simulation/live-status", handleGetSimulationLiveStatus);
 
   r.get("/api/surveillance/cameras", handleGetCameras);
   r.get("/api/surveillance/camera-snapshot", handleCameraSnapshot);

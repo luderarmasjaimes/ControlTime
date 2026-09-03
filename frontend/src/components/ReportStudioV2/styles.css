@@ -1694,15 +1694,20 @@ button:active {
   border: 1px solid;
 }
 
-/* Force high contrast in right inspector fields/buttons */
-.panel.right .input-group label {
+/* Force high contrast in right inspector fields/buttons
+   (selector era ".panel.right", una clase que no existe -- el contenedor
+   real usa "panel panel--right" -- por eso este bloque nunca se aplicaba y
+   el <select> de "Tipo de sensor" quedaba con texto claro sobre fondo claro,
+   heredando --text-main pensado para el panel oscuro). */
+.panel.panel--right .input-group label {
   color: #334155;
   font-weight: 700;
 }
 
-.panel.right .input-premium,
-.panel.right input[type='number'],
-.panel.right input.input-premium {
+.panel.panel--right .input-premium,
+.panel.panel--right select.input-premium,
+.panel.panel--right input[type='number'],
+.panel.panel--right input.input-premium {
   background: #ffffff !important;
   color: #0f172a !important;
   border: 1.5px solid #cbd5e1 !important;
@@ -1710,16 +1715,21 @@ button:active {
   appearance: textfield;
 }
 
-.panel.right .input-premium:focus,
-.panel.right input[type='number']:focus,
-.panel.right input.input-premium:focus {
+.panel.panel--right select.input-premium option {
+  color: #0f172a;
+  background: #ffffff;
+}
+
+.panel.panel--right .input-premium:focus,
+.panel.panel--right input[type='number']:focus,
+.panel.panel--right input.input-premium:focus {
   background: #ffffff !important;
   color: #0f172a !important;
   border-color: #6366f1 !important;
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14) !important;
 }
 
-.panel.right .btn-premium-outline {
+.panel.panel--right .btn-premium-outline {
   background: #f8fafc;
   color: #1e293b;
   border-color: #cbd5e1;
@@ -3762,6 +3772,53 @@ button:active {
 }
 .pdf-pw-copy-btn:hover { background: #334155; }
 
+.pdf-pw-qr-block {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #050810;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.pdf-pw-qr-img {
+  border-radius: 6px;
+  background: #fff;
+  padding: 4px;
+  flex-shrink: 0;
+}
+
+.pdf-pw-qr-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pdf-pw-qr-text p {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: #94a3b8;
+}
+
+.pdf-pw-qr-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+}
+.pdf-pw-qr-download-btn:hover { background: #334155; }
+
 .pdf-pw-done-btn {
   width: 100%;
   padding: 9px;
@@ -3939,6 +3996,40 @@ button:active {
    valor computado del propio <video>. El bloque sigue arrastrándose por el
    marco/borde -- solo el reproductor en sí queda perforado. */
 .report-canvas-html-shield video {
+  pointer-events: auto !important;
+}
+
+/* Gráfico de sensores (SensorMultiChartWidget.tsx): mismo problema que la
+   tabla y el video de arriba -- la leyenda lateral (clic para aislar un
+   sensor, scroll de la lista) y los botones de pantalla completa/descargar
+   PNG llevan pointer-events:auto inline, pero el !important de arriba lo
+   anula igual (confirmado en vivo: `.click()` programático "funcionaba" en
+   las pruebas porque eso ignora pointer-events por completo, pero un clic
+   real de mouse nunca llegaba al botón -- pasaba de largo hacia el Rect de
+   Konva debajo, que lo interpretaba como arrastre del bloque). El área del
+   gráfico ECharts en sí NO se perfora acá a propósito: debe seguir en
+   pointer-events:none para que el bloque se pueda arrastrar/seleccionar por
+   ahí (ver comentario en SensorMultiChartWidget.tsx sobre por qué). */
+.report-canvas-html-shield .sensor-widget-controls,
+.report-canvas-html-shield .sensor-widget-controls * {
+  pointer-events: auto !important;
+}
+
+/* Tipo "Mapa" (SensorGeoMapPanel.tsx, Leaflet): a diferencia del área de
+   ECharts (deliberadamente sin puntero para poder arrastrar el bloque
+   desde ahí), un mapa sin pan/zoom no sirve de nada -- mismo criterio que
+   el <video> de arriba: se perfora el área completa del mapa, el bloque
+   sigue siendo arrastrable desde su borde/marco. */
+.report-canvas-html-shield .sensor-geomap-interactive,
+.report-canvas-html-shield .sensor-geomap-interactive * {
+  pointer-events: auto !important;
+}
+
+/* Tipo "Superficie" (SensorSurface3DPanel.tsx, Three.js/OrbitControls):
+   mismo criterio que el mapa de arriba -- una malla 3D sin poder rotar/
+   hacer zoom con el mouse no cumple su propósito. */
+.report-canvas-html-shield .sensor-surface3d-interactive,
+.report-canvas-html-shield .sensor-surface3d-interactive * {
   pointer-events: auto !important;
 }
 
@@ -4331,6 +4422,22 @@ button:active {
   .ro-overlay     { position: static !important; background: white !important; }
   .ro-content     { overflow: visible !important; padding: 0 !important; }
   .ro-page-canvas { box-shadow: none !important; }
+  .ro-pages       { gap: 0 !important; display: block !important; }
+  .ro-page-wrapper {
+    display: block !important;
+    gap: 0 !important;
+    break-after: page;
+    page-break-after: always;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .ro-page-wrapper:last-child { break-after: auto; page-break-after: auto; }
+  .ro-page-label { display: none !important; }
+  .ro-page-canvas {
+    border-radius: 0 !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
   .ro-meta        { display: none !important; }
 }
 

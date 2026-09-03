@@ -51,10 +51,14 @@ handleMyPermissions(const http::request<http::string_body>& req,
     json::array arr;
     for (const auto& p : perms) arr.push_back(json::string(p));
     // admin: además del set explícito, marcar el flag para el cliente.
+    // is_organization_tenant (db_scripts/72): el frontend lo usa para decidir
+    // si muestra el panel de acceso cruzado (UserManagementView.tsx) -- solo
+    // tiene sentido para personal cuyo tenant activo es Beemetry/TimeTelemetry.
     return makeJsonResponse(http::status::ok,
         json::object{{"role", role},
                      {"tenant_id", session->tenantId},
                      {"is_admin", role == "admin"},
+                     {"is_organization_tenant", auth::isOrganizationTenant(session->tenantId)},
                      {"permissions", arr}});
 }
 

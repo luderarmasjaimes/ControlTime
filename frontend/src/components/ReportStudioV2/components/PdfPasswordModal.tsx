@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { KeyRound, Copy, Check, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { KeyRound, Copy, Check, X, Download } from 'lucide-react';
+import QRCode from 'qrcode';
 
 interface PdfPasswordModalProps {
   password: string;
@@ -10,9 +11,25 @@ interface PdfPasswordModalProps {
  * ADR-080: muestra UNA sola vez la contraseña con la que quedó cifrado el
  * PDF recién descargado (el servidor no la persiste — si se cierra este
  * modal sin copiarla, hay que volver a exportar para obtener una nueva).
+ *
+ * El QR es puramente client-side (codifica el mismo texto que ya viaja en
+ * X-Pdf-Password) — ningún lector de PDF estándar soporta "abrir sin pedir
+ * contraseña" vía QR/enlace, así que esto no reemplaza el diálogo de
+ * contraseña del lector: solo evita transcribir a mano una contraseña
+ * aleatoria al escanearla desde otro dispositivo (p.ej. el celular donde
+ * llegó el correo o WhatsApp con el PDF adjunto).
  */
 function PdfPasswordModal({ password, onClose }: PdfPasswordModalProps) {
   const [copied, setCopied] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL(password, { width: 208, margin: 1 })
+      .then((url) => { if (!cancelled) setQrDataUrl(url); })
+      .catch(() => { /* si falla la generación, la contraseña en texto sigue disponible */ });
+    return () => { cancelled = true; };
+  }, [password]);
 
   const handleCopy = async () => {
     try {
@@ -23,6 +40,14 @@ function PdfPasswordModal({ password, onClose }: PdfPasswordModalProps) {
       // Portapapeles no disponible (permiso denegado, contexto no seguro):
       // la contraseña sigue visible en pantalla para copiarla a mano.
     }
+  };
+
+  const handleDownloadQr = () => {
+    if (!qrDataUrl) return;
+    const a = document.createElement('a');
+    a.href = qrDataUrl;
+    a.download = 'clave-pdf-qr.png';
+    a.click();
   };
 
   return (
@@ -47,6 +72,21 @@ function PdfPasswordModal({ password, onClose }: PdfPasswordModalProps) {
             {copied ? 'Copiada' : 'Copiar'}
           </button>
         </div>
+        {qrDataUrl && (
+          <div className="pdf-pw-qr-block">
+            <img src={qrDataUrl} alt="QR con la contraseña del PDF" className="pdf-pw-qr-img" width={104} height={104} />
+            <div className="pdf-pw-qr-text">
+              <p>
+                Escaneá este QR desde el celular para copiar la contraseña sin transcribirla
+                a mano — útil al abrir el PDF adjunto desde el correo o WhatsApp. El lector de
+                PDF va a seguir pidiendo la contraseña igual; el QR solo evita tipearla.
+              </p>
+              <button className="pdf-pw-qr-download-btn" onClick={handleDownloadQr} title="Descargar QR como imagen">
+                <Download size={13} /> Descargar QR
+              </button>
+            </div>
+          </div>
+        )}
         <button className="pdf-pw-done-btn" onClick={onClose}>Entendido</button>
       </div>
     </div>

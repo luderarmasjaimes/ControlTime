@@ -3,6 +3,8 @@ import {
   createReport,
   updateReport,
   deleteReport as deleteReportApi,
+  shareReport,
+  type ShareReportChannelResult,
 } from './api';
 
 import { log } from '../../../lib/logger';
@@ -21,6 +23,9 @@ function normalizeReport(r: any = {}): any {
     reviewedBy: r.reviewedBy || r.reviewed_by || '',
     reviewedByName: r.reviewedByName || r.reviewed_by_name || '',
     versionNumber: r.versionNumber || r.version_number || 1,
+    pageCount: r.pageCount ?? r.page_count ?? 0,
+    // 'document' (Word) o 'presentation' (PowerPoint) -- ver DocumentMeta.layoutMode.
+    layoutMode: r.layoutMode || r.layout_mode || 'document',
   };
 }
 
@@ -87,6 +92,15 @@ export async function listReportsAsync({
     }
     if (status && status !== 'all') {
       all = all.filter((r) => r.status === status);
+    }
+    // ANTES: createdBy/reviewedBy se aceptaban como parámetro pero nunca se
+    // aplicaban -- los selectores "Generado por"/"Revisado por" de
+    // ReportsAdminModal.tsx no filtraban nada en la práctica.
+    if (createdBy && createdBy !== 'all') {
+      all = all.filter((r) => r.createdByName === createdBy);
+    }
+    if (reviewedBy && reviewedBy !== 'all') {
+      all = all.filter((r) => r.reviewedByName === reviewedBy);
     }
     if (title) {
       const q = title.toLowerCase();
@@ -176,17 +190,44 @@ export async function getReportAsync(id: string): Promise<any | null> {
     return reports.find(r => r.id === id) || null;
 }
 
-export async function shareReportAsync(id: string, { toUsername, message }: { toUsername?: string; message?: string }): Promise<boolean> {
-  // Mock background share for now
-  log.debug('Sharing report', id, 'with', toUsername, ':', message);
-  await new Promise(resolve => setTimeout(resolve, 600));
-  return true;
+export interface ShareReportOutcome {
+  ok: boolean;
+  recipientName?: string;
+  channels: ShareReportChannelResult[];
+  error?: string;
 }
 
-// Mock placeholder for users (to be replaced by /api/auth/users later)
-export function getReportFilterUsers(company?: string) {
+/** Envía el informe a otro usuario de la empresa (POST /api/reports/{id}/share
+ * real -- antes esto era un mock que ni siquiera llamaba al backend). */
+export async function shareReportAsync(
+  id: string,
+  { toUserId, message }: { toUserId: string; message?: string },
+): Promise<ShareReportOutcome> {
+  const result = await shareReport(id, { toUserId, message });
+  if (result.status === 'error') {
+    log.error('Error sharing report:', result.error);
+    return { ok: false, channels: [], error: result.error };
+  }
+  return { ok: true, recipientName: result.recipientName, channels: result.channels };
+}
+
+/** Opciones de filtro "Generado por"/"Revisado por" derivadas de los informes
+ * ya cargados en la página actual (sin pedir un catálogo aparte) — antes era
+ * un placeholder fijo con una sola opción "Todos". */
+export function getReportFilterUsers(reports: any[] = []) {
+  const byName = (field: 'createdByName' | 'reviewedByName') => {
+    const seen = new Map<string, string>();
+    for (const r of reports) {
+      const name = r?.[field];
+      if (name && !seen.has(name)) seen.set(name, name);
+    }
+    return [
+      { value: 'all', label: 'Todos' },
+      ...Array.from(seen.keys()).sort().map((name) => ({ value: name, label: name })),
+    ];
+  };
   return {
-    createdByOptions: [{ value: 'all', label: 'Todos' }],
-    reviewedByOptions: [{ value: 'all', label: 'Todos' }],
+    createdByOptions: byName('createdByName'),
+    reviewedByOptions: byName('reviewedByName'),
   };
 }

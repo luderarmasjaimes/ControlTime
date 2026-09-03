@@ -246,6 +246,55 @@ WHERE e.nombre = $1
 );
 )SQL",
       {normalized.c_str()});
+
+  // ADR-131: dual-write hacia el modelo consolidado, mismo patrón que
+  // telemetry_ingest.cpp (upsert de dimensiones + INSERT en la hypertable
+  // de hechos), acotado a la empresa recién sembrada. mineria_empresas no
+  // trae tenant_id real en este flujo (se resuelve más tarde por
+  // 28_mining_telemetry_uuid_tenant.sql o queda como placeholder solo con
+  // legacy_mineria_empresa_id) -- dim_tenant lo soporta (CHECK exige al
+  // menos uno de los dos, no ambos).
+  (void)execParams(
+      "INSERT INTO dim_tenant (legacy_mineria_empresa_id, display_name) "
+      "SELECT e.id, e.nombre FROM mineria_empresas e WHERE e.nombre = $1 "
+      "ON CONFLICT (legacy_mineria_empresa_id) DO NOTHING",
+      {normalized.c_str()});
+
+  (void)execParams(
+      "INSERT INTO dim_site (legacy_mineria_mina_id, tenant_id_sk, display_name) "
+      "SELECT m.id, dt.tenant_id_sk, m.nombre "
+      "FROM mineria_minas m JOIN mineria_empresas e ON e.id = m.empresa_id "
+      "JOIN dim_tenant dt ON dt.legacy_mineria_empresa_id = e.id "
+      "WHERE e.nombre = $1 "
+      "ON CONFLICT (legacy_mineria_mina_id) DO NOTHING",
+      {normalized.c_str()});
+
+  (void)execParams(
+      "INSERT INTO dim_sensor (source_system, legacy_mineria_sensor_id, tenant_id_sk, "
+      "site_id_sk, sensor_code, sensor_type, unit, is_active) "
+      "SELECT 'formula', ms.id, dt.tenant_id_sk, dsi.site_id_sk, ms.codigo, v.tipo, v.unidad, ms.activo "
+      "FROM mineria_sensores ms "
+      "JOIN mineria_empresas e ON e.id = ms.empresa_id "
+      "JOIN mineria_variables v ON v.id = ms.variable_id "
+      "JOIN dim_tenant dt ON dt.legacy_mineria_empresa_id = e.id "
+      "LEFT JOIN dim_site dsi ON dsi.legacy_mineria_mina_id = ms.mina_id "
+      "WHERE e.nombre = $1 "
+      "ON CONFLICT (legacy_mineria_sensor_id) DO NOTHING",
+      {normalized.c_str()});
+
+  (void)execParams(
+      R"SQL(
+INSERT INTO telemetry_fact_formula (tenant_id_sk, sensor_id_sk, channel_id, captured_at, value_numeric, quality_code)
+SELECT ds.tenant_id_sk, ds.sensor_id_sk, 0, l.timestamp_lectura, l.valor::real, l.calidad
+FROM mineria_lecturas l
+JOIN mineria_sensores ms ON ms.empresa_id = l.empresa_id AND ms.mina_id = l.mina_id AND ms.variable_id = l.variable_id
+JOIN mineria_empresas e ON e.id = l.empresa_id
+JOIN dim_sensor ds ON ds.legacy_mineria_sensor_id = ms.id
+WHERE e.nombre = $1
+ON CONFLICT (sensor_id_sk, channel_id, captured_at) DO NOTHING;
+)SQL",
+      {normalized.c_str()});
+
   if (!ensureFormulaCatalogViewPg(conn)) {
     return false;
   }

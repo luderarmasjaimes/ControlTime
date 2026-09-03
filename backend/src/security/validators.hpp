@@ -68,6 +68,35 @@ public:
   }
 
   /**
+   * @brief Valida un campo de nombre libre (first_name, last_name, company de
+   *        registro): longitud acotada y sin los caracteres que habilitan
+   *        inyección HTML/script (`<`, `>`) ni control chars.
+   *
+   * Hallazgo de un ejercicio de red-team real (2026-08-26): la API aceptaba
+   * `<img src=x onerror=...>` / `"><script>...` sin ningún rechazo en estos
+   * campos. El panel de administración (React) los escapa al renderizar, así
+   * que no había XSS explotable hoy -- pero validar en el borde es defensa en
+   * profundidad barata ante cualquier futura vista que renderice estos campos
+   * sin ese mismo cuidado (export a PDF/CSV, un nuevo panel, etc.), y evita
+   * que nombres con marcado HTML lleguen a quedar guardados en la BD/auditoría.
+   * No se prohíbe `'`/acentos: son parte normal de nombres reales (O'Higgins,
+   * Muñoz, José María).
+   *
+   * @param s Cadena candidata.
+   * @param maxLen Longitud máxima permitida (ver config::auth::kDisplayNameMaxLength).
+   * @return true si no está vacía, no excede maxLen y no contiene '<', '>' ni
+   *         caracteres de control.
+   */
+  static bool isValidDisplayName(
+      const std::string& s,
+      std::size_t maxLen = config::auth::kDisplayNameMaxLength) noexcept {
+    if (s.empty() || s.size() > maxLen) return false;
+    return std::none_of(s.begin(), s.end(), [](unsigned char c) {
+      return c == '<' || c == '>' || (c < 0x20 && c != '\t');
+    });
+  }
+
+  /**
    * @brief Valida un DNI peruano: exactamente 8 dígitos.
    * @param dni Cadena candidata.
    * @return true si son 8 dígitos.

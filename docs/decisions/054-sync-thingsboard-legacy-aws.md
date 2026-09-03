@@ -1,5 +1,26 @@
 # ADR-054 — Sync ThingsBoard (legacy, hoy en AWS) → plataforma propia
 
+**Actualización 2026-08-30**: a diferencia de lo que documentaba la
+actualización del 2026-08-28 ("no se dejó corriendo sync activo contra
+producción"), verificado hoy que **sí hay un sync persistente activo**:
+`etl_sync_peer` tiene una sola fila con `is_active=true`, apuntando a
+`https://board.beemetry.com`, y el contenedor `tb-sync-prod6h` está
+corriendo contra ese peer, procesando telemetría real en tiempo real — se
+confirmó en sus logs que el filtro `isSaneCapturedAt()` (fix de esta misma
+sesión, ver actualización del 2026-08-25 arriba) está descartando
+correctamente timestamps corruptos en producción, no solo en la prueba
+acotada de un sensor. Según lo indica el developer, este es un entorno que
+se describe como **"réplica exacta de producción"** — se usa hoy para
+pruebas y automatizaciones, y el cambio a la credencial de producción real
+del cliente queda para el momento de la puesta en producción. **No se
+verificó de forma independiente en esta pasada si `board.beemetry.com` es
+el ThingsBoard real del cliente o una instancia gestionada por
+Beemetry** — esta distinción importa para el criterio de cierre de este
+ADR ("validación contra entorno/credenciales reales del cliente") y queda
+como pregunta abierta, no resuelta unilateralmente. Lo que sí es evidencia
+verificada de forma independiente: el sync está activo, corriendo con datos
+reales, y el fix de timestamps corruptos funciona en ese entorno.
+
 **Actualización 2026-08-25**: primer acceso real (VPN ZeroTier) a la BD Postgres
 del ThingsBoard de producción del cliente (antes solo se había probado contra
 una instancia local aislada, ver "Status" abajo — sin acceso al AWS real en esa

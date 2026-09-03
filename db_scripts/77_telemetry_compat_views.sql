@@ -1,0 +1,84 @@
+-- ============================================================================
+-- 77_telemetry_compat_views.sql
+-- ADR-131: vistas de compatibilidad de solo lectura que exponen el layout de
+-- columnas legacy (telemetry_raw / mineria_lecturas / mining_sensor_history)
+-- sobre las tablas de hechos consolidadas, para las ~12 rutas de backend que
+-- HOY leen las tablas viejas directamente (sensor_service.cpp, kpi_service.cpp,
+-- sensor_telemetry_wizard.cpp, device_alarm_routes.cpp, platform_routes.cpp,
+-- mining_gateway.hpp, etc.) sin necesitar un deploy de C++ el mismo dia del
+-- cutover de escritura.
+--
+-- *** NO EJECUTAR TODAVIA ***
+-- Este script queda preparado pero DELIBERADAMENTE NO SE APLICA en esta
+-- sesion. Depende de la Fase D del plan (ADR-131): recien tiene sentido
+-- ejecutarlo DESPUES de que:
+--   1. El backend tenga el dual-write desplegado (Fase 6, telemetry_ingest.cpp
+--      escribiendo tambien en telemetry_fact) -- cambio de codigo C++ fuera
+--      de alcance de esta sesion.
+--   2. El backfill (78_telemetry_fact_backfill.sql) este al dia (watermark
+--      cerca de NOW()).
+--   3. Se verifique paridad de conteos entre las tablas viejas y las nuevas
+--      en una ventana reciente.
+-- Ejecutarlo ANTES de eso no aporta nada (las tablas originales siguen
+-- existiendo y siendo la fuente real mientras el backend no fue migrado) y
+-- el RENAME de abajo interrumpiria la escritura del backend actual, que
+-- todavia hace INSERT directo sobre telemetry_raw/mineria_lecturas.
+--
+-- Verificado antes de escribir este script (mismo criterio que 32/35): 0 FK
+-- externos apuntan a telemetry_raw/mineria_lecturas/mining_sensor_history
+-- salvo entre si mismas (mineria_sensores/mining_sensors no referencian sus
+-- tablas de lecturas), asi que el RENAME no rompe integridad referencial de
+-- otras tablas.
+--
+-- Sin trigger INSTEAD OF INSERT: las 2 rutas que escriben (telemetry_ingest.cpp,
+-- formula_service.cpp) se migran por codigo directo (Fase A/6), no por vista
+-- -- un trigger por fila seria contraproducente justo en la ruta de 25k/s.
+-- ============================================================================
+
+-- Paso 1: renombrar las tablas originales (quedan como respaldo de solo
+-- lectura, mismo patron que mining_sensor_history_old en 35_adr006...sql).
+-- ALTER TABLE telemetry_raw RENAME TO telemetry_raw_legacy;
+-- ALTER TABLE mineria_lecturas RENAME TO mineria_lecturas_legacy;
+-- ALTER TABLE mining_sensor_history RENAME TO mining_sensor_history_legacy;
+
+-- Paso 2: vistas con el nombre y layout de columnas originales, resueltas
+-- contra las tablas de hechos consolidadas + dimensiones.
+-- CREATE VIEW telemetry_raw AS
+-- SELECT
+--     row_number() OVER (ORDER BY tf.captured_at) AS telemetry_id,  -- NO estable entre corridas; solo para SELECTs, no PK real
+--     dt.tenant_id, dsi.site_id, NULL::uuid AS asset_id, ds.sensor_id,
+--     tf.captured_at, tf.captured_at AS ingested_at,
+--     tf.value_numeric::double precision AS value_numeric,
+--     tfd.value_text, tf.quality_code, tfd.raw_payload,
+--     COALESCE(tfd.tags, '{}'::jsonb) AS tags
+-- FROM telemetry_fact tf
+-- JOIN dim_sensor ds ON ds.sensor_id_sk = tf.sensor_id_sk
+-- JOIN dim_tenant dt ON dt.tenant_id_sk = tf.tenant_id_sk
+-- LEFT JOIN dim_site dsi ON dsi.site_id_sk = ds.site_id_sk
+-- LEFT JOIN telemetry_fact_detail tfd
+--     ON tfd.sensor_id_sk = tf.sensor_id_sk AND tfd.channel_id = tf.channel_id AND tfd.captured_at = tf.captured_at
+-- WHERE tf.channel_id = 0;
+--
+-- CREATE VIEW mineria_lecturas AS
+-- SELECT
+--     row_number() OVER (ORDER BY tff.captured_at) AS id,
+--     dt.legacy_mineria_empresa_id AS empresa_id, dsi.legacy_mineria_mina_id AS mina_id,
+--     ms.variable_id, tff.captured_at AS timestamp_lectura,
+--     tff.value_numeric::decimal(12,4) AS valor, tff.quality_code AS calidad, tff.captured_at AS created_at
+-- FROM telemetry_fact_formula tff
+-- JOIN dim_sensor ds ON ds.sensor_id_sk = tff.sensor_id_sk
+-- JOIN mineria_sensores ms ON ms.id = ds.legacy_mineria_sensor_id
+-- JOIN dim_tenant dt ON dt.tenant_id_sk = tff.tenant_id_sk
+-- LEFT JOIN dim_site dsi ON dsi.site_id_sk = ds.site_id_sk;
+--
+-- CREATE VIEW mining_sensor_history AS
+-- SELECT
+--     row_number() OVER (ORDER BY tfdm.captured_at) AS id,
+--     ds.legacy_mining_sensor_id AS sensor_id,
+--     tfdm.value_numeric::numeric AS value, tfdm.captured_at AS "timestamp"
+-- FROM telemetry_fact_demo tfdm
+-- JOIN dim_sensor ds ON ds.sensor_id_sk = tfdm.sensor_id_sk;
+
+-- Este archivo queda comentado por diseno hasta la Fase D. Cuando el backend
+-- ya tenga dual-write + paridad verificada, descomentar y aplicar tal cual.
+SELECT 1; -- no-op: mantiene el script valido para el runner de migraciones sin ejecutar el cutover todavia

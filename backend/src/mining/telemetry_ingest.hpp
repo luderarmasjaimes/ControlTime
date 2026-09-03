@@ -29,6 +29,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -118,6 +119,22 @@ public:
     Stats stats() const;
     bool running() const { return running_.load(); }
 
+    // Motor de alarmas en tiempo real (ADR-140, actualización 2026-09-02):
+    // llamado desde copyBatch() apenas un lote queda COMMIT-eado (durable en
+    // telemetry_raw/telemetry_fact), con el lote completo -- así el
+    // evaluador de alarmas puede reaccionar al valor recién ingresado sin
+    // esperar el ciclo de polling de 10s ni volver a leer la BD para el
+    // valor actual (ya lo tiene en memoria). Debe llamarse ANTES de start()
+    // (mismo criterio que configureKafka()) — este ingestor no sabe nada de
+    // alarmas, solo invoca lo que le hayan registrado. Se ejecuta EN el
+    // hilo de flush/consumo (flushLoop/consumerLoop), nunca en el hot path
+    // de la request HTTP -- por eso debe ser barato en el caso común (sin
+    // disparo) y nunca debe lanzar: copyBatch() lo envuelve en try/catch
+    // para que un bug en el callback jamás tumbe la ingesta.
+    void setOnBatchCommitted(std::function<void(const std::vector<TelemetryRow>&)> cb) {
+        on_batch_committed_ = std::move(cb);
+    }
+
 private:
     TelemetryIngestor() = default;
     ~TelemetryIngestor();
@@ -164,6 +181,8 @@ private:
     std::atomic<bool> running_{false};
 
     void* conn_{nullptr};  // PGconn* opaco (evita incluir libpq en el header)
+
+    std::function<void(const std::vector<TelemetryRow>&)> on_batch_committed_;
 
     // Métricas
     std::atomic<std::uint64_t> m_received_{0};

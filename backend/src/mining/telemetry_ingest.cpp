@@ -542,6 +542,52 @@ bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch,
         }
         if (merge) PQclear(merge);
     }
+    // ADR-131: dual-write hacia el modelo consolidado (telemetry_fact) en la
+    // MISMA transacción que el INSERT de arriba — o ambas tablas quedan
+    // consistentes, o ninguna (el ROLLBACK de abajo cubre las dos). Mantiene
+    // dim_tenant/dim_sensor al día para cualquier tenant/sensor nuevo que
+    // llegue en el lote sin haber pasado por el backfill manual
+    // (78_telemetry_fact_backfill.sql) — join contra tenants/sensors (fuente
+    // real), no contra telemetry_ingest_stage, para capturar nombre/tipo
+    // reales en vez de un placeholder.
+    if (ok) {
+        PGresult* dimTenant = PQexec(c,
+            "INSERT INTO dim_tenant (tenant_id, display_name) "
+            "SELECT DISTINCT t.tenant_id, t.tenant_name "
+            "FROM telemetry_ingest_stage s "
+            "JOIN tenants t ON t.tenant_id = s.tenant_id "
+            "WHERE NOT EXISTS (SELECT 1 FROM dim_tenant dt WHERE dt.tenant_id = s.tenant_id) "
+            "ON CONFLICT (tenant_id) DO NOTHING");
+        if (!dimTenant || PQresultStatus(dimTenant) != PGRES_COMMAND_OK) ok = false;
+        if (dimTenant) PQclear(dimTenant);
+    }
+    if (ok) {
+        PGresult* dimSensor = PQexec(c,
+            "INSERT INTO dim_sensor (source_system, sensor_id, tenant_id_sk, "
+            "site_id_sk, sensor_code, sensor_type, unit, is_active) "
+            "SELECT DISTINCT 'iot_v2', sn.sensor_id, dt.tenant_id_sk, dsi.site_id_sk, "
+            "sn.sensor_code, sn.sensor_type, sn.unit, sn.is_active "
+            "FROM telemetry_ingest_stage s "
+            "JOIN sensors sn ON sn.sensor_id = s.sensor_id "
+            "JOIN dim_tenant dt ON dt.tenant_id = sn.tenant_id "
+            "LEFT JOIN dim_site dsi ON dsi.site_id = sn.site_id "
+            "WHERE NOT EXISTS (SELECT 1 FROM dim_sensor ds WHERE ds.sensor_id = sn.sensor_id) "
+            "ON CONFLICT (sensor_id) DO NOTHING");
+        if (!dimSensor || PQresultStatus(dimSensor) != PGRES_COMMAND_OK) ok = false;
+        if (dimSensor) PQclear(dimSensor);
+    }
+    if (ok) {
+        PGresult* factMerge = PQexec(c,
+            "INSERT INTO telemetry_fact (tenant_id_sk, sensor_id_sk, channel_id, "
+            "captured_at, value_numeric, quality_code, kafka_partition, kafka_offset) "
+            "SELECT ds.tenant_id_sk, ds.sensor_id_sk, 0, s.captured_at, "
+            "s.value_numeric::real, s.quality_code, s.kafka_partition, s.kafka_offset "
+            "FROM telemetry_ingest_stage s "
+            "JOIN dim_sensor ds ON ds.sensor_id = s.sensor_id "
+            "ON CONFLICT (sensor_id_sk, channel_id, captured_at) DO NOTHING");
+        if (!factMerge || PQresultStatus(factMerge) != PGRES_COMMAND_OK) ok = false;
+        if (factMerge) PQclear(factMerge);
+    }
     if (ok) {
         PGresult* commit = PQexec(c, "COMMIT");
         ok = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
@@ -551,6 +597,22 @@ bool TelemetryIngestor::copyBatch(const std::vector<TelemetryRow>& batch,
         m_inserted_.fetch_add(inserted, std::memory_order_relaxed);
         m_deduplicated_.fetch_add(batch.size() - inserted,
                                   std::memory_order_relaxed);
+        // ADR-140: motor de alarmas en tiempo real. `batch` ya está COMMIT-
+        // eado (durable) en este punto -- evaluar contra un lote que todavía
+        // pudiera hacer ROLLBACK produciría alarmas fantasma. Nunca debe
+        // poder tumbar la ingesta: cualquier excepción se registra y se
+        // descarta, el hilo de flush/consumo sigue con el próximo lote.
+        if (on_batch_committed_) {
+            try {
+                on_batch_committed_(batch);
+            } catch (const std::exception& e) {
+                std::cerr << "[TELEMETRY] on_batch_committed_ (alarmas tiempo real) "
+                             "lanzó excepción, ignorada: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "[TELEMETRY] on_batch_committed_ (alarmas tiempo real) "
+                             "lanzó excepción no-std, ignorada" << std::endl;
+            }
+        }
     } else {
         PGresult* rollback = PQexec(c, "ROLLBACK");
         if (rollback) PQclear(rollback);

@@ -1,5 +1,58 @@
 # ADR-034 — Core C++ como plataforma IoT propia (reemplazo de ThingsBoard)
 
+**Actualización 2026-09-02 (reconciliación con SPEC-016, ver `README.md` y
+ADR-016-1..5)**: SPEC-016 ("Alertas y umbrales por sensor") describía un
+diseño específico para el motor de alarmas — evaluación embebida en el
+consumidor Kafka, cache LRU de reglas, condiciones `above_max`/`below_min`/
+`rate`, debounce por ventana de tiempo, canal SSE dedicado
+(`GET /api/live/alerts`) — que nunca se construyó tal cual. Lo que este ADR
+ya documenta abajo ("Motor de alarmas event-driven") es la implementación
+REAL, con una arquitectura distinta pero que cubre la misma necesidad de
+negocio. Diferencias explícitas entre lo que SPEC-016 pedía y lo que existe:
+
+- **Evaluación**: SPEC-016 pedía embeberla en el consumidor Kafka de
+  telemetría. La real es un **hilo de fondo separado** (`AlarmEngine`) que
+  hace polling cada `BEEMETRY_ALARM_EVAL_INTERVAL_MS` (default 10s) —
+  decisión deliberada para no cargar `telemetry_ingest.cpp::copyBatch()`
+  (que debe seguir optimizado para 10K/seg) con lógica de reglas.
+- **Push en tiempo real**: SPEC-016 pedía SSE (`GET /api/live/alerts`). La
+  plataforma ya tiene un mecanismo de push equivalente vía **WebSocket**
+  (`WsRegistry::broadcastToTenant`, `alarm_notifier.cpp`,
+  `frontend/.../alarmStream.ts`) — no existe (ni se agregó) un canal SSE
+  paralelo. Mismo patrón que otras specs de este log donde el transporte
+  real terminó siendo WS en vez de SSE (ver spec 005).
+- **Cache de reglas (T3)**: agregado 2026-09-02 — TTL de 60s sobre el único
+  conjunto cacheable (todas las reglas habilitadas), no una "LRU" en el
+  sentido estricto (no hay entradas individuales que desalojar por uso
+  cuando solo hay una colección cacheada). Invalidado en cualquier
+  create/update/delete de regla (T12). Ver `alarm_rule_evaluator.hpp` y
+  `getCachedEnabledRules()` en `device_alarm_routes.cpp`.
+- **Condición por tasa de cambio (T4)**: agregado 2026-09-02 —
+  `condition_type` nuevo (`'value'` default, `'rate'`) en
+  `platform_alarm_rules` (`db_scripts/89`). `rate` compara unidades/minuto
+  calculadas entre dos lecturas consecutivas del evaluador, no
+  `above_max`/`below_min` como dos condiciones separadas de SPEC-016 (esas
+  ya existían como `gt`/`lt` sobre el valor absoluto).
+- **Debounce por ventana de tiempo (T5)**: agregado 2026-09-02 —
+  `debounce_secs` nuevo por regla (`db_scripts/89`, default 0 =
+  desactivado). Complementa, no reemplaza, el mecanismo YA existente
+  documentado abajo ("Deduplicación vía índice único parcial"): ese índice
+  evita alarmas ABIERTAS duplicadas; el debounce nuevo evita RE-notificar en
+  ráfaga si una alarma se resuelve y vuelve a cumplirse rápido.
+- **Endpoint de actualización de regla (T9)**: agregado 2026-09-02 —
+  `PUT /api/mining/alarms/rules/{id}` (antes solo existían POST/GET/DELETE;
+  pausar una regla exigía borrarla y perder su historial de alarmas
+  asociado).
+- **Paginación e historial (T10)**: agregado 2026-09-02 —
+  `GET /api/mining/alarms` acepta `limit`/`offset`/`severity` y devuelve
+  `total` (antes: `LIMIT 200` fijo, sin offset ni forma de saber si había
+  más resultados).
+
+Ninguno de estos cambios reabre una decisión de este ADR — son extensiones
+aditivas sobre el mismo motor ya decidido acá. El detalle completo (schema,
+pruebas, verificación) vive en **ADR-016-1..5**, el ADR propio de SPEC-016
+que formaliza esta reconciliación; no se duplica el contenido acá.
+
 **Corrección de auditoría (2026-07-13)**: este ADR afirmaba en dos lugares (ver
 párrafos "Status" y "Sigue fuera de alcance" más abajo, sin editar, para dejar
 trazabilidad del error) que los adaptadores de protocolo Modbus/OPC-UA/MQTT

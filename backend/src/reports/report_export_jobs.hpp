@@ -28,4 +28,29 @@ void runVideoExportJob(const std::string &jobId, const std::string &pptxStorageP
                        int slideDurationSeconds, const std::string &transition,
                        const json::array &narration);
 
+/** @brief Worker de un job `report_export_job` (export_format='docx'): mismo
+ * patrón que `runPptxExportJob` (POST al sidecar Chromium, endpoint
+ * `/render-docx`), pero para informes en `layoutMode: 'document'` (A4/A3) en
+ * vez de presentación. Pensado para `std::thread(...).detach()`, disparado
+ * desde `POST /api/reports/{id}/export/docx`. */
+void runDocxExportJob(const std::string &jobId, const std::string &reportId,
+                      const std::string &sessionToken);
+
+/** @brief Worker de un job `report_export_job` (export_format='pdf'): mismo
+ * patrón que `runDocxExportJob`/`runPptxExportJob` (POST al sidecar
+ * Chromium, endpoint DEDICADO `/render-pdf`, separado del `/render`
+ * síncrono que sigue usando `exportReportPdf` sin cambios). Convertido a
+ * job asíncrono porque el pipeline síncrono está acotado por el timeout
+ * HTTP del cliente que originó el request -- documentos de miles de
+ * páginas lo exceden aunque el render en sí termine bien. `watermarkText`
+ * viaja igual que en `exportReportPdf` (resuelto server-side, ADR-080); el
+ * cifrado (misma decisión ADR-080) queda siempre activo -- la contraseña
+ * generada por el sidecar se guarda en `report_export_job.options` al
+ * completar (ver `updateExportJobStatusPg`), y el endpoint de descarga la
+ * expone igual que el pipeline síncrono. Pensado para
+ * `std::thread(...).detach()`, disparado desde
+ * `POST /api/reports/{id}/export/pdf`. */
+void runPdfExportJob(const std::string &jobId, const std::string &reportId,
+                     const std::string &sessionToken, const std::string &watermarkText);
+
 }  // namespace reports

@@ -37,6 +37,11 @@ export interface PptxOverlayRun {
   color?: string;
   fontSize?: number;
   fontFamily?: string;
+  /** Color de resaltado (marcador), hex sin '#' (ej. 'FFFF00') -- mapea a
+   * `options.highlight` de pptxgenjs::addText. Mismo campo que
+   * `TextStyleSpan.highlightColor` en lib/textSpans.ts; 'transparent' o
+   * ausente = sin resaltar. */
+  highlightColor?: string;
 }
 
 export interface PptxOverlayMeta {

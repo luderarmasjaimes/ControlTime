@@ -263,19 +263,28 @@ handleQueryTelemetrySeries(const http::request<http::string_body>& req,
   const std::string tenantVal = effectiveTenant;
   const char *ps[4] = {tenantVal.c_str(), idsLiteral.c_str(), itFrom->second.c_str(), itTo->second.c_str()};
 
+  // ADR-131: telemetry_raw -> telemetry_fact (vía dim_sensor/dim_tenant).
+  // hourly/daily leen directo de telemetry_fact_hourly/_daily (ya
+  // materializados por TimescaleDB) en vez de GROUP BY date_trunc sobre la
+  // hypertable cruda -- la agregación ya está pagada. "raw" (acotado a <=7
+  // días por el degrade de arriba) sigue siendo resolución exacta sobre
+  // telemetry_fact.
   const std::string sqlSeries =
       agg == "raw"
-          ? ("SELECT tr.sensor_id::text, tr.captured_at::text AS t, tr.value_numeric AS v "
-             "FROM telemetry_raw tr "
-             "WHERE tr.tenant_id = $1::uuid AND tr.sensor_id = ANY($2::uuid[]) "
-             "AND tr.captured_at >= $3::timestamptz AND tr.captured_at <= $4::timestamptz "
-             "ORDER BY tr.sensor_id ASC, tr.captured_at ASC")
-          : ("SELECT tr.sensor_id::text, date_trunc('" + (agg == "daily" ? std::string("day") : std::string("hour")) +
-             "', tr.captured_at)::text AS t, AVG(tr.value_numeric) AS v "
-             "FROM telemetry_raw tr "
-             "WHERE tr.tenant_id = $1::uuid AND tr.sensor_id = ANY($2::uuid[]) "
-             "AND tr.captured_at >= $3::timestamptz AND tr.captured_at <= $4::timestamptz "
-             "GROUP BY 1, 2 ORDER BY 1 ASC, 2 ASC");
+          ? ("SELECT ds.sensor_id::text, tf.captured_at::text AS t, tf.value_numeric AS v "
+             "FROM telemetry_fact tf "
+             "JOIN dim_sensor ds ON ds.sensor_id_sk = tf.sensor_id_sk "
+             "WHERE tf.tenant_id_sk = (SELECT tenant_id_sk FROM dim_tenant WHERE tenant_id = $1::uuid) "
+             "AND ds.sensor_id = ANY($2::uuid[]) AND tf.channel_id = 0 "
+             "AND tf.captured_at >= $3::timestamptz AND tf.captured_at <= $4::timestamptz "
+             "ORDER BY ds.sensor_id ASC, tf.captured_at ASC")
+          : ("SELECT ds.sensor_id::text, h.bucket::text AS t, h.avg_value AS v "
+             "FROM telemetry_fact_" + (agg == "daily" ? std::string("daily") : std::string("hourly")) + " h "
+             "JOIN dim_sensor ds ON ds.sensor_id_sk = h.sensor_id_sk "
+             "WHERE h.tenant_id_sk = (SELECT tenant_id_sk FROM dim_tenant WHERE tenant_id = $1::uuid) "
+             "AND ds.sensor_id = ANY($2::uuid[]) AND h.channel_id = 0 "
+             "AND h.bucket >= $3::timestamptz AND h.bucket <= $4::timestamptz "
+             "ORDER BY ds.sensor_id ASC, h.bucket ASC");
 
   storage::PgResult resSeries{PQexecParams(conn, sqlSeries.c_str(), 4, nullptr, ps, nullptr, nullptr, 0)};
   if (!resSeries.okTuples()) {

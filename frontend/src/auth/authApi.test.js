@@ -14,13 +14,15 @@ describe('authApi', () => {
     beforeEach(() => {
         // ADR-082: `authHeaders()` lee la cookie CSRF de document.cookie para
         // el double-submit. Sin sembrarla, las peticiones saldrian sin header.
-        document.cookie = 'csrf_token_v2=csrf_abc; path=/'
+        // Nombre namespaced desde la migración a Bearer-en-memoria
+        // (2026-08-27) -- antes `csrf_token_v2`, ver csrfHeaders() en authApi.ts.
+        document.cookie = 'beemetry_csrf_token=csrf_abc; path=/'
     })
 
     afterEach(() => {
         vi.restoreAllMocks()
         localStorage.clear()
-        document.cookie = 'csrf_token_v2=; path=/; max-age=0'
+        document.cookie = 'beemetry_csrf_token=; path=/; max-age=0'
     })
 
     it('fetches companies from backend', async () => {

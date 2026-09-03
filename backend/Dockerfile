@@ -176,5 +176,5 @@ VOLUME ["/data"]
 EXPOSE 8081
 # ONNX Runtime (.so en /usr/local/lib) + SDK Dermalog opcional
 ENV LD_LIBRARY_PATH=/usr/local/lib:/opt/dermalog/lib64:/opt/dermalog/lib
-HEALTHCHECK --interval=15s --timeout=3s --retries=3 CMD wget -q --spider http://localhost:8081/health || exit 1
+HEALTHCHECK --interval=15s --timeout=3s --retries=3 CMD curl -sf http://localhost:8081/health -o /dev/null || exit 1
 CMD ["/app/entrypoint.sh"]

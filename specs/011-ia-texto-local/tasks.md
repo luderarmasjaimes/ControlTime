@@ -26,7 +26,7 @@
 | **T13** | **Test CA-4**: LT down → 503 (no 500) | CA-4 | QA | — | ☑ |
 | **T14** | **Test CA-5**: sin sesión → 401 | CA-5 | QA | — | ☑ |
 | **T15** | Verificación privacidad: 0 paquetes a IPs externas durante rewrite | priv | QA | — | ☐ |
-| **T16** | Integración en editor de informes (007): botón "Corregir/Reescribir" | UX | FE1 | Sonnet | ☐ |
+| **T16** | Integración en editor de informes (007): botón "Corregir/Reescribir" | UX | FE1 | Sonnet | ☑ |
 | **T17** | Modelo especializado minería (fine-tuning Llama3 con corpus minero) | S11 | ML | **Opus** | ☐ |
 
 ## Secuencia
@@ -47,7 +47,7 @@ T17 (Etapa 2/S11)
 - [x] T1-T14 completadas.
 - [x] CA-1..5 demostrados.
 - [ ] T15 (verificación privacidad) — **pendiente**.
-- [ ] T16 (integración UX) — pendiente.
+- [x] T16 (integración UX) — verificado 2026-08-30: botón "Corregir ortografía" real en `PageCanvas.tsx` (ReportStudioV2) + `textRewriteOnPremise` importado y usado para reescritura, ambos wireados a `textForSpellOrRewrite`.
 - [ ] T17 (fine-tuning) — Etapa 2.
 - [x] ADR-011-1..4 registrados.
 

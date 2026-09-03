@@ -1,16 +1,8 @@
-import React, { memo, useState } from 'react';
-import { Send, X, User, Search } from 'lucide-react';
+import React, { memo, useState, useEffect } from 'react';
+import { Send, X, User, Search, Mail, MessageCircle, Smartphone, Bell, Check, AlertCircle } from 'lucide-react';
 import { getSession } from '../../../../auth/authStorage';
 import { shareReportAsync } from '../../lib/reportsStorage';
-
-interface ShareUser {
-  username: string;
-  first_name?: string;
-  last_name?: string;
-  company?: string;
-  role?: string;
-  is_active?: boolean;
-}
+import { fetchCompanyUsers, type CompanyUser, type ShareReportChannelResult } from '../../lib/api';
 
 interface ShareReportModalProps {
   report: { id: string; title?: string };
@@ -18,38 +10,45 @@ interface ShareReportModalProps {
   onSuccess?: (message: string) => void;
 }
 
+const CHANNEL_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
+  in_app: { label: 'Notificación interna', icon: <Bell size={13} /> },
+  email: { label: 'Correo electrónico', icon: <Mail size={13} /> },
+  whatsapp: { label: 'WhatsApp', icon: <MessageCircle size={13} /> },
+  sms: { label: 'SMS', icon: <Smartphone size={13} /> },
+};
+
 /**
  * Sub-modal para enviar un informe a otro usuario de la empresa.
- * Usa la lista de usuarios guardados en localStorage (creados con el sistema de auth).
+ * Antes leía una lista mock de localStorage (solo iniciales como "avatar",
+ * sin garantía de reflejar los usuarios reales) y el envío era un mock que no
+ * tocaba el backend. Ahora usa GET /api/auth/users (avatar real incluido) y
+ * POST /api/reports/{id}/share (persiste + notifica in-app/email/WhatsApp/SMS).
  */
 function ShareReportModal({ report, onClose, onSuccess }: ShareReportModalProps) {
   const session = getSession();
   const [search, setSearch] = useState('');
-  const [selectedUser, setSelectedUser] = useState<ShareUser | null>(null);
+  const [selectedUser, setSelectedUser] = useState<CompanyUser | null>(null);
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [allUsers, setAllUsers] = useState<CompanyUser[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [channelResults, setChannelResults] = useState<ShareReportChannelResult[] | null>(null);
 
-  // Obtener usuarios de la empresa desde localStorage (auth users)
-  const allUsers: ShareUser[] = (() => {
-    try {
-      const raw = localStorage.getItem('mining_auth_users_v1');
-      if (!raw) return [];
-      const users = JSON.parse(raw);
-      return users.filter(
-        (u: ShareUser) => u.is_active !== false &&
-          u.company === session?.company &&
-          u.username !== session?.username
-      );
-    } catch {
-      return [];
-    }
-  })();
+  useEffect(() => {
+    let cancelled = false;
+    fetchCompanyUsers().then((users) => {
+      if (cancelled) return;
+      setAllUsers(users.filter((u) => u.username !== session?.username));
+      setLoadingUsers(false);
+    });
+    return () => { cancelled = true; };
+  }, [session?.username]);
 
   const filtered = search
     ? allUsers.filter(
         (u) =>
-          (u.first_name + ' ' + u.last_name).toLowerCase().includes(search.toLowerCase()) ||
+          `${u.firstName} ${u.lastName}`.toLowerCase().includes(search.toLowerCase()) ||
           u.username.toLowerCase().includes(search.toLowerCase())
       )
     : allUsers;
@@ -58,18 +57,17 @@ function ShareReportModal({ report, onClose, onSuccess }: ShareReportModalProps)
     if (!selectedUser) { setError('Selecciona un destinatario.'); return; }
     setSending(true);
     setError('');
-    try {
-      await shareReportAsync(report.id, {
-        toUsername: selectedUser.username,
-        message,
-      });
-      onSuccess?.(`Informe enviado a ${selectedUser.first_name} ${selectedUser.last_name}`);
-      onClose();
-    } catch (e) {
+    setChannelResults(null);
+    const outcome = await shareReportAsync(report.id, { toUserId: selectedUser.id, message });
+    setSending(false);
+    if (!outcome.ok) {
       setError('No se pudo enviar el informe. Intenta nuevamente.');
-    } finally {
-      setSending(false);
+      return;
     }
+    setChannelResults(outcome.channels);
+    const sentChannels = outcome.channels.filter((c) => c.ok).map((c) => CHANNEL_LABELS[c.channel]?.label || c.channel);
+    const summary = sentChannels.length > 0 ? ` (${sentChannels.join(', ')})` : '';
+    onSuccess?.(`Informe enviado a ${outcome.recipientName || `${selectedUser.firstName} ${selectedUser.lastName}`}${summary}`);
   };
 
   return (
@@ -102,20 +100,33 @@ function ShareReportModal({ report, onClose, onSuccess }: ShareReportModalProps)
 
         {/* Lista de usuarios */}
         <div className="ra-user-list">
-          {filtered.length === 0 ? (
+          {loadingUsers ? (
+            <div className="ra-empty-sm">
+              <span>Cargando usuarios…</span>
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="ra-empty-sm">
               <User size={24} style={{ opacity: 0.25 }} />
               <span>No se encontraron usuarios de la empresa.</span>
             </div>
           ) : filtered.map((u) => (
             <div
-              key={u.username}
-              className={`ra-user-item ${selectedUser?.username === u.username ? 'ra-user-selected' : ''}`}
+              key={u.id}
+              className={`ra-user-item ${selectedUser?.id === u.id ? 'ra-user-selected' : ''}`}
               onClick={() => setSelectedUser(u)}
             >
-              <div className="ra-user-avatar">{(u.first_name || u.username)[0].toUpperCase()}</div>
+              {u.avatarBase64 ? (
+                <img
+                  className="ra-user-avatar"
+                  src={`data:image/png;base64,${u.avatarBase64}`}
+                  alt=""
+                  style={{ objectFit: 'cover' }}
+                />
+              ) : (
+                <div className="ra-user-avatar">{(u.firstName || u.username)[0]?.toUpperCase() || '?'}</div>
+              )}
               <div>
-                <div className="ra-user-name">{u.first_name} {u.last_name}</div>
+                <div className="ra-user-name">{u.firstName} {u.lastName}</div>
                 <div className="ra-user-meta">{u.username} · {u.role || 'operator'}</div>
               </div>
             </div>
@@ -135,6 +146,20 @@ function ShareReportModal({ report, onClose, onSuccess }: ShareReportModalProps)
           />
           <span style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 2 }}>{message.length}/500</span>
         </div>
+
+        {/* Resultado por canal de la última notificación disparada */}
+        {channelResults && (
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {channelResults.map((c) => (
+              <div key={c.channel} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', color: c.ok ? '#065f46' : '#94a3b8' }}>
+                {CHANNEL_LABELS[c.channel]?.icon}
+                <span>{CHANNEL_LABELS[c.channel]?.label || c.channel}</span>
+                {c.ok ? <Check size={13} color="#10b981" /> : <AlertCircle size={13} />}
+                {!c.ok && <span style={{ opacity: 0.7 }}>({c.detail || 'no disponible'})</span>}
+              </div>
+            ))}
+          </div>
+        )}
 
         {error && <p className="ra-error">{error}</p>}
 

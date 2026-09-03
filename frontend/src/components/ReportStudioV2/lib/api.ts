@@ -127,6 +127,97 @@ export async function fetchTelemetryWizardCatalog(params: {
   return response.data ?? {};
 }
 
+// Un informe puede contener decenas (o, en exports grandes DOCX/PPTX/PDF,
+// miles) de bloques de sensores. En la página de impresión todos se montan
+// según avanza la virtualización, y sin coordinación pueden saturar el
+// límite de Nginx (20 req/s, burst 40).
+// Se implementa:
+// 1. Límite de concurrencia (máximo 16 peticiones simultáneas en vuelo --
+//    subido de 3→6→16: medido en vivo en un export de 2104 páginas/6300
+//    gráficos. Al ampliar `EXPORT_VIRTUALIZATION_WINDOW` (ReadOnlyViewer.tsx,
+//    ver su comentario -- causa raíz real de los abortos de red) de 1 a 6
+//    para que un widget no se desmonte antes de que termine su fetch, la
+//    población de widgets montados SIMULTÁNEAMENTE subió de ~9 a ~39 -- con
+//    solo 6 cupos de concurrencia, la cola de abajo se atascaba (crecía sin
+//    drenar: 0 peticiones completadas en 3+ min, confirmado en vivo con
+//    `queueLength()`/`runningCount()`). El burst=40 de Nginx da margen para
+//    16 cupos sin arriesgar 429s.
+// 2. Intervalo mínimo garantizado de 50 ms entre inicios de petición (bajado
+//    de 75ms -- a 75ms el propio intervalo topeaba los arranques en ~13.3/s,
+//    por debajo de los 20 r/s que Nginx ya permite).
+// 3. Deduplicación de peticiones en vuelo con los mismos parámetros.
+// 4. Reintento exponencial para 429 Y para timeouts de axios (ver más abajo).
+class AsyncTelemetryQueue {
+  private maxConcurrency = 16;
+  private running = 0;
+  private queue: Array<() => void> = [];
+  private lastStartAt = 0;
+  private minIntervalMs = 50;
+
+  /** Reduce la cuota de ESTA cola (una página = una cola, ver comentario de
+   * arriba) -- necesario cuando VARIAS páginas corren en paralelo contra el
+   * mismo backend (pipeline DOCX Fase 2, `pdf-export-service/server.js`):
+   * los 16 cupos / 50ms fueron calibrados para UNA sola página contra el
+   * límite de Nginx (20 r/s) -- con N páginas paralelas, cada una con su
+   * propia cola independiente, la demanda agregada es N veces esa cuota
+   * (reproducido en vivo: 4 workers, ráfaga sostenida de 429 desde el
+   * arranque, cero capturas en varios minutos). Cada worker debe pedir una
+   * fracción proporcional para que la SUMA de las N colas siga respetando
+   * el límite real del servidor. */
+  setQuota(maxConcurrency: number, minIntervalMs: number): void {
+    this.maxConcurrency = Math.max(1, Math.floor(maxConcurrency));
+    this.minIntervalMs = Math.max(1, Math.floor(minIntervalMs));
+  }
+
+  async acquire(): Promise<() => void> {
+    return new Promise<() => void>((resolve) => {
+      const tryExecute = async () => {
+        const now = Date.now();
+        const waitTime = Math.max(0, this.lastStartAt + this.minIntervalMs - now);
+        if (waitTime > 0) {
+          await new Promise((r) => setTimeout(r, waitTime));
+        }
+        this.lastStartAt = Date.now();
+        this.running++;
+        resolve(() => {
+          this.running--;
+          if (this.queue.length > 0) {
+            const next = this.queue.shift();
+            if (next) next();
+          }
+        });
+      };
+
+      if (this.running < this.maxConcurrency) {
+        tryExecute();
+      } else {
+        // DIAGNÓSTICO TEMPORAL -- queueLength()/runningCount() exponen el
+        // tamaño real de esta cola para confirmar en vivo si el atasco es
+        // ACÁ (muchos widgets esperando turno) o en la red/servidor.
+        this.queue.push(() => tryExecute());
+      }
+    });
+  }
+
+  queueLength(): number {
+    return this.queue.length;
+  }
+
+  runningCount(): number {
+    return this.running;
+  }
+}
+
+const telemetryQueue = new AsyncTelemetryQueue();
+const telemetryInFlightQueries = new Map<string, Promise<any>>();
+
+/** Ver `AsyncTelemetryQueue.setQuota`. Llamarlo ANTES de cualquier
+ * `fetchTelemetryWizardSeries` -- lo usa `print-report/main.tsx` cuando
+ * navega como un worker del pipeline DOCX en paralelo. */
+export function setTelemetryQueueQuota(maxConcurrency: number, minIntervalMs: number): void {
+  telemetryQueue.setQuota(maxConcurrency, minIntervalMs);
+}
+
 /**
  * Series históricas de `telemetry_raw` para los sensores ya elegidos en el
  * wizard, acotadas por `from`/`to` (ISO 8601). `agg` por defecto es
@@ -139,16 +230,132 @@ export async function fetchTelemetryWizardSeries(params: {
   agg?: 'raw' | 'hourly' | 'daily';
   tenant_id?: string;
 }): Promise<any> {
-  const response = await api.get('/mining/telemetry/wizard/query', {
-    params: {
-      sensor_ids: params.sensorIds.join(','),
-      from: params.from,
-      to: params.to,
-      ...(params.agg ? { agg: params.agg } : {}),
-      ...(params.tenant_id ? { tenant_id: params.tenant_id } : {}),
-    },
-  });
-  return response.data ?? {};
+  const queryParams = {
+    sensor_ids: params.sensorIds.join(','),
+    from: params.from,
+    to: params.to,
+    ...(params.agg ? { agg: params.agg } : {}),
+    ...(params.tenant_id ? { tenant_id: params.tenant_id } : {}),
+  };
+
+  const dedupeKey = `${queryParams.tenant_id || ''}|${queryParams.sensor_ids}|${queryParams.from}|${queryParams.to}|${queryParams.agg || 'hourly'}`;
+  const inFlight = telemetryInFlightQueries.get(dedupeKey);
+  // DIAGNÓSTICO TEMPORAL -- contador de aciertos/fallos de caché expuesto en
+  // window para medir en vivo (vía consola del sidecar de export, que ya
+  // captura console.warn) si la extensión de TTL de telemetryInFlightQueries
+  // realmente está evitando refetch en un documento con muchas repeticiones
+  // del mismo sensor/rango (ver comentario del TTL de 30 min más abajo).
+  const w = window as unknown as { __telemetryCacheStats__?: { hits: number; misses: number } };
+  w.__telemetryCacheStats__ = w.__telemetryCacheStats__ || { hits: 0, misses: 0 };
+  if (inFlight) {
+    w.__telemetryCacheStats__.hits += 1;
+    if (w.__telemetryCacheStats__.hits % 50 === 0) {
+      console.warn('[TELEMETRY_CACHE]', JSON.stringify(w.__telemetryCacheStats__));
+    }
+    return inFlight;
+  }
+  w.__telemetryCacheStats__.misses += 1;
+  if (w.__telemetryCacheStats__.misses % 50 === 0) {
+    console.warn('[TELEMETRY_CACHE]', JSON.stringify(w.__telemetryCacheStats__));
+  }
+
+  const queryPromise = (async () => {
+    const maxAttempts = 5;
+    // DIAGNÓSTICO TEMPORAL -- separa cuánto tiempo se va en ESPERAR TURNO en
+    // AsyncTelemetryQueue (queueWaitMs) de cuánto se va en la llamada de RED
+    // en sí (networkMs), para confirmar cuál de las dos es el cuello de
+    // botella real antes de decidir qué ajustar.
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      // DIAGNÓSTICO TEMPORAL -- logueado ANTES de esperar el cupo (no
+      // gateado detrás de un éxito/fallo que quizás nunca llegue): si la
+      // cola crece sin drenar, esto lo muestra de inmediato en vez de
+      // quedar en silencio total como pasó con el conteo por-éxito de abajo.
+      const w3 = window as unknown as { __telemetryAcquireCount__?: number };
+      w3.__telemetryAcquireCount__ = (w3.__telemetryAcquireCount__ || 0) + 1;
+      if (w3.__telemetryAcquireCount__ % 10 === 0) {
+        console.warn('[TELEMETRY_QUEUE]', JSON.stringify({
+          acquireCount: w3.__telemetryAcquireCount__,
+          queueLength: telemetryQueue.queueLength(),
+          running: telemetryQueue.runningCount(),
+        }));
+      }
+      const acquireStartedAt = Date.now();
+      const release = await telemetryQueue.acquire();
+      const queueWaitMs = Date.now() - acquireStartedAt;
+      const networkStartedAt = Date.now();
+      try {
+        // Timeout propio de 45s (no los 15s por defecto de `api` -- ver su
+        // comentario en la definición): reproducido en vivo con
+        // "data-export-error":"timeout of 15000ms exceeded" en un export
+        // grande -- el widget se quedaba con `data-export-ready=false` para
+        // SIEMPRE porque este catch relanzaba el error sin reintentar (el
+        // bloque de abajo solo cubría 429), y encima 15s alcanza para que la
+        // ESPERA EN COLA (AsyncTelemetryQueue de arriba, bajo carga con miles
+        // de widgets) por sí sola agote el reloj de axios antes de que la
+        // petición llegue siquiera a salir por la red.
+        const response = await api.get('/mining/telemetry/wizard/query', { params: queryParams, timeout: 45000 });
+        const networkMs = Date.now() - networkStartedAt;
+        const w2 = window as unknown as { __telemetryTiming__?: { count: number; totalQueueMs: number; totalNetworkMs: number; maxQueueMs: number; maxNetworkMs: number } };
+        w2.__telemetryTiming__ = w2.__telemetryTiming__ || { count: 0, totalQueueMs: 0, totalNetworkMs: 0, maxQueueMs: 0, maxNetworkMs: 0 };
+        w2.__telemetryTiming__.count += 1;
+        w2.__telemetryTiming__.totalQueueMs += queueWaitMs;
+        w2.__telemetryTiming__.totalNetworkMs += networkMs;
+        w2.__telemetryTiming__.maxQueueMs = Math.max(w2.__telemetryTiming__.maxQueueMs, queueWaitMs);
+        w2.__telemetryTiming__.maxNetworkMs = Math.max(w2.__telemetryTiming__.maxNetworkMs, networkMs);
+        if (w2.__telemetryTiming__.count % 5 === 0) {
+          console.warn('[TELEMETRY_TIMING]', JSON.stringify({
+            ...w2.__telemetryTiming__,
+            avgQueueMs: Math.round(w2.__telemetryTiming__.totalQueueMs / w2.__telemetryTiming__.count),
+            avgNetworkMs: Math.round(w2.__telemetryTiming__.totalNetworkMs / w2.__telemetryTiming__.count),
+            queueLength: telemetryQueue.queueLength(),
+            running: telemetryQueue.runningCount(),
+          }));
+        }
+        return response.data ?? {};
+      } catch (error) {
+        const status = (error as AxiosError)?.response?.status;
+        const isTimeout = (error as AxiosError)?.code === 'ECONNABORTED';
+        console.warn('[TELEMETRY_ERROR]', JSON.stringify({
+          attempt, status: status ?? null, isTimeout, code: (error as AxiosError)?.code ?? null,
+          message: (error as Error)?.message ?? String(error),
+          queueWaitMs, networkMs: Date.now() - networkStartedAt,
+        }));
+        if ((status === 429 || isTimeout) && attempt < maxAttempts - 1) {
+          const retryAfter = Number((error as AxiosError)?.response?.headers?.['retry-after']);
+          const backoffMs = Number.isFinite(retryAfter) && retryAfter > 0
+            ? retryAfter * 1000
+            : 350 * (2 ** attempt) + Math.floor(Math.random() * 150);
+          await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
+          continue;
+        }
+        throw error;
+      } finally {
+        release();
+      }
+    }
+    return {};
+  })();
+
+  telemetryInFlightQueries.set(dedupeKey, queryPromise);
+  try {
+    return await queryPromise;
+  } finally {
+    // TTL de 30 min (antes 10s). `from`/`to` son literales dentro de
+    // `dedupeKey`: un dashboard "en vivo" que recalcula `to=now()` en cada
+    // mount ya genera una key DISTINTA cada vez, así que subir el TTL no
+    // arriesga mostrar datos viejos ahí -- solo evita refetch cuando el
+    // rango realmente es el MISMO. Medido en vivo en un export DOCX de
+    // 2104 páginas (generador demo, ADR de prueba de escala): el mismo par
+    // de sensores se vuelve a pedir hasta 300 veces (20 tipos de gráfico ×
+    // 15 pasadas de REPEAT_PASSES) para el MISMO sensorType/rango, pero
+    // separadas por minutos entre sí (no por los 10s que cubría el TTL
+    // anterior) -- cada una disparaba un fetch nuevo en vez de reusar el
+    // resultado ya obtenido, inflando tanto el tiempo total de export como
+    // la carga sobre telemetry_raw sin ninguna razón real.
+    window.setTimeout(() => {
+      telemetryInFlightQueries.delete(dedupeKey);
+    }, 30 * 60 * 1000);
+  }
 }
 
 export async function fetchMiningKpis({ category }: { category?: string } = {}): Promise<any[]> {
@@ -775,6 +982,74 @@ export async function fetchProjects(): Promise<any[]> {
   return response.data?.projects ?? [];
 }
 
+export interface CompanyUser {
+  id: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  role: string;
+  email: string;
+  avatarBase64: string;
+}
+
+/**
+ * GET /api/auth/users — usuarios de la misma empresa que la sesión (el
+ * backend filtra por `session.company`, nunca por un parámetro del cliente).
+ * Usado por ShareReportModal.tsx para el picker de destinatarios con avatar
+ * real (antes leía una lista mock de localStorage con solo iniciales).
+ */
+export async function fetchCompanyUsers(): Promise<CompanyUser[]> {
+  try {
+    const response = await api.get('/auth/users');
+    const raw = Array.isArray(response.data?.users) ? response.data.users : [];
+    return raw.map((u: any) => ({
+      id: u.id,
+      firstName: u.firstName || '',
+      lastName: u.lastName || '',
+      username: u.username || '',
+      role: u.role || 'operator',
+      email: u.email || '',
+      avatarBase64: u.avatar_base64 || '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export interface ShareReportChannelResult {
+  channel: string;
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * POST /api/reports/{id}/share — envía el informe a otro usuario de la
+ * empresa: persiste en `report_shares` y dispara notificación in-app +
+ * email + WhatsApp + SMS (best-effort, canal por canal — ver
+ * `notify/notify_service.cpp`). Antes esta función no existía: el modal
+ * llamaba a un mock que no tocaba el backend en absoluto.
+ */
+export async function shareReport(
+  reportId: string,
+  payload: { toUserId: string; message?: string },
+): Promise<{ status: string; recipientName?: string; channels: ShareReportChannelResult[]; error?: string }> {
+  try {
+    const response = await api.post(`/reports/${encodeURIComponent(reportId)}/share`, {
+      to_user_id: payload.toUserId,
+      message: payload.message || '',
+    });
+    const data = response.data ?? {};
+    return {
+      status: data.status || 'shared',
+      recipientName: data.recipient_name,
+      channels: Array.isArray(data.channels) ? data.channels : [],
+    };
+  } catch (error) {
+    const { backendError, backendMessage } = backendErrorMessage(error);
+    return { status: 'error', channels: [], error: backendMessage || backendError || 'share_failed' };
+  }
+}
+
 // tenantId: unidad minera a consultar (multitenant, UUID). Si se omite, el
 // backend usa el tenant activo de la sesión. Si se pasa uno distinto, el
 // backend verifica membresía real en auth_user_tenant antes de honrarlo —
@@ -848,25 +1123,25 @@ export async function fetchReportRevisions(id: string): Promise<any[]> {
 }
 
 /**
- * ADR-016: export PDF server-side (Chromium headless vía sidecar), con la
- * MISMA fidelidad visual que el visor de solo lectura (reusa ReadOnlyViewer).
- * Requiere que el informe ya esté guardado (id real, no borrador sin guardar).
- * ADR-080: el PDF viene con marca de agua y cifrado con una contraseña
- * generada para esta descarga (`password`, header `X-Pdf-Password` — axios
- * normaliza los nombres de header a minúsculas). No se persiste en ningún
- * lado: cada descarga genera un PDF y una contraseña nuevos.
+ * ADR-138: crea un enlace de acceso directo al PDF (token opaco, expira en
+ * `expires_in_hours` horas) — a diferencia de `fetchReportPdfBlob` (ADR-080,
+ * PDF cifrado con contraseña), el PDF servido por esa URL NO pide nada: la
+ * protección es el token en sí, pensado para un QR que se escanea y abre
+ * directo, sin ningún paso manual.
  */
-export async function fetchReportPdfBlob(
+export async function createReportShareLink(
   id: string,
-): Promise<{ blob: Blob; filename: string; password: string | null }> {
-  const response = await api.get(`/reports/${encodeURIComponent(id)}/export/pdf`, {
-    responseType: 'blob',
-    timeout: 60000,
-  });
-  const disposition = response.headers?.['content-disposition'] || '';
-  const match = /filename="([^"]+)"/.exec(disposition);
-  const password = response.headers?.['x-pdf-password'] || null;
-  return { blob: response.data, filename: match ? match[1] : 'informe.pdf', password };
+): Promise<{ url: string; expiresInHours: number }> {
+  const response = await api.post(`/reports/${encodeURIComponent(id)}/share-link`, {});
+  // El backend devuelve una ruta same-origin para no fijar localhost ni un
+  // host interno en el QR. Resolverla donde corre la SPA garantiza que un
+  // celular abra exactamente el host/puerto/protocolo que ve el usuario.
+  const url = resolveReportShareLinkUrl(String(response.data.url), window.location.origin);
+  return { url, expiresInHours: response.data.expires_in_hours };
+}
+
+export function resolveReportShareLinkUrl(pathOrUrl: string, browserOrigin: string): string {
+  return new URL(pathOrUrl, browserOrigin).toString();
 }
 
 /**
@@ -904,6 +1179,34 @@ export interface ExportJobStatus {
  */
 export async function createPptxExportJob(reportId: string): Promise<{ job_id: string; status: string }> {
   const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/pptx`);
+  return response.data;
+}
+
+/**
+ * Encola la exportación del informe a DOCX vía el pipeline SERVIDOR (sidecar
+ * Chromium, endpoint /render-docx) — alternativa al pipeline cliente
+ * (`lib/exportEngine.ts::exportDOCX`, que no llama a esta función y no
+ * depende del backend). Solo funciona sobre informes YA GUARDADOS y con
+ * `layoutMode: 'document'` (A4/A3) — el backend responde 400
+ * `layout_mode_not_document` en caso contrario. Async: usar `pollExportJob`.
+ */
+export async function createDocxExportJob(reportId: string): Promise<{ job_id: string; status: string }> {
+  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/docx`);
+  return response.data;
+}
+
+/**
+ * Encola la exportación del informe a PDF vía el pipeline ASÍNCRONO (sidecar
+ * Chromium, endpoint /render-pdf) — alternativa a `fetchReportPdfBlob`
+ * (síncrona, ADR-016), pensada para informes grandes (miles de páginas)
+ * donde el render puede exceder cualquier presupuesto razonable de request
+ * HTTP directo aunque termine bien. Mismo watermark + cifrado (ADR-080) que
+ * la variante síncrona -- la contraseña se recupera de
+ * `fetchExportJobBlob` (header `X-Pdf-Password`) una vez el job está en
+ * `success`. Async: usar `pollExportJob`.
+ */
+export async function createPdfExportJob(reportId: string): Promise<{ job_id: string; status: string }> {
+  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/pdf`);
   return response.data;
 }
 
@@ -968,14 +1271,18 @@ export async function fetchExportJobStatus(reportId: string, jobId: string): Pro
 export async function fetchExportJobBlob(
   reportId: string,
   jobId: string,
-): Promise<{ blob: Blob; filename: string }> {
+): Promise<{ blob: Blob; filename: string; password: string | null }> {
   const response = await api.get(
     `/reports/${encodeURIComponent(reportId)}/export/jobs/${encodeURIComponent(jobId)}/download`,
     { responseType: 'blob', timeout: 60000 },
   );
   const disposition = response.headers?.['content-disposition'] || '';
   const match = /filename="([^"]+)"/.exec(disposition);
-  return { blob: response.data, filename: match ? match[1] : 'informe.pptx' };
+  // Solo viene poblado para jobs 'pdf' (ADR-080, ver runPdfExportJob en el
+  // backend) -- axios normaliza los nombres de header a minúsculas, mismo
+  // criterio que `fetchReportPdfBlob`.
+  const password = response.headers?.['x-pdf-password'] || null;
+  return { blob: response.data, filename: match ? match[1] : 'informe.pptx', password };
 }
 
 /**
@@ -991,7 +1298,17 @@ export async function pollExportJob(
   jobId: string,
   options: { intervalMs?: number; maxAttempts?: number; onProgress?: (status: ExportJobStatus) => void } = {},
 ): Promise<ExportJobStatus> {
-  const { intervalMs = 2000, maxAttempts = 150, onProgress } = options;
+  // maxAttempts=1350 (~45 min de polling total, antes 400/~13.3 min): medido
+  // en vivo en un documento de 2104 páginas/6302 gráficos con la Fase 2 de
+  // paralelismo (checkpoints + N workers dedicados, ver server.js) — DOCX
+  // tomó ~30 min de procesamiento activo, PPTX ~25 min. Con 400 intentos el
+  // FRONTEND se rendía y mostraba "export_job_poll_timeout" mientras el job
+  // seguía corriendo de verdad en el backend (y terminaba bien poco después,
+  // invisible para el usuario que ya vio "error"). 1350 intentos da margen
+  // real por encima de esos tiempos medidos, no solo del timeout HTTP del
+  // backend (que en la práctica no corta la conexión, ver comentario de
+  // `postJsonToSidecar`/`gPdfExportTimeoutMs` en report_export_jobs.cpp).
+  const { intervalMs = 2000, maxAttempts = 1350, onProgress } = options;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const status = await fetchExportJobStatus(reportId, jobId);
     onProgress?.(status);

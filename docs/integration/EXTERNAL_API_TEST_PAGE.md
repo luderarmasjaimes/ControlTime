@@ -4,9 +4,12 @@ Tres páginas standalone (HTML/CSS/JS, sin dependencias externas, sin paso de bu
 backend **desde un origen genuinamente externo** a la plataforma (no el frontend real, no el proxy
 de Vite) — igual que lo haría la app de un tercero integrando contra este backend:
 
-- [`external-api-test-page/index.html`](../../external-api-test-page/index.html) — **solo login**:
-  contraseña/PIN o verificación facial, con selector país→empresa (multitenant/multiregión). Es la
-  página de referencia para un integrador externo — ver
+- [`external-api-test-page/index.html`](../../external-api-test-page/index.html) — login
+  (contraseña/PIN o verificación facial, con selector país→empresa, multitenant/multiregión) **más**,
+  una vez autenticado, una sección "Control de Accesos / Organización" (ADR-130) con empresas,
+  matriz de permisos y acceso cruzado de organización (`/api/auth/org-access/*`) — ver
+  [`ACCESS_CONTROL_API_GUIDE.md`](ACCESS_CONTROL_API_GUIDE.md) §7. Es la página de referencia para
+  un integrador externo — ver también
   [`BIOMETRIC_PASSWORD_AUTH_API_GUIDE.md`](BIOMETRIC_PASSWORD_AUTH_API_GUIDE.md) (documento
   autocontenido para ese público).
 - [`external-api-test-page/api-test-harness.html`](../../external-api-test-page/api-test-harness.html) —

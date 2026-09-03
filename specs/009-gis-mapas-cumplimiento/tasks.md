@@ -20,7 +20,7 @@
 | **T7** | `POST /api/map/markers` — crear/actualizar marcador | CA-1 | BE1 | Sonnet | ☑ |
 | **T8** | `map_routes.cpp` — registro de rutas en router | CA-1..5 | BE1 | Haiku | ☑ |
 | **T9** | Carga de GeoJSON inicial desde `OFFICIAL_ZONES_GEOJSON` env | CA-2,CA-5 | SYS | Haiku | ☑ |
-| **T10** | Frontend: render Leaflet/MapboxGL con markers + zones | CA-1,CA-2 | FE1 | Sonnet/ChatGPT | ☐ |
+| **T10** | Frontend: render Leaflet/MapboxGL con markers + zones | CA-1,CA-2 | FE1 | Sonnet/ChatGPT | ☑ |
 | **T11** | Frontend: highlight zona al hacer check-point | CA-3 | FE1 | Sonnet | ☐ |
 | **T12** | **Test CA-1**: GET markers → lista con lat/lng | CA-1 | QA | — | ☑ |
 | **T13** | **Test CA-2**: GET official-zones → GeoJSON válido | CA-2 | QA | — | ☑ |
@@ -47,6 +47,7 @@ T17 (futuro/Etapa 2)
 
 - [x] T1-T9, T12-T16 completadas.
 - [x] CA-1..5 demostrados.
-- [ ] Frontend Leaflet (T10, T11) — pendientes.
+- [x] T10 Frontend Leaflet: render de markers + zonas oficiales — verificado 2026-08-30 (`MapViewer.tsx` consume `/api/map/official-zones`, `L.polygon`/`L.marker` reales con clustering, offline cache y WS diffs; `TerritorialCompliancePanel.tsx` consume intersecciones por zona). T18/T19 (ya ☑) son funcionalidad estrictamente más avanzada que dependía de esto.
+- [ ] T11 Frontend: highlight de zona al llamar check-point — **pendiente**, verificado por grep que ningún componente del frontend llama al endpoint `handleCheckPoint`/`check-point` todavía (el backend y su test T14 sí funcionan).
 - [ ] PostGIS migration (T17) — Etapa 2.
 - [x] ADR-009-1..3 registrados.

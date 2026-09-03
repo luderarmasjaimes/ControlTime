@@ -67,7 +67,7 @@ $stages = foreach ($entry in $stageMap.GetEnumerator()) {
 }
 
 [pscustomobject]@{
-    Cutoff = '2026-08-18'
+    Cutoff = (Get-Date -Format 'yyyy-MM-dd')
     CanonicalSpecs = $records.Count
     Done = $doneAll
     Total = $totalAll

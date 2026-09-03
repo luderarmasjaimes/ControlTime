@@ -11,6 +11,8 @@ export interface WizardCatalogSensor {
   zone_name?: string;
   device_key: string;
   connection_status?: string;
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface WizardCatalogZone {
@@ -28,6 +30,8 @@ export interface SensorSelection {
   deviceKey: string;
   zoneId: number | null;
   zoneName: string;
+  lat?: number | null;
+  lng?: number | null;
 }
 
 interface TriStateCheckboxProps {
@@ -101,6 +105,8 @@ function ZoneSensorPicker({ sensors, selections, onChange }: ZoneSensorPickerPro
     deviceKey: s.device_key,
     zoneId: s.zone_id ?? null,
     zoneName: s.zone_name || 'Sin zona asignada',
+    lat: s.lat ?? null,
+    lng: s.lng ?? null,
   });
 
   const toggleSensor = (s: WizardCatalogSensor) => {
@@ -143,7 +149,7 @@ function ZoneSensorPicker({ sensors, selections, onChange }: ZoneSensorPickerPro
         const zoneSelectedCount = zoneRows.filter((r) => selectedIds.has(r.id)).length;
         const zoneAllSelected = zoneSelectedCount === zoneRows.length;
         return (
-          <details key={String(zone.zoneId)} open={zone.devices.length <= 3} className="wizard-zone-group">
+          <details key={String(zone.zoneId)} open className="wizard-zone-group">
             <summary
               style={{
                 display: 'flex',

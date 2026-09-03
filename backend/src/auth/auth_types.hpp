@@ -37,6 +37,11 @@ struct AuthUser {
   std::string avatarCartoonBase64;
   /** UUID tenants(tenant_id) para telemetría minera / informes (Postgres). */
   std::string tenantId;
+  /** MFA/TOTP (ADR-135, db_scripts/81). Secreto Base32 en claro -- ver
+   * comentario de la columna en la migración. Vacío si nunca se enroló. */
+  std::string totpSecret;
+  /** true solo tras el primer código válido post-enrolamiento. */
+  bool totpEnabled = false;
 };
 
 struct Project {
@@ -53,7 +58,16 @@ struct Report {
   json::value contentJson;
   std::string status = "draft";
   std::string createdBy;
+  std::string createdByName;
   int versionNumber = 1;
+  // Autoría/revisión (columnas ya existentes en `reports` desde
+  // db_scripts/05_reports_admin.sql pero nunca leídas hasta ahora — ver nota
+  // en report_service.cpp sobre el bug de edición bloqueada al dueño).
+  std::string reviewedBy;
+  std::string reviewedByName;
+  std::string reviewedAt;
+  std::string lastModifiedBy;
+  std::string lastModifiedByName;
   // Legacy: nombre de empresa desnormalizado, solo para display. Desde la
   // migración de ADR-039 (2026-07-13) YA NO se usa para aislamiento/lectura
   // — `tenantId` es la única clave de aislamiento real de `reports`.
@@ -72,6 +86,12 @@ struct Report {
   std::string signedByName;
   std::string signedByRole;
   std::string signedAt;
+  // Derivados de content_json->'pages'/'meta.layoutMode' vía SQL (jsonb_array_length
+  // + ->>'), sin traer el content_json completo en el listado — ver listReportsPg.
+  // Permiten mostrar "N páginas" y el icono Word/PowerPoint en ReportsAdminModal.tsx
+  // sin pagar el costo de transferir/parsear el documento entero por fila.
+  int pageCount = 0;
+  std::string layoutMode = "document";
 };
 
 struct AuthSession {

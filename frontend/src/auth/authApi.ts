@@ -79,51 +79,57 @@ async function parseJsonResponse(response: Response): Promise<any> {
 }
 
 /**
- * ADR-082: la credencial viaja en la cookie HttpOnly `access_token`, no en un
- * header que este código pueda construir (ni leer, que es el objetivo). Lo
- * único que aporta el JS es el token CSRF del double-submit — ver
- * `authStorage.authHeaders`.
+ * Migración a Bearer-en-memoria: la credencial primaria vuelve a ser
+ * `Authorization: Bearer <token>` (token en memoria de JS, nunca en disco --
+ * ver `authStorage.ts`), no la cookie HttpOnly `beemetry_access_token` (que
+ * se sigue enviando como respaldo). El motivo del cambio: dos frontends
+ * distintos en el mismo host (mismo dominio, distinto puerto) comparten el
+ * mismo cajón de cookies del navegador y se pisan la sesión entre sí; Bearer
+ * en memoria es inmune a eso porque vive en el contexto de JS de cada
+ * aplicación, no en un recurso compartido por host.
  */
 function authHeaders(): Record<string, string> {
     return sharedAuthHeaders()
 }
 
 /**
- * ADR-029, "Actualización 2026-07-19": header de doble envío contra CSRF
- * (double-submit cookie). El backend pone una cookie `csrf_token_v2` legible
- * por JS a propósito (a diferencia de `refresh_token`, HttpOnly); este
- * código la repite en el header para que el servidor pueda verificar que
- * quien llama puede LEER cookies de este origen (un sitio de terceros no
- * puede, aunque el navegador de la víctima sí mande la cookie sola).
+ * Header de doble envío contra CSRF (double-submit cookie) -- sigue siendo
+ * necesario para `/api/auth/refresh` y `/api/auth/logout`, que dependen de
+ * la cookie `beemetry_refresh_token` (HttpOnly), no del Bearer. El backend
+ * pone una cookie `beemetry_csrf_token` legible por JS a propósito (a
+ * diferencia de `beemetry_refresh_token`); este código la repite en el
+ * header para que el servidor pueda verificar que quien llama puede LEER
+ * cookies de este origen (un sitio de terceros no puede, aunque el
+ * navegador de la víctima sí mande la cookie sola).
  *
- * "Actualización 2026-07-21": la cookie pasó de `csrf_token` (Path=/api/auth)
- * a `csrf_token_v2` (Path=/) porque `document.cookie` NUNCA exponía la
- * versión vieja a este código (que corre en páginas de la SPA como "/" o
- * "/report", nunca "/api/auth") — todo refresh fallaba con
- * `csrf_token_mismatch` en cuanto el access token de 15 min vencía,
- * disparando el logout silencioso que mostraba "Sesión expirada" una y otra
- * vez pese a que el usuario seguía autenticado. El nombre nuevo (no solo el
- * Path) evita además que la cookie vieja, aún viva hasta 7 días en sesiones
- * activas de antes de este fix, siga generando el mismo mismatch.
+ * Nombre namespaced `beemetry_csrf_token` (antes `csrf_token_v2`, migración
+ * 2026-08-27): mismo motivo que el resto de las cookies de esta migración --
+ * evitar colisión con una cookie genérica de otro frontend en el mismo host.
  */
 function csrfHeaders(): Record<string, string> {
-    const csrf = readCookie('csrf_token_v2')
+    const csrf = readCookie('beemetry_csrf_token')
     return csrf ? { 'X-CSRF-Token': csrf } : {}
 }
 
 /**
- * ADR-029 (revisado): el access token vive ~15 min; en vez de esperar a que
- * el backend responda 401, cualquier fetch autenticado puede pasar por acá
- * para renovarlo una sola vez y reintentar. `refreshInFlight` deduplica
- * refrescos concurrentes (varias llamadas 401 casi simultáneas comparten
- * la misma promesa en vez de rotar el refresh token varias veces).
+ * El access token vive ~15 min; en vez de esperar a que el backend responda
+ * 401, cualquier fetch autenticado puede pasar por acá para renovarlo una
+ * sola vez y reintentar. `refreshInFlight` deduplica refrescos concurrentes
+ * (varias llamadas 401 casi simultáneas comparten la misma promesa en vez de
+ * rotar el refresh token varias veces).
  *
- * "Actualización 2026-07-19": el refresh token ya no vive en `localStorage`
- * -- viaja como cookie HttpOnly que el navegador adjunta solo. Este código
- * ya no puede (ni necesita) leerlo: simplemente llama al endpoint con
- * `credentials: 'include'` y deja que el navegador mande la cookie; si no
- * hay una cookie de refresh válida, el backend responde 401/400 igual que
- * antes y se limpia la sesión local.
+ * El refresh token en sí NUNCA vive en JS -- viaja como cookie HttpOnly
+ * namespaced (`beemetry_refresh_token`) que el navegador adjunta solo. Este
+ * código no puede (ni necesita) leerlo: llama al endpoint con
+ * `credentials: 'include'` + `X-CSRF-Token` y deja que el navegador mande la
+ * cookie; si no hay una cookie de refresh válida, el backend responde
+ * 401/400 y se limpia la sesión local. El `access_token` NUEVO que sí viene
+ * en el body de la respuesta se guarda vía `updateSessionTokens` en la
+ * variable de memoria de `authStorage.ts` (Bearer-en-memoria) -- también
+ * exportado como `refreshAccessToken()` para que `AuthGateway`/el arranque
+ * de la app puedan llamarlo directo y restaurar la sesión sin re-loguear
+ * tras una recarga (el token en memoria se pierde con cada reload, a
+ * propósito).
  */
 let refreshInFlight: Promise<string | null> | null = null
 
@@ -132,11 +138,28 @@ export async function refreshAccessToken(): Promise<string | null> {
         return refreshInFlight
     }
     refreshInFlight = (async () => {
+        // Sin timeout (versión anterior) este fetch podía quedar colgado
+        // indefinidamente si el backend estaba sobrecargado/lento -- axios
+        // NO protege este camino: el `timeout` de la instancia `api` (ver
+        // ReportStudioV2/lib/api.ts) solo acota la request ORIGINAL que
+        // disparó el 401, no este `await refreshAccessToken()` que corre
+        // DENTRO del interceptor. Reproducido en vivo: un export de un
+        // informe grande (378 páginas / 1120 gráficos en vivo, cada uno con
+        // su propia petición de telemetría) se colgó 10 minutos completos --
+        // un 401 a mitad de export (el access token dura ~15 min) disparaba
+        // este refresh, que nunca resolvía ni rechazaba bajo backend
+        // sobrecargado, dejando el widget del gráfico en estado "cargando"
+        // para siempre (nunca llegaba a su propio catch/finally). Mismo
+        // patrón AbortController que ya usa `postJson` más abajo en este
+        // mismo archivo.
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 15000)
         try {
             const response = await fetch(`${backendBaseUrl()}/api/auth/refresh`, {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+                signal: controller.signal,
             })
             if (!response.ok) {
                 // Refresh token inválido/expirado/revocado/ausente: no hay
@@ -152,7 +175,14 @@ export async function refreshAccessToken(): Promise<string | null> {
             updateSessionTokens(payload.access_token, payload.expires_in)
             return payload.access_token as string
         } catch {
+            // Incluye AbortError (timeout): no limpia la sesión -- puede ser
+            // un problema transitorio de red/servidor, no un refresh token
+            // realmente inválido. El caller (authFetch/interceptor de axios)
+            // trata `null` como "no se pudo renovar" y sigue con el 401
+            // original en vez de quedarse esperando para siempre.
             return null
+        } finally {
+            clearTimeout(timeoutId)
         }
     })()
     try {
@@ -250,6 +280,9 @@ export async function fetchCompanies(): Promise<any[]> {
     return Array.isArray(payload.companies) ? payload.companies : []
 }
 
+/** db_scripts/72: 'mining_client' (empresa minera cliente, default) | 'organization' (Beemetry/TimeTelemetry). */
+export type CompanyType = 'mining_client' | 'organization';
+
 export interface CompanyRecord {
     company_id: string;
     name: string;
@@ -267,6 +300,7 @@ export interface CompanyRecord {
     latitude: number | null;
     longitude: number | null;
     location_zoom: number | null;
+    company_type: CompanyType;
 }
 
 export interface CreateCompanyPayload {
@@ -277,6 +311,7 @@ export interface CreateCompanyPayload {
     latitude?: number;
     longitude?: number;
     location_zoom?: number;
+    company_type?: CompanyType;
 }
 
 /** ADR-085/086: extendido para aceptar RUC/país/domicilio opcionales, además
@@ -290,6 +325,7 @@ export async function createCompany(payload: string | CreateCompanyPayload): Pro
         ...(body.ruc ? { ruc: body.ruc } : {}),
         ...(body.country ? { country: body.country } : {}),
         ...(body.domicilio_fiscal ? { domicilio_fiscal: body.domicilio_fiscal } : {}),
+        ...(body.company_type ? { company_type: body.company_type } : {}),
         // ADR-121: lat/lng viajan juntas o ninguna -- ver auth_routes.cpp.
         ...(typeof body.latitude === 'number' && typeof body.longitude === 'number'
             ? {
@@ -322,6 +358,7 @@ export async function updateCompany(companyId: string, patch: {
     latitude?: number;
     longitude?: number;
     location_zoom?: number;
+    company_type?: CompanyType;
 }): Promise<CompanyRecord> {
     const response = await authFetch(`/api/auth/companies/${encodeURIComponent(companyId)}`, {
         method: 'PUT',
@@ -329,6 +366,53 @@ export async function updateCompany(companyId: string, patch: {
         body: JSON.stringify(patch),
     })
     return parseJsonResponse(response)
+}
+
+// ── db_scripts/72: acceso cruzado de personal de organización ─────────────
+// (Beemetry/TimeTelemetry) a empresas mineras clientes. Todo esto solo tiene
+// efecto si el tenant activo de la sesión es company_type='organization' Y el
+// usuario tiene el permiso de plataforma `org.cross_tenant.manage` -- el
+// backend re-valida ambas condiciones en cada request (ver
+// backend/src/auth/org_access_routes.cpp), esto es solo para no mostrar la UI
+// a quien de todas formas no podría usarla.
+
+export interface OrgAccessCandidateTenant {
+    tenant_id: string;
+    tenant_name: string;
+    country_code: string;
+    region: string;
+}
+
+/** GET /api/auth/org-access/candidates — tenants mineros disponibles para otorgar acceso cruzado. */
+export async function fetchOrgAccessCandidates(): Promise<OrgAccessCandidateTenant[]> {
+    const response = await authFetch('/api/auth/org-access/candidates')
+    const payload = await parseJsonResponse(response)
+    return Array.isArray(payload.tenants) ? payload.tenants : []
+}
+
+/** POST /api/auth/org-access/grant — otorga (o actualiza el rol de) acceso cruzado. */
+export async function grantOrgAccess(username: string, tenantId: string, role: string): Promise<any> {
+    return postJson('/api/auth/org-access/grant', { username, tenant_id: tenantId, role })
+}
+
+/** POST /api/auth/org-access/revoke — revoca un acceso cruzado ya otorgado. */
+export async function revokeOrgAccess(username: string, tenantId: string): Promise<any> {
+    return postJson('/api/auth/org-access/revoke', { username, tenant_id: tenantId })
+}
+
+export interface OrgAccessAuditRow {
+    event_time: string;
+    action: string;
+    actor_username: string;
+    success: boolean;
+    detail: string;
+}
+
+/** GET /api/auth/org-access/audit — historial dedicado de concesiones/revocaciones. */
+export async function fetchOrgAccessAudit(limit = 50, offset = 0): Promise<OrgAccessAuditRow[]> {
+    const response = await authFetch(`/api/auth/org-access/audit?limit=${limit}&offset=${offset}`)
+    const payload = await parseJsonResponse(response)
+    return Array.isArray(payload.items) ? payload.items : []
 }
 
 export interface CompanyLocation {
@@ -477,6 +561,44 @@ export async function loginWithPassword(payload: {
         }
     }
     return postJson('/api/auth/login/password', body)
+}
+
+/**
+ * Segundo paso del login cuando loginWithPassword (o el login facial)
+ * devuelve `{status: "mfa_required", mfa_token}` (ADR-135, MFA/TOTP). El
+ * `mfa_token` es de un solo uso real y expira en 5 min -- si el código es
+ * incorrecto se puede reintentar con el MISMO mfa_token hasta esa ventana.
+ */
+export async function loginWithMfaCode(mfaToken: string, code: string): Promise<any> {
+    return postJson('/api/auth/login/mfa', { mfa_token: mfaToken, code })
+}
+
+/** Estado actual de MFA/TOTP de la cuenta logueada. */
+export async function getMfaStatus(): Promise<{ enabled: boolean }> {
+    return authFetch('/api/auth/mfa/status').then((r) => r.json())
+}
+
+/** Inicia el enrolamiento: genera un secreto pendiente + la URI otpauth:// para QR/ingreso manual. */
+export async function enrollMfa(): Promise<{ secret: string; otpauth_uri: string }> {
+    return authFetch('/api/auth/mfa/enroll', { method: 'POST' }).then((r) => r.json())
+}
+
+/** Confirma el enrolamiento con el primer código real del authenticator. */
+export async function verifyMfaEnroll(code: string): Promise<any> {
+    return authFetch('/api/auth/mfa/verify-enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+    }).then((r) => r.json())
+}
+
+/** Desactiva MFA -- exige el código vigente (prueba de posesión del segundo factor). */
+export async function disableMfa(code: string): Promise<any> {
+    return authFetch('/api/auth/mfa/disable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+    }).then((r) => r.json())
 }
 
 /**

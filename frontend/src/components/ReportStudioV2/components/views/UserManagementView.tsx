@@ -12,6 +12,8 @@ import { useI18n } from '../../../../i18n/I18nProvider';
 import { requestConfirmation } from '../../../UI/ConfirmActionDialog';
 import { DocumentScanCapture } from '../../../UI/DocumentScanCapture';
 import type { DniScanResult } from '../../../../auth/authApi';
+import { fetchOrgAccessCandidates, grantOrgAccess, revokeOrgAccess, type OrgAccessCandidateTenant } from '../../../../auth/authApi';
+import { usePermissions } from '../../../../auth/usePermissions';
 import { FACIAL_ICAO } from '../../../../config/facialIcaoConfig';
 import './accessAdministration.css';
 // Modal movido internamente para evitar errores de resolucion dinamica en tiempo de ejecucion
@@ -28,6 +30,8 @@ interface TenantAssignment {
   tenant_name: string;
   role: string | null;
   is_default: boolean;
+  /** db_scripts/72: "membership" (auth_user_tenant, default) | "org_grant" (org_tenant_access -- acceso cruzado). */
+  via?: 'membership' | 'org_grant';
 }
 
 const ACTIONS = [
@@ -63,6 +67,8 @@ function UserManagementView() {
   const { t } = useI18n();
   const session = getSession();
   const company = session?.company || '';
+  const { isOrganizationTenant, hasPermission, isAdmin } = usePermissions();
+  const canManageOrgAccess = (isAdmin || hasPermission('org.cross_tenant.manage')) && isOrganizationTenant;
 
   const [users, setUsers] = useState<any[]>([]);
   const [auditRows, setAuditRows] = useState<any[]>([]);
@@ -89,6 +95,13 @@ function UserManagementView() {
   const [tenantsLoading, setTenantsLoading] = useState(false);
   const [assignRole, setAssignRole] = useState('operator');
   const [assigningTenant, setAssigningTenant] = useState(false);
+
+  // db_scripts/72: acceso cruzado (personal de organización -> empresas
+  // mineras clientes). Solo se carga/usa si canManageOrgAccess.
+  const [orgCandidates, setOrgCandidates] = useState<OrgAccessCandidateTenant[]>([]);
+  const [orgAccessTenantId, setOrgAccessTenantId] = useState('');
+  const [orgAccessRole, setOrgAccessRole] = useState('operator');
+  const [grantingOrgAccess, setGrantingOrgAccess] = useState(false);
 
   // Form States for edits
   const [formData, setFormData] = useState({
@@ -123,6 +136,13 @@ function UserManagementView() {
   useEffect(() => {
     if (company) loadData();
   }, [company]);
+
+  useEffect(() => {
+    if (!canManageOrgAccess) { setOrgCandidates([]); return; }
+    fetchOrgAccessCandidates()
+      .then(setOrgCandidates)
+      .catch((err) => log.error('fetchOrgAccessCandidates', err));
+  }, [canManageOrgAccess]);
 
   const createUser = async () => {
     if (!createForm.username.trim() || !createForm.password.trim() ||
@@ -197,18 +217,43 @@ function UserManagementView() {
     }
   };
 
-  const revokeTenant = async (username: string, tenantName: string) => {
-    if (!(await requestConfirmation(t('confirm.revokeTenant', { user: username, tenant: tenantName })))) return;
+  // db_scripts/72: una fila "org_grant" es una concesión de acceso cruzado
+  // (org_tenant_access), no una membresía real (auth_user_tenant) -- se
+  // revoca por un endpoint distinto (POST /api/auth/org-access/revoke).
+  const revokeTenant = async (username: string, assignment: TenantAssignment) => {
+    if (!(await requestConfirmation(t('confirm.revokeTenant', { user: username, tenant: assignment.tenant_name })))) return;
     try {
-      const res = await fetch(`/api/auth/users/${encodeURIComponent(username)}/tenants/remove`, {
-        method: 'POST', headers: authHeaders(),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      if (assignment.via === 'org_grant') {
+        await revokeOrgAccess(username, assignment.tenant_id);
+      } else {
+        const res = await fetch(`/api/auth/users/${encodeURIComponent(username)}/tenants/remove`, {
+          method: 'POST', headers: authHeaders(),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      }
       setStatusMsg({ type: 'success', text: 'Acceso revocado.' });
       loadUserTenants(username);
     } catch (err) {
       setStatusMsg({ type: 'error', text: `No se pudo revocar: ${(err as Error).message}` });
+    }
+  };
+
+  const grantSelectedOrgAccess = async (username: string) => {
+    if (!orgAccessTenantId) {
+      setStatusMsg({ type: 'error', text: 'Seleccione la empresa minera destino.' });
+      return;
+    }
+    setGrantingOrgAccess(true);
+    try {
+      await grantOrgAccess(username, orgAccessTenantId, orgAccessRole);
+      const tenantName = orgCandidates.find(c => c.tenant_id === orgAccessTenantId)?.tenant_name || orgAccessTenantId;
+      setStatusMsg({ type: 'success', text: `Acceso cruzado a "${tenantName}" otorgado (${orgAccessRole}).` });
+      loadUserTenants(username);
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: `No se pudo otorgar el acceso cruzado: ${(err as Error).message}` });
+    } finally {
+      setGrantingOrgAccess(false);
     }
   };
 
@@ -561,7 +606,10 @@ function UserManagementView() {
           </div>
           <div>
             <h1 id="users-title">Administración de usuarios</h1>
-            <p>{company || 'Empresa no identificada'} · {users.length} registros</p>
+            <p>
+              {company || 'Empresa no identificada'} · {users.length} registros
+              {isOrganizationTenant && <span className="access-badge-sky ml-2">Personal de organización</span>}
+            </p>
           </div>
           </div>
         </div>
@@ -782,11 +830,14 @@ function UserManagementView() {
                           <div key={t.tenant_id} className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg bg-white/5 border border-white/5">
                             <div className="min-w-0">
                               <div className="text-[10px] font-black text-white truncate">{t.tenant_name}</div>
-                              <div className="text-[8px] text-slate-500 uppercase font-bold">{t.role || 'sin rol'} {t.is_default && '· Predeterminada'}</div>
+                              <div className="text-[8px] text-slate-500 uppercase font-bold flex items-center gap-1.5">
+                                {t.role || 'sin rol'} {t.is_default && '· Predeterminada'}
+                                {t.via === 'org_grant' && <span className="access-badge-sky">Acceso cruzado</span>}
+                              </div>
                             </div>
                             <button
                               type="button"
-                              onClick={() => revokeTenant(selectedUser.username, t.tenant_name)}
+                              onClick={() => revokeTenant(selectedUser.username, t)}
                               className="shrink-0 p-1 rounded bg-slate-800 text-slate-500 hover:bg-rose-500/20 hover:text-rose-400 transition-colors"
                               title="Revocar acceso a esta unidad"
                             >
@@ -812,6 +863,44 @@ function UserManagementView() {
                       </button>
                     </div>
                   </div>
+
+                  {/* db_scripts/72: acceso a otras empresas mineras (acceso
+                      cruzado de personal de organización) -- visible solo si
+                      el tenant activo de la sesión es de organización y el
+                      operador tiene org.cross_tenant.manage; el backend
+                      revalida ambas condiciones en cada request. */}
+                  {canManageOrgAccess && (
+                    <div className="p-3 rounded-xl bg-slate-950/40 border border-white/10 space-y-2">
+                      <h3 className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                        <Building2 size={11} className="text-sky-400" /> Acceso a otras empresas mineras
+                      </h3>
+                      <p className="text-[8px] text-slate-500 leading-relaxed">
+                        Otorga acceso de soporte a una empresa minera cliente, sobre uno de los perfiles existentes — auditado aparte del acceso normal.
+                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <select className="flex-1 form-select-base"
+                          value={orgAccessTenantId} onChange={e => setOrgAccessTenantId(e.target.value)}>
+                          <option value="">Seleccione empresa minera...</option>
+                          {orgCandidates.map(c => (
+                            <option key={c.tenant_id} value={c.tenant_id}>{c.tenant_name}</option>
+                          ))}
+                        </select>
+                        <select className="form-select-base"
+                          value={orgAccessRole} onChange={e => setOrgAccessRole(e.target.value)}>
+                          {ROLE_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={grantingOrgAccess || !orgAccessTenantId}
+                          onClick={() => grantSelectedOrgAccess(selectedUser.username)}
+                          className="shrink-0 px-2 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-[8px] font-black uppercase flex items-center gap-1"
+                          title="Otorgar acceso cruzado"
+                        >
+                          <Plus size={10} /> Otorgar
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Formulario Dinámico según Acción */}
                   {activeAction && (

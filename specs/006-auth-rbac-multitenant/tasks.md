@@ -57,7 +57,7 @@ T21, T22 (hardening S9, paralelo)
 
 - [x] T1-T14 completadas (código en repo).
 - [x] CA-1..CA-5 demostradas: login, aislamiento, RBAC, audit, export.
-- [ ] CA-6 (roles BD dashboard_ro) — enlazado a spec 004, verificado allí.
+- [x] CA-6 (roles BD dashboard_ro) — enlazado a spec 004: T4 (`Crear rol dashboard_ro`) ya estaba ☑ ahí desde 2026-06; verificado 2026-08-30 que la infraestructura de réplica que lo consume sigue real y activa (PgBouncer primario confirmado, ver spec 004).
 - [x] T21 — `POST /api/auth/logout` (revoca token) + `POST /api/auth/refresh` (rotación: token nuevo, viejo revocado; también limpia EMA de gafas).
 - [x] T22 — Rate limiter en-memoria: 5 fallos/300 s por `company|username` → HTTP 429; se limpia en login exitoso.
 - [x] ADR-006-1..5 registrados.

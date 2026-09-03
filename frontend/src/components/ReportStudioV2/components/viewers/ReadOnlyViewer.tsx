@@ -1,7 +1,10 @@
 import React, { memo, useEffect, useState } from 'react';
-import { X, Download, Eye, Printer, ShieldCheck } from 'lucide-react';
+import { flushSync } from 'react-dom';
+import { X, Download, Eye, Printer, ShieldCheck, Link2 } from 'lucide-react';
 import { usePdfExport } from '../../lib/usePdfExport';
+import { useShareLink } from '../../lib/useShareLink';
 import PdfPasswordModal from '../PdfPasswordModal';
+import ShareLinkModal from '../ShareLinkModal';
 import { resolveReportImageSrc } from '../../lib/reportImageSrc';
 import { getSession } from '../../../../auth/authStorage';
 import { getTenantLogoDataUrl } from '../../lib/tenantLogo';
@@ -14,16 +17,85 @@ import { buildStyledSegments, sanitizeSpans, styleToCss, type BaseTextStyle } fr
 import { isPptxOverlayEligible, type PptxOverlayMeta } from '../../lib/pptxOverlayMapping';
 import { semanticStatusStyle } from '../../lib/semanticStatus';
 import { sanitizeRichHtml } from '../../lib/sanitizeHtml';
+import { toTrustedHtml } from '../../../../lib/trustedHtml';
 import LiveChartBlock from '../dashboard/LiveChartBlock';
 import SeismicReportWidget from '../document/SeismicReportWidget';
 import SensorMultiChartWidget from '../document/SensorMultiChartWidget';
 import { fixRecordedVideoElement } from '../../lib/videoDurationFix';
+import { sensorDashboardMinHeight } from '../../lib/sensorMultiChartLayout';
 
 /** Misma tipografía/color "impactante" de plataforma que PageCanvas.tsx —
  * encabezado y pie de página deben verse idénticos en editor y solo-lectura. */
 const PLATFORM_CHROME_FONT = "'Arial Black', 'Arial Bold', Arial, sans-serif";
 const PLATFORM_CHROME_FONT_SIZE = 9;
 const PLATFORM_CHROME_COLOR = '#595959';
+
+/**
+ * Virtualización de páginas SOLO para el pipeline de export server-side
+ * (`isPrint`) de informes grandes -- pedido explícito tras reproducir en
+ * vivo que, sin esto, un informe de cientos/miles de páginas monta TODOS
+ * sus widgets de sensor (ECharts + Leaflet + Three.js/WebGL) al mismo
+ * tiempo, sin importar que la exportación solo capture uno a la vez: la
+ * contención de CPU/GPU resultante hacía que CADA captura individual
+ * (`elementHandle.screenshot()`, 12s de margen) empezara a expirar en un
+ * informe de 1120 diagramas, y Chromium tiene además un techo duro de
+ * contextos WebGL simultáneos (peor aún con `SensorSurface3DPanel`).
+ *
+ * Umbral deliberadamente alto: la inmensa mayoría de informes reales (unas
+ * pocas a unas pocas decenas de páginas) NUNCA activa este camino -- sigue
+ * exactamente el comportamiento de siempre, sin ningún riesgo de regresión.
+ * Recién con documentos grandes se activa: la página arranca mostrando solo
+ * la página 1 (± `EXPORT_VIRTUALIZATION_WINDOW`) con contenido real; el
+ * resto queda como un placeholder del tamaño exacto de la hoja (necesario
+ * para que `reportPageSizes()`/el conteo de `.ro-page-wrapper` en
+ * server.js sigan funcionando) pero SIN montar ningún elemento -- el
+ * sidecar de export (`pdf-export-service/server.js`) avanza la página
+ * activa con `window.__setExportActivePage__(n)` según va necesitando
+ * capturar cada una, en vez de tener las 2000 montadas a la vez.
+ */
+const EXPORT_VIRTUALIZATION_PAGE_THRESHOLD = 25;
+// Subido de 1 a 6 (causa raíz real de la lentitud en exports grandes,
+// encontrada en vivo con un documento de 2104 páginas): con ventana=1, un
+// widget de sensor solo queda montado mientras la página activa transita
+// por sus 3 vecinas (N-1, N, N+1) -- a ~2.4s por transición, son ~7s de vida
+// real antes de que ese elemento se desmonte (sale del `.map()` de abajo).
+// El fetch de telemetría de ese widget (SensorMultiChartWidget.tsx) no
+// tiene ninguna forma de sobrevivir al desmontaje: Chromium aborta la
+// petición de red en pleno vuelo ("net::ERR_ABORTED", confirmado en los
+// logs del sidecar de export), sin importar cuán generoso sea el timeout
+// de axios -- nunca llega a cumplirse porque la página desaparece primero.
+// Ventana=6 mantiene un widget montado ~13 transiciones (~31s), tiempo real
+// de sobra para que la consulta a /mining/telemetry/wizard/query complete
+// incluso bajo la carga de miles de peticiones concurrentes de un export
+// grande. Costo: ~13 páginas montadas a la vez en vez de 3 (antes 3
+// elementos de sensor activos, ahora hasta ~39) -- memoria medida en vivo
+// durante un export exitoso de 2104 páginas se mantuvo muy por debajo de
+// cualquier límite (RSS máx. ~286MB de 4GB disponibles), así que hay
+// margen de sobra para este cambio.
+const EXPORT_VIRTUALIZATION_WINDOW = 6;
+
+/** Suscriptores del componente(s) `ReadOnlyViewer` montado(s) a cambios de
+ * página activa -- normalmente hay uno solo (print-report.html), pero un
+ * registro en vez de una única variable de callback evita pisar nada si
+ * alguna vez hay más de una instancia viva. */
+const exportActivePageSubscribers = new Set<(page: number) => void>();
+if (typeof window !== 'undefined') {
+  (window as any).__setExportActivePage__ = (n: number) => {
+    // `flushSync` -- SIN esto, `page.evaluate()` (Puppeteer) resuelve la
+    // promesa apenas termina esta función síncrona, ANTES de que React
+    // realmente vuelva a renderizar/montar la página nueva (los `setState`
+    // de los suscriptores solo quedan agendados). El sidecar entonces
+    // consultaba `data-export-ready` sobre una página que todavía no tenía
+    // NINGÚN widget montado (0 pendientes = vacuamente "lista") y pasaba
+    // directo a capturar -- reproducido en vivo: de 420 diagramas, 417
+    // terminaron como texto "no se pudo capturar" porque el elemento
+    // literalmente no existía todavía en el DOM en ese instante.
+    // `flushSync` fuerza el commit ANTES de que esta función retorne.
+    flushSync(() => {
+      exportActivePageSubscribers.forEach((fn) => fn(n));
+    });
+  };
+}
 
 function ReadOnlyHeaderLogo({ tenantId }: { tenantId?: string }) {
   const [src, setSrc] = useState<string | null>(null);
@@ -41,7 +113,7 @@ function ReadOnlyHeaderLogo({ tenantId }: { tenantId?: string }) {
 
 interface ReadOnlyViewerProps {
   report: any;
-  onClose: (() => void) | null;
+  onClose?: (() => void) | null;
   /** Solo la usa el sidecar de export PPTX (print-report.html?pptxOverlay=1):
    * los bloques `isPptxOverlayEligible` (hoy solo `text`) se capturan con la
    * tinta invisible (mismo layout/line-wrap, sin texto visible) y se marcan
@@ -49,6 +121,8 @@ interface ReadOnlyViewerProps {
    * para superponer un cuadro de texto NATIVO editable de PowerPoint en la
    * misma posición, en vez de dejar el texto horneado en la imagen de fondo. */
   hideOverlayText?: boolean;
+  /** Modo de impresión/export PDF aislado server-side: omite la barra de herramientas y etiquetas de página */
+  isPrint?: boolean;
 }
 
 /**
@@ -56,10 +130,12 @@ interface ReadOnlyViewerProps {
  * Renderiza las páginas usando el mismo HTML que MultipageView pero deshabilitando
  * toda interacción (pointer-events: none en el contenido).
  */
-function ReadOnlyViewer({ report, onClose, hideOverlayText }: ReadOnlyViewerProps) {
-  if (!report) return null;
-
-  const doc = (() => {
+function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: ReadOnlyViewerProps) {
+  // `doc` se calcula ACÁ (antes del `if (!report) return null` de abajo) a
+  // propósito -- el hook de virtualización que sigue necesita conocer
+  // `doc.pages.length` desde el primer render, y los hooks no pueden
+  // llamarse condicionalmente después de un return temprano.
+  const doc = report ? (() => {
     try {
       // El backend devuelve content_json (snake_case); algunos flujos internos
       // usan contentJson (camelCase, ya combinado en frontend). Aceptar ambos.
@@ -69,7 +145,26 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText }: ReadOnlyViewerProp
     } catch {
       return null;
     }
-  })();
+  })() : null;
+
+  // Ver comentario de EXPORT_VIRTUALIZATION_PAGE_THRESHOLD más arriba. Arranca
+  // directo en la página 1 (no en `null`) para documentos grandes -- así el
+  // PRIMER render ya monta solo esa página, sin ninguna ventana donde las
+  // miles de páginas restantes lleguen a montarse aunque sea un instante.
+  const shouldVirtualize = isPrint && (doc?.pages?.length || 0) > EXPORT_VIRTUALIZATION_PAGE_THRESHOLD;
+  const [exportActivePage, setExportActivePage] = useState<number | null>(shouldVirtualize ? 1 : null);
+  useEffect(() => {
+    if (!shouldVirtualize) return undefined;
+    (window as any).__exportVirtualized__ = true;
+    const onActivePageChange = (n: number) => setExportActivePage(n);
+    exportActivePageSubscribers.add(onActivePageChange);
+    return () => {
+      exportActivePageSubscribers.delete(onActivePageChange);
+      delete (window as any).__exportVirtualized__;
+    };
+  }, [shouldVirtualize]);
+
+  if (!report) return null;
 
   // "Imprimir" es impresión nativa del navegador, inmediata y sin protección
   // (uso interno rápido). "Descargar PDF protegido" es el pipeline
@@ -81,6 +176,15 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText }: ReadOnlyViewerProp
     downloadPdf(report.id).catch(() => {});
   };
 
+  // ADR-138: enlace de acceso directo (sin contraseña) — complementa el PDF
+  // protegido de arriba en vez de reemplazarlo (ver decisión: "implementar
+  // tanto la 1 como la 2").
+  const { generateLink, generating: generatingLink, link: shareLink, clearLink } = useShareLink();
+  const handleGenerateShareLink = () => {
+    if (!report.id) return;
+    generateLink(report.id).catch(() => {});
+  };
+
   // Misma fuente de verdad que el editor (PageCanvas.tsx) — antes esta vista
   // usaba una heurística propia y desactualizada (primera línea de CADA
   // bloque de texto, sin filtrar por estilo de encabezado ni numerar), por
@@ -90,46 +194,59 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText }: ReadOnlyViewerProp
   // la lista completa repetida en cada página.
 
   return (
-    <div className="ro-overlay">
-      {/* ── Barra superior readonly ── */}
-      <div className="ro-toolbar">
-        <div className="ro-toolbar-left">
-          <Eye size={16} style={{ color: '#a5b4fc' }} />
-          <span className="ro-badge">MODO LECTURA — SOLO VISUALIZACIÓN</span>
-          <span className="ro-title">{report.title}</span>
-        </div>
-        <div className="ro-toolbar-right">
-          <button className="ro-btn" onClick={handlePrint} title="Imprimir (sin marca de agua ni contraseña)">
-            <Printer size={15} /> Imprimir
-          </button>
-          {report.id && (
-            <button
-              className="ro-btn"
-              onClick={handleDownloadProtectedPdf}
-              disabled={exporting}
-              title="Descargar PDF con marca de agua y contraseña"
-            >
-              {exporting ? <ShieldCheck size={15} className="ra-spin" /> : <Download size={15} />}
-              {exporting ? 'Generando...' : 'Descargar PDF protegido'}
+    <div className="ro-overlay" style={isPrint ? { position: 'relative', background: '#ffffff', width: '100%', margin: 0, padding: 0 } : undefined}>
+      {/* ── Barra superior readonly (oculta en modo impresión) ── */}
+      {!isPrint && (
+        <div className="ro-toolbar">
+          <div className="ro-toolbar-left">
+            <Eye size={16} style={{ color: '#a5b4fc' }} />
+            <span className="ro-badge">MODO LECTURA — SOLO VISUALIZACIÓN</span>
+            <span className="ro-title">{report.title}</span>
+          </div>
+          <div className="ro-toolbar-right">
+            <button className="ro-btn" onClick={handlePrint} title="Imprimir (sin marca de agua ni contraseña)">
+              <Printer size={15} /> Imprimir
             </button>
-          )}
-          {onClose && (
-            <button className="ro-btn ro-btn-close" onClick={onClose} title="Cerrar">
-              <X size={15} /> Cerrar
-            </button>
-          )}
+            {report.id && (
+              <button
+                className="ro-btn"
+                onClick={handleDownloadProtectedPdf}
+                disabled={exporting}
+                title="Descargar PDF con marca de agua y contraseña"
+              >
+                {exporting ? <ShieldCheck size={15} className="ra-spin" /> : <Download size={15} />}
+                {exporting ? 'Generando...' : 'Descargar PDF protegido'}
+              </button>
+            )}
+            {report.id && (
+              <button
+                className="ro-btn"
+                onClick={handleGenerateShareLink}
+                disabled={generatingLink}
+                title="Generar enlace/QR que abre el PDF directo al escanearlo, sin contraseña (vence en 48h)"
+              >
+                <Link2 size={15} />
+                {generatingLink ? 'Generando...' : 'Enlace + QR'}
+              </button>
+            )}
+            {onClose && (
+              <button className="ro-btn ro-btn-close" onClick={onClose} title="Cerrar">
+                <X size={15} /> Cerrar
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Contenido del informe ── */}
-      <div className="ro-content">
+      <div className="ro-content" style={isPrint ? { padding: 0, margin: 0, overflow: 'visible' } : undefined}>
         {!doc ? (
           <div className="ro-no-content">
             <Eye size={40} style={{ opacity: 0.2 }} />
             <p>Este informe no tiene contenido visual disponible.</p>
           </div>
         ) : (
-          <div className="ro-pages" style={{ pointerEvents: 'none', userSelect: 'none' }}>
+          <div className="ro-pages" style={{ pointerEvents: 'none', userSelect: 'none', ...(isPrint ? { gap: 0, padding: 0, margin: 0 } : {}) }}>
             {doc.pages && doc.pages.map((page: any) => {
               // Mismo cálculo que PageCanvas.tsx/MultipageView.tsx (editor):
               // sin esto, `.ro-page-canvas` quedaba fijo en A4-portrait vía
@@ -142,20 +259,35 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText }: ReadOnlyViewerProp
                 { paperSize: doc.meta?.paperSize, orientation: doc.meta?.orientation },
               );
               const { PAGE_WIDTH, PAGE_HEIGHT } = getReportLayoutMetrics(layoutMode, paperSize, orientation);
+              // Ver EXPORT_VIRTUALIZATION_PAGE_THRESHOLD arriba -- fuera de la
+              // ventana activa, esta página mantiene su caja (`.ro-page-canvas`
+              // con el tamaño real, necesario para reportPageSizes()/el conteo
+              // de `.ro-page-wrapper` en server.js) pero SIN montar ni un solo
+              // elemento: ningún ECharts/Leaflet/Three.js vivo hasta que le
+              // toque su turno real de captura.
+              const withinExportWindow = !shouldVirtualize
+                || exportActivePage === null
+                || Math.abs(page.page_number - exportActivePage) <= EXPORT_VIRTUALIZATION_WINDOW;
               return (
-              <div key={page.page_number} className="ro-page-wrapper">
-                <div className="ro-page-label">Página {page.page_number} de {doc.pages.length}</div>
-                <div className="ro-page-canvas" style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT }}>
+              <div key={page.page_number} className="ro-page-wrapper" data-page-number={page.page_number} style={isPrint ? { margin: 0, padding: 0, gap: 0 } : undefined}>
+                {!isPrint && <div className="ro-page-label">Página {page.page_number} de {doc.pages.length}</div>}
+                <div className="ro-page-canvas" style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT, ...(isPrint ? { boxShadow: 'none', borderRadius: 0 } : {}) }}>
                   {/* Renderizar cada elemento como lectura estática */}
-                  {page.elements && page.elements.map((el: any) => (
+                  {withinExportWindow && page.elements && page.elements.map((el: any) => {
+                    const renderedHeight = el.type === 'sensor_multi_chart'
+                      ? Math.max(Number(el.height) || 0, sensorDashboardMinHeight(el.props || {}, Number(el.width) || 0))
+                      : el.height;
+                    return (
                     <div
                       key={el.id}
+                      data-element-id={el.id}
+                      data-element-type={el.type}
                       style={{
                         position: 'absolute',
                         left: el.x,
                         top: el.y,
                         width: el.width,
-                        height: el.height,
+                        height: renderedHeight,
                         zIndex: el.zIndex || 1,
                         overflow: 'hidden',
                       }}
@@ -164,11 +296,14 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText }: ReadOnlyViewerProp
                         element={el.type === 'toc' ? { ...el, _tocEntries: tocSliceForElementId(doc, el.id) } : el}
                         pageNumber={page.page_number}
                         totalPages={doc.pages.length}
+                        tenantId={report.tenant_id || report.tenantId}
                         hideOverlayText={hideOverlayText}
                         resolveRef={(targetId) => resolveHeadingRefLabel(doc, targetId)}
+                        isPrint={isPrint}
                       />
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
               );
@@ -195,12 +330,15 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText }: ReadOnlyViewerProp
         </div>
       </div>
       {password && <PdfPasswordModal password={password} onClose={clearPassword} />}
+      {shareLink && (
+        <ShareLinkModal url={shareLink.url} expiresInHours={shareLink.expiresInHours} onClose={clearLink} />
+      )}
     </div>
   );
 }
 
 /** Renderiza un solo elemento de página en modo lectura estática */
-function ReadOnlyElement({ element, pageNumber, totalPages, hideOverlayText, resolveRef }: { element: any; pageNumber?: number; totalPages?: number; hideOverlayText?: boolean; resolveRef?: (targetId: string) => string | undefined }) {
+function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverlayText, resolveRef, isPrint }: { element: any; pageNumber?: number; totalPages?: number; tenantId?: string; hideOverlayText?: boolean; resolveRef?: (targetId: string) => string | undefined; isPrint?: boolean }) {
   const props = element.props || {};
 
   if (element.type === 'header') {
@@ -296,6 +434,10 @@ function ReadOnlyElement({ element, pageNumber, totalPages, hideOverlayText, res
             color: seg.style.color,
             fontSize: seg.style.fontSize,
             fontFamily: seg.style.fontFamily,
+            highlightColor:
+              seg.style.highlightColor && seg.style.highlightColor !== 'transparent'
+                ? seg.style.highlightColor
+                : undefined,
           })),
         }
       : null;
@@ -401,10 +543,14 @@ function ReadOnlyElement({ element, pageNumber, totalPages, hideOverlayText, res
         title={props.title}
         selections={props.selections}
         chartType={props.chartType}
+        chartTypes={props.chartTypes}
+        comboConfig={props.comboConfig}
         from={props.from}
         to={props.to}
-        width="100%"
+        tenantId={tenantId}
+        width={element.width}
         height="100%"
+        isPrint={isPrint}
       />
     );
   }
@@ -468,7 +614,7 @@ function ReadOnlyElement({ element, pageNumber, totalPages, hideOverlayText, res
                     // texto plano — renderizarla como children de React
                     // escapaba las etiquetas y mostraba "<b>texto</b>"
                     // literal en el visor de solo lectura y el export PDF.
-                    dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(String(cell ?? '')) }}
+                    dangerouslySetInnerHTML={{ __html: toTrustedHtml(sanitizeRichHtml(String(cell ?? ''))) }}
                   />
                   );
                 })}
@@ -499,6 +645,7 @@ function ReadOnlyElement({ element, pageNumber, totalPages, hideOverlayText, res
     return element.src ? (
       <video
         src={element.src}
+        poster={props.posterSrc || undefined}
         controls
         ref={(el) => fixRecordedVideoElement(el)}
         style={{ width: '100%', height: '100%', background: '#000', borderRadius: 6, display: 'block' }}

@@ -63,7 +63,16 @@ export function ConfirmActionHost() {
 
     return (
         <div
-            className="fixed inset-0 z-[1600] flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm"
+            // z-[1600] originalmente dejaba este diálogo GLOBAL por debajo de
+            // modales normales (.ra-overlay usa z-index:9999) y muy por debajo
+            // de los modales de inserción de medios (image/video/map/etc usan
+            // z-[20000]+) -- el diálogo SE RENDERIZABA (visible en el DOM,
+            // getBoundingClientRect correcto) pero era completamente
+            // inclickeable: el overlay del modal que lo disparó quedaba
+            // encima y absorbía el puntero, dejando el flujo de confirmación
+            // colgado sin ningún error visible. z-[20050] lo deja por encima
+            // del mayor z-index conocido en la app (20010, MapCaptureModal).
+            className="fixed inset-0 z-[20050] flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm"
             role="presentation"
             onMouseDown={() => finish(false)}
         >

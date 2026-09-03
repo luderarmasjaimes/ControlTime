@@ -127,6 +127,11 @@ services:
     container_name: beemetry-db
     image: timescale/timescaledb:latest-pg15
     restart: unless-stopped
+    # shm_size: default de Docker (64MB) es insuficiente con parallel workers
+    # habilitados (max_parallel_workers_per_gather=2) bajo consultas concurrentes;
+    # produce "could not resize shared memory segment ... No space left on device"
+    # (hallado en vivo el 2026-08-30 durante la simulación de sync ThingsBoard).
+    shm_size: "1gb"
     # Tuning para ingesta tiempo real ~10K sensores (host 20C/15G):
     # - shared_buffers/effective_cache calibrados al límite de mem del contenedor (4G)
     # - max_connections=400 (backend C++ abre/cierra PQconnectdb por request → cabecera amplia)
@@ -205,6 +210,20 @@ services:
       - ./db_scripts/64_telemetry_ingest_optimization.sql:/docker-entrypoint-initdb.d/64_telemetry_ingest_optimization.sql:ro
       - ./db_scripts/67_telemetry_25k_hardening.sql:/docker-entrypoint-initdb.d/67_telemetry_25k_hardening.sql:ro
       - ./db_scripts/69_cv_postulaciones_rrhh.sql:/docker-entrypoint-initdb.d/69_cv_postulaciones_rrhh.sql:ro
+      # ADR-131: modelo de telemetria consolidado (dim_*/telemetry_fact*).
+      # NOTA: 29-63/65/66/68/70/71 (RBAC, alarmas, chat, CV, etc.) siguen sin
+      # estar cableados aqui -- ver db-migrate mas abajo, que los cubre a
+      # traves de scripts/apply_migrations.sh en vez de initdb.d. Reducir esta
+      # lista al minimo (solo 01_init.sql) y mover TODO a db-migrate queda
+      # como paso separado, deliberadamente no hecho en la misma sesion que
+      # crea el runner, para no romper el bootstrap de un volumen nuevo sin
+      # antes probarlo aparte.
+      - ./db_scripts/73_repair_corrupt_chunk_verification.sql:/docker-entrypoint-initdb.d/73_repair_corrupt_chunk_verification.sql:ro
+      - ./db_scripts/74_telemetry_fact_dimensions.sql:/docker-entrypoint-initdb.d/74_telemetry_fact_dimensions.sql:ro
+      - ./db_scripts/75_telemetry_fact_compression_retention.sql:/docker-entrypoint-initdb.d/75_telemetry_fact_compression_retention.sql:ro
+      - ./db_scripts/76_telemetry_fact_continuous_aggregates.sql:/docker-entrypoint-initdb.d/76_telemetry_fact_continuous_aggregates.sql:ro
+      - ./db_scripts/78_telemetry_fact_backfill.sql:/docker-entrypoint-initdb.d/78_telemetry_fact_backfill.sql:ro
+      - ./db_scripts/79_schema_migrations_bootstrap.sql:/docker-entrypoint-initdb.d/79_schema_migrations_bootstrap.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sensors -d sensors_db"]
       interval: 10s
@@ -219,6 +238,33 @@ services:
         reservations:
           cpus: '1'
           memory: 1536M
+
+  # ADR-131: aplica db_scripts/*.sql no cubiertos por docker-entrypoint-initdb.d
+  # (ver comentario en el volumes: de `db` arriba) vía scripts/apply_migrations.sh,
+  # con control de versión/checksum en la tabla schema_migrations. Job de un
+  # solo disparo (restart: "no"), no un servicio de larga duración.
+  # Primer uso contra una BD que ya tiene estos scripts aplicados por otra vía:
+  #   docker compose run --rm db-migrate --record-only
+  db-migrate:
+    container_name: beemetry-db-migrate
+    image: timescale/timescaledb:latest-pg15
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: sensors
+      PGDATABASE: sensors_db
+      PGPASSWORD: ${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)}
+      SCRIPTS_DIR: /db_scripts
+    volumes:
+      - ./db_scripts:/db_scripts:ro
+      - ./scripts/apply_migrations.sh:/apply_migrations.sh:ro
+    entrypoint: ["/bin/bash", "/apply_migrations.sh"]
+    profiles: ["migrate"]
+    restart: "no"
+
   # MinIO: almacenamiento de objetos S3-compatible para el TIER FRÍO (>1 año).
   # Los chunks antiguos se exportan a Parquet aquí y se eliminan del hypertable.
   minio:
@@ -274,6 +320,7 @@ services:
     container_name: beemetry-db-replica
     image: timescale/timescaledb:latest-pg15
     restart: unless-stopped
+    shm_size: "1gb"
     user: root
     environment:
       PGDATA: /var/lib/postgresql/data
@@ -421,11 +468,16 @@ services:
       - BEEMETRY_MQTT_PASSWORD=${BEEMETRY_MQTT_PASSWORD:?Definir BEEMETRY_MQTT_PASSWORD en .env}
       - BEEMETRY_MODBUS_ENABLED=true
       - BEEMETRY_OPCUA_ENABLED=true
-      # Notificaciones de alarma por email (relay SMTP). Dev: sidecar mailpit;
-      # prod: apuntar al SMTP corporativo de la minera.
-      - BEEMETRY_SMTP_HOST=mailpit
-      - BEEMETRY_SMTP_PORT=1025
-      - BEEMETRY_ALARM_MAIL_FROM=alarmas@beemetry.local
+      # Notificaciones de alarma por email (relay SMTP). Dev: sidecar mailpit
+      # (no entrega a bandejas reales); para que llegue de verdad se
+      # sobreescriben estas 6 vars desde .env (ver 2026-08-21, relay Gmail
+      # con App Password para validar entrega real al correo de RRHH).
+      - BEEMETRY_SMTP_HOST=${BEEMETRY_SMTP_HOST:-mailpit}
+      - BEEMETRY_SMTP_PORT=${BEEMETRY_SMTP_PORT:-1025}
+      - BEEMETRY_SMTP_USER=${BEEMETRY_SMTP_USER:-}
+      - BEEMETRY_SMTP_PASS=${BEEMETRY_SMTP_PASS:-}
+      - BEEMETRY_SMTP_TLS=${BEEMETRY_SMTP_TLS:-0}
+      - BEEMETRY_ALARM_MAIL_FROM=${BEEMETRY_ALARM_MAIL_FROM:-alarmas@beemetry.local}
       - BEEMETRY_MAPAS_PORT=8081
       # Mapas / GIS (backend C++ beemetry_backend): GeoJSON en MAPAS_DATA_ROOT/map_official_polygons.geojson
       # (volumen ./data:/data). APIs: GET /api/map/markers, /api/map/official-zones, /api/map/compliance-intersections
@@ -466,12 +518,20 @@ services:
       # depends_on hard: si el sidecar no está listo, el export falla con un
       # error claro en vez de bloquear el arranque del backend.
       - BEEMETRY_PDF_EXPORT_URL=http://pdf_export:4000
-      - BEEMETRY_PDF_EXPORT_TIMEOUT_MS=45000
+      # 650000 (~10.8 min) da margen por encima del PDF_RENDER_TIMEOUT_MS del
+      # sidecar (600000, ver servicio pdf_export más abajo) para que el
+      # backend no se rinda esperando ANTES de que el sidecar termine o
+      # devuelva su propio error de timeout -- informes de cientos de páginas
+      # con más de mil gráficos de sensor en vivo tardan varios minutos reales
+      # en renderizar (reproducido en vivo: 45000 producía 502 con un informe
+      # de 378 páginas / 1120 diagramas).
+      - BEEMETRY_PDF_EXPORT_TIMEOUT_MS=650000
       # Export PPTX/MP4 (modo presentación, mismo sidecar Chromium): carpeta
       # compartida con pdf_export (mismo volumen ./data:/data que ya monta
       # este servicio) donde caen los archivos generados. Vacío = deshabilitado.
       - BEEMETRY_EXPORT_DATA_ROOT=/data/export
-      - BEEMETRY_PPTX_EXPORT_TIMEOUT_MS=60000
+      - BEEMETRY_PPTX_EXPORT_TIMEOUT_MS=650000
+      - BEEMETRY_DOCX_EXPORT_TIMEOUT_MS=650000
       - BEEMETRY_VIDEO_EXPORT_TIMEOUT_MS=180000
       # Origen público desde el que Chromium debe llegar al frontend para
       # renderizar el informe (nombre de servicio interno, no localhost).
@@ -505,6 +565,16 @@ services:
       - BEEMETRY_WHATSAPP_BUSINESS_ACCOUNT_ID=${BEEMETRY_WHATSAPP_BUSINESS_ACCOUNT_ID:-}
       - BEEMETRY_WHATSAPP_ACCESS_TOKEN=${BEEMETRY_WHATSAPP_ACCESS_TOKEN:-}
       - BEEMETRY_WHATSAPP_SUPPORT_TO_E164=${BEEMETRY_WHATSAPP_SUPPORT_TO_E164:-}
+      # API de notificaciones (backend/src/notify/) -- canal WhatsApp: nombre
+      # de la plantilla pre-aprobada en Meta a usar para notificaciones
+      # iniciadas por el negocio (informe compartido, etc.), distinta del
+      # chatbot de soporte de arriba.
+      - BEEMETRY_WHATSAPP_NOTIFY_TEMPLATE=${BEEMETRY_WHATSAPP_NOTIFY_TEMPLATE:-}
+      # API de notificaciones -- canal SMS (Twilio, ver notify/sms_client.hpp
+      # para por qué se eligió este proveedor para el piloto).
+      - BEEMETRY_TWILIO_ACCOUNT_SID=${BEEMETRY_TWILIO_ACCOUNT_SID:-}
+      - BEEMETRY_TWILIO_AUTH_TOKEN=${BEEMETRY_TWILIO_AUTH_TOKEN:-}
+      - BEEMETRY_TWILIO_FROM_NUMBER=${BEEMETRY_TWILIO_FROM_NUMBER:-}
       # ADR-112: bot conversacional (menú, reclamos) -- número comercial y
       # credenciales del webhook de entrada, mismo criterio (solo vía .env).
       - BEEMETRY_WHATSAPP_COMERCIAL_TO_E164=${BEEMETRY_WHATSAPP_COMERCIAL_TO_E164:-}
@@ -560,7 +630,7 @@ services:
       # default de app_config.cpp) -- causa raíz real de "la sesión se cierra
       # cada 15 minutos" reportado por el usuario final. Ahora respeta el .env,
       # con el mismo default 60 que el binario.
-      - BEEMETRY_JWT_ACCESS_TTL_MINUTES=${BEEMETRY_JWT_ACCESS_TTL_MINUTES:-60}
+      - BEEMETRY_JWT_ACCESS_TTL_MINUTES=${BEEMETRY_JWT_ACCESS_TTL_MINUTES:-15}
       - BEEMETRY_AUTH_SESSION_TTL_MINUTES=${BEEMETRY_AUTH_SESSION_TTL_MINUTES:-480}
       - BEEMETRY_JWT_REFRESH_TTL_DAYS=7
       # ADR-029, "Actualización 2026-07-19": el refresh token vive en cookie
@@ -587,6 +657,17 @@ services:
       # Para desarrollo local: BEEMETRY_ALLOW_DEV_SECRETS=true.
       - BEEMETRY_REPORT_EXPORT_KEY=${BEEMETRY_REPORT_EXPORT_KEY:-}
       - BEEMETRY_ALLOW_DEV_SECRETS=${BEEMETRY_ALLOW_DEV_SECRETS:-}
+      # ADR-130: allowlist de IP OPCIONAL solo para grant/revoke de acceso
+      # cruzado de organización (/api/auth/org-access/grant|revoke) -- la
+      # capacidad de mayor privilegio nueva de la plataforma (Beemetry/
+      # TimeTelemetry operando en tenants mineros clientes). Vacío (default) =
+      # sin restricción por IP, solo el guardia de permiso+tipo de tenant.
+      # CSV de IPs; nginx ya reenvía X-Real-IP delante de este backend.
+      - BEEMETRY_ORG_ACCESS_IP_ALLOWLIST=${BEEMETRY_ORG_ACCESS_IP_ALLOWLIST:-}
+      # ADR-135: webhook opcional de alertas de seguridad (CSP violations,
+      # bloqueos cross-site, escalada de rol, MFA desactivado). Vacío (default)
+      # = no-op, no requiere credenciales para el resto del endurecimiento.
+      - BEEMETRY_SECURITY_ALERT_WEBHOOK_URL=${BEEMETRY_SECURITY_ALERT_WEBHOOK_URL:-}
       # ADR-087: consulta OPCIONAL de RUC contra un verificador de terceros
       # (SUNAT no publica API REST oficial gratuita — solo el portal HTML).
       # Apagado por defecto: excepción explícita y acotada a ADR-001
@@ -1082,7 +1163,22 @@ services:
       context: ./pdf-export-service
     environment:
       - PDF_RENDER_ALLOWED_HOST=frontend
-      - PDF_RENDER_TIMEOUT_MS=30000
+      # 30s (valor anterior) alcanza para informes típicos, pero
+      # `waitForReportRender` espera CADA widget/gráfico individual
+      # (`data-export-ready`) antes de capturar -- un informe de cientos de
+      # páginas con más de mil gráficos de sensor en vivo (p.ej. la prueba
+      # exhaustiva de 56 sensores × 20 tipos de gráfico) tarda varios minutos
+      # en que todos terminen de pedir su telemetría y renderizar; con 30s el
+      # `page.goto()` inicial ya fallaba con "Navigation timeout of 30000 ms
+      # exceeded" (reproducido en vivo) antes de que la página siquiera
+      # empezara a pintar. 600000 (10 min) da margen real para documentos
+      # grandes sin dejarlo sin límite.
+      - PDF_RENDER_TIMEOUT_MS=600000
+      # La espera global de navegación puede ser larga, pero una sola señal
+      # de readiness de un gráfico no debe inmovilizar una hoja completa. El
+      # DOCX espera cada bloque de forma aislada y luego intenta capturarlo
+      # igualmente; 20 s limita el impacto de un widget defectuoso.
+      - DOCX_ELEMENT_READY_TIMEOUT_MS=20000
       # ADR-080: contraseña de PROPIETARIO del PDF cifrado (permisos —
       # imprimir sí, copiar/editar no). Nunca se entrega al usuario final;
       # solo la contraseña de usuario (generada por descarga) se muestra en
@@ -1098,6 +1194,17 @@ services:
       # el volumen ./data:/data) — el backend solo persiste esta ruta como
       # report_export_job.storage_uri y sirve el archivo desde ahí.
       - EXPORT_DATA_ROOT=/data/export
+      # Fase 2 de captura en paralelo (server.js): cuántos procesos Chromium
+      # DEDICADOS (no pestañas de uno compartido, ver
+      # `launchDedicatedExportBrowser`) capturan al mismo tiempo, uno por
+      # formato -- mismo patrón validado en vivo para DOCX (documento de
+      # prueba de 2104 páginas/6302 gráficos: con 4 workers dedicados, ~3.2
+      # elem/seg vs ~0.85 elem/seg secuencial, ~3.7x) y aplicado desde el
+      # principio a PPTX/PDF. Con 8 CPUs asignadas al contenedor, hay margen
+      # de sobra para subir estos números si una prueba futura lo justifica.
+      - DOCX_CAPTURE_PARALLELISM=4
+      - PPTX_CAPTURE_PARALLELISM=4
+      - PDF_CAPTURE_PARALLELISM=4
     volumes:
       - ./data:/data
     networks:
@@ -1114,8 +1221,33 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1'
-          memory: 1024M
+          # 1024M se quedaba corto para informes grandes: un informe de 63
+          # páginas con 56 dashboards de sensores (cada uno con su propia
+          # instancia ECharts/Leaflet) llegó a 97% de uso durante la
+          # exportación real (verificado con `docker stats` en vivo) — a un
+          # informe apenas más grande lo habría matado el OOM killer a mitad
+          # de render, perdiendo el trabajo ya hecho. 2048M dejaba margen para
+          # ESE caso, pero un informe de prueba exhaustiva (378 páginas / 1120
+          # gráficos, ~20x más dashboards que el caso de arriba, incluyendo 56
+          # instancias del tipo "Superficie (3D)"/WebGL) crasheó el proceso de
+          # Chromium (`TargetCloseError: Target closed`) incluso con la
+          # virtualización por página activa (ver EXPORT_VIRTUALIZATION_PAGE_
+          # THRESHOLD en ReadOnlyViewer.tsx) -- 4096M/2 CPUs da margen real
+          # para documentos de ese tamaño sin cambiar el patrón de uso.
+          # 8 CPUs (antes 2, 2026-09-02): ese límite de 2 se calibró para UN
+          # solo Chromium renderizando secuencialmente (Fase 1 de este ADR).
+          # La Fase 2 (captura DOCX en paralelo, `DOCX_CAPTURE_PARALLELISM`
+          # en pdf-export-service/server.js) corre 2+ renderers de Chromium
+          # SIMULTÁNEOS -- cada uno compitiendo en serio por CPU real, porque
+          # el renderizado corre por software (`--use-angle=swiftshader-webgl`,
+          # sin GPU real en el contenedor). Medido en vivo: con el límite de
+          # 2 CPUs, 2 workers en paralelo NO mostraron ninguna ganancia de
+          # velocidad sobre el pipeline secuencial (ambos renderers
+          # compitiendo por el mismo presupuesto de 2 núcleos que antes
+          # usaba uno solo) -- el host tiene 32 núcleos disponibles, así que
+          # subir este límite no le quita capacidad real a nada más.
+          cpus: '8'
+          memory: 8192M
         reservations:
           cpus: '0.25'
           memory: 512M

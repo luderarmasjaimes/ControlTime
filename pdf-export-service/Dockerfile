@@ -29,7 +29,7 @@ USER pptruser
 COPY package.json ./
 RUN npm install --omit=dev
 
-COPY server.js ./
+COPY server.js reportDocxBuilder.js ./
 
 EXPOSE 4000
 CMD ["node", "server.js"]

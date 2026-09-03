@@ -186,6 +186,9 @@ bool sendEmail(const std::string& to, const std::string& subject,
     const std::string host = envOr("BEEMETRY_SMTP_HOST", "mailpit");
     const std::string port = envOr("BEEMETRY_SMTP_PORT", "1025");
     const std::string from = envOr("BEEMETRY_ALARM_MAIL_FROM", "alarmas@beemetry.local");
+    const std::string user = envOr("BEEMETRY_SMTP_USER", "");
+    const std::string pass = envOr("BEEMETRY_SMTP_PASS", "");
+    const bool useTls = envOr("BEEMETRY_SMTP_TLS", "") == "1";
     if (!isSafeEmail(from)) { detail = "mail_from_invalido"; return false; }
 
     // Cuerpo RFC822 en archivo temporal (evita pasar contenido por argv).
@@ -203,8 +206,10 @@ bool sendEmail(const std::string& to, const std::string& subject,
     close(fd);
 
     std::ostringstream cmd;
-    cmd << "curl -s -m 8 --url 'smtp://" << host << ":" << port << "' "
-        << "--mail-from '" << from << "' --mail-rcpt '" << to << "' "
+    cmd << "curl -s -m 8 --url 'smtp://" << host << ":" << port << "' ";
+    if (useTls) cmd << "--ssl-reqd ";
+    if (!user.empty()) cmd << "--user '" << user << ":" << pass << "' ";
+    cmd << "--mail-from '" << from << "' --mail-rcpt '" << to << "' "
         << "-T " << tmpl;
     std::string out;
     const int rc = runCommand(cmd.str(), out);
@@ -379,6 +384,9 @@ bool sendEmailWithAttachment(const std::string &to, const std::string &subject,
     const std::string host = envOr("BEEMETRY_SMTP_HOST", "mailpit");
     const std::string port = envOr("BEEMETRY_SMTP_PORT", "1025");
     const std::string from = envOr("BEEMETRY_ALARM_MAIL_FROM", "alarmas@beemetry.local");
+    const std::string user = envOr("BEEMETRY_SMTP_USER", "");
+    const std::string pass = envOr("BEEMETRY_SMTP_PASS", "");
+    const bool useTls = envOr("BEEMETRY_SMTP_TLS", "") == "1";
     if (!isSafeEmail(from)) { detail = "mail_from_invalido"; return false; }
     if (attachmentBytes.empty()) { detail = "adjunto_vacio"; return false; }
 
@@ -413,14 +421,21 @@ bool sendEmailWithAttachment(const std::string &to, const std::string &subject,
     close(fd);
 
     std::ostringstream cmd;
-    cmd << "curl -s -m 20 --url 'smtp://" << host << ":" << port << "' "
-        << "--mail-from '" << from << "' --mail-rcpt '" << to << "' "
+    cmd << "curl -s -m 20 --url 'smtp://" << host << ":" << port << "' ";
+    if (useTls) cmd << "--ssl-reqd ";
+    if (!user.empty()) cmd << "--user '" << user << ":" << pass << "' ";
+    cmd << "--mail-from '" << from << "' --mail-rcpt '" << to << "' "
         << "-T " << tmpl;
     std::string out;
     const int rc = runCommand(cmd.str(), out);
     std::remove(tmpl);
     detail = (rc == 0) ? ("smtp " + host + ":" + port) : ("curl rc=" + std::to_string(rc) + " " + out.substr(0, 200));
     return rc == 0;
+}
+
+bool sendPlainEmail(const std::string &to, const std::string &subject,
+                    const std::string &body, std::string &detail) {
+    return sendEmail(to, subject, body, detail);
 }
 
 bool validateChannelTarget(const std::string& channelType,

@@ -1,9 +1,10 @@
 import { create } from 'zustand';
-import { getReportLayoutMetrics } from '../lib/reportLayoutMetrics';
+import { getReportLayoutMetrics, type ReportLayoutMetrics } from '../lib/reportLayoutMetrics';
 import { REPORT_IMAGE_PLACEHOLDER_SVG } from '../lib/reportImageSrc';
 import { generateTocData } from '../components/document/TableOfContents';
 import { HEADING_STYLES } from '../lib/headingStyles';
 import { buildDocumentTemplate } from '../lib/documentTemplates';
+import { sensorDashboardMinHeight } from '../lib/sensorMultiChartLayout';
 
 import { log } from '../../../lib/logger';
 const INSERT_GAP = 12;
@@ -34,14 +35,139 @@ const metricsForPage = (
   );
 };
 
+/** Ajusta `x/y/width/height` de un bloque de CONTENIDO (no encabezado/pie/
+ * carátula, que ya recalculan su propia geometría) para que quepa dentro
+ * del área de contenido de las métricas dadas -- se usa al cambiar tamaño
+ * de hoja/orientación (A4↔A3, vertical↔horizontal). No reposiciona nada
+ * que ya encaje (dos llamadas con las mismas métricas son un no-op); solo
+ * corrige lo que la hoja nueva dejaría fuera de los márgenes o de la
+ * página -- reportado en vivo como "fallas en los márgenes tanto para A3
+ * como para A4" (un bloque cerca del borde derecho/inferior de una A4
+ * vertical queda fuera del margen, o directamente fuera de la hoja, al
+ * pasar a A3 horizontal o viceversa, porque antes esta función NO tocaba
+ * nada fuera de header/footer/cover). */
+function clampContentElementToMetrics(el: ReportElement, m: ReportLayoutMetrics): ReportElement {
+  const maxWidth = Math.max(1, m.CONTENT_RIGHT - m.CONTENT_LEFT);
+  const maxHeight = Math.max(1, m.CONTENT_BOTTOM - m.CONTENT_TOP);
+  const width = Math.min(el.width, maxWidth);
+  const height = Math.min(el.height, maxHeight);
+  const x = Math.min(Math.max(el.x, m.CONTENT_LEFT), Math.max(m.CONTENT_LEFT, m.CONTENT_RIGHT - width));
+  const y = Math.min(Math.max(el.y, m.CONTENT_TOP), Math.max(m.CONTENT_TOP, m.CONTENT_BOTTOM - height));
+  if (x === el.x && y === el.y && width === el.width && height === el.height) return el;
+  return { ...el, x, y, width, height };
+}
+
+/** Tipos de bloque "de plataforma" (encabezado/pie/carátula) que quedan
+ * fuera del algoritmo de empaquetado -- no son contenido insertable por el
+ * usuario, viven fuera del área de contenido (o la ocupan entera, en el caso
+ * de carátula). */
+const NON_PACKABLE_TYPES = new Set(['header', 'footer', 'cover']);
+
+/** Vuelve a acomodar (empaquetar) los bloques de CONTENIDO de una página que
+ * quedaron superpuestos ENTRE SÍ tras un `clampContentElementToMetrics` (p.ej.
+ * al reducir A3→A4 dos bloques que antes no se tocaban pueden terminar
+ * pisándose una vez que ambos se achican hacia los márgenes nuevos) -- el
+ * clamp por sí solo corrige que un bloque se salga de la hoja/margen, nunca
+ * que dos bloques queden superpuestos entre sí. Si no hay ninguna
+ * superposición no toca nada (no reordena un layout que ya está bien).
+ * Reutiliza `findFreeSlot` (mismo motor de empaquetado en 1/2 columnas que ya
+ * usa la inserción de objetos nuevos) para que el resultado sea consistente
+ * con cómo el usuario insertaría un bloque a mano. */
+function repackOverlappingElements(elements: ReportElement[], m: ReportLayoutMetrics): ReportElement[] {
+  const packable = elements.filter((el) => !NON_PACKABLE_TYPES.has(el.type));
+  const hasOverlap = packable.some((a, i) =>
+    packable
+      .slice(i + 1)
+      .some((b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y),
+  );
+  if (!hasOverlap) return elements;
+
+  const ordered = [...packable].sort((a, b) => a.y - b.y || a.x - b.x);
+  const placed: ReportElement[] = [];
+  for (const el of ordered) {
+    const slot = findFreeSlot(placed, m, el.width, el.height, m.CONTENT_TOP);
+    placed.push(slot ? { ...el, x: slot.x, y: slot.y } : el);
+  }
+  const byId = new Map(placed.map((el) => [el.id, el]));
+  return elements.map((el) => byId.get(el.id) || el);
+}
+
+/**
+ * Encuentra la primera posición libre (sin solaparse con NINGÚN bloque de
+ * contenido ya existente) para un objeto de `width`×`height` dentro del
+ * área de contenido de `page`, en 1 o 2 columnas según lo que quepa —
+ * motor de "empaquetado por estantes" (shelf packing): prueba cada Y
+ * candidata (el tope del área de contenido, o el borde inferior + espaciado
+ * de cada bloque ya existente) de arriba hacia abajo, y en cada una prueba
+ * cada X candidata (el margen izquierdo, o el borde derecho + espaciado de
+ * cualquier bloque que se solape verticalmente con esa fila) de izquierda a
+ * derecha. Devuelve la PRIMERA combinación que entra en los márgenes y no
+ * pisa ningún rectángulo existente -- o `null` si NINGUNA posición en toda
+ * la página alcanza (el llamador decide si reduce el tamaño del objeto o
+ * pasa a la siguiente hoja).
+ *
+ * Pedido explícito en vivo: "los diagramas de sensores deben insertarse en
+ * 1 o 2 columnas... en todos los casos evitar salirse de los márgenes...
+ * que no se dibuje un objeto encima de otro". Reemplaza el apilado anterior
+ * (una sola columna, siempre al fondo de TODO lo demás) que ignoraba por
+ * completo el espacio horizontal libre y podía, en algunos casos de anclaje
+ * a un bloque seleccionado, terminar solapando un tercer bloque ya ubicado
+ * en una fila distinta.
+ */
+function findFreeSlot(
+  elements: ReportElement[],
+  m: ReportLayoutMetrics,
+  width: number,
+  height: number,
+  minY: number = m.CONTENT_TOP,
+): { x: number; y: number } | null {
+  const GAP = 12;
+  const rects = elements
+    .filter((el) => !NON_PACKABLE_TYPES.has(el.type))
+    .map((el) => ({ x: el.x, y: el.y, w: el.width, h: el.height }));
+
+  const contentRight = m.CONTENT_RIGHT;
+  const contentBottom = m.CONTENT_BOTTOM;
+  // Épsilon generoso: evita que redondeos de punto flotante (herencia de
+  // conversiones mm→px en A3/A4) rechacen por error una posición que en la
+  // práctica sí encaja al pixel.
+  const EPS = 0.5;
+
+  if (width > contentRight - m.CONTENT_LEFT + EPS || height > contentBottom - minY + EPS) return null;
+
+  const overlaps = (x: number, y: number): boolean =>
+    rects.some(
+      (r) => x < r.x + r.w + GAP && x + width + GAP > r.x && y < r.y + r.h + GAP && y + height + GAP > r.y,
+    );
+
+  const candidateYs = Array.from(
+    new Set([minY, ...rects.map((r) => r.y + r.h + GAP)].filter((y) => y >= minY && y + height <= contentBottom + EPS)),
+  ).sort((a, b) => a - b);
+
+  for (const y of candidateYs) {
+    // Bloques que se solapan verticalmente con la franja [y, y+height) de
+    // esta fila candidata -- sus bordes derechos son las X candidatas.
+    const rowRects = rects.filter((r) => y < r.y + r.h + GAP && y + height + GAP > r.y);
+    const candidateXs = Array.from(
+      new Set([m.CONTENT_LEFT, ...rowRects.map((r) => r.x + r.w + GAP)].filter((x) => x + width <= contentRight + EPS)),
+    ).sort((a, b) => a - b);
+    for (const x of candidateXs) {
+      if (!overlaps(x, y)) return { x, y };
+    }
+  }
+  return null;
+}
+
 /**
  * Aplica un cambio de tamaño de hoja (A4/A3) u orientación (vertical/
  * horizontal) — recalcula la geometría de los bloques "de plataforma" fijos
  * (encabezado, pie de página, carátula a toda hoja) para que sigan
- * ocupando el ancho/alto correcto de la nueva hoja. El resto de bloques
- * (texto, imágenes, tablas, etc.) NO se reposicionan automáticamente —
- * mismo comportamiento que Word al cambiar el tamaño de papel: el usuario
- * ajusta manualmente si algo queda fuera de los márgenes nuevos.
+ * ocupando el ancho/alto correcto de la nueva hoja, y ACOTA el resto de
+ * bloques (texto, imágenes, tablas, etc.) para que quepan dentro de los
+ * márgenes nuevos si la hoja anterior era más grande -- no los reposiciona
+ * si ya encajan (misma posición relativa que tenía el usuario), pero ya no
+ * puede quedar contenido fuera de la página o de los márgenes tras el
+ * cambio.
  */
 const applyPageSetup = (
   state: EditorState,
@@ -59,11 +185,8 @@ const applyPageSetup = (
   // sin elegir página) es "todo el documento" — limpia cualquier
   // personalización por página para que todas vuelvan a heredar el valor
   // global, igual que Word al reaplicar la configuración de página entera.
-  const pages = state.doc.pages.map((page) => ({
-    ...page,
-    paperSize: undefined,
-    orientation: undefined,
-    elements: page.elements.map((el) => {
+  const pages = state.doc.pages.map((page) => {
+    const clamped = page.elements.map((el) => {
       if (el.type === 'header') {
         return {
           ...el,
@@ -85,9 +208,15 @@ const applyPageSetup = (
       if (el.type === 'cover') {
         return { ...el, x: 0, y: 0, width: m.PAGE_WIDTH, height: m.PAGE_HEIGHT };
       }
-      return el;
-    }),
-  }));
+      return clampContentElementToMetrics(el, m);
+    });
+    return {
+      ...page,
+      paperSize: undefined,
+      orientation: undefined,
+      elements: repackOverlappingElements(clamped, m),
+    };
+  });
   return { doc: { ...state.doc, pages, meta } };
 };
 
@@ -114,32 +243,33 @@ const applyPagePaperSetup = (
     if (!affected) return page;
     const nextPage: ReportPage = { ...page, ...patch };
     const m = metricsForPage(nextPage, state.doc.meta);
+    const clamped = nextPage.elements.map((el) => {
+      if (el.type === 'header') {
+        return {
+          ...el,
+          x: m.CONTENT_LEFT,
+          y: layoutMode === 'presentation' ? 8 : 10,
+          width: m.PAGE_WIDTH - m.CONTENT_LEFT * 2,
+          height: layoutMode === 'presentation' ? 32 : 40,
+        };
+      }
+      if (el.type === 'footer') {
+        return {
+          ...el,
+          x: m.CONTENT_LEFT,
+          y: m.PAGE_HEIGHT - m.FOOTER_HEIGHT + 6,
+          width: m.PAGE_WIDTH - m.CONTENT_LEFT * 2,
+          height: 30,
+        };
+      }
+      if (el.type === 'cover') {
+        return { ...el, x: 0, y: 0, width: m.PAGE_WIDTH, height: m.PAGE_HEIGHT };
+      }
+      return clampContentElementToMetrics(el, m);
+    });
     return {
       ...nextPage,
-      elements: nextPage.elements.map((el) => {
-        if (el.type === 'header') {
-          return {
-            ...el,
-            x: m.CONTENT_LEFT,
-            y: layoutMode === 'presentation' ? 8 : 10,
-            width: m.PAGE_WIDTH - m.CONTENT_LEFT * 2,
-            height: layoutMode === 'presentation' ? 32 : 40,
-          };
-        }
-        if (el.type === 'footer') {
-          return {
-            ...el,
-            x: m.CONTENT_LEFT,
-            y: m.PAGE_HEIGHT - m.FOOTER_HEIGHT + 6,
-            width: m.PAGE_WIDTH - m.CONTENT_LEFT * 2,
-            height: 30,
-          };
-        }
-        if (el.type === 'cover') {
-          return { ...el, x: 0, y: 0, width: m.PAGE_WIDTH, height: m.PAGE_HEIGHT };
-        }
-        return el;
-      }),
+      elements: repackOverlappingElements(clamped, m),
     };
   });
   return {
@@ -1155,16 +1285,22 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       // cargar, para que "no dependa de que el usuario presione un botón"
       // también aplique a informes viejos, no solo a páginas nuevas.
       const pagesWithChrome = (parsed?.pages || []).map((page: ReportPage) => {
+        const elementsWithNaturalSensorHeight = page.elements.map((el) => {
+          if (el.type !== 'sensor_multi_chart') return el;
+          const minHeight = sensorDashboardMinHeight(el.props || {}, Number(el.width) || 0);
+          return Number(el.height) >= minHeight ? el : { ...el, height: minHeight };
+        });
+        const normalizedPage = { ...page, elements: elementsWithNaturalSensorHeight };
         // Una página de carátula a toda hoja no lleva encabezado/pie (ver
         // addElement('cover') más abajo) — no hay que backfillearlos aquí.
-        const hasCover = page.elements.some((el) => el.type === 'cover');
-        if (hasCover) return page;
-        const hasHeader = page.elements.some((el) => el.type === 'header');
-        const hasFooter = page.elements.some((el) => el.type === 'footer');
-        if (hasHeader && hasFooter) return page;
+        const hasCover = elementsWithNaturalSensorHeight.some((el) => el.type === 'cover');
+        if (hasCover) return normalizedPage;
+        const hasHeader = elementsWithNaturalSensorHeight.some((el) => el.type === 'header');
+        const hasFooter = elementsWithNaturalSensorHeight.some((el) => el.type === 'footer');
+        if (hasHeader && hasFooter) return normalizedPage;
         const [header, footer] = createHeaderFooterPair(page.page_number, m, layoutMode);
         const missing = [...(hasHeader ? [] : [header]), ...(hasFooter ? [] : [footer])];
-        return { ...page, elements: [...missing, ...page.elements] };
+        return { ...normalizedPage, elements: [...missing, ...elementsWithNaturalSensorHeight] };
       });
       set({
         doc: {
@@ -1281,10 +1417,17 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     ),
   addElement: (type, patch = {}) =>
     set((state) => {
-      const m = metricsFromMeta(state.doc.meta);
       const pages = [...state.doc.pages];
       const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
       const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
+      const activePage = pages[currentIndex];
+      // Métricas de la página REALMENTE activa, no las del documento: una
+      // página puede tener su propio paperSize/orientation (A3 horizontal
+      // dentro de un documento A4 vertical, ver `setPagePaperSetup`) — usar
+      // `metricsFromMeta(state.doc.meta)` acá calculaba márgenes/límites de
+      // A4 para inserciones en una página A3, contradiciendo el pedido
+      // explícito de "las mismas consideraciones de márgenes" en A3.
+      const m = metricsForPage(activePage, state.doc.meta);
 
       const hasExplicitPosition =
         typeof patch.x === 'number' && Number.isFinite(patch.x) &&
@@ -1301,37 +1444,93 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           return { fits: true, element: { ...element, x: clampedX, y: clampedY } };
         }
 
-        // Con un bloque de contenido seleccionado, el objeto nuevo se ancla
-        // A ESA POSICIÓN (como Word inserta en el cursor) en vez de irse al
-        // fondo de la página o a una hoja nueva — este era el motivo por el
-        // que "no dejaba insertar sobre bloques de texto ya existentes":
-        // el flujo automático solo sabía apilar debajo de TODO lo demás.
+        // Con un bloque de contenido seleccionado, el objeto nuevo prefiere
+        // ubicarse CERCA de esa posición (como Word inserta en el cursor) en
+        // vez de irse siempre al fondo de la página — pero SIEMPRE pasando
+        // por el empaquetador de abajo, nunca ancla a ciegas: anclar
+        // directamente al mismo `y` del seleccionado SIN pasar por
+        // `findFreeSlot` (comportamiento viejo) garantizaba solape total con
+        // objetos de tamaño real. `anchor` solo le da un límite inferior (no
+        // busca más arriba que el TOPE del bloque seleccionado) -- usar el
+        // FONDO del anchor como límite (`anchor.y + anchor.height + GAP`,
+        // versión anterior) forzaba SIEMPRE una fila nueva en inserciones
+        // secuenciales (el flujo típico: cada `addElement` selecciona el
+        // bloque recién insertado, así que el siguiente insert siempre tenía
+        // ANCLA = el anterior), dejando el empaquetador de 2 columnas de
+        // `findFreeSlot` sin efecto práctico -- reproducido en vivo con el
+        // generador de prueba exhaustiva: 1120 diagramas, TODOS en una sola
+        // columna. Usar el TOPE del anchor deja que `findFreeSlot` evalúe esa
+        // misma fila primero (cabe al lado si hay espacio) antes de bajar a
+        // una fila nueva -- pedido explícito: "los diagramas de sensores
+        // deben insertarse en 1 o 2 columnas... que no se dibuje un objeto
+        // encima de otro".
         const anchor = page.elements.find(
           (el) =>
             el.id === state.selectedElementId &&
             el.type !== 'header' && el.type !== 'footer' && el.type !== 'cover',
         );
-        if (anchor) {
-          const anchoredY = Math.min(
-            Math.max(m.CONTENT_TOP, anchor.y),
-            Math.max(m.CONTENT_TOP, m.CONTENT_BOTTOM - element.height),
-          );
-          return { fits: true, element: { ...element, y: anchoredY, x: m.CONTENT_LEFT } };
+        const minY = anchor ? Math.max(m.CONTENT_TOP, anchor.y) : m.CONTENT_TOP;
+
+        let slot = findFreeSlot(page.elements, m, element.width, element.height, minY);
+        let placedElement = element;
+        if (!slot) {
+          // No hay ninguna posición libre a su tamaño pedido en TODA la
+          // página (ni siquiera en una fila nueva al fondo) -- "en caso el
+          // objeto no pueda ingresar en esas dimensiones se ajustan
+          // automáticamente las dimensiones del objeto": se reduce a una
+          // sola columna (ancho completo del área de contenido) y a la
+          // altura que realmente quede libre debajo de lo último ya
+          // colocado, y se reintenta UNA vez antes de rendirse (el llamador
+          // pasa entonces a la siguiente hoja).
+          const contentWidth = m.CONTENT_RIGHT - m.CONTENT_LEFT;
+          const contentEls = page.elements.filter((el) => !NON_PACKABLE_TYPES.has(el.type));
+          const maxBottom = contentEls.length
+            ? Math.max(minY, ...contentEls.map((el) => el.y + el.height + INSERT_GAP))
+            : minY;
+          const remainingHeight = m.CONTENT_BOTTOM - maxBottom;
+          const MIN_VIABLE_HEIGHT = 80;
+          if (remainingHeight >= MIN_VIABLE_HEIGHT) {
+            const maxW = Math.min(element.width, contentWidth);
+            const maxH = Math.min(element.height, remainingHeight);
+            // Imagen/video/mapa/gráfico son un único activo visual (a
+            // diferencia de sensor_multi_chart, que reflowa varios paneles
+            // internos) -- achicarlos con un factor de escala UNIFORME evita
+            // deformarlos; clampear ancho y alto de forma independiente (como
+            // antes) los "aplastaba" al no entrar en el espacio libre.
+            const ASPECT_SENSITIVE_TYPES = new Set(['image', 'video', 'map', 'chart']);
+            let shrunkWidth: number;
+            let shrunkHeight: number;
+            if (ASPECT_SENSITIVE_TYPES.has(element.type) && element.width > 0 && element.height > 0) {
+              const scale = Math.min(maxW / element.width, maxH / element.height, 1);
+              shrunkWidth = Math.max(1, Math.round(element.width * scale));
+              shrunkHeight = Math.max(1, Math.round(element.height * scale));
+            } else {
+              shrunkWidth = maxW;
+              shrunkHeight = maxH;
+            }
+            if (element.type === 'sensor_multi_chart') {
+              // Prefiere la altura mínima natural del dashboard (con sus
+              // paneles reflowados al ancho nuevo) si cabe en lo que queda;
+              // si no, usa todo lo que quede -- sigue siendo utilizable,
+              // solo más apretado, nunca se sale del margen inferior.
+              const naturalMin = sensorDashboardMinHeight(element.props || {}, shrunkWidth);
+              shrunkHeight = Math.min(remainingHeight, Math.max(naturalMin, shrunkHeight));
+            }
+            const retry = findFreeSlot(page.elements, m, shrunkWidth, shrunkHeight, minY);
+            if (retry) {
+              slot = retry;
+              placedElement = { ...element, width: shrunkWidth, height: shrunkHeight };
+            }
+          }
         }
 
-        // Encabezado/pie de página son elementos fijos de plataforma (ADR-046)
-        // anclados fuera del área de contenido — no deben contar para el
-        // "punto más bajo ocupado" o cada página nueva empezaría a apilar
-        // contenido a la altura del pie de página en vez de justo debajo del
-        // encabezado.
-        const contentElements = page.elements.filter((el) => el.type !== 'header' && el.type !== 'footer');
-        const maxBottom = contentElements.length
-          ? Math.max(...contentElements.map((existing) => existing.y + existing.height))
-          : m.CONTENT_TOP - INSERT_GAP;
-        const nextY = Math.max(m.CONTENT_TOP, maxBottom + INSERT_GAP);
-        const positionedElement = { ...element, y: nextY, x: m.CONTENT_LEFT };
-        const fits = nextY + positionedElement.height <= m.CONTENT_BOTTOM;
-        return { fits, element: positionedElement };
+        if (slot) {
+          return { fits: true, element: { ...placedElement, x: slot.x, y: slot.y } };
+        }
+        // Nada cabe en esta página ni siquiera reduciendo el tamaño -- el
+        // llamador (addElement) lo coloca en la siguiente hoja disponible
+        // (crea una si hace falta, ver más abajo).
+        return { fits: false, element };
       };
 
       const mergePatch = (base: ReportElement): ReportElement => {
@@ -1362,8 +1561,6 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         }
         return next;
       };
-
-      const activePage = pages[currentIndex];
 
       // La carátula ocupa TODA la hoja (x=0,y=0, PAGE_WIDTH x PAGE_HEIGHT,
       // ver createElement) — no pasa por el flujo de contenido normal
@@ -1418,6 +1615,14 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       const layoutModeForNewPage = state.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
       const nextPage: ReportPage = {
         page_number: nextPageNumber,
+        // Hereda el paperSize/orientation de la página que desbordó (no el
+        // default del documento): si una sección A3 horizontal se queda sin
+        // espacio a mitad de camino, la hoja de continuación sigue siendo
+        // A3 horizontal -- de lo contrario `m` (ya resuelto arriba para
+        // `activePage`) dejaría de coincidir con el tamaño real de esta
+        // hoja nueva y el empaquetador volvería a calcular mal los límites.
+        paperSize: activePage.paperSize,
+        orientation: activePage.orientation,
         elements: createHeaderFooterPair(nextPageNumber, m, layoutModeForNewPage),
       };
       const nextElement = mergePatch(createElement(type, nextPageNumber, nextPage.elements.length, m));
@@ -1461,13 +1666,14 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 
       const pageTwoIndex = pages.findIndex((p) => p.page_number === 2);
       const pageTwo = pages[pageTwoIndex];
+      const pageTwoM = metricsForPage(pageTwo, state.doc.meta);
       const tocElement: ReportElement = {
         id: `toc-2-${Date.now()}`,
         type: 'toc',
-        x: m.CONTENT_LEFT,
-        y: m.CONTENT_TOP,
-        width: m.CONTENT_RIGHT - m.CONTENT_LEFT,
-        height: tocContinuationHeight(m),
+        x: pageTwoM.CONTENT_LEFT,
+        y: pageTwoM.CONTENT_TOP,
+        width: pageTwoM.CONTENT_RIGHT - pageTwoM.CONTENT_LEFT,
+        height: tocContinuationHeight(pageTwoM),
         zIndex: pageTwo.elements.length,
         locked: false,
         props: defaultPropsByType('toc'),
@@ -1587,7 +1793,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set((state) => {
       const page = state.doc.pages.find((p) => p.page_number === pageNumber);
       if (!page) return state;
-      const m = metricsFromMeta(state.doc.meta);
+      const m = metricsForPage(page, state.doc.meta);
       const hasCover = page.elements.some((el) => el.type === 'cover');
       // Tamaño inicial generoso pero con margen visible alrededor — el
       // usuario la redimensiona/mueve libremente después (ver ADR-048
@@ -1638,11 +1844,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   addTextTemplate: (template) =>
     set((state) => {
       const layoutMode = state.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
-      const m = metricsFromMeta(state.doc.meta);
       const pages = [...state.doc.pages];
       const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
       const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
       const activePage = pages[currentIndex];
+      const m = metricsForPage(activePage, state.doc.meta);
       const nextIndex = activePage.elements.length;
 
       const element = createTextTemplateElement(activePage.page_number, nextIndex, template, m);
@@ -1690,11 +1896,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     }),
   addTechnicalBlock: (kind) =>
     set((state) => {
-      const m = metricsFromMeta(state.doc.meta);
       const pages = [...state.doc.pages];
       const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
       const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
       const activePage = pages[currentIndex];
+      const m = metricsForPage(activePage, state.doc.meta);
       const baseIndex = activePage.elements.length;
       const contentLeft = m.CONTENT_LEFT;
       const contentWidth = m.CONTENT_RIGHT - m.CONTENT_LEFT;
@@ -1837,11 +2043,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set((state) => {
       const tpl = SECTION_TEMPLATES[kind];
       if (!tpl) return {} as Partial<EditorState>;
-      const m = metricsFromMeta(state.doc.meta);
       const pages = [...state.doc.pages];
       const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
       const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
       const activePage = pages[currentIndex];
+      const m = metricsForPage(activePage, state.doc.meta);
       const baseIndex = activePage.elements.length;
       const contentLeft = m.CONTENT_LEFT;
       const contentWidth = m.CONTENT_RIGHT - m.CONTENT_LEFT;
@@ -1926,11 +2132,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     }),
   addStaticChart: (kind) =>
     set((state) => {
-      const m = metricsFromMeta(state.doc.meta);
       const pages = [...state.doc.pages];
       const selectedIndex = pages.findIndex((page) => page.page_number === state.selectedPage);
       const currentIndex = selectedIndex >= 0 ? selectedIndex : pages.length - 1;
       const activePage = pages[currentIndex];
+      const m = metricsForPage(activePage, state.doc.meta);
       const baseIndex = activePage.elements.length;
       const contentLeft = m.CONTENT_LEFT;
       const contentWidth = m.CONTENT_RIGHT - m.CONTENT_LEFT;

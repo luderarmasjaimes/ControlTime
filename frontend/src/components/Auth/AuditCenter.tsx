@@ -184,12 +184,13 @@ const AuditCenter = ({ open, onClose, defaultCompany }: AuditCenterProps) => {
                                 <th>{t('audit.user')}</th>
                                 <th>{t('audit.status')}</th>
                                 <th>{t('audit.detail')}</th>
+                                <th>IP / GPS</th>
                             </tr>
                         </thead>
                         <tbody>
                             {rows.length === 0 && (
                                 <tr>
-                                    <td colSpan={6} className="audit-empty">{t('audit.empty')}</td>
+                                    <td colSpan={7} className="audit-empty">{t('audit.empty')}</td>
                                 </tr>
                             )}
                             {rows.map((row, index) => (
@@ -204,6 +205,15 @@ const AuditCenter = ({ open, onClose, defaultCompany }: AuditCenterProps) => {
                                         </span>
                                     </td>
                                     <td>{row.detail || '-'}</td>
+                                    <td className="audit-geo">
+                                        <div>{row.source_ip || '—'}</div>
+                                        {typeof row.latitude === 'number' && typeof row.longitude === 'number' && (
+                                            <div className="audit-geo-coords">
+                                                {row.latitude.toFixed(5)}, {row.longitude.toFixed(5)}
+                                                {typeof row.accuracy_m === 'number' ? ` (±${Math.round(row.accuracy_m)}m)` : ''}
+                                            </div>
+                                        )}
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>

@@ -300,6 +300,12 @@
 .access-users-table tbody td:last-child { text-align: right; }
 .access-users-table tbody td:last-child button { width: 27px; height: 27px; padding: 0; border: 1px solid var(--access-line); border-radius: 7px; color: #8fa1b4; background: rgba(38,52,70,.5); }
 
+/* Badges de clasificación por clase explícita (no posicional) -- usados por
+   CompanyManagementView.tsx (tipo de empresa) y UserManagementView.tsx
+   (personal de organización, db_scripts/72). */
+.access-badge-sky { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 99px; color: #7dd3fc; background: rgba(56,189,248,.1); font-size: .62rem; font-weight: 750; text-transform: uppercase; }
+.access-badge-neutral { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 99px; color: #94a3b8; background: rgba(148,163,184,.08); font-size: .62rem; font-weight: 750; text-transform: uppercase; }
+
 .access-users__detail-card { display: flex; flex-direction: column; }
 .access-users__detail-inner, .access-users__detail-inner > div { height: 100%; min-height: 0; }
 .access-users__detail-inner > div { display: flex; flex-direction: column; }

@@ -1,5 +1,73 @@
 # ADR-109 — Catálogo por zonas y analítica multiserie de sensores
 
+> **Actualización 2026-09-02 (auditoría de trazabilidad, ver `README.md`)**:
+> tres hallazgos sobre el pendiente "aceptación integrada" de este ADR — el
+> texto original no se edita, ver abajo.
+> 1. **Prueba anti-IDOR ya existe y ahora corre en CI local (cerrado en una
+>    segunda pasada el mismo día)**: `backend/tests/test_sensor_anti_idor.cpp`
+>    cubre contractualmente `mining::resolveAllowedSensorTenant` (4 casos:
+>    sin `tenant_id`, `tenant_id` propio, `tenant_id` vacío, y el caso real de
+>    IDOR — tenant ajeno sin membresía real — con fail-closed verificado,
+>    `ok=false`, nunca se devuelve el tenant ajeno como "efectivo"). Al
+>    escribir este bloque más arriba el archivo existía pero **no compilaba**
+>    (`backend/CMakeLists.txt` lo excluía del target liviano de tests porque
+>    enlazar `sensor_service.cpp` completo arrastraba la cadena
+>    `auth_session.cpp` → `auth_storage_pg.cpp` → biometric/OpenCV/ONNX).
+>    Se extrajo `resolveAllowedSensorTenant` a su propia unidad de compilación
+>    (`backend/src/mining/sensor_tenant_resolver.cpp`, sin esa cadena) y se
+>    agregó `permissions.cpp` (ya liviano — sin `HAS_LIBPQ` cae fail-closed a
+>    `return false`, el comportamiento correcto para este test) al target de
+>    tests. Verificado con `docker build -f backend/Dockerfile.verify --no-cache`
+>    limpio: **742 aserciones en 50 test cases, 100% passed** (antes de este
+>    cambio: 734/46). Cierra el ítem "falta prueba anti-IDOR" de la Decisión
+>    §6 con evidencia de build real, no solo lectura de código. La rama de
+>    acceso cruzado real (`userBelongsToTenant` consultando `auth_user_tenant`
+>    vía libpq con Postgres vivo) sigue sin cubrir por este test unitario —
+>    requiere un entorno con BD, fuera de alcance de un test de Catch2 puro.
+> 2. **El catálogo de gráficos creció más allá de los 10 declarados en la
+>    Decisión §4, sin actualizar este ADR**: `SensorMultiChartWidget.tsx`
+>    ahora también renderiza mapa geográfico de sensores
+>    (`SensorGeoMapPanel.tsx`, nuevo, Leaflet — mismo basemap satelital que
+>    `MapViewer.tsx`), superficie 3D (`SensorSurface3DPanel.tsx`, nuevo,
+>    `@react-three/fiber`, mismo criterio que `Viewer3D.tsx`) y combinado
+>    línea+barra con eje secundario configurable por serie
+>    (`ComboSeriesEditor.tsx`, nuevo — réplica del diálogo "Combinación
+>    personalizada" de Word/Excel). Los tres están cableados en
+>    `ChartTypePicker.tsx`/`SensorMultiChartInspector.tsx`/`App.tsx`, no son
+>    código muerto. Esto **contradice directamente** la Decisión §4 original
+>    ("La vista 3D existente es un módulo especializado independiente: no se
+>    declara todavía exportación 3D dentro del documento") — la superficie 3D
+>    del catálogo multiserie SÍ queda dentro del documento ahora. Un ADR
+>    nuevo (**ADR-139**, exportación DOCX) confirma que estos tres tipos
+>    entran también al pipeline de captura raster de exportación
+>    (`captureRasterAssets.ts`), no solo al lienzo en vivo. Sin verificación
+>    en vivo de render/export con datos reales para los tres tipos nuevos —
+>    sigue siendo el mismo pendiente que ya declaraba la Decisión §6 para el
+>    resto del catálogo.
+> 3. **Regresión de `tsc` real, no bloqueante para build de producción**: al
+>    correr `npx tsc --noEmit` sobre el árbol actual, `SensorSurface3DPanel.tsx`
+>    produce 2 errores (`TS2739`, `PlaneGeometry`/`WireframeGeometry` sin
+>    `computeBoundsTree`/`disposeBoundsTree`) por una duplicación preexistente
+>    de `@types/three` en `node_modules` (`0.183.1` en el nivel superior vs.
+>    `0.185.4` resuelto por dependencias transitivas de `@react-three/drei`
+>    dentro de `.pnpm/` — el árbol tiene una mezcla real de instalación
+>    npm+pnpm, `pnpm-workspace.yaml` nuevo sin commitear). El mismo problema ya
+>    existía antes de esta sesión en `Viewer3D.tsx` (1 error idéntico,
+>    preexistente, no introducido ahora) — la superficie 3D nueva solo lo hace
+>    más visible. `npx vite build` (Rolldown) sí compila igual, verificado en
+>    esta auditoría — mismo patrón exacto que ADR-093 ya documentó (gap
+>    esbuild/Rolldown-vs-`tsc`), reabierto acá en un archivo distinto. No
+>    corregido en esta pasada (requiere decidir versión objetivo de
+>    `@types/three` o consolidar en un solo gestor de paquetes, npm o pnpm, no
+>    ambos). De paso, mientras se investigaba este hallazgo se encontró y
+>    corrigió un bug real independiente y ya commiteable en
+>    `GeocatminWorkbench.tsx` (ADR-121): leía `remote.location_zoom` y
+>    `remote.company_name`, campos que `GET /api/map/company-location` nunca
+>    devuelve (el campo real es `zoom`, sin `company_name`) — el zoom
+>    configurado por el admin para la mina del tenant nunca se aplicaba,
+>    siempre caía al default `14`. Corregido a `remote.zoom`; verificado que
+>    los 2 errores de `tsc` asociados a ese archivo desaparecen.
+
 > **Actualización 2026-08-20 (auditoría de trazabilidad ADR-103/106/112-120,
 > ver `README.md`)**: dos correcciones de exactitud, no de decisión — el
 > texto original de este ADR no se edita, ver abajo.

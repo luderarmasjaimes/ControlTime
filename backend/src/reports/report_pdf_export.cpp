@@ -65,7 +65,7 @@ std::string urlEncode(const std::string &value) {
 }  // namespace
 
 PdfExportResult exportReportPdf(const std::string &reportId, const std::string &sessionToken,
-                                const std::string &watermarkText) {
+                                const std::string &watermarkText, bool encrypt) {
   PdfExportResult result;
   auto &cfg = config::AppConfig::instance();
   if (cfg.gPdfExportUrl.empty()) {
@@ -89,7 +89,8 @@ PdfExportResult exportReportPdf(const std::string &reportId, const std::string &
   // insertados server-side, ver report_document_settings.cpp) — el sidecar
   // solo lo dibuja, no conoce ni necesita conocer el modelo de datos.
   const std::string requestBody = json::serialize(json::object{
-      {"url", printUrl}, {"watermark", json::object{{"text", watermarkText}}}});
+      {"url", printUrl}, {"watermark", json::object{{"text", watermarkText}}},
+      {"encrypt", encrypt}});
 
   beast::error_code ec;
   asio::io_context ioc;
@@ -124,10 +125,32 @@ PdfExportResult exportReportPdf(const std::string &reportId, const std::string &
   beast::flat_buffer buffer;
   http::response<http::string_body> res;
   http::read(stream, buffer, res, ec);
-  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+  // BUG real (encontrado en vivo): `shutdown()` reusaba la MISMA `ec` que
+  // acababa de poner `http::read()`, así que el resultado del shutdown
+  // pisaba silenciosamente cualquier error real de lectura -- si la
+  // respuesta llegaba truncada (conexión cortada a mitad de un PDF de
+  // varios MB, tras 5+ min de espera), el shutdown de un socket ya roto
+  // solía completar "bien" (o con `not_connected`, ya tolerado abajo),
+  // enmascarando el truncamiento por completo: este código seguía de largo
+  // creyendo que la lectura fue exitosa y devolvía `result.ok = true` con
+  // `pdfBytes` vacío o parcial -- el cliente recibía un 200 con un PDF
+  // corrupto/vacío en vez de un error claro y reintentable. `ec` (de la
+  // lectura) y `shutdownEc` (del shutdown, solo informativo, se ignora)
+  // ahora son variables separadas.
+  const bool readFailed = static_cast<bool>(ec) && ec != beast::errc::not_connected;
+  beast::error_code shutdownEc;
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdownEc);
 
-  if (ec && ec != beast::errc::not_connected) {
+  if (readFailed) {
     result.error = "pdf_export_read_failed";
+    return result;
+  }
+  // Red de seguridad adicional: aunque `ec` no reporte error, un cuerpo
+  // vacío para una respuesta 200 que debería traer un PDF real es en sí
+  // mismo la señal de un truncamiento silencioso (ver comentario arriba)
+  // -- nunca hay un PDF legítimo de 0 bytes.
+  if (res.result() == http::status::ok && res.body().empty()) {
+    result.error = "pdf_export_empty_body";
     return result;
   }
   if (res.result() != http::status::ok) {

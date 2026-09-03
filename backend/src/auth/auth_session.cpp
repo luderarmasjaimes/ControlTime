@@ -3,10 +3,12 @@
 #include "jwt.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
+#include "../security/security_alerts.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <ctime>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -61,6 +63,32 @@ bool isWebSocketUpgrade(const http::request<http::string_body> &req) {
   return value.find("websocket") != std::string::npos;
 }
 
+/**
+ * @brief ¿Esta request cruza "sites" según la cabecera Fetch Metadata
+ *        `Sec-Fetch-Site` (enviada por todo navegador moderno, no
+ *        falsificable desde JS -- a diferencia de `Origin`/`Referer`, que un
+ *        atacante server-side sí puede fabricar en curl/etc.)?
+ *
+ * Hallazgo de red-team (2026-08-26): una página en http://localhost:9091
+ * (otro puerto, mismo "site" que localhost:5173 -- SameSite se basa en
+ * dominio registrable, el puerto NO cuenta) pudo leer datos reales de la
+ * víctima desde `GET /api/auth/permissions` porque el navegador SÍ adjunta
+ * una cookie `SameSite=Strict` en ese caso (es "same-site", solo distinto
+ * origen/puerto). `Sec-Fetch-Site` sí distingue esto: vale "same-origin"
+ * solo cuando el origen completo (esquema+host+puerto) coincide, "same-site"
+ * para el caso de arriba (mismo site, distinto puerto/subdominio), y
+ * "cross-site"/"none" para el resto. Se falla ABIERTO si la cabecera no
+ * viene (clientes no-navegador que ya dependen del fallback de cookie,
+ * p.ej. integraciones server-to-server previas) -- el objetivo es cerrar el
+ * vector real de navegador, no romper compatibilidad con quien no la manda.
+ */
+bool isCrossSiteCookieRequest(const http::request<http::string_body> &req) {
+  const auto it = req.find("Sec-Fetch-Site");
+  if (it == req.end()) return false;
+  const std::string value(it->value());
+  return value != "same-origin" && value != "none";
+}
+
 }  // namespace
 
 std::string extractAuthTokenFromRequest(
@@ -90,11 +118,38 @@ std::string extractAuthTokenFromRequest(
     }
   }
 
-  // Cookie HttpOnly `access_token` (ADR-082): la vía normal de la SPA. El JS de
-  // la página no puede leerla, así que un XSS no puede exfiltrar la sesión.
-  if (const std::string cookieToken = http_utils::extractCookie(req, "access_token");
-      !cookieToken.empty()) {
-    return emit(AuthTokenSource::Cookie, cookieToken);
+  // Cookie HttpOnly `beemetry_access_token` (ADR-082, renombrada en la
+  // migración a Bearer-en-memoria): vía de compatibilidad -- el frontend
+  // real de la plataforma ya prefiere el header Authorization (arriba), pero
+  // esta cookie se sigue aceptando para integraciones que aún dependan de
+  // ella. El JS de la página no puede leerla, así que un XSS no puede
+  // exfiltrar la sesión a través de esta vía.
+  //
+  // Pero SÍ puede usarse desde OTRA aplicación en el mismo "site" (mismo
+  // dominio registrable, distinto puerto/subdominio -- SameSite=Strict no
+  // distingue eso, ver isCrossSiteCookieRequest arriba): confirmado en vivo
+  // el 2026-08-26. Por eso la cookie solo se acepta cuando la request es
+  // same-origin/same-site real; una request cross-site cae al fallback de
+  // abajo (WS/query param) o directamente sin sesión -- el llamador legítimo
+  // cross-app siempre tiene la opción de usar el header Authorization, que
+  // no depende en absoluto de "site" y no se ve afectado por esta guarda.
+  if (!isCrossSiteCookieRequest(req)) {
+    if (const std::string cookieToken = http_utils::extractCookie(req, "beemetry_access_token");
+        !cookieToken.empty()) {
+      return emit(AuthTokenSource::Cookie, cookieToken);
+    }
+  } else if (!http_utils::extractCookie(req, "beemetry_access_token").empty()) {
+    // Señal real de ataque, no ruido: solo se llega aquí cuando el navegador
+    // SÍ tenía la cookie de sesión para adjuntar (la víctima está logueada) y
+    // la request viene de otro site -- exactamente el patrón del intento de
+    // lectura cross-site del red-team. Se registra para poder alertar/
+    // auditar, aunque la request en sí siga su camino sin sesión (fail
+    // closed) hacia el resto del handler.
+    std::cerr << "[CROSS_SITE_COOKIE_BLOCKED] ip=" << http_utils::getClientIp(req)
+              << " target=" << std::string(req.target()) << std::endl;
+    security::sendSecurityAlert("cross_site_cookie_blocked",
+                                "ip=" + http_utils::getClientIp(req) +
+                                    " target=" + std::string(req.target()));
   }
 
   // `?auth_token=` queda restringido al handshake WebSocket (auditoría de
@@ -116,7 +171,7 @@ std::string extractAuthTokenFromRequest(
 }
 
 bool csrfTokenMatches(const http::request<http::string_body> &req) {
-  const std::string cookie = http_utils::extractCookie(req, "csrf_token_v2");
+  const std::string cookie = http_utils::extractCookie(req, "beemetry_csrf_token");
   if (cookie.empty()) return false;
   const auto header = req.find("X-CSRF-Token");
   if (header == req.end()) return false;
@@ -228,6 +283,55 @@ std::string makeSessionToken() {
   return http_utils::secureRandomHex(32);
 }
 
+// ── MFA/TOTP (ADR-135): tokens de login pendientes de segundo factor ──────
+namespace {
+struct MfaPendingEntry {
+  AuthUser user;
+  std::chrono::system_clock::time_point expiresAt;
+};
+std::mutex gMfaPendingMutex;
+std::unordered_map<std::string, MfaPendingEntry> gMfaPendingTokens;
+constexpr auto kMfaPendingTtl = std::chrono::minutes(5);
+}  // namespace
+
+std::string createMfaPendingToken(const AuthUser &user) {
+  const std::string token = http_utils::secureRandomHex(32);
+  std::scoped_lock lk(gMfaPendingMutex);
+  // Purga perezosa de entradas vencidas (evita crecimiento sin límite, mismo
+  // criterio que pruneExpiredAuthSessions más abajo).
+  for (auto it = gMfaPendingTokens.begin(); it != gMfaPendingTokens.end();) {
+    if (it->second.expiresAt <= std::chrono::system_clock::now()) {
+      it = gMfaPendingTokens.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  gMfaPendingTokens[token] = {user, std::chrono::system_clock::now() + kMfaPendingTtl};
+  return token;
+}
+
+std::optional<AuthUser> consumeMfaPendingToken(const std::string &mfaToken) {
+  // Deliberadamente NO borra la entrada al leerla: un código de 6 dígitos
+  // mal tipeado no debe forzar un login completo de nuevo (password/
+  // biometría) -- el caller (POST /api/auth/login/mfa) es quien decide
+  // cuándo invalidarla, solo tras un código correcto. La entrada igual
+  // expira sola a los 5 min si nunca se usa.
+  std::scoped_lock lk(gMfaPendingMutex);
+  const auto it = gMfaPendingTokens.find(mfaToken);
+  if (it == gMfaPendingTokens.end()) return std::nullopt;
+  if (it->second.expiresAt <= std::chrono::system_clock::now()) {
+    gMfaPendingTokens.erase(it);
+    return std::nullopt;
+  }
+  return it->second.user;
+}
+
+/** @brief Invalida un `mfa_token` tras su uso exitoso (uso único real). */
+void invalidateMfaPendingToken(const std::string &mfaToken) {
+  std::scoped_lock lk(gMfaPendingMutex);
+  gMfaPendingTokens.erase(mfaToken);
+}
+
 /** @brief Construye+firma el access token JWT para `user`, con TTL de config::AppConfig::gJwtAccessTtlMinutes. */
 static std::pair<std::string, std::string> issueAccessToken(const AuthUser &user) {
   auto &cfg = config::AppConfig::instance();
@@ -241,6 +345,26 @@ static std::pair<std::string, std::string> issueAccessToken(const AuthUser &user
   claims.issuedAt = std::chrono::system_clock::now();
   claims.expiresAt = claims.issuedAt + std::chrono::minutes(cfg.gJwtAccessTtlMinutes);
   return {jwt::sign(claims, cfg.gJwtSecret), claims.jti};
+}
+
+std::string issueEphemeralAccessToken(const AuthUser &user) {
+  return issueAccessToken(user).first;
+}
+
+std::string issueExportAccessToken(const std::string &userId, const std::string &username,
+                                   const std::string &company, const std::string &role,
+                                   const std::string &tenantId) {
+  auto &cfg = config::AppConfig::instance();
+  jwt::JwtClaims claims;
+  claims.sub = userId;
+  claims.username = username;
+  claims.company = company;
+  claims.role = role;
+  claims.tenantId = tenantId;
+  claims.jti = makeSessionToken();
+  claims.issuedAt = std::chrono::system_clock::now();
+  claims.expiresAt = claims.issuedAt + std::chrono::minutes(cfg.gJwtExportTtlMinutes);
+  return jwt::sign(claims, cfg.gJwtSecret);
 }
 
 static std::string iso8601(std::chrono::system_clock::time_point tp) {

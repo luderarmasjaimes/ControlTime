@@ -3,9 +3,11 @@ import { RefreshCw, X, Radar } from 'lucide-react';
 import { getSession } from '../../../../auth/authStorage';
 import { telemetryTenantIdFromSession } from '../../../../auth/telemetryTenant';
 import { fetchTelemetryWizardCatalog } from '../../lib/api';
-import { useEditorStore, type ReportElement } from '../../store/useEditorStore';
+import type { ReportElement } from '../../store/useEditorStore';
 import ZoneSensorPicker, { type WizardCatalogSensor, type SensorSelection } from './ZoneSensorPicker';
 import ChartTypePicker, { type SensorMultiChartType } from './ChartTypePicker';
+import ComboSeriesEditor, { type ComboSeriesConfig } from './ComboSeriesEditor';
+import { sensorDashboardLayout, sensorDashboardMinHeight } from '../../lib/sensorMultiChartLayout';
 
 interface SensorMultiChartInspectorProps {
   element: ReportElement;
@@ -49,6 +51,11 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
   const [chartTypes, setChartTypes] = useState<SensorMultiChartType[]>(
     props.chartType ? [props.chartType as SensorMultiChartType] : [],
   );
+  // Configuración por sensor del modelo "Combinado" (línea/barra + eje
+  // secundario) -- solo se usa cuando 'combo' está marcado en el paso 4,
+  // ver ComboSeriesEditor. Se guarda en props.comboConfig junto al resto del
+  // bloque al insertar, para que el widget la lea sin recalcular defaults.
+  const [comboConfig, setComboConfig] = useState<ComboSeriesConfig>(props.comboConfig || {});
   const [from, setFrom] = useState<string>(props.from || '');
   const [to, setTo] = useState<string>(props.to || '');
 
@@ -119,15 +126,31 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
 
   const handleInsert = () => {
     if (!canInsert) return;
-    const sharedProps = { ...props, sensorType, selections, from, to };
-    // El primer tipo actualiza ESTE bloque (el que ya está en el lienzo,
-    // recién insertado desde la biblioteca); cada tipo adicional agrega un
-    // bloque nuevo — mismo patrón que SensorInspector.applyToDocument.
-    onUpdate({ props: { ...sharedProps, chartType: chartTypes[0] } });
-    const addElement = useEditorStore.getState().addElement;
-    for (let i = 1; i < chartTypes.length; i += 1) {
-      addElement('sensor_multi_chart', { props: { ...sharedProps, chartType: chartTypes[i] } });
+    // Un solo bloque con TODOS los tipos marcados -- pedido explícito: "en
+    // solo 1 dashboard del sensor se muestren todos los diagramas de
+    // telemetría de todos los sensores seleccionados", en vez del
+    // comportamiento anterior (un bloque nuevo por cada tipo marcado).
+    // `chartType` (singular) se conserva igual para que bloques ya
+    // insertados con versiones previas, y el visor de solo lectura/export,
+    // sigan resolviendo un tipo por defecto sin cambios.
+    const minHeight = sensorDashboardMinHeight({ chartTypes, chartType: chartTypes[0] }, element.width || 480);
+    const patch: Partial<ReportElement> = {
+      props: { ...props, sensorType, selections, from, to, chartType: chartTypes[0], chartTypes, comboConfig },
+      height: Math.max(element.height || 0, minHeight),
+    };
+    // Con varios tipos el bloque es un dashboard (grilla de mini-gráficos,
+    // ~200px de alto cada uno) -- el tamaño por defecto de un gráfico
+    // simple (480×260) lo dejaría apretado a una sola fila con scroll.
+    // Se agranda automáticamente solo la primera vez que se pasa a modo
+    // dashboard, respetando cualquier resize manual posterior del usuario.
+    if (chartTypes.length > 1 && (!Array.isArray(props.chartTypes) || props.chartTypes.length <= 1)) {
+      const cols = Math.min(3, chartTypes.length);
+      const nextWidth = Math.max(element.width || 0, Math.min(960, cols * 300));
+      const layout = sensorDashboardLayout(chartTypes.length, nextWidth, true);
+      patch.width = nextWidth;
+      patch.height = Math.max(element.height || 0, layout.minHeight);
     }
+    onUpdate(patch);
   };
 
   const removeSelection = (sensorId: string) => {
@@ -215,16 +238,26 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
       )}
 
       {/* Paso 4: tipo(s) de gráfico — vista reducida de los modelos Apache
-         ECharts disponibles para esta serie de datos; marcar varios inserta
-         un bloque por cada uno. Rotulado explícito con "Apache ECharts"
-         porque no era evidente que estos checkboxes fueran justamente el
-         selector de modelos de gráfico. */}
+         ECharts disponibles para esta serie de datos; marcar varios los
+         combina en un solo dashboard (una tarjeta por tipo, mismos sensores
+         y rango). Rotulado explícito con "Apache ECharts" porque no era
+         evidente que estos checkboxes fueran justamente el selector de
+         modelos de gráfico. */}
       <div className="input-group" style={{ opacity: selections.length > 0 ? 1 : 0.5, pointerEvents: selections.length > 0 ? 'auto' : 'none' }}>
         <label>4. Tipo de gráfico (Apache ECharts)</label>
         <p style={{ margin: '0 0 8px', fontSize: 10, color: '#94a3b8' }}>
-          Marque uno o varios modelos — se inserta un gráfico por cada uno con los mismos sensores y rango.
+          Marque uno o varios modelos — se combinan en un solo dashboard con los mismos sensores y rango.
         </p>
         <ChartTypePicker values={chartTypes} onChange={setChartTypes} disabled={selections.length === 0} />
+        {(chartTypes as string[]).includes('combo') && selections.length > 0 && (
+          <>
+            <p style={{ margin: '10px 0 0', fontSize: 10, color: '#94a3b8' }}>
+              Combinado: elija línea o barra por sensor, y marque "2.º eje" para los que tengan una magnitud muy
+              distinta al resto (eje Y derecho independiente).
+            </p>
+            <ComboSeriesEditor selections={selections} config={comboConfig} onChange={setComboConfig} />
+          </>
+        )}
       </div>
 
       {/* Paso 5: rango de fecha/hora */}
@@ -291,10 +324,10 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
         }}
         disabled={!canInsert}
         onClick={handleInsert}
-        title={canInsert ? 'Insertar un gráfico por cada tipo marcado, con la configuración actual' : 'Complete los 5 pasos para habilitar la inserción'}
+        title={canInsert ? 'Insertar un solo dashboard con los tipos marcados, con la configuración actual' : 'Complete los 5 pasos para habilitar la inserción'}
       >
         <RefreshCw size={14} />
-        Insertar {chartTypes.length > 1 ? `${chartTypes.length} gráficos` : 'gráfico'} ({selections.length} sensor{selections.length === 1 ? '' : 'es'})
+        Insertar {chartTypes.length > 1 ? `dashboard (${chartTypes.length} diagramas)` : 'gráfico'} ({selections.length} sensor{selections.length === 1 ? '' : 'es'})
       </button>
     </div>
   );
