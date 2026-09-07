@@ -1,0 +1,17 @@
+[
+  {
+    "id": "case01_obama_local_tts",
+    "image_sha256": "fde858d90f3922cf071832799b3ff9139dd0cd889d87cb6084fa754edf8268f2",
+    "audio_sha256": "941b2b99be4482528e0c290b15d2cd31c68e0a9d43aa03e110ba0c31aa0a82d8",
+    "image_source": "Wikimedia Commons, ya verificado en artifacts/avatar_ca15_public_domain (ADR-141 CA-15a)",
+    "image_license": "dominio publico (obra de gobierno federal EEUU)",
+    "audio_source": "TTS local offline (pyttsx3/SAPI, sesion 2026-09-07), sin dependencia de audio de terceros",
+    "audio_license": "generado localmente, sin restriccion",
+    "elapsed_ms": 146915,
+    "http_status": 200,
+    "ok": true,
+    "output_video": "/tmp/eval_out/case01_obama_local_tts.mp4",
+    "output_bytes": 1168309,
+    "backend": "sadtalker"
+  }
+]

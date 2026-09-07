@@ -1,0 +1,11 @@
+[
+  {
+    "id": "case01_obama_local_tts",
+    "image": "case01.jpg",
+    "audio": "case01.wav",
+    "image_source": "Wikimedia Commons, ya verificado en artifacts/avatar_ca15_public_domain (ADR-141 CA-15a)",
+    "image_license": "dominio publico (obra de gobierno federal EEUU)",
+    "audio_source": "TTS local offline (pyttsx3/SAPI, sesion 2026-09-07), sin dependencia de audio de terceros",
+    "audio_license": "generado localmente, sin restriccion"
+  }
+]

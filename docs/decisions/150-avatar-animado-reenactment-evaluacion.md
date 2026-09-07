@@ -196,14 +196,53 @@ el build** en vez de producir una imagen que revienta recién en la primera
 inferencia real — exactamente el modo de fallo que costó dos vueltas en esta
 sesión.
 
+### Segunda corrida (2026-09-07) — arnés real con audio de habla
+
+Corrida del propio `scripts/evaluate_public_domain.py` (no una reconstrucción
+aislada) contra el servicio real, cerrando el pendiente más importante de la
+corrida anterior: la primera prueba (2026-09-04) usó un tono sintético como
+audio, válido para probar el pipeline pero no para juzgar lip-sync.
+
+**Assets de esta corrida**:
+- Imagen: `01_barack_obama.jpg`, ya verificado como dominio público en
+  `artifacts/avatar_ca15_public_domain` (mismo manifiesto de ADR-141/CA-15a,
+  obra de gobierno federal EE. UU.).
+- Audio: habla real generada con TTS **local y offline** (`pyttsx3` sobre
+  SAPI de Windows, sin red ni dependencia de audio de terceros con licencia
+  ambigua) — se evita así el mismo tipo de problema de licencias que ya
+  bloqueó LivePortrait/LatentSync en la tabla de arriba, aplicado esta vez al
+  driving audio en vez de a los pesos del modelo.
+
+**Resultado**: `POST /animate` vía el arnés real, `1/1 casos OK`,
+`elapsed_ms=146915` (audio de ~10s, más lento que el smoke de 2s de la
+primera corrida, escala con la duración del audio). Video de salida h264
+896×1200, **196 frames, 7.84s**, audio aac. `report.json` con SHA-256 de
+imagen/audio y fuente/licencia de cada asset, mismo estándar de evidencia que
+`avatar_engine/scripts/ca15_public_domain_test.py`.
+
+VRAM con el servicio cargado tras esta corrida: 4459 MiB de 8151 MiB
+(`avatar_engine` seguía activo en simultáneo) — consistente con la medición
+de la corrida anterior (4481 MiB), confirma que el footprint no crece con la
+duración del audio de forma significativa en este tamaño de muestra.
+
+**Nota de reproducibilidad de infraestructura (no de este ADR)**: entre la
+primera y la segunda corrida, Docker Desktop entró en un crash-loop por
+sockets AF_UNIX stale (`sailor-ingest.sock`, `docker-secrets-engine/engine.sock`)
+que no se pudieron borrar individualmente (`El sistema no tiene acceso al
+archivo`) — se resolvió renombrando los directorios contenedores completos en
+vez de los archivos, liberando el WSL con `wsl --shutdown` antes. No es un
+problema de `avatar_animation_engine`; se documenta acá porque interrumpió la
+continuidad de esta evaluación y puede repetirse.
+
 ### Pendiente de verificación
 
-- Calidad visual/identidad con fotos reales de usuarios del producto (esta
-  corrida usó el asset de smoke con un tono sintético como audio, sirve para
-  probar el pipeline, no para juzgar lip-sync).
-- `--size 512` y su costo de VRAM.
-- Arnés `scripts/evaluate_public_domain.py` contra un set con manifiesto de
-  licencias — todavía sin assets cargados.
+- Calidad visual/identidad con **fotos de usuarios reales** del producto (las
+  dos corridas hasta ahora usaron retratos públicos de terceros, válidos para
+  probar el pipeline y el lip-sync, no necesariamente representativos de la
+  variedad real de rostros/anteojos/iluminación de los usuarios finales).
+- `--size 512` y su costo de VRAM (ambas corridas usaron el default 256).
+- Medir VRAM en el *pico* durante la inferencia, no solo el residente
+  post-carga (ninguna corrida hasta ahora perfiló el pico).
 
 ## Alternativas descartadas
 
