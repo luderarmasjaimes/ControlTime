@@ -222,8 +222,35 @@ imagen/audio y fuente/licencia de cada asset, mismo estándar de evidencia que
 
 VRAM con el servicio cargado tras esta corrida: 4459 MiB de 8151 MiB
 (`avatar_engine` seguía activo en simultáneo) — consistente con la medición
-de la corrida anterior (4481 MiB), confirma que el footprint no crece con la
-duración del audio de forma significativa en este tamaño de muestra.
+de la corrida anterior (4481 MiB), confirma que el footprint *residente*
+(post-carga, sin inferencia activa) no crece con la duración del audio de
+forma significativa en este tamaño de muestra.
+
+### Corrección importante — pico real de VRAM durante inferencia (2026-09-07)
+
+La sección de Verificación de la primera corrida (2026-09-04) afirmaba que
+`avatar_animation_engine` "convivió sin OOM con `avatar_engine`" basado
+únicamente en el consumo *residente* medido después de que la inferencia
+terminó — no en el pico real durante la inferencia. Se corrige acá con una
+medición real: `nvidia-smi` muestreado cada 2s mientras corría
+`POST /animate` (mismo caso `case01_obama_local_tts`, `--size 256`,
+`avatar_engine` activo en simultáneo).
+
+**Resultado: el pico real llega a 7748 MiB de 8151 MiB totales — solo 403 MiB
+de margen.** La traza sube de 4459 MiB (idle) a 7618 MiB en ~16s (arranque de
+la inferencia: 3DMM + cara-render cargando a GPU) y se estabiliza en 7748 MiB
+durante el resto de los 129s de la request. No hubo OOM en esta corrida, pero
+el margen es demasiado ajustado para considerarlo seguro en producción: un
+segundo request concurrente a `avatar_engine`, una carga puntual de
+`ollama`, o simplemente `--size 512` en vez de 256, probablemente lo cruzan.
+
+**Esta medición revierte la recomendación relajada de la corrida anterior**:
+la disciplina operativa de **no correr `avatar_animation_engine` y
+`avatar_engine` a la vez** (ya documentada arriba en "Restricción de
+infraestructura") sigue siendo la recomendación real, no una precaución
+excesiva. `--size 512` queda descartado para evaluar en este host mientras
+`avatar_engine` esté activo — el margen a 256 ya es insuficiente para
+absorber ese salto.
 
 **Nota de reproducibilidad de infraestructura (no de este ADR)**: entre la
 primera y la segunda corrida, Docker Desktop entró en un crash-loop por
@@ -240,9 +267,9 @@ continuidad de esta evaluación y puede repetirse.
   dos corridas hasta ahora usaron retratos públicos de terceros, válidos para
   probar el pipeline y el lip-sync, no necesariamente representativos de la
   variedad real de rostros/anteojos/iluminación de los usuarios finales).
-- `--size 512` y su costo de VRAM (ambas corridas usaron el default 256).
-- Medir VRAM en el *pico* durante la inferencia, no solo el residente
-  post-carga (ninguna corrida hasta ahora perfiló el pico).
+- `--size 512` y su costo de VRAM — descartado de evaluar en este host
+  mientras `avatar_engine` esté activo, ver corrección de pico de VRAM
+  arriba; requeriría medirse con `avatar_engine` apagado.
 
 ## Alternativas descartadas
 
