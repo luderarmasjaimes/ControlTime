@@ -78,14 +78,31 @@ candidato de la misma familia no cambiaría la conclusión.
    ADR-141/150).
 3. **Reducir alcance**: si lo que realmente se necesita es "el avatar se ve
    trabajando/en contexto" y no video con movimiento corporal real, una
-   alternativa mucho más barata es *imagen* estática con fondo/contexto
-   (persona en la mina, en el camión) generada por el pipeline de difusión
-   ya existente de `avatar_engine` (ADR-141, SD1.5+ControlNet, ya corre en
-   este hardware) en vez de *video* con movimiento real — cambia la pregunta
-   de "generar movimiento humano" (cara ADR-160) a "generar una escena
-   estática" (ya resuelto, mismo costo que el avatar actual). Requeriría su
-   propia evaluación de prompt/ControlNet si se decide perseguir, no
-   implementado en esta pasada.
+   alternativa mucho más barata en principio es *imagen* estática con
+   fondo/contexto (persona en la mina, en el camión) sobre el pipeline de
+   difusión ya existente de `avatar_engine` (ADR-141, SD1.5+ControlNet, ya
+   corre en este hardware).
+
+   **Corrección (2026-09-07, verificado contra el código real, no
+   asumido)**: esto NO está "ya resuelto" como se afirmaba en una versión
+   anterior de este párrafo. `avatar_engine/avatar_diffusion.py` deriva el
+   `control_image` de ControlNet con `cv2.Canny()` directamente sobre **la
+   misma foto fuente** (línea ~229) — la salida respeta estructuralmente la
+   misma composición que la entrada (busto, encuadre carnet, fondo blanco
+   fijo en `_STYLE_PROMPT`, "corporate id photo composition, centered
+   headshot, plain white background"). No existe ningún mecanismo hoy para
+   inyectar una escena/pose distinta a la de la foto de registro real de la
+   persona. Generar "persona en una mina" a partir de un busto de carnet
+   requeriría un cambio de arquitectura real, no un cambio de prompt:
+   reemplazar la fuente del Canny (una imagen de referencia genérica de
+   "persona en mina/camión" en vez de la foto real) manteniendo identidad
+   vía `img2img strength` + comparación de similitud (mismo mecanismo que ya
+   usa `_diffusion_stylize_with_quality_retry`, ADR-159) — y esa es
+   exactamente la clase de problema de preservación de identidad bajo SD1.5
+   que ya está documentada como limitación conocida en ADR-141 y fue el
+   motivo original que llevó a evaluar ADR-150. No es gratis, es su propia
+   investigación pendiente si se decide perseguir — no implementado en esta
+   pasada.
 
 ## Alternativas descartadas
 
