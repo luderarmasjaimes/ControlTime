@@ -1,6 +1,25 @@
 # ADR-156 — Contador ICAO sin tolerancia, retos variados y reinicio a la etapa 1 tras agotarlos
 
-**Status**: implemented
+> **Actualización 2026-09-11 — "Defecto latente, no corregido" (sección de
+> abajo) queda resuelto, según confirmación del developer.** El bug real que
+> este ADR dejó documentado y sin corregir — una vez que el score de la
+> heurística CV marcaba una sesión como "con lentes", el tope protector
+> (54) nunca bajaba del umbral de salida (49), así que la sesión no podía
+> volver a salir de esa marca ni aunque la persona se quitara los lentes,
+> bloqueando por completo el registro biométrico — ya no ocurre en el flujo
+> real. El propio texto original de este ADR (sección "Defecto latente")
+> anticipaba que la corrección real requería "rediseño (apoyarse en el
+> clasificador ONNX en vez de la heurística CV), no un ajuste de umbral" —
+> coincide con el trabajo de reentrenamiento del clasificador ONNX de
+> ADR-163/165, que se ejecutó en el mismo período sin citar a este ADR (ver
+> hallazgo de coordinación en el bloque de auditoría 2026-09-10 de
+> `README.md`). **Queda anotado explícitamente para más pruebas de QA antes
+> de certificar la corrección al 100%** — esta actualización registra la
+> corrección funcional confirmada por el developer, no un ensayo QA
+> independiente con evidencia propia. No se edita el texto original de
+> abajo.
+
+**Status**: implemented, defecto latente corregido (2026-09-11) — pendiente certificación QA
 
 **Fecha**: 2026-09-04
 

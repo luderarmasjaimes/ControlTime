@@ -115,6 +115,10 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 >    sin que ninguno de los dos cite al otro pese a tocar la misma ruta de
 >    código. Ninguno de los tres ADR queda cerrado por esta observación — se
 >    documenta para quien mantenga biometría, no se resuelve unilateralmente.
+>    *(Corregido 2026-09-11: el developer confirma que el defecto latente de
+>    ADR-156 ya no ocurre — ver el bloque de actualización agregado a ese
+>    ADR. Queda pendiente de certificación QA formal, no de decisión
+>    arquitectónica.)*
 > 5. **Resumen del ámbito `ia` desactualizado** (línea de subtotal al final de
 >    la tabla): decía 29 ADR, la tabla real tiene 35 filas hoy — corregido con
 >    nota de auditoría fechada arriba de la línea original, sin editarla
