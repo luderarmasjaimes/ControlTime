@@ -27,8 +27,10 @@ import {
     LifeBuoy,
     UserSearch,
     Gauge,
+    RefreshCw,
 } from 'lucide-react'
 import { log } from './lib/logger';
+import { installNavClickGuard } from './lib/navClickGuard';
     // Hubspot is removed as it is not available in lucide-react
 import { motion, AnimatePresence } from 'framer-motion'
 import AnimatedButton from './components/UI/AnimatedButton'
@@ -99,12 +101,13 @@ const ViewLoader = ({ label }: { label: string }) => (
 import { PlatformBrandDashboardBlock } from './brand/PlatformBrandMark'
 import { ensureCompanyUsers } from './components/ReportStudioV2/lib/userBootstrap'
 import { purgeOfflineCacheOnLogout } from './components/ReportStudioV2/lib/offlineSqlite'
-import { getSession, createSession, clearSession, type Session } from './auth/authStorage'
-import { fetchMyAvatarHd, logout as logoutApi, refreshAccessToken } from './auth/authApi'
+import { getSession, createSession, clearSession, updateSessionAvatar, type Session } from './auth/authStorage'
+import { fetchMyAvatarHd, fetchMyAvatarThumb, logout as logoutApi, refreshAccessToken } from './auth/authApi'
 import { usePermissions, invalidatePermissionsCache } from './auth/usePermissions'
 import { telemetryTenantIdFromSession } from './auth/telemetryTenant'
 import { useI18n } from './i18n/I18nProvider'
 import { ConfirmActionHost } from './components/UI/ConfirmActionDialog'
+import { AvatarWidget } from './components/UI/AvatarWidget'
 
 /** Sesión ampliada con campos opcionales de contexto de plataforma/unidad, aún no emitidos por AuthGateway pero leídos defensivamente aquí. */
 interface AppSession extends Session {
@@ -272,11 +275,28 @@ function tabPillClassName(badge?: string): string {
 interface DashboardAppProps {
     session: AppSession
     onLogout: () => void
+    /** true mientras App() sondea /api/auth/avatar/thumb tras un registro o
+     * login sin avatar todavía generado (ver el useEffect de más abajo,
+     * ADR-157 + hallazgo real 2026-09-10) -- default false para no romper
+     * llamadores existentes (ej. App.avatar.test.jsx, que renderiza
+     * DashboardApp directo con un avatar ya presente). */
+    avatarGenerating?: boolean
 }
 
-export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
+export const DashboardApp = ({ session, onLogout, avatarGenerating = false }: DashboardAppProps) => {
     const { t, language, countryIso2 } = useI18n()
     const telemetryScope = telemetryScopeFromSession(session)
+
+    // Diagnóstico SIEMPRE activo (no gateado por VITE_DEBUG, ver
+    // navClickGuard.ts), instalado apenas arranca la interfaz de la
+    // plataforma (mount de DashboardApp = shell real que ve el usuario tras
+    // loguearse). Reporte 2026-09-10: "el avatar generando no me deja
+    // entrar a Informes/Reportes" -- la causa (AvatarWidget.tsx tapando el
+    // nav con z-index) ya se corrigió, pero este guard queda para que, si
+    // el mismo síntoma vuelve a aparecer (por este widget o por cualquier
+    // otro overlay futuro), quede en la consola del navegador en el momento
+    // exacto en que ocurre, sin depender de reproducirlo para diagnosticarlo.
+    useEffect(() => installNavClickGuard(), [])
     const mainScrollRef = useRef<HTMLDivElement>(null)
     const [activeTab, setActiveTab] = useState('Dashboard')
     const [sidebarTab, setSidebarTab] = useState('Azimuth')
@@ -872,15 +892,21 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
                                         </button>
                                     ) : (
                                         <span
-                                            className="header-user-avatar header-user-avatar--placeholder w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center shrink-0"
+                                            className={`header-user-avatar header-user-avatar--placeholder w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center shrink-0 ${avatarGenerating ? 'header-user-avatar--generating' : ''}`}
                                             title={
-                                                avatarB64
-                                                    ? t('avatar.invalid')
-                                                    : t('avatar.missing')
+                                                avatarGenerating
+                                                    ? t('avatar.generating')
+                                                    : avatarB64
+                                                      ? t('avatar.invalid')
+                                                      : t('avatar.missing')
                                             }
                                             aria-hidden
                                         >
-                                            <UserRound size={18} className="text-amber-100" />
+                                            {avatarGenerating ? (
+                                                <RefreshCw size={14} className="text-amber-100 animate-spin" />
+                                            ) : (
+                                                <UserRound size={18} className="text-amber-100" />
+                                            )}
                                         </span>
                                     )}
                                     <span className="mining-user-card__name">
@@ -1416,6 +1442,7 @@ export const DashboardApp = ({ session, onLogout }: DashboardAppProps) => {
                 </div>
             )}
             <ConfirmActionHost />
+            <AvatarWidget />
         </div>
     )
 }
@@ -1424,6 +1451,7 @@ const App = () => {
     const [session, setSession] = useState<AppSession | null>(() => {
         return getSession()
     })
+    const [avatarGenerating, setAvatarGenerating] = useState(false)
     // Migración a Bearer-en-memoria: el access token vive SOLO en una
     // variable de módulo (authStorage.ts), que se pierde en cada recarga de
     // página a propósito (nunca se persiste en disco). Si `getSession()`
@@ -1462,6 +1490,72 @@ const App = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [!!session])
 
+    // El avatar de una cuenta recién registrada NO viene en la respuesta de
+    // /api/auth/register: el backend lo genera en un hilo aparte que tarda
+    // 15-40 s (AUTH_REGISTER_CARTOON_BG -> difusión SD1.5 con hasta 3 seeds y
+    // 3 niveles de fallback), a propósito, para no bloquear el alta. Antes de
+    // esto la sesión se quedaba sin avatar para siempre y el usuario veía el
+    // placeholder de iniciales durante toda su primera sesión; recién
+    // aparecía tras desconectarse y volver a entrar, porque el login sí lee
+    // la fila ya actualizada (bug reportado 2026-09-04).
+    //
+    // Sondeo acotado y barato: solo corre si la sesión NO tiene avatar, cada
+    // 6 s y como máximo 20 intentos (~2 min, cubre el peor caso de los 3
+    // niveles de fallback). En cuanto llega, actualiza la sesión guardada y
+    // el estado -- la cabecera reemplaza las iniciales por el avatar sin
+    // recargar ni re-loguear. Si el avatar nunca se genera (los 3 niveles
+    // fallan, ADR-074: placeholder de iniciales), el sondeo simplemente se
+    // agota en silencio.
+    useEffect(() => {
+        if (!session || restoringSession) {
+            setAvatarGenerating(false)
+            return
+        }
+        if (normalizeSessionAvatarBase64(session)) {
+            setAvatarGenerating(false)
+            return
+        }
+        // Hallazgo real 2026-09-10 (usuario 09637600/ALPAYANA): sin este
+        // estado, la cabecera se veía IDÉNTICA (placeholder de iniciales) ya
+        // sea que el avatar todavía no exista o que el pipeline llevara los
+        // 60+ s reales medidos generándolo (ver AUTH_REGISTER_CARTOON_BG en
+        // los logs de beemetry-api) -- de ahí el reporte "en el primer login
+        // no aparece ningún avatar": no estaba roto, sólo sin ningún
+        // indicio visual de que el sondeo de abajo seguía en curso.
+        setAvatarGenerating(true)
+        let cancelled = false
+        let attempts = 0
+        const maxAttempts = 20
+        const tick = async () => {
+            if (cancelled) return
+            attempts += 1
+            try {
+                const b64 = await fetchMyAvatarThumb()
+                if (cancelled) return
+                if (b64) {
+                    const updated = updateSessionAvatar(b64)
+                    if (updated) setSession({ ...updated } as AppSession)
+                    setAvatarGenerating(false)
+                    return
+                }
+            } catch (error) {
+                // Sesión aún sin Bearer, red intermitente, backend ocupado:
+                // no es un fallo del usuario ni algo que deba interrumpirlo.
+                log.debug('[SESSION_AVATAR] sondeo de avatar pendiente falló', error)
+            }
+            if (!cancelled && attempts < maxAttempts) {
+                timer = window.setTimeout(() => void tick(), 6000)
+            } else if (!cancelled) {
+                setAvatarGenerating(false)
+            }
+        }
+        let timer = window.setTimeout(() => void tick(), 3000)
+        return () => {
+            cancelled = true
+            window.clearTimeout(timer)
+        }
+    }, [session, restoringSession])
+
     if (restoringSession) {
         // Pantalla mínima: evita que el dashboard llegue a montar (y disparar
         // llamadas protegidas sin Bearer todavía) mientras se resuelve el
@@ -1480,6 +1574,7 @@ const App = () => {
     return (
         <DashboardApp
             session={session}
+            avatarGenerating={avatarGenerating}
             onLogout={() => {
                 // Debe leer la sesión SALIENTE (getSession() todavía no
                 // limpiada -- clearSession() corre recién dentro del

@@ -3,11 +3,29 @@ FROM python:3.10-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
+    # libgles2-mesa/libegl1-mesa: sin estos dos, MediaPipe Tasks
+    # (ImageSegmenter, matting.py) falla al cargar con "libGLESv2.so.2:
+    # cannot open shared object file" -- hallazgo real, sesión 2026-09-08,
+    # reproducido con una animación completa (SadTalker terminó bien, el
+    # video ya estaba listo) que igual se reportaba como fallo porque el
+    # post-proceso de fondo transparente moría acá. ai_engine/Dockerfile.ai
+    # ya instala estos dos paquetes para el mismo modelo/mismo propósito
+    # (selfie_segmenter.tflite, eye_analyzer.py) -- este Dockerfile se había
+    # quedado corto al copiarlo.
+    libgles2-mesa \
+    libegl1-mesa \
     libglib2.0-0 \
     ffmpeg \
     git \
     curl \
     ca-certificates \
+    # TTS local/offline para el guion de las funcionalidades pre-renderizadas
+    # (bienvenida/onboarding/informes/KPIs, ADR-150 integración a producto) --
+    # invocado como subproceso (mismo patrón que ffmpeg), no enlazado: la
+    # licencia GPL-3.0 de espeak-ng no alcanza a este servicio por eso, igual
+    # criterio ya aplicado a herramientas GPL invocadas por subprocess en
+    # todo el ecosistema de este tipo de pipeline (ver THIRD_PARTY_NOTICES.md).
+    espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

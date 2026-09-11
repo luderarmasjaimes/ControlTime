@@ -5,6 +5,7 @@ import {
   ChevronDown, ChevronUp, Search, Volume2, VolumeX, Wifi, WifiOff,
 } from 'lucide-react';
 import { useAlarmStream, type LiveAlarm } from '../../lib/alarmStream';
+import { requestSupportAvatar } from '../UI/AvatarWidget';
 
 /* ─────────────────────────────────────────────────────────────────────────────
    ALARM CENTER — Motor de Alarmas Automáticas con Umbrales y Prioridades
@@ -210,6 +211,21 @@ function AlarmCenter({ telemetryTenantId, onCreateReportFromAlarm }: AlarmCenter
   }, [usingLiveData, liveAlarms, demoAlarms, ackedLiveIds]);
 
   const setAlarms = setDemoAlarms;  // acks/reportes de demo siguen mutando el estado demo
+
+  // Avatar de soporte (ADR-164): la alarma CRÍTICA no reconocida más reciente
+  // dispara "alarm_loop", una sola vez por alarma (dedupe por id manejado
+  // adentro de AvatarWidget vía sessionStorage). Si llegan varias a la vez o
+  // ya hay una animación en curso, el resto se ignora a propósito (ver
+  // comentario de restricción de GPU en AvatarWidget.tsx) — no se reintenta.
+  useEffect(() => {
+    if (!usingLiveData) return;
+    const newestCritical = liveAlarms
+      .filter((a) => a.severity === 'critical' && !a.acknowledged && !a.resolvedAt)
+      .sort((a, b) => (a.triggeredAt < b.triggeredAt ? 1 : -1))[0];
+    if (newestCritical) {
+      requestSupportAvatar('alarm_loop', newestCritical.id);
+    }
+  }, [usingLiveData, liveAlarms]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filterPriority, setFilterPriority] = useState<PriorityKey | 'all'>('all');
   const [searchTerm, setSearchTerm] = useState('');

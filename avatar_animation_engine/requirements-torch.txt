@@ -1,0 +1,17 @@
+# Instalado en un paso pip aparte, ANTES del resto de requirements.txt --
+# torch/torchvision pineados igual que avatar_engine (ADR-141/143): la RTX
+# 5060 Laptop (Blackwell, sm_120) sólo tiene soporte confiable con esta
+# combinación cu128. torchvision==0.26.0 es la versión emparejada con
+# torch==2.11.0 (offset estable torch 2.X <-> torchvision 0.(X+15)).
+#
+# Por qué en un paso separado (hallazgo real del primer build, 2026-09-04):
+# basicsr==1.4.2 (dependencia de GFPGAN, requirements.txt) resuelve sus
+# "setup_requires" en un entorno de build AISLADO (PEP 517) que no ve el
+# torch ya instalado en el entorno principal -- termina intentando descargar
+# un torch/nvidia-nccl-cu13 sin pinear y falla por mismatch de hash. La forma
+# estándar de evitarlo es instalar torch en el entorno REAL primero y luego
+# instalar el resto con --no-build-isolation (ver Dockerfile), para que ese
+# setup.py vea el torch ya presente en vez de intentar resolver el suyo.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128

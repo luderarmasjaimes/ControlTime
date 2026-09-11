@@ -1,0 +1,29 @@
+# Restaurador facial GFPGAN (mejora 2026-09-04, pedido explícito del
+# usuario), aplicado como post-proceso sobre la salida de SD1.5+ControlNet
+# (avatar_diffusion.py::enhance_with_gfpgan). Apache 2.0, uso comercial
+# libre -- mismos pesos ya auditados para avatar_animation_engine/ADR-150
+# (ver ese THIRD_PARTY_NOTICES.md). No depende de InsightFace ni de ningún
+# peso "non-commercial research only".
+#
+# Instalado en un paso pip APARTE, DESPUÉS de requirements.txt (que ya deja
+# torch instalado en el entorno real) y con --no-build-isolation -- mismo
+# hallazgo real ya documentado en avatar_animation_engine/requirements-torch.txt:
+# basicsr==1.4.2 resuelve sus "setup_requires" en un entorno de build PEP 517
+# aislado que no ve el torch ya instalado, y termina intentando resolver su
+# propio torch sin pinear (falla por mismatch de hash). --no-build-isolation
+# hace que vea el entorno real, donde torch==2.11.0+cu128 ya está.
+#
+# Hallazgo real 2026-09-10: facexlib depende de `opencv-python` SIN version
+# pineada -- este paso, al instalarse APARTE y DESPUÉS de requirements.txt
+# (arriba), reinstalaba cv2 con la última opencv-python (5.0.0.93 al momento
+# de este hallazgo) y pisaba el opencv-python-headless==4.11.0.86 ya pineado
+# ahí, silenciosamente. Esa build 5.0.0.93 resultó no exponer
+# `cv2.CascadeClassifier` en absoluto -- rompía en silencio cualquier código
+# de este servicio que dependiera de esa clase. Un pin acá NO alcanzó (pip
+# resuelve por grafo de dependencias, no por orden del archivo -- la
+# dependencia transitiva de facexlib se instaló después de todas formas); el
+# fix real es el paso `pip uninstall/--force-reinstall` en el Dockerfile,
+# después de este install completo.
+basicsr==1.4.2
+facexlib==0.3.0
+gfpgan

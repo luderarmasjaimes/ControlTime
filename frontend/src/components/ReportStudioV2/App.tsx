@@ -49,6 +49,7 @@ import {
   uploadSlideNarration,
   pollExportJob,
   fetchExportJobBlob,
+  type ExportJobStatus,
 } from './lib/api';
 import { getSession, type Session } from '../../auth/authStorage';
 import { telemetryTenantIdFromSession } from '../../auth/telemetryTenant';
@@ -65,6 +66,7 @@ import { tryApplyToActiveTextSelection, tryApplyCaseToActiveTextSelection } from
 import { applyListToText } from './lib/listFormatting';
 import { useI18n } from '../../i18n/I18nProvider';
 import { requestConfirmation, requestNotice } from '../UI/ConfirmActionDialog';
+import { requestSupportAvatar } from '../UI/AvatarWidget';
 import './styles.css';
 import './ribbon.css';
 
@@ -149,6 +151,22 @@ export default function App({
   const [reviewResult, setReviewResult] = useState<ReturnType<typeof reviewDocumentQuality> | null>(null);
   const [showReview, setShowReview] = useState(false);
   const [aiStatus, setAiStatus] = useState('');
+  // Barra de progreso de export DOCX/PPTX/PDF (server-side, job asíncrono) --
+  // visible en la barra superior persistente (.doc-header-meta, ver más
+  // abajo) para que el usuario vea que el sistema sigue trabajando en
+  // exports largos (documentos de miles de páginas miden 25-40+ min reales,
+  // ver ADR de checkpoints/paralelismo) en vez de asumir que se colgó.
+  // `null` = sin export en curso. Se actualiza desde el `onProgress` de
+  // `pollExportJob` (ver `makeExportProgressHandler`).
+  const [exportProgress, setExportProgress] = useState<{ format: string; captured: number; total: number } | null>(null);
+  // Callback de progreso COMPARTIDO entre DOCX/PPTX/PDF: mismo texto en
+  // `aiStatus` + misma barra visual, solo cambia la etiqueta de formato.
+  const makeExportProgressHandler = useCallback((formatLabel: string, renderingText: string) => (status: ExportJobStatus) => {
+    setAiStatus(status.status === 'running' ? renderingText : `${formatLabel} en cola de exportación...`);
+    if (status.progress && status.progress.total > 0) {
+      setExportProgress({ format: formatLabel, captured: status.progress.captured, total: status.progress.total });
+    }
+  }, []);
   const [showAiReview, setShowAiReview] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<AiSuggestion[]>([]);
   const [aiSeverityFilter, setAiSeverityFilter] = useState('todas');
@@ -1365,13 +1383,7 @@ export default function App({
         // `fetchExportJobBlob` recién al descargar, no antes.
         const { job_id: jobId } = await measurePerfAsync('export', () => createPdfExportJob(currentReportId));
         const finalStatus = await pollExportJob(currentReportId, jobId, {
-          onProgress: (status) => {
-            setAiStatus(
-              status.status === 'running'
-                ? 'Generando PDF (renderizando informe)...'
-                : 'PDF en cola de exportación...',
-            );
-          },
+          onProgress: makeExportProgressHandler('PDF', 'Generando PDF (renderizando informe)...'),
         });
         if (finalStatus.status === 'success') {
           const { blob, filename, password } = await fetchExportJobBlob(currentReportId, jobId);
@@ -1384,6 +1396,7 @@ export default function App({
           a.remove();
           URL.revokeObjectURL(url);
           setAiStatus('PDF exportado (servidor)');
+          requestSupportAvatar('report', currentReportId); // ADR-164
           // ADR-080: el PDF llega cifrado y con marca de agua — la contraseña
           // se muestra una única vez, nunca queda guardada en el backend.
           if (password) setPdfPassword(password);
@@ -1400,6 +1413,8 @@ export default function App({
           return;
         }
         log.error('Export PDF server-side falló, usando fallback cliente', err);
+      } finally {
+        setExportProgress(null);
       }
     }
     setAiStatus('Exportando PDF...');
@@ -1449,13 +1464,7 @@ export default function App({
       try {
         const { job_id: jobId } = await measurePerfAsync('export', () => createDocxExportJob(currentReportId));
         const finalStatus = await pollExportJob(currentReportId, jobId, {
-          onProgress: (status) => {
-            setAiStatus(
-              status.status === 'running'
-                ? 'Generando DOCX (renderizando informe)...'
-                : 'DOCX en cola de exportación...',
-            );
-          },
+          onProgress: makeExportProgressHandler('DOCX', 'Generando DOCX (renderizando informe)...'),
         });
         if (finalStatus.status === 'success') {
           const { blob, filename } = await fetchExportJobBlob(currentReportId, jobId);
@@ -1468,6 +1477,7 @@ export default function App({
           a.remove();
           URL.revokeObjectURL(url);
           setAiStatus('DOCX exportado (servidor)');
+          requestSupportAvatar('report', currentReportId); // ADR-164
           return;
         }
         if (finalStatus.error_message === 'export_busy') {
@@ -1477,6 +1487,8 @@ export default function App({
         log.warn('Export DOCX servidor no exitoso, usando pipeline cliente:', finalStatus.error_message);
       } catch (err) {
         log.warn('Export DOCX servidor falló, usando pipeline cliente:', err);
+      } finally {
+        setExportProgress(null);
       }
     }
     setAiStatus('Exportando DOCX (cliente)...');
@@ -1503,13 +1515,7 @@ export default function App({
     try {
       const { job_id: jobId } = await measurePerfAsync('export', () => createPptxExportJob(currentReportId));
       const finalStatus = await pollExportJob(currentReportId, jobId, {
-        onProgress: (status) => {
-          setAiStatus(
-            status.status === 'running'
-              ? 'Generando PPTX (renderizando diapositivas)...'
-              : 'PPTX en cola de exportación...',
-          );
-        },
+        onProgress: makeExportProgressHandler('PPTX', 'Generando PPTX (renderizando diapositivas)...'),
       });
       if (finalStatus.status !== 'success') {
         setAiStatus(`Error al exportar PPTX${finalStatus.error_message ? `: ${finalStatus.error_message}` : ''}`);
@@ -1526,6 +1532,7 @@ export default function App({
       a.remove();
       URL.revokeObjectURL(url);
       setAiStatus('PPTX exportado (servidor)');
+      requestSupportAvatar('report', currentReportId); // ADR-164
     } catch (err) {
       log.error('Export PPTX server-side falló', err);
       const backendError = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
@@ -1534,6 +1541,8 @@ export default function App({
           ? 'El informe no está en modo presentación.'
           : 'Error al exportar PPTX.',
       );
+    } finally {
+      setExportProgress(null);
     }
   }, [currentReportId, doc, setLayoutMode]);
 
@@ -1849,6 +1858,24 @@ export default function App({
               </>
             ) : null}
           </div>
+
+          {exportProgress ? (
+            <div className="export-progress-bar" role="status" aria-live="polite">
+              <span className="export-progress-bar__label">
+                Exportando {exportProgress.format}: {exportProgress.captured}/{exportProgress.total} páginas
+                {' · '}
+                {Math.min(100, Math.round((exportProgress.captured / exportProgress.total) * 100))}%
+              </span>
+              <div className="export-progress-bar__track">
+                <div
+                  className="export-progress-bar__fill"
+                  style={{
+                    width: `${Math.min(100, Math.round((exportProgress.captured / exportProgress.total) * 100))}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
 
           {offlineSince && (
             <div
