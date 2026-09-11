@@ -1,5 +1,23 @@
 # ADR-134 — Fix crítico: escalada de privilegios vía autoregistro en empresa existente
 
+> **Actualización 2026-09-11 — pendiente de notificación/auditoría retroactiva
+> cerrado por decisión explícita del developer/Gerencia.** El informe de
+> estado del 2026-08-30 había dejado abierta la pregunta de si correspondía
+> notificar o auditar retroactivamente a los tenants que existían antes del
+> fix (2026-08-26), dado que el endpoint estuvo expuesto un tiempo
+> indeterminado antes de corregirse. Decisión: **no se requiere auditoría de
+> log ni notificación** — la plataforma sigue en etapa de desarrollo; aunque
+> los datos de las empresas mineras usadas (p. ej. "Minera Raura") son
+> reales, **ningún cliente tiene la plataforma en uso**, ni en entorno de
+> prueba ni productivo, a la fecha del hallazgo ni a la fecha de esta
+> decisión. Sin usuarios de cliente reales expuestos, no hay a quién
+> notificar ni una ventana de explotación con impacto de negocio que auditar.
+> Este criterio aplica únicamente a este hallazgo, en este momento del
+> proyecto — no exime de auditoría retroactiva a hallazgos de severidad
+> crítica que se descubran una vez la plataforma tenga clientes reales en
+> producción. Cierra el pendiente correspondiente del informe del 30-ago y
+> del corte gerencial del 2026-09-10.
+
 **Status**: implemented, verificado en vivo contra el stack corriendo (ver Verificación)
 **Fecha**: 2026-08-26
 **Autores**: EC

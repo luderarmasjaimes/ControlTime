@@ -54,6 +54,22 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 > documentado en el propio ADR-166, fuera de alcance de esta pasada
 > (decisión de producto/licencia, no cambio de código).
 
+> **Actualización 2026-09-11 (segunda pasada, mismo día): pendiente de
+> ADR-134 cerrado.** El informe de estado del 2026-08-30 había dejado
+> abierta la pregunta de si correspondía auditoría de log o notificación
+> retroactiva a tenants preexistentes por la vulnerabilidad crítica de
+> escalada de privilegios de ADR-134 (activa hasta el fix del 2026-08-26).
+> Decisión explícita del developer/Gerencia: no se requiere ni auditoría de
+> log ni notificación — la plataforma sigue en etapa de desarrollo y, pese a
+> que se usaron nombres reales de empresas mineras en la prueba (p. ej.
+> "Minera Raura"), **ningún cliente tiene la plataforma en uso** en ningún
+> entorno (prueba ni productivo) ni a la fecha del hallazgo ni a la fecha de
+> esta decisión — no hay usuarios de cliente expuestos a quién notificar.
+> Bloque de actualización agregado a ADR-134 (sin editar su texto original).
+> Este criterio es específico de esta etapa del proyecto: no aplica
+> automáticamente a hallazgos futuros de severidad crítica una vez existan
+> clientes reales en producción.
+
 > **Auditoría 2026-09-10: 140 → 165 ADR de archivo (000-165, huecos reales en
 > 151 y 152 — no existen esos dos números).** A pedido explícito del developer
 > de revisar todas las mejoras/actualizaciones del proyecto, actualizar los
