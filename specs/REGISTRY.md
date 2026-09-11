@@ -1,9 +1,9 @@
 # REGISTRO MAESTRO ADR ↔ SPEC · Plataforma Minera Beemetry
 
-> **Fuente vigente al 2026-08-21, rango de ADR actualizado 2026-09-10.** Las
+> **Fuente vigente al 2026-08-21, rango de ADR actualizado 2026-09-11.** Las
 > decisiones canónicas están únicamente en
-> [`docs/decisions/`](../docs/decisions/README.md), ADR-000 a ADR-165 (huecos
-> reales en 151-152, sin ADR con esos números) *(rango corregido 2026-08-21 —
+> [`docs/decisions/`](../docs/decisions/README.md), ADR-000 a ADR-169 (huecos
+> en 151-152 ya cerrados con archivo mínimo, ver ADR-151/152) *(rango corregido 2026-08-21 —
 > este banner decía "ADR-111" pese a que la fila SPEC-024 más abajo ya citaba
 > ADR-121/123; ampliado ese día a 128 tras redactar ADR-124 a 128; corregido
 > de nuevo 2026-09-10 — la fila SPEC-008 de abajo ya citaba ADR-141 desde
