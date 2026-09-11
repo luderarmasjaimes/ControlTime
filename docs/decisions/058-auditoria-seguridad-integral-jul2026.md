@@ -1,5 +1,10 @@
 # ADR-058 — Auditoría de seguridad integral interna/externa (jul-2026)
 
+> **Actualización 2026-09-11 — el pentest externo ya tiene ADR propio.**
+> Ver **ADR-169** (`pentest-externo-seguridad-requisito-obligatorio-produccion`):
+> alcance, metodología, entregables y criterio de cierre formalizados.
+> Sigue **PENDIENTE de ejecución** — sin proveedor ni fecha.
+
 **Status**: implemented, parcial por diseño (2026-07-19) — ver desglose
 CERRADO / VERIFICADO SANO / PENDIENTE abajo; el status "parcial" refleja que
 el ítem más severo del bloque PENDIENTE (refresh token en localStorage) se

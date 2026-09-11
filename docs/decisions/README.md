@@ -26,6 +26,23 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (sexta pasada, mismo día): pentest externo
+> formalizado con alcance completo — ADR-169.** El developer proveyó el
+> requisito detallado de negocio/seguridad (objetivo, alcance mínimo,
+> catálogo de vulnerabilidades OWASP, metodología PTES/NIST/CVSS,
+> independencia del proveedor, 10 entregables, proceso de remediación y 8
+> criterios de cierre) para el único de los 10 pendientes del corte
+> gerencial del 2026-09-10 que llevaba desde julio mencionado sin
+> definición propia en ADR-043/058. Se agrega **ADR-169**
+> (`pentest-externo-seguridad-requisito-obligatorio-produccion`, ámbito
+> `plataforma`/`seguridad`) con el requisito completo formalizado — **no
+> cierra el pendiente**, sigue `PENDIENTE` de ejecución (sin proveedor ni
+> fecha, decisión de compra/presupuesto que no resuelve un ADR técnico por
+> sí solo). Bloques de actualización agregados a ADR-043 y ADR-058
+> cruzando la referencia, sin editar su texto original. Con esto, los 10
+> pendientes del corte gerencial del 2026-09-10 tienen todos documento
+> propio — 9 cerrados, 1 (este) formalizado y explícitamente abierto.
+
 > **Actualización 2026-09-11 (quinta pasada, mismo día): SPEC-025 aprobado
 > al alcance contractual, causa del bloqueo SMS confirmada.** Cierra la
 > última decisión "de scope" del corte gerencial del 2026-09-10 (queda solo
@@ -1145,6 +1162,7 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 042 | `nomenclatura-menus-lenguaje-llano-minero` | ✅ implemented, mejorado (2026-07-27) | Etiquetas operativas cortas: Gestión, Control, Terreno, Mapas, Permisos, Informes; Usuarios, Accesos y Umbrales. |
 | 043 | `endurecimiento-seguridad-pre-pentest` | ✅ controles internos implementados | Cierra IDOR/endpoints sin auth/CORS; CSPRNG y Argon2id cerrados por ADR-076/077. Pentest externo sigue independiente. |
 | 058 | `auditoria-seguridad-integral-jul2026` | ✅ implemented (2026-07-19) | XSS almacenado e IDOR sin auth cerrados; CVEs altas llevadas a 0 y HSTS agregado. `echarts@6` cerrado 2026-07-27 (migrado a 6.1.x). Pendiente: pentest externo. |
+| 169 | `pentest-externo-seguridad-requisito-obligatorio-produccion` | ✅ accepted (decisión de gobierno de seguridad, 2026-09-11); ejecución **PENDIENTE** — sin proveedor ni fecha | Formaliza el pentest externo que ADR-043/058 dejaban mencionado sin alcance desde julio de 2026: objetivo, alcance mínimo (portal, APIs, auth, VPS, TLS, sesiones/tokens, OWASP Top 10), catálogo de vulnerabilidades a evaluar, metodología de referencia (OWASP WSTG/Top 10/API Top 10, PTES, NIST SP 800-115, CVSS), condición de independencia del proveedor, 10 entregables obligatorios, proceso de remediación (crítica/alta bloquean cierre, retest obligatorio) y 8 criterios de cierre verificables. Complementa, no reemplaza, el red-team interno ya cerrado (ADR-133/134). Última de las 10 decisiones pendientes del corte gerencial del 2026-09-10 sin documento propio — sigue siendo la única sin fecha de cierre posible desde el equipo, depende de decisión de compra/presupuesto de Gerencia. |
 | 059 | `plan-maestro-pruebas-qa` | ✅ accepted, primera fase implementada (2026-07-21) | 5 capas de prueba formalizadas (unit frontend, unit backend, e2e frontend, smoke/integración backend, regresión de cierre de etapa) con cronograma y exit criteria por gate. Verificado en vivo: `smoke-auth-e2e.ps1` extendido corrido de punta a punta contra el `beemetry-api` real, `Resultado: OK`. |
 | 060 | `framework-pruebas-backend-catch2` | ✅ implemented, verificado (2026-08-05) | Catch2 v3 (apt) como framework de tests del backend; target `beemetry_backend_tests`. Corrida real contra el contenedor `beemetry-api`: **610 aserciones en 20 test cases, todas passed** (crecimiento real desde las 27/7 de 2026-07-21). |
 | 061 | `catalogo-casos-prueba-qa` | ✅ accepted, documentado (2026-07-21) | Catálogo de 69 casos de prueba QA (Capa 5 de ADR-059, adelantada) sobre 14 funcionalidades pedidas por Gerencia. Encontró 2 brechas reales (video no implementado; creación de empresas sin endpoint) y 1 defecto (RBAC: 6 vs 7 roles en `roleConstants.ts`). |
