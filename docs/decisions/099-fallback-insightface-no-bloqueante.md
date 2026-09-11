@@ -1,5 +1,14 @@
 # ADR-099 — Fallback a pipeline legacy cuando InsightFace falla (no bloquear)
 
+> **Actualización 2026-09-11 — InsightFace se decomisiona por ADR-166.**
+> Motivo: licencia no comercial en los modelos pre-entrenados (`buffalo_l`),
+> mismo hallazgo que cerró la evaluación de InspireFace en ADR-144.
+> Reemplazo: SeetaFace6Open (ADR-104, ya integrado, licencia BSD). El
+> comportamiento no bloqueante que este ADR corrigió sigue siendo el
+> principio correcto de diseño para cualquier motor auxiliar; se documenta
+> acá para quien conecte SeetaFace6 en el mismo punto de llamada. No se
+> edita el texto original de abajo.
+
 **Status**: implemented, verificado (2026-08-08)
 **Fecha**: 2026-08-08
 **Autores**: EC

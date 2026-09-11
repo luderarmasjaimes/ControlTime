@@ -1,5 +1,19 @@
 # ADR-144 — Evaluación de InspireFace (Opción C): licencia académica bloquea producción, spike aislado autorizado
 
+> **Actualización 2026-09-11 — decisión comercial cerrada por ADR-166.** A
+> pedido explícito del developer de justificar formalmente el no adoptar
+> InspireFace, se investigó si la misma restricción de licencia afectaba a
+> otras piezas ya desplegadas — y sí: InsightFace (`buffalo_l`), el motor
+> biométrico secundario que corre en producción desde ADR-089/099, tiene la
+> **misma licencia no comercial** en sus modelos pre-entrenados (código MIT,
+> modelos con licencia aparte, sin tier gratuito para uso comercial). A
+> diferencia de InspireFace (este ADR, nunca desplegado), InsightFace sí está
+> en producción — ver ADR-166 para el cierre formal de ambos: no se licencia
+> ninguno de los dos comercialmente, se migra al proveedor ya integrado
+> SeetaFace6Open (ADR-104, licencia BSD). El texto original de este ADR no se
+> edita — la decisión de no adoptar InspireFace, tomada acá el 2026-09-03,
+> se mantiene sin cambios y queda confirmada, no revertida.
+
 **Status**: evaluado, no adoptado (spike de I+D autorizado, sin ruta a producción sin licencia comercial)
 
 **Fecha**: 2026-09-03

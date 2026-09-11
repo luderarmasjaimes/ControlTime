@@ -26,6 +26,34 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11: 165 → 166 ADR.** A pedido explícito del
+> developer de justificar formalmente el decomiso de InspireFace como motor
+> biométrico secundario (licencia académica, sin permiso de despliegue
+> comercial) y evaluar su reemplazo entre SeetaFace6Open y libfacedetection.
+> Se agrega **ADR-166**
+> (`decomiso-insightface-secundario-adopcion-seetaface6`, ámbito
+> `ia`/`seguridad`/`biometría`/`plataforma`): investigando la licencia de
+> InspireFace se encontró que **InsightFace** (`buffalo_l`) — el motor
+> biométrico secundario que sí corre en producción desde ADR-089/099, no
+> InspireFace, que nunca se desplegó — tiene la misma restricción de
+> licencia no comercial en sus modelos pre-entrenados (verificado contra la
+> página de licenciamiento de InsightFace y `deepinsight/insightface#2587`).
+> ADR-166 decomisiona InsightFace, cierra formalmente la decisión comercial
+> pendiente de ADR-144 (misma justificación, extendida), y adopta
+> SeetaFace6Open (ya integrado desde ADR-104, licencia BSD verificada) como
+> reemplazo. Se evaluó libfacedetection (BSD-3-Clause) y se descartó como
+> sustituto directo: es únicamente un detector de rostros, sin componente de
+> reconocimiento/embedding de identidad — no cumple el rol que hoy cumple
+> InsightFace. Se agregan bloques de actualización fechados a ADR-089,
+> ADR-099 y ADR-144 (sin editar su texto original) cruzando la referencia a
+> ADR-166. Las cuentas `face_template_provider='insightface_onnx'`
+> existentes son de prueba (entorno de desarrollo, confirmado por el
+> developer) — se eliminan o reinscriben sin impacto de negocio; el wiring
+> de implementación (retirar la llamada auxiliar de `face_analysis.cpp`,
+> quitar la dependencia `insightface` de `ai_engine`) queda pendiente,
+> documentado en el propio ADR-166, fuera de alcance de esta pasada
+> (decisión de producto/licencia, no cambio de código).
+
 > **Auditoría 2026-09-10: 140 → 165 ADR de archivo (000-165, huecos reales en
 > 151 y 152 — no existen esos dos números).** A pedido explícito del developer
 > de revisar todas las mejoras/actualizaciones del proyecto, actualizar los
@@ -1173,12 +1201,13 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 | 163 | `curacion-dataset-lentes-reentrenamiento-onnx` | 🟡 partial — curación implementada y verificada (2026-09-07), reentrenamiento v3 en curso (2026-09-08) | Pedido explícito del usuario: curar el pool de entrenamiento gafas/sin-gafas (66,278 imágenes, nunca antes revisadas imagen por imagen) antes de reentrenar el clasificador ONNX consumido por ADR-119. Nuevo `data/curate_glasses_dataset.py` reutiliza InsightFace buffalo_l (mismo paquete de producción, solo los submódulos necesarios) para filtrar por: exactamente 1 rostro, frontalidad (yaw/roll), calidad (brillo/desenfoque), encuadre rostro-hombros, excluye niños/adultos muy mayores (sin filtro de género, pedido explícito), duplicados exactos y archivos corruptos. Corrida completa real: 66,038 procesadas, 53,267 conservadas (80.7%), ~7.1h; pool curado final 23,403 con lentes / 30,052 sin lentes. El clasificador en producción (`glasses_classifier_v2.onnx`) se había entrenado 2 días *antes* de esta curación, sobre el pool crudo sin filtrar — v3 (en curso) reentrena sobre el pool ya curado; pendiente comparar val_acc contra v2 y validar contra `glasses_probe.jsonl` real antes de promover a producción. |
 | 165 | `cpu-saturacion-workers-curacion-lentes` | ✅ implemented, verificado en vivo contra el proceso real (2026-09-10) | Capacidad, no el cuelgue puntual de ADR-125: `curate_glasses_dataset.py` (ADR-163) crea su propia `FaceAnalysis` por fuera de `face_embedding_insight.py`, así que nunca heredó el fix de ADR-100 — mismo diagnóstico raíz (onnxruntime sin límite de hilos vía `SessionOptions`, kwargs descartados en silencio por `FaceAnalysis`) más OpenCV con su propio pool de hilos (`cv2.setNumThreads`) sin tocar, más el default de `--workers` calculado sobre `os.cpu_count()` (núcleos del host, 32) en vez de la cuota real del cgroup (12) — con `--workers 8` esto medía 1188% CPU del contenedor `beemetry-ai-vision` (compartido con el login/registro facial real) y `/health` en 90-673ms. Fix: mismo monkeypatch de `onnxruntime.InferenceSession.__init__` que ADR-100, `cv2.setNumThreads(1)`, `os.nice(10)` para priorizar el tráfico en vivo bajo contención, y `_container_cpu_budget()` (lee `/sys/fs/cgroup/cpu.max`/`cpu.cfs_quota_us`) para un default de `--workers` acotado a la cuota real. Verificado contra la corrida real en producción: 1188%→725% CPU total, ~150%→~88% por worker, `/health` 90-673ms→8-10ms. |
+| 166 | `decomiso-insightface-secundario-adopcion-seetaface6` | ✅ accepted (decisión de producto/licencia, 2026-09-11); wiring de implementación pendiente | Decomisiona InsightFace (`buffalo_l`) como motor biométrico secundario (ADR-089/099): investigando la licencia de InspireFace (ADR-144) se confirmó que InsightFace tiene la misma restricción no comercial en sus modelos — código MIT, modelos con licencia aparte, sin tier gratuito comercial (verificado contra la página de licenciamiento de InsightFace y `deepinsight/insightface#2587`). A diferencia de InspireFace, InsightFace SÍ está en producción hoy — cierra formalmente la decisión comercial que ADR-144 dejó pendiente. Adopta SeetaFace6Open (ya integrado desde ADR-104, licencia BSD confirmada) como reemplazo; evalúa y descarta libfacedetection (BSD-3-Clause) por desajuste técnico — es solo detector, no genera embeddings de identidad. Cuentas `face_template_provider='insightface_onnx'` existentes son de prueba (desarrollo), se eliminan/reinscriben sin impacto de negocio. |
 
 **Ámbito `ia`: 22 implemented/accepted (1 activo tras recalibración, 1 con verificación de generación real pendiente), 1 superseded, 1 deferred por diseño (EPP no cuenta como pendiente v0.1), 1 en evaluación (ADR-150), 1 descartado por restricción de hardware (ADR-160), 1 parcial con reentrenamiento en curso (ADR-163) y 1 implementado en código con verificación GPU end-to-end pendiente (ADR-164).**
-> *(Nota de auditoría 2026-09-10: este subtotal quedó desactualizado tras la
-> tanda de avatar/liveness de 2026-09-02 a 2026-09-10 — el ámbito `ia` tiene
-> hoy 35 filas reales en esta tabla (contadas por grep de filas `| NNN |`,
-> incluido el ADR-144 agregado hoy), no 29. Se deja el texto original sin
+> *(Nota de auditoría 2026-09-10, actualizada 2026-09-11: este subtotal quedó
+> desactualizado tras la tanda de avatar/liveness de 2026-09-02 a 2026-09-10 —
+> el ámbito `ia` tiene hoy 36 filas reales en esta tabla (contadas por grep de
+> filas `| NNN |`, incluidos ADR-144 y ADR-166), no 29. Se deja el texto original sin
 > editar por convención de este log; ver el bloque de auditoría 2026-09-10 más
 > arriba para el recuento correcto y el detalle de hallazgos de esta pasada.)*
 

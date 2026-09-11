@@ -1,5 +1,14 @@
 # ADR-089 — Integración Comercial Biométrica con Dermalog Face SDK
 
+> **Actualización 2026-09-11 — el rol de InsightFace como motor secundario se
+> retira por ADR-166.** Investigando la licencia de InspireFace (ADR-144) se
+> encontró que el propio InsightFace/`buffalo_l` que este ADR introdujo como
+> fallback tiene la misma restricción de licencia no comercial en sus
+> modelos pre-entrenados — código MIT, modelos sin uso comercial gratuito.
+> ADR-166 decomisiona InsightFace y adopta SeetaFace6Open (ADR-104, BSD) en
+> su lugar. El texto original de abajo (arquitectura "Dual Provider") se
+> conserva como registro histórico de la decisión original.
+
 **Status**: partially superseded by ADR-105
 
 **Ámbito**: ia, seguridad, biometría
