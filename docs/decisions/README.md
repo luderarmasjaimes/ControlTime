@@ -26,6 +26,26 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (octava pasada, mismo día): evaluación de
+> VPS/GPU declarada pendiente — ADR-170, nuevo pendiente de
+> infraestructura.** A pedido explícito del developer, motivado por
+> funciones nuevas que consumen recursos de forma intensiva (import/export
+> Word/PPTX/PDF/video, documentos hasta 2104 páginas). Investigando el
+> código se encontró evidencia real ya existente, sin ADR propio hasta
+> ahora: un export DOCX real de 2104 páginas/6300 diagramas midió ~101 min
+> al 69.5% (≈145 min proyectados para completar) y forzó dos fixes de
+> timeout reales (token de export 120→240 min;
+> `SO_RCVTIMEO`/`SO_SNDTIMEO` porque `expires_after()` no aplicaba a las
+> llamadas síncronas del backend, un job quedó "running" 39+ min después
+> de terminar de verdad). Se agrega **ADR-170**
+> (`evaluacion-vps-gpu-pendiente-exportacion-documentos-extensos`, ámbito
+> `plataforma`/`reports`) documentando esa evidencia retroactivamente y
+> declarando pendiente el dimensionamiento real de VPS/GPU de producción
+> — no resuelve la evaluación, la formaliza. Con esto son **2** los
+> pendientes de infraestructura sin proveedor/fecha (junto al pentest
+> externo, ADR-169), además de los 2 pendientes de cuentas comerciales
+> (Meta WhatsApp, Twilio SMS — ADR-168).
+
 > **Actualización 2026-09-11 (séptima pasada, mismo día): aclaración sobre
 > el alcance de la aprobación de SPEC-025.** El developer aclara
 > explícitamente que "aprobar SPEC-025 al alcance contractual" (ADR-168)
@@ -1176,6 +1196,7 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 | 043 | `endurecimiento-seguridad-pre-pentest` | ✅ controles internos implementados | Cierra IDOR/endpoints sin auth/CORS; CSPRNG y Argon2id cerrados por ADR-076/077. Pentest externo sigue independiente. |
 | 058 | `auditoria-seguridad-integral-jul2026` | ✅ implemented (2026-07-19) | XSS almacenado e IDOR sin auth cerrados; CVEs altas llevadas a 0 y HSTS agregado. `echarts@6` cerrado 2026-07-27 (migrado a 6.1.x). Pendiente: pentest externo. |
 | 169 | `pentest-externo-seguridad-requisito-obligatorio-produccion` | ✅ accepted (decisión de gobierno de seguridad, 2026-09-11); ejecución **PENDIENTE** — sin proveedor ni fecha | Formaliza el pentest externo que ADR-043/058 dejaban mencionado sin alcance desde julio de 2026: objetivo, alcance mínimo (portal, APIs, auth, VPS, TLS, sesiones/tokens, OWASP Top 10), catálogo de vulnerabilidades a evaluar, metodología de referencia (OWASP WSTG/Top 10/API Top 10, PTES, NIST SP 800-115, CVSS), condición de independencia del proveedor, 10 entregables obligatorios, proceso de remediación (crítica/alta bloquean cierre, retest obligatorio) y 8 criterios de cierre verificables. Complementa, no reemplaza, el red-team interno ya cerrado (ADR-133/134). Última de las 10 decisiones pendientes del corte gerencial del 2026-09-10 sin documento propio — sigue siendo la única sin fecha de cierre posible desde el equipo, depende de decisión de compra/presupuesto de Gerencia. |
+| 170 | `evaluacion-vps-gpu-pendiente-exportacion-documentos-extensos` | 📋 proposed (2026-09-11) — evaluación de capacidad pendiente, sin proveedor ni configuración definida | Declara pendiente el dimensionamiento real de VPS/GPU de producción, motivado por evidencia concreta ya encontrada: un export DOCX real de 2104 páginas/6300 diagramas tardó ~145 min proyectados (101 min medidos al 69.5%) y encontró dos bugs reales de timeout (token de export subido de 120 a 240 min; `SO_RCVTIMEO`/`SO_SNDTIMEO` agregado porque `expires_after()` no aplicaba a las llamadas síncronas del backend al sidecar) — ambos corregidos en código pero documentados recién acá, sin ADR propio hasta ahora. Suma la GPU de laptop actual (RTX 5060, 8151 MiB, solo 403 MiB de margen medido en ADR-150) y los techos de memoria por servicio (`beemetry-llm` 12GB, `beemetry-ai-vision` 10GB, varios más en 6-8GB) nunca validados contra carga combinada real (telemetría 25k/s + export extenso + biometría concurrente a la vez). No selecciona proveedor ni presupuesto — decisión de Gerencia. |
 | 059 | `plan-maestro-pruebas-qa` | ✅ accepted, primera fase implementada (2026-07-21) | 5 capas de prueba formalizadas (unit frontend, unit backend, e2e frontend, smoke/integración backend, regresión de cierre de etapa) con cronograma y exit criteria por gate. Verificado en vivo: `smoke-auth-e2e.ps1` extendido corrido de punta a punta contra el `beemetry-api` real, `Resultado: OK`. |
 | 060 | `framework-pruebas-backend-catch2` | ✅ implemented, verificado (2026-08-05) | Catch2 v3 (apt) como framework de tests del backend; target `beemetry_backend_tests`. Corrida real contra el contenedor `beemetry-api`: **610 aserciones en 20 test cases, todas passed** (crecimiento real desde las 27/7 de 2026-07-21). |
 | 061 | `catalogo-casos-prueba-qa` | ✅ accepted, documentado (2026-07-21) | Catálogo de 69 casos de prueba QA (Capa 5 de ADR-059, adelantada) sobre 14 funcionalidades pedidas por Gerencia. Encontró 2 brechas reales (video no implementado; creación de empresas sin endpoint) y 1 defecto (RBAC: 6 vs 7 roles en `roleConstants.ts`). |
