@@ -52,6 +52,7 @@
 | SPEC-021 | Zonas y gráficos multiserie | 057, 109 | Código 6/10 tareas; aceptación integrada pendiente |
 | SPEC-022 | Operaciones de campo | 022, 025, 026, 045, 103, 110 | Aprobado como proyecto derivado (2026-09-11), propio PO/presupuesto, etapas posteriores; 0/14 tareas |
 | SPEC-023 | Portabilidad/despliegue/restore | 033, 035, 111 | Utilidad 6/11; restore/CI/CD pendientes |
+| SPEC-025 | Soporte/WhatsApp | 112-118, 122, 129, 137, 168 | Aprobado al alcance contractual (2026-09-11, ADR-168); sin tasks.md formal todavía; canal SMS de ADR-137 pendiente de cuenta Twilio comercial |
 | SPEC-024 | Integración GEOCATMIN INGEMMET | 009, 026, 121, 123 | Implementada; acceso directo por unidad minera |
 
 ## Decisiones transversales

@@ -26,6 +26,21 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (quinta pasada, mismo día): SPEC-025 aprobado
+> al alcance contractual, causa del bloqueo SMS confirmada.** Cierra la
+> última decisión "de scope" del corte gerencial del 2026-09-10 (queda solo
+> pentest/DR/UAT, que no es una decisión de scope sino de proveedor/fecha).
+> Se agrega **ADR-168**
+> (`spec025-soporte-whatsapp-aprobacion-contractual-sms-comercial`, ámbito
+> `soporte`): formaliza los 9 ADR de soporte/WhatsApp (112-118, 122, 129) en
+> `specs/REGISTRY.md`/`BACKLOG.md` bajo SPEC-025, que nunca había tenido
+> fila propia. Confirma además la causa completa del canal `sms` de
+> ADR-137: existe cuenta Twilio, pero es la trial gratuita (solo números
+> verificados, prefijo de aviso en cada mensaje) — se requiere cuenta
+> comercial, decisión de compra/presupuesto de Gerencia, sin trabajo de
+> código pendiente. Bloque de actualización agregado a ADR-137 sin editar
+> su texto original.
+
 > **Actualización 2026-09-11 (cuarta pasada, mismo día): proveedor de SUNAT
 > contratado, activado y verificado en vivo — bug real de TLS encontrado y
 > corregido.** El developer proveyó un API key real de **Chequea**
@@ -1352,8 +1367,9 @@ archivos completos sin sección propia en este índice — ver auditoría
 | 118 | `chatbot-aceleracion-gpu-ollama` | ✅ implemented (2026-08-19) | Aceleración GPU para Ollama, reduce la latencia del chatbot de soporte. |
 | 122 | `cv-postulantes-whatsapp-ia-local-scoring` | 🟡 implemented, pendiente E2E *(fila agregada 2026-08-21 — el ADR ya existía sin fila en esta tabla)* | Postulaciones de CV por WhatsApp: descarga de media, extracción de texto (`ai_engine::/extract_cv_text`, sin LLM), extracción de campos + score 0-100 vía Ollama (`qwen2.5:7b`) con guarda anti-alucinación (`looksPresentInSource`), correo con adjunto MIME multipart, panel admin RRHH. Retención: indefinida por decisión explícita del developer (2026-08-21, ver actualización en el ADR), sin purga automática. Pendiente: aplicar `db_scripts/69_*.sql` a la BD en ejecución y prueba E2E con WhatsApp Business real. |
 | 129 | `widget-chat-menu-whatsapp-adjuntos-cv-web` | 🟡 implemented, verificado por build/tests; E2E contra WhatsApp real pendiente de credenciales de producción de Meta (2026-08-21) | Menú real de WhatsApp en el widget de chat web, adjuntos (docx/pptx/pdf/jpg/png), CV desde la web y lectura QR/OCR de imágenes — mismo bloqueo de credenciales Meta que ya afectaba a ADR-112/113. Sin SPEC ni sprint asignado en el cronograma v36 (ver informe de estado). |
+| 168 | `spec025-soporte-whatsapp-aprobacion-contractual-sms-comercial` | ✅ accepted (decisión de alcance/producto, 2026-09-11) | Aprueba SPEC-025 (todo este ámbito) al alcance contractual del proyecto, formalizando los 9 ADR de arriba en `specs/REGISTRY.md`/`BACKLOG.md`. Confirma además, para el canal `sms` de ADR-137, que la cuenta Twilio configurada es la trial gratuita (solo números verificados, prefijo "Sent from your Twilio trial account"); se requiere cuenta comercial — decisión de compra/presupuesto de Gerencia, sin cambio de código pendiente. |
 
-**Ámbito `soporte`: 8/9 implemented (3 pendientes de E2E), 1 partial. Todo el ámbito sigue sin SPEC/sprint formal en el cronograma v36 — decisión pendiente de Gerencia (SPEC-025).**
+**Ámbito `soporte`: 8/9 implemented (3 pendientes de E2E), 1 partial, más ADR-168 (accepted). Aprobado al alcance contractual (2026-09-11, ADR-168) — ya no pendiente de Gerencia; sigue sin `tasks.md` formal en `specs/025-...`.**
 
 ### Ámbitos futuros (componentes por venir)
 - *(otros componentes se agregan acá a medida que surgen)*

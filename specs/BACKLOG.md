@@ -28,6 +28,7 @@
 | 021 | Zonas/multiserie | R3-R4 | 6/10 · 60% | Código; pruebas/export pendientes |
 | 022 | Operaciones de campo | Rebaseline | 0/14 · 0% | **Aprobado como proyecto derivado (2026-09-11)** — propio PO/presupuesto, fuera de v36.1, etapas posteriores; arquitectura: reutilizar backend Beemetry vía servicios web |
 | 023 | Portabilidad/restore/CI-CD | R5-R6 | 6/11 · 55% | Utilidad; restore y despliegue no aceptados |
+| 025 | Soporte/WhatsApp | Sin sprint asignado | Sin tasks.md · N/A | **Aprobado al alcance contractual (2026-09-11, ADR-168)** — 9 ADR ya implementados (112-118, 122, 129); canal SMS pendiente de cuenta Twilio comercial |
 
 ## Métrica consolidada
 

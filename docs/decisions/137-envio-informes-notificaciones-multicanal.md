@@ -1,5 +1,17 @@
 # ADR-137 — Envío de informes a otros usuarios + API de notificaciones multi-canal
 
+> **Actualización 2026-09-11 — causa completa del bloqueo del canal `sms`
+> confirmada (ADR-168).** El developer confirma que sí existe una cuenta
+> Twilio configurada, pero es la cuenta **trial gratuita** (documentada en
+> `.env.example`): solo envía a números previamente verificados en la
+> consola de Twilio y antepone *"Sent from your Twilio trial account -"* a
+> cada mensaje — inutilizable para notificar a usuarios/clientes reales sin
+> ese paso manual previo. Se requiere contratar una **cuenta Twilio de uso
+> comercial** (o proveedor SMS equivalente) para que este canal sirva a la
+> plataforma completa — decisión de compra/presupuesto de Gerencia, no de
+> código: `backend/src/notify/sms_client.hpp` ya apunta a las mismas
+> variables de entorno y no necesita cambios para usar una cuenta comercial.
+
 **Status**: implemented, verificado E2E en vivo para 2/4 canales (2026-09-02); WhatsApp/SMS siguen bloqueados por infraestructura externa, no por código
 
 **Fecha**: 2026-08-29
