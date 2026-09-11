@@ -1,5 +1,30 @@
 # ADR-087 — Validación de RUC: excepción opcional y acotada a ADR-001 para consulta externa
 
+> **Actualización 2026-09-11 — Gerencia confirma el requisito de negocio:
+> validación externa real obligatoria para Perú.** Cierra, junto con la
+> actualización de ADR-035, la decisión pendiente del corte gerencial del
+> 2026-09-10. Confirmado: la empresa necesita validar que el RUC/empresa
+> registrada en la plataforma sea real, vía el servicio web de SUNAT (o un
+> proveedor que lo re-exponga, dado que SUNAT no publica API oficial
+> gratuita — ver Contexto original de este ADR). **Esto confirma la
+> política (sí, se requiere); no reemplaza el paso operativo que el punto 3
+> de la Decisión original ya dejaba pendiente**: elegir un proveedor
+> concreto (`peruapi.com`/`apis.net.pe`/otro) y proveer su token —
+> `BEEMETRY_TAX_REGISTRY_ENABLED` sigue en `false` por defecto hasta que
+> eso se resuelva; el código ya está listo para activarse sin otro cambio
+> de C++.
+>
+> **Para el resto de LATAM (Brasil, Ecuador, Chile y demás países donde la
+> empresa ya opera)**: se confirma que se buscarán mecanismos de validación
+> externa equivalentes **cuando se implemente cada mercado**, no de forma
+> inmediata ni simultánea. Hoy el checksum local ya cubre Perú, Brasil
+> (CNPJ, este mismo ADR) y Ecuador/Chile/Costa Rica (ADR-102) — es
+> validación de formato, no de registro real contra un padrón oficial. La
+> validación externa tipo SUNAT para esos países queda como trabajo futuro,
+> sin proveedor ni fecha todavía, a definir país por país cuando haya
+> pedido de negocio concreto (mismo criterio que este ADR ya aplicó a
+> Perú).
+
 **Status**: implemented (checksum extraído + fix del bug de nombre; cliente externo detrás de flag apagado por defecto, sin proveedor contratado — ver Decisión punto 3)
 **Fecha**: 2026-08-05
 **Autores**: EC

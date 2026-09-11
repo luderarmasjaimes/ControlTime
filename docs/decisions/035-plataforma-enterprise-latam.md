@@ -1,5 +1,32 @@
 # ADR-035 — Plataforma enterprise multi-unidad para operaciones mineras LATAM
 
+> **Actualización 2026-09-11 — postura de negocio confirmada por Gerencia,
+> cierra la decisión pendiente del corte gerencial del 2026-09-10.** Se
+> confirma que la empresa **es Enterprise LATAM hoy, no un escenario
+> hipotético a futuro**: existen proyectos activos en Perú, Brasil, Ecuador
+> y Chile, entre otros. Esto fija dos cosas distintas — una decisión de
+> **requisito de producto**, que aplica ya, y una decisión de **infraestructura
+> (F1-F4 de este mismo ADR)**, que sigue sin aprobarse:
+>
+> 1. **Requisito de producto, vigente desde hoy**: toda implementación de
+>    módulo nuevo debe considerar **soporte multi-país y multi-idioma** desde
+>    el diseño, no como an añadido posterior. La parte de idioma ya está
+>    resuelta (ADR-075: selector país→idioma, 4 locales ES/EN/FR/PT-BR,
+>    cubre Perú/Brasil/mercados francófonos ya operativo) — no requiere
+>    trabajo nuevo. La parte de validación fiscal/registro por país queda
+>    documentada en la actualización de **ADR-087** (ver ese ADR): SUNAT
+>    obligatorio para Perú; mecanismos equivalentes para Brasil/Ecuador/
+>    Chile y el resto de LATAM, a implementar cuando cada mercado lo
+>    requiera — no se construyen los cuatro a la vez sin pedido concreto.
+> 2. **Decisión de infraestructura, todavía NO aprobada**: la topología
+>    edge+hub jerárquica de 3 niveles (Fases F1-F4 de este ADR — hub
+>    regional, federación OIDC/Keycloak, soberanía de datos por topología)
+>    sigue **sin fecha ni presupuesto**. Confirmar que la empresa opera en
+>    varios países no autoriza por sí solo empezar F1 — esa sigue siendo
+>    una decisión de arquitectura/inversión separada, del tamaño de un
+>    proyecto propio, que este mensaje no cubre. El estado de ejecución de
+>    F1-F4 sigue en 0%.
+
 **Status**: propuesto (2026-07-12) — revisado 2026-08-18: sigue en F0
 (un edge autónomo por unidad, estado actual del stack). Los documentos de
 perfiles multipaís del 2026-08-14 son planificación de recursos, no evidencia

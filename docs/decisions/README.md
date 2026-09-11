@@ -26,6 +26,24 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (pasada adicional): postura Enterprise LATAM y
+> validación SUNAT confirmadas por Gerencia.** Cierra la penúltima decisión
+> pendiente del corte gerencial del 2026-09-10. Se agregan bloques de
+> actualización a **ADR-035** y **ADR-087** (sin editar su texto original):
+> se confirma que la empresa **es Enterprise LATAM hoy** (proyectos activos
+> en Perú, Brasil, Ecuador y Chile), lo que fija un **requisito de
+> producto** vigente ya (todo módulo nuevo debe considerar soporte
+> multi-país/multi-idioma) — la parte de idioma ya está resuelta (ADR-075,
+> 4 locales); la de validación fiscal por país se confirma obligatoria para
+> **Perú vía SUNAT** (ADR-087), con mecanismos equivalentes para el resto
+> de LATAM **cuando se implemente cada mercado**, no de inmediato. **No se
+> confirma** la aprobación de la topología edge+hub de 3 niveles (Fases
+> F1-F4 de ADR-035) — eso sigue siendo una decisión de infraestructura/
+> inversión separada, sin fecha ni presupuesto, que este mensaje no cubre.
+> Tampoco se elige proveedor de validación SUNAT todavía (`peruapi.com`/
+> `apis.net.pe`/otro) — falta ese paso operativo para activar
+> `BEEMETRY_TAX_REGISTRY_ENABLED`.
+
 > **Actualización 2026-09-11 (pasada adicional): rebaseline de Operaciones de
 > Campo (SPEC-022) aprobado por Gerencia.** Cierra la última decisión
 > pendiente del corte gerencial del 2026-09-10. Se agrega bloque de
