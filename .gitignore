@@ -87,3 +87,39 @@ auditoria-base-datos-*/
 # personal de terceros que nunca dieron consentimiento para esto. Gestionar
 # aparte (ATS/carpeta de RRHH fuera del repo).
 docs_/04_Convocatorias_RRHH/cv/
+
+# 2026-09-10: auditoría de riesgo de trazabilidad (227 cambios sin commitear)
+# encontró contenido ajeno al código fuente mezclado en el árbol de trabajo.
+# Se excluye en vez de commitear -- ver docs/decisions/README.md, bloque de
+# auditoría 2026-09-10.
+
+# 193MB de imágenes/video de prueba del avatar (incl. fotos reales de prueba
+# del developer) -- salida de experimentos, no código ni evidencia versionada
+# a propósito (la evidencia citable vive en el ADR/spec correspondiente).
+artifacts/
+
+# Propuesta completa para un cliente distinto (Culqi), sin relación con
+# Beemetry -- no pertenece a este repositorio.
+deliverables/culqi-next-gen/
+
+# Carpeta de planificación/reportes gerenciales y convocatorias de RRHH --
+# se distribuye aparte de este repositorio de código.
+docs_/
+
+# Material personal/de reclutamiento suelto en la raíz (CVs, exámenes
+# técnicos, comparativos de candidatos, códigos QR de avisos, extractos de
+# CV de postulantes reales) -- nunca debe vivir en un repositorio de código.
+/CV_*.docx
+/CV_*.pdf
+/Examen_Tecnico_*.docx
+/Examen_Tecnico_*.pdf
+/Analisis_Comparativo_Candidatos_*.xlsx
+/codigo_QR_*.png
+/codigo_QR_*.jpg
+/generate_cv_docx*.py
+/tmp_job_*.txt
+/tmp_cv*extracts/
+
+# Script puntual de mantenimiento con un ID de usuario hardcodeado en el
+# nombre -- operativo, no una decisión de arquitectura reutilizable.
+scripts/delete_user_*.ps1
