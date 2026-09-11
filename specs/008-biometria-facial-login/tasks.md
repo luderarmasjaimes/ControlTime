@@ -5,7 +5,7 @@
 | **Plan** | `specs/008-biometria-facial-login/plan.md` |
 | **Sprint·Release** | S6, S11 · R3, R5 |
 | **Responsables** | BE1 (routes/C++), ML (OpenCV/DNN), SYS (Dermalog), QA |
-| **Última revisión** | 2026-07-27 (avatar local HD, ADR-074) |
+| **Última revisión** | 2026-09-03 (avatar por difusión local aislado, ADR-141) |
 
 ## Backlog de tareas
 
@@ -30,6 +30,8 @@
 | **T17** | Liveness detection (anti-spoofing, foto vs cara real) | S11/seguridad | ML | **Opus** | ☑ |
 | **T18** | Avatar local MediaPipe/OpenCV + fallback ONNX, miniatura y maestro 4K privado | perfil | ML/BE1 | **Opus** | ☑ |
 | **T19** | Endpoint self-only + modal doble clic/cierre exterior + pruebas | perfil/seguridad | BE1/FE1/QA | **Opus** | ☑ |
+| **T20** | Avatar por difusión local (SD1.5+ControlNet), servicio `avatar_engine` aislado de TensorFlow, concurrencia=1, GPU obligatoria+timeout, preload antes de readiness, FP16+safetensors+revisión fijada, logs/estado explícito | CA-11..CA-15 | ML/BE1 | **Opus** | ☑ `avatar_engine` construido/probado real en GPU; integración `ai_engine→avatar_engine` verificada de punta a punta. El bloqueante de cuDNN que impedía reconstruir la imagen OFICIAL de `ai_engine` quedó resuelto por T21/ADR-143. CA-15(a) completado 2026-09-03 (ADR-141 v4): 12/12 retratos sin colapso tras corregir falso positivo en `_is_oval_matte_black_background()` |
+| **T21** | Silent-Face-Anti-Spoofing (PyTorch) movido a servicio propio `silentface_engine`, aislado de TensorFlow — resuelve de raíz el bloqueante de cuDNN que bloqueaba el build oficial de `ai_engine` (ADR-143) | CA-16..CA-18 | ML/BE1 | **Opus** | ☑ CA-16/17/18 completos; build oficial sin conflicto, fail-closed y carga concurrente 10/20/50 verificados. `beemetry-ai-vision` recreado el 2026-09-03 con la imagen oficial nueva y conexión saludable al sidecar SilentFace. |
 
 ## Secuencia
 
@@ -49,6 +51,26 @@ T16, T17 (Etapa 2/S11)
 - [x] T17 liveness activo por desafío-respuesta (ISO/IEC 30107-3, ADR-126) — verificado 2026-08-30: `implemented y activo`, reactivado y recalibrado 2026-08-21 (2 de 4 desafíos por sesión, ventana 8s/4 intentos).
 - [ ] T16 (Dermalog hardware real + certificación) — **Sprint S11 pendiente**: la integración CLI existe (ADR-089), pero la certificación con hardware físico no.
 - [x] ADR-008-1..4 registrados.
+- [x] T20 (avatar por difusión local, ADR-141) — código e infraestructura
+  completos (CA-11..CA-15) y activados en el entorno operativo mediante
+  `AVATAR_STYLE_ENGINE=diffusion`.
+  Verificado en runtime real 2026-09-03: `avatar_engine` construido y
+  corriendo en GPU (RTX 5060), integración HTTP con `ai_engine` confirmada
+  de punta a punta (respuesta `generator:"local_sd15_controlnet"`,
+  contadores incrementados en ambos servicios). La imagen oficial de
+  `ai_engine` se reconstruyó correctamente tras separar SilentFace (T21) y
+  fue desplegada en `beemetry-ai-vision`. **CA-15(a) completado
+  2026-09-03** con 12 retratos oficiales de dominio público (sustituto de
+  fotos de registro reales por disponibilidad de consentimiento): 2/12
+  colapsaban (cabeza flotante/rasgos derretidos); causa raíz real fue un
+  falso positivo en `_is_oval_matte_black_background()` (fondo oscuro real
+  confundido con el óvalo-sobre-negro del cliente, no el artefacto de la
+  imagen sintética que se sospechaba antes), corregido — 12/12 sin colapso
+  tras el fix; evidencia fresca en
+  `artifacts/avatar_ca15_verified_20260903/`. Detalle completo en ADR-141
+  v4/v5. Queda una limitación conocida
+  no bloqueante (deriva de género/tono de piel bajo difusión) a monitorear
+  en producción.
 
 ## Métricas
 

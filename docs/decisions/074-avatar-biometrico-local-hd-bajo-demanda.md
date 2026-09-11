@@ -6,6 +6,30 @@
 **Ámbito**: ia
 **Relación**: refina ADR-004/025/027/029/037/041; no habilita visión EPP.
 
+## Actualización 2026-09-03 — calidad de captura y máscara de persona
+
+Una prueba visual reproducible encontró que `selfie_segmenter.tflite` entrega
+la probabilidad de persona en `confidence_masks[0]`, mientras su
+`category_mask` binaria queda cuantizada a 0/255 con la polaridad opuesta a la
+que asumía el código. El pipeline aplicaba `category_mask > 0` y podía borrar
+al usuario mientras conservaba el fondo. Desde esta actualización se usa la
+confianza continua persona=1/fondo=0 como fuente primaria y la máscara
+categórica queda solo como fallback con control de polaridad.
+
+También se redujo el sobreprocesado del fallback OpenCV (CLAHE, suavizado,
+posterización y tinta), que amplificaba compresión, reflejos y sombras hasta
+dar a la piel un aspecto quemado. El frontend ahora puntúa los fotogramas ICAO
+válidos por nitidez, exposición, clipping y tamaño facial, y el registro envía
+el mejor fotograma reciente en vez de volver a capturar arbitrariamente al
+momento exacto del auto-envío.
+
+AnimeGANv2 permanece únicamente como fallback ONNX histórico. No debe
+promoverse a generador principal en un despliegue comercial sin autorización
+del titular: el repositorio oficial limita el uso gratuito a fines no
+comerciales. Una fase generativa posterior debe aislarse del motor biométrico,
+declarar licencia y checksum de cada peso y conservar este fallback
+determinista si falla la generación o la validación de identidad.
+
 ## Contexto
 
 El registro facial ya genera un avatar ilustrado desde la fotografía capturada

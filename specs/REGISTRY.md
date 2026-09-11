@@ -1,11 +1,14 @@
 # REGISTRO MAESTRO ADR ↔ SPEC · Plataforma Minera Beemetry
 
-> **Fuente vigente al 2026-08-21.** Las decisiones canónicas están únicamente
-> en [`docs/decisions/`](../docs/decisions/README.md), ADR-000 a ADR-128
-> *(rango corregido 2026-08-21 — este banner decía "ADR-111" pese a que la
-> fila SPEC-024 más abajo ya citaba ADR-121/123; ampliado el mismo día a 128
-> tras redactar ADR-124 a 128 en la auditoría general del árbol de trabajo;
-> ver `docs/decisions/README.md`)*.
+> **Fuente vigente al 2026-08-21, rango de ADR actualizado 2026-09-10.** Las
+> decisiones canónicas están únicamente en
+> [`docs/decisions/`](../docs/decisions/README.md), ADR-000 a ADR-165 (huecos
+> reales en 151-152, sin ADR con esos números) *(rango corregido 2026-08-21 —
+> este banner decía "ADR-111" pese a que la fila SPEC-024 más abajo ya citaba
+> ADR-121/123; ampliado ese día a 128 tras redactar ADR-124 a 128; corregido
+> de nuevo 2026-09-10 — la fila SPEC-008 de abajo ya citaba ADR-141 desde
+> antes de esta corrección, el banner había quedado rezagado otra vez; ver
+> `docs/decisions/README.md` para el detalle completo de la tanda 141-165)*.
 > `specs/adr/` y `docs/docs/decisions/` son copias históricas/no canónicas y no
 > deben alimentar decisiones nuevas, RAG ni conteos de avance.
 
@@ -33,7 +36,7 @@
 | SPEC-005 | Push realtime | 002, 008, 031, 057 | Parcialmente aceptada |
 | SPEC-006 | Auth/RBAC/multitenant | 029, 030, 036, 043, 058, 063, 066, 067, 076-078, 085-088, 100-102, 106-107 | Implementada; pentest externo pendiente |
 | SPEC-007 | ReportStudio/export | 009-021, 046-053, 055, 064-065, 068-073, 079-084, 092, 097-098 | Implementada con regresiones abiertas |
-| SPEC-008 | Biometría | 025, 029, 089, 099, 105, 107 | Implementada; calibración/certificación pendiente |
+| SPEC-008 | Biometría | 025, 029, 074, 089, 099, 105, 107, 141 | Implementada; calibración/certificación pendiente; ADR-141 (avatar por difusión) opt-in, CA-15 sin validar |
 | SPEC-009 | GIS/mapas | 022, 026-028, 056, 072 | Implementada; pruebas offline de sitio pendientes |
 | SPEC-010 | Fórmulas | 031, 034 | Implementada |
 | SPEC-011 | IA de texto | 024, 068, 093-096 | Implementada; SLA depende del modelo/hardware |
