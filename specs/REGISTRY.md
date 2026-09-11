@@ -50,7 +50,7 @@
 | SPEC-019 | RP TimeTelemetry/Odoo | 103, 110 | Lectura real validada; escritura productiva pendiente |
 | SPEC-020 | Telemetría 25k/s | 008, 023, 032, 108 | Aceptada a 25k; 100k no aprobado |
 | SPEC-021 | Zonas y gráficos multiserie | 057, 109 | Código 6/10 tareas; aceptación integrada pendiente |
-| SPEC-022 | Operaciones de campo | 022, 025, 026, 045, 103, 110 | Propuesta; 0/14 tareas |
+| SPEC-022 | Operaciones de campo | 022, 025, 026, 045, 103, 110 | Aprobado como proyecto derivado (2026-09-11), propio PO/presupuesto, etapas posteriores; 0/14 tareas |
 | SPEC-023 | Portabilidad/despliegue/restore | 033, 035, 111 | Utilidad 6/11; restore/CI/CD pendientes |
 | SPEC-024 | Integración GEOCATMIN INGEMMET | 009, 026, 121, 123 | Implementada; acceso directo por unidad minera |
 

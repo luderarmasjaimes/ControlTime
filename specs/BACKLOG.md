@@ -26,7 +26,7 @@
 | 019 | RP/Odoo | R4 | 19/20 · 95% | Falta escritura productiva autorizada |
 | 020 | Telemetría 25k/s | R3 | 9/9 · 100% | Aceptada a 25k; no a 100k |
 | 021 | Zonas/multiserie | R3-R4 | 6/10 · 60% | Código; pruebas/export pendientes |
-| 022 | Operaciones de campo | Rebaseline | 0/14 · 0% | Propuesta |
+| 022 | Operaciones de campo | Rebaseline | 0/14 · 0% | **Aprobado como proyecto derivado (2026-09-11)** — propio PO/presupuesto, fuera de v36.1, etapas posteriores; arquitectura: reutilizar backend Beemetry vía servicios web |
 | 023 | Portabilidad/restore/CI-CD | R5-R6 | 6/11 · 55% | Utilidad; restore y despliegue no aceptados |
 
 ## Métrica consolidada

@@ -2,10 +2,12 @@
 
 | Campo | Valor |
 |---|---|
-| **Estado** | Propuesta; 0% implementación de producto |
-| **ADR** | ADR-110 (propuesto), ADR-103 |
-| **Sprint / release** | Requiere reprogramación posterior a R6 |
-| **Última revisión** | 2026-08-18 |
+| **Estado** | **Aprobado como proyecto derivado (2026-09-11)**, separado del alcance/presupuesto de la plataforma minera; 0% implementación de producto |
+| **ADR** | ADR-110 (proposed; rebaseline aprobado, ver actualización 2026-09-11), ADR-103 |
+| **Sprint / release** | Fuera del cronograma v36.1 (S1-S13/R1-R6) — construcción prevista para etapas posteriores de la plataforma minera, sin fecha de inicio |
+| **Product owner / presupuesto** | Propios del proyecto derivado, pendientes de asignar |
+| **Dirección de arquitectura** | Reutilizar el backend de Beemetry como componentes de servicios web (API), no una plataforma paralela — ver ADR-110 punto 1 y actualización 2026-09-11 |
+| **Última revisión** | 2026-09-11 |
 
 ## ADRs globales aplicables
 

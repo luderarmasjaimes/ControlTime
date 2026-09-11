@@ -1,5 +1,37 @@
 # ADR-110 — Operaciones de campo offline-first e integración gobernada con ERP
 
+> **Actualización 2026-09-11 — rebaseline aprobado por Gerencia, cierra la
+> decisión pendiente del corte gerencial del 2026-09-10.** Se confirma
+> explícitamente: (1) Operaciones de Campo es un **proyecto derivado**,
+> separado del alcance/cronograma v36.1 de la plataforma minera AURIXA/
+> Beemetry (S1-S13, R1-R6) — necesita su **propio product owner y
+> presupuesto**, no se absorbe en los sprints restantes, mismo criterio que
+> ya adelantaba `specs/022/spec.md` ("requiere reprogramación posterior a
+> R6"). (2) Su construcción se considera para **etapas posteriores** de la
+> plataforma minera, sin fecha de inicio todavía. (3) **Dirección de
+> arquitectura confirmada por Gerencia, refuerza el punto 1 de la Decisión
+> propuesta de abajo**: en vez de que este proyecto derivado (u otras
+> aplicaciones futuras que lo requieran) reimplemente su propio backend,
+> debe **reutilizar el backend de Beemetry como componentes de servicios
+> web** — la robustez ya construida y verificada (base de datos, RBAC
+> multitenant, procesamiento en tiempo real a 25k/s sostenidos, ADR-108) se
+> expone vía API en vez de duplicarse. Esto no es una decisión nueva de
+> arquitectura — ya era el diseño de ADR-110 punto 1 ("Toda integración
+> entra por la API Beemetry; el cliente nunca accede a BD ni ERP
+> directamente") — esta actualización eleva ese punto de diseño técnico a
+> decisión de negocio explícita, y aclara que el mismo backend puede
+> servir a Operaciones de Campo y a aplicaciones futuras distintas, no solo
+> a esta.
+>
+> **Lo que NO queda resuelto por esta actualización**: la lista completa de
+> "Decisiones pendientes antes de aceptar" de este ADR (formato del PDF,
+> dispositivos/MDM, matriz de datos ERP↔Beemetry, ventana offline,
+> consentimiento/privacidad, piloto minero y KPIs) sigue abierta — son
+> decisiones operativas del proyecto derivado, para cuando tenga su propio
+> product owner, no decisiones que este documento resuelva por adelantado.
+> El estado de ejecución de SPEC-022 sigue en 0% — aprobar el proyecto como
+> derivado no es lo mismo que empezar a construirlo.
+
 **Status**: proposed; pendiente de aprobación de producto y arquitectura
 
 **Fecha**: 2026-08-18

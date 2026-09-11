@@ -26,6 +26,27 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (pasada adicional): rebaseline de Operaciones de
+> Campo (SPEC-022) aprobado por Gerencia.** Cierra la última decisión
+> pendiente del corte gerencial del 2026-09-10. Se agrega bloque de
+> actualización a **ADR-110** (sin editar su texto original): Operaciones de
+> Campo queda confirmada como **proyecto derivado**, separado del alcance y
+> presupuesto de la plataforma minera AURIXA/Beemetry, con construcción
+> prevista para **etapas posteriores** (sin fecha), propio product owner y
+> presupuesto. Dirección de arquitectura confirmada: el backend de Beemetry
+> se **reutiliza como componentes de servicios web (API)** para este
+> proyecto y para otras aplicaciones futuras que necesiten la robustez ya
+> construida (base de datos, RBAC multitenant, procesamiento en tiempo real
+> a 25k/s) — refuerza, no reabre, el punto 1 de la Decisión original de
+> ADR-110 ("toda integración entra por la API Beemetry"). No queda resuelta
+> la lista de "Decisiones pendientes antes de aceptar" del propio ADR-110
+> (formato de PDF, dispositivos/MDM, matriz ERP↔Beemetry, ventana offline,
+> privacidad, piloto y KPIs) — son decisiones operativas del proyecto
+> derivado, no de esta aprobación de alcance/arquitectura. SPEC-022 sigue en
+> 0% de ejecución: se aprobó el proyecto, no se empezó a construir. Se
+> actualizan en el mismo sentido `specs/022-operaciones-campo-offline-erp/
+> spec.md`, `specs/BACKLOG.md` y `specs/REGISTRY.md`.
+
 > **Actualización 2026-09-11: 165 → 166 ADR.** A pedido explícito del
 > developer de justificar formalmente el decomiso de InspireFace como motor
 > biométrico secundario (licencia académica, sin permiso de despliegue
