@@ -6,8 +6,16 @@
 #   archivo alcanza, no depende de Git Bash ni de ningún .sh.
 #
 # Qué SÍ cubre (todo lo que Docker gestiona):
-#   - Imágenes: las 5 que build-ea este repo + las que se descargan.
-#   - Volúmenes con nombre: minio_data, insightface_models, ollama_data
+#   - Imágenes: TODAS las que build-ea este repo + las que se descargan --
+#     se descubren en vivo con `docker compose config --images`, así que
+#     avatar_engine/avatar_animation_engine/silentface_engine (ADR-141/143/
+#     150) ya salen sin tener que tocar esta lista de nuevo.
+#   - Volúmenes con nombre: minio_data, insightface_models, ollama_data,
+#     diffusion_avatar_cache (SD1.5+ControlNet, ADR-141, ~5GB),
+#     avatar_animation_cache + avatar_animation_model_cache (SadTalker +
+#     GFPGAN/facexlib, ADR-150) -- estos tres últimos se agregaron
+#     2026-09-11, el script no los cubría hasta ahora pese a existir en
+#     docker-compose.yml desde antes (brecha real, no intencional).
 #     (redpanda_data se omite por defecto -- buffer de telemetría de 2h).
 #   - Bases de datos: pg_dump lógico de sensors_db y formula.
 #
@@ -138,7 +146,11 @@ if ($IncludeDb) {
 
 # --- 2. Volumenes con nombre --------------------------------------------------
 if ($IncludeVolumes) {
-    $volsToExport = @("minio_data", "insightface_models", "ollama_data")
+    $volsToExport = @(
+        "minio_data", "insightface_models", "ollama_data",
+        "diffusion_avatar_cache", "avatar_animation_cache",
+        "avatar_animation_model_cache"
+    )
     if ($IncludeRedpanda) { $volsToExport += "redpanda_data" }
 
     foreach ($vol in $volsToExport) {

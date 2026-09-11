@@ -10,7 +10,12 @@
 #     formula_engine, pdf_export) + las 11 que se descargan de Docker Hub/
 #     ghcr (timescaledb, postgres, redpanda, minio, mosquitto, mailpit,
 #     pgbouncer, mbtileserver, languagetool, ollama).
-#   - Volúmenes con nombre: minio_data, insightface_models, ollama_data
+#   - Volúmenes con nombre: minio_data, insightface_models, ollama_data,
+#     diffusion_avatar_cache (SD1.5+ControlNet, ADR-141, ~5GB),
+#     avatar_animation_cache + avatar_animation_model_cache (SadTalker +
+#     GFPGAN/facexlib, ADR-150) -- estos tres últimos se agregaron
+#     2026-09-11, el script no los cubría hasta ahora pese a existir en
+#     docker-compose.yml desde antes (brecha real, no intencional).
 #     (redpanda_data se omite por defecto -- es buffer de telemetría con
 #     retención de 2h, ADR-020, no es un dato que valga la pena preservar).
 #   - Bases de datos: pg_dump lógico de sensors_db y formula (más portable
@@ -57,7 +62,7 @@ INCLUDE_REDPANDA="${INCLUDE_REDPANDA:-0}"
 DB_CONTAINER="${DB_CONTAINER:-beemetry-db}"
 FORMULA_DB_CONTAINER="${FORMULA_DB_CONTAINER:-beemetry-formula-db}"
 
-VOLUMES_TO_EXPORT=(minio_data insightface_models ollama_data)
+VOLUMES_TO_EXPORT=(minio_data insightface_models ollama_data diffusion_avatar_cache avatar_animation_cache avatar_animation_model_cache)
 if [[ "$INCLUDE_REDPANDA" == "1" ]]; then
   VOLUMES_TO_EXPORT+=(redpanda_data)
 fi
