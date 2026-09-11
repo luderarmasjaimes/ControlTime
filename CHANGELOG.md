@@ -4,6 +4,130 @@ Insumo para la decisión de release v0.1. No implica que el equipo ya haya
 decidido cortar la versión — ver `RUNBOOK.md` para lo que falta antes de
 GO-LIVE.
 
+## [Unreleased] — 2026-09-11
+
+Catch-up documental: esta sección cubre el trabajo real entre el 2026-08-21
+(última entrada de este archivo) y hoy, formalizado en
+[ADR-129 a ADR-167](docs/decisions/README.md) — 20 días con la mayor
+actividad documental del proyecto hasta la fecha, concentrada en biometría/
+avatar (2026-09-02 a 09-11) y en el cierre de las decisiones pendientes del
+corte gerencial del 2026-09-10. No reordena ni reescribe las entradas
+previas.
+
+### Plataforma y seguridad: hallazgo crítico, RBAC cruzado, MFA
+
+RBAC de acceso cruzado empresa minera/organización
+([ADR-130](docs/decisions/130-rbac-empresas-minera-organizacion-acceso-cruzado.md)),
+consolidación del modelo de telemetría para 25k/s sostenidos
+([ADR-131](docs/decisions/131-consolidacion-modelo-telemetria-unificado.md)),
+aislamiento de cookies namespaced entre frontends en el mismo host
+([ADR-132](docs/decisions/132-bearer-en-memoria-cookies-namespaced-aislamiento-multifrontend.md))
+y endurecimiento post red-team propio (CSP, cookie cross-site, validación de
+entrada,
+[ADR-133](docs/decisions/133-endurecimiento-post-red-team-csp-cookie-cross-site-validacion-entrada.md)).
+**Hallazgo más grave del proyecto hasta ahora**: `POST /api/auth/register`
+público aceptaba `role:admin` contra una empresa ya existente con usuarios
+reales, entregando una sesión administrativa completa — cerrado y verificado
+en vivo el mismo día
+([ADR-134](docs/decisions/134-fix-critico-escalada-privilegios-autoregistro-empresa-existente.md));
+MFA/TOTP, alertas de seguridad y RUC obligatorio en el bootstrap de admin
+([ADR-135](docs/decisions/135-mfa-totp-alertas-seguridad-ruc-bootstrap.md)).
+Motor de alarmas reconciliado con SPEC-016 (cache de reglas, tasa de cambio,
+debounce, evaluación por evento con hook post-commit, 179ms medidos en vivo,
+[ADR-140](docs/decisions/140-alertas-umbral-cache-tasa-debounce-sensor.md)).
+
+### Reportabilidad: notificaciones, QR sin password, DOCX nativo
+
+Envío de informes a otros usuarios + notificaciones multicanal (in_app/
+email/whatsapp/sms,
+[ADR-137](docs/decisions/137-envio-informes-notificaciones-multicanal.md)),
+enlace directo por QR sin password como segundo mecanismo junto al PDF
+cifrado
+([ADR-138](docs/decisions/138-enlace-directo-pdf-qr-sin-password.md)) y
+exportación a `.docx` 100% client-side vía OpenXML
+([ADR-139](docs/decisions/139-exportacion-docx-nativa-cliente.md)).
+
+### Biometría y avatar: el bloque más grande del período
+
+Ocho días (2026-09-02 a 09-10) de la mayor actividad de ADR del proyecto,
+mayormente ámbito `ia`: avatar estilizado por difusión local (SD1.5 +
+ControlNet,
+[ADR-141](docs/decisions/141-avatar-estilizado-difusion-local-sd15-controlnet.md)),
+liveness verificado en servidor con parpadeo natural pasivo, desafío activo
+de un gesto y contador ICAO sin tolerancia
+([ADR-142](docs/decisions/142-liveness-challenge-verificado-en-servidor.md),
+[145](docs/decisions/145-parpadeo-natural-simultaneo-5-lecturas.md),
+[146](docs/decisions/146-desafio-1-gesto-acercarse-alejarse-camara.md),
+[148](docs/decisions/148-fusion-parpadeo-sensible-y-candado-lecturas-icao.md),
+[149](docs/decisions/149-desafio-activo-en-paralelo-con-espera-de-parpadeo.md),
+[156](docs/decisions/156-contador-icao-sin-tolerancia-y-retos-variados-con-reinicio.md) —
+el defecto latente de clasificación "con lentes" que este último dejó sin
+resolver ya está corregido, según confirma el developer, pendiente
+certificación formal de QA). SilentFace movido a servicio aislado,
+resolviendo de raíz un conflicto real de cuDNN con TensorFlow
+([ADR-143](docs/decisions/143-silentface-servicio-aislado-cudnn.md));
+InspireFace evaluado y descartado por licencia académica, sin ruta a
+producción comercial
+([ADR-144](docs/decisions/144-inspireface-evaluacion-licencia-academica.md)).
+Guardrails de registro: buffer de nginx, reintentos no transitorios,
+precheque de DNI/username
+([ADR-147](docs/decisions/147-buffer-nginx-reintento-transitorio-precheque-dni.md),
+[153](docs/decisions/153-reintento-login-facial-no-transitorio-y-precheque-username.md)),
+beacon de diagnóstico de incidentes de cliente
+([ADR-154](docs/decisions/154-beacon-diagnostico-client-incident.md)), OTP de
+contacto antes de habilitar la cámara
+([ADR-161](docs/decisions/161-otp-validacion-contacto-pre-registro.md)) y
+reemplazo del tracking facial del cliente por MediaPipe Tasks Vision (WASM)
+([ADR-162](docs/decisions/162-tracking-facial-local-mediapipe-wasm.md)).
+Avatar animado evaluado (SadTalker verificado E2E con habla real; body
+completo descartado por límite real de VRAM del host,
+[ADR-150](docs/decisions/150-avatar-animado-reenactment-evaluacion.md),
+[160](docs/decisions/160-avatar-cuerpo-completo-pose-driven-descartado-vram.md)),
+con mejoras de calidad, encuadre y uniforme/logo de marca
+([ADR-155](docs/decisions/155-avatar-diffusion-desactiva-safety-checker-nsfw.md),
+[157](docs/decisions/157-avatar-encuadre-y-visibilidad-en-primera-sesion.md),
+[158](docs/decisions/158-avatar-fuente-solo-etapa-1-icao.md),
+[159](docs/decisions/159-avatar-mejoras-calidad-gfpgan-steps-mejor-seed.md),
+[164](docs/decisions/164-avatar-busto-uniforme-logo-y-wiring-soporte.md)).
+Curación del dataset de lentes (66k→111k imágenes) y reentrenamiento del
+clasificador ONNX, con un fix de saturación de CPU que reaplica el mismo
+patrón de ADR-100
+([ADR-163](docs/decisions/163-curacion-dataset-lentes-reentrenamiento-onnx.md),
+[165](docs/decisions/165-cpu-saturacion-workers-curacion-lentes.md)).
+
+### Cierre de decisiones pendientes de Gerencia (2026-09-10/11)
+
+El corte gerencial del 2026-09-10 dejó 10 decisiones pendientes; 9 ya están
+cerradas: **InsightFace decomisionado** por licencia no comercial (mismo
+hallazgo que InspireFace, pero éste sí en producción), reemplazado por
+SeetaFace6Open ya integrado
+([ADR-166](docs/decisions/166-decomiso-insightface-secundario-adopcion-seetaface6.md));
+**alcance v1 del avatar de soporte** fijado a saludo de bienvenida, con
+justificación de la inversión en IA y un **piloto QA implementado y
+verificado en vivo** (avatar por difusión solo para cuentas en
+`AVATAR_DIFFUSION_QA_USERNAMES`, aún vacía —
+[ADR-167](docs/decisions/167-avatar-soporte-alcance-v1-saludo-bienvenida-justificacion-ia.md));
+**validación SUNAT activada** vía Chequea, con un bug real de TLS 1.2-only
+encontrado y corregido en el primer intento en vivo
+([ADR-087](docs/decisions/087-validacion-ruc-registro-externo-opcional.md));
+postura Enterprise LATAM confirmada (proyectos activos en Perú, Brasil,
+Ecuador, Chile; pilotos sobre la VPS de Perú, topología edge+hub sin
+aprobar,
+[ADR-035](docs/decisions/035-plataforma-enterprise-latam.md)); rebaseline de
+Operaciones de Campo aprobado como proyecto derivado
+([ADR-110](docs/decisions/110-operaciones-campo-offline-integracion-erp.md));
+notificación retroactiva de ADR-134 evaluada y no requerida (sin clientes
+reales en ningún entorno a la fecha del hallazgo). Queda 1 decisión abierta:
+pentest externo, simulacro DR y UAT sin proveedor ni fecha.
+
+De paso: se corrigieron 13 citas cruzadas erróneas (ADR-146/148/149/156
+citaban "ADR-143" por "ADR-145"), se cerró el hueco de numeración
+ADR-151/152 (nunca tuvieron archivo — ver
+[ADR-151](docs/decisions/151-numero-reservado-sin-uso.md)/
+[152](docs/decisions/152-numero-reservado-sin-uso.md)), y se resolvió el
+riesgo de trazabilidad de 227 archivos sin commitear (62 modificados + 165
+nuevos) en 9 commits temáticos, ya en `origin/2026-08-21`.
+
 ## [Unreleased] — 2026-08-21
 
 Catch-up documental: esta sección cubre el trabajo real de código entre el
