@@ -25,6 +25,47 @@
 > pedido de negocio concreto (mismo criterio que este ADR ya aplicó a
 > Perú).
 
+> **Actualización 2026-09-11 (segunda pasada, mismo día) — proveedor
+> contratado y activado, verificado en vivo.** El developer proveyó un API
+> key real de **Chequea** (`https://chequea.pe`, `GET
+> https://api.chequea.pe/api/v1/ruc/{ruc}`, `Authorization: Bearer <token>`).
+> Configurado en `.env` local (gitignored, nunca en un archivo versionado —
+> `BEEMETRY_TAX_REGISTRY_TOKEN` es secreto real; `.env.example` documenta
+> solo el host/path template, con el valor de token vacío). El esquema de
+> respuesta de Chequea
+> (`razonSocial`, `estado`, `condicion`, `direccion`) ya calzaba sin cambios
+> con los nombres alternativos que `firstStringField()` ya probaba desde
+> 2026-08-05 — cero cambios de parsing necesarios.
+>
+> **Bug real encontrado y corregido, nunca antes probado en vivo** (el
+> propio ADR ya advertía: "la funcionalidad de consulta existe en código
+> pero no está activa"): el primer intento devolvió `registry:"unavailable"`
+> — `tax_registry_client.cpp` fijaba el contexto TLS a
+> `ssl::context::tlsv12_client` (TLS 1.2 EXCLUSIVAMENTE, no "1.2 como
+> mínimo"), y Chequea (detrás de Cloudflare) rechaza TLS 1.2 con un alert
+> fatal `protocol_version` — confirmado aislando la causa con `openssl
+> s_client -tls1_2` contra `api.chequea.pe` dentro del propio contenedor
+> `beemetry-api`. Corregido a `ssl::context::tls_client` (negocia la
+> versión más alta soportada por ambos lados), el mismo patrón que ya usan
+> el resto de clientes HTTPS de este backend (`geocode_proxy.cpp`,
+> `wms_proxy.cpp`, `whatsapp_client.cpp`) — `tax_registry_client.cpp` era
+> el único que seguía fijado a 1.2. Rebuild (`docker compose build web`,
+> limpio) y redeploy contra el `beemetry-api` real.
+>
+> **Verificado en vivo** contra `GET /api/auth/validate-company?ruc=20100070970&country=PE`
+> (RUC público de ejemplo de la propia documentación de Chequea, sin datos
+> de tenant real): `{"valid":true,"registry":"confirmed","registry_razon_social":"SUPERMERCADOS
+> PERUANOS SOCIEDAD ANONIMA 'O ' S.P.S.A.","registry_estado":"ACTIVO"}` —
+> antes del fix, el mismo request devolvía `registry:"unavailable"`. No se
+> corrió el suite completo de CTest en esta pasada (cambio acotado a un
+> cliente HTTPS aislado, sin tocar rutas de auth/biometría probadas); queda
+> pendiente para la próxima verificación de build integral.
+>
+> Pendiente real, no resuelto acá: probar el camino `not_found` (RUC válido
+> por checksum pero inexistente en el padrón) y el camino de rate-limit
+> (`429`, plan Free de Chequea: 25.000 requests/mes, 300 rpm) contra tráfico
+> real de registro.
+
 **Status**: implemented (checksum extraído + fix del bug de nombre; cliente externo detrás de flag apagado por defecto, sin proveedor contratado — ver Decisión punto 3)
 **Fecha**: 2026-08-05
 **Autores**: EC

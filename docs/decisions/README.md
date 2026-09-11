@@ -26,6 +26,28 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (cuarta pasada, mismo día): proveedor de SUNAT
+> contratado, activado y verificado en vivo — bug real de TLS encontrado y
+> corregido.** El developer proveyó un API key real de **Chequea**
+> (`chequea.pe`) para `GET /api/v1/ruc/{ruc}`. Configurado únicamente en
+> `.env` local (nunca en un archivo versionado) y en `.env.example` (solo
+> host/path template, sin el valor del token). Se agrega bloque de
+> actualización a **ADR-087** (sin editar su texto original) documentando:
+> el primer intento en vivo falló (`registry:"unavailable"`) por un bug
+> real y **nunca antes probado** en `tax_registry_client.cpp` — el
+> contexto TLS estaba fijado a TLS 1.2 exclusivamente
+> (`ssl::context::tlsv12_client`), y Chequea (Cloudflare) rechaza TLS 1.2
+> con un alert fatal, solo acepta TLS 1.3; aislado con `openssl s_client`
+> dentro del propio contenedor. Corregido a `ssl::context::tls_client`
+> (negociación de versión, mismo patrón ya usado por el resto de clientes
+> HTTPS del backend). Build limpio (`docker compose build web`), redeploy
+> real, y **verificado en vivo**: `GET /api/auth/validate-company` contra
+> un RUC público de ejemplo devuelve `registry:"confirmed"` con razón
+> social y estado reales de SUNAT. No se corrió el suite completo de CTest
+> en esta pasada — cambio acotado a un cliente HTTPS aislado. Cierra la
+> última decisión pendiente del corte gerencial del 2026-09-10 con
+> evidencia de funcionamiento real, no solo de configuración.
+
 > **Actualización 2026-09-11 (tercera pasada, mismo día): infraestructura de
 > pilotos LATAM e investigación de SUNAT.** (1) Gerencia confirma que los
 > pilotos iniciales en LATAM fuera de Perú corren sobre la **misma VPS ya

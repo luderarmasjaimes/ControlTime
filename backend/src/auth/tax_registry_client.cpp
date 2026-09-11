@@ -69,7 +69,13 @@ TaxRegistryLookup lookupPeruRuc(const std::string &ruc) {
 
   try {
     asio::io_context ioc;
-    ssl::context ctx{ssl::context::tlsv12_client};
+    // tls_client (no tlsv12_client, que fija el handshake EXCLUSIVAMENTE a
+    // TLS 1.2): Chequea (Cloudflare) rechaza TLS 1.2 con un alert fatal
+    // "protocol_version" y solo acepta TLS 1.3 -- verificado en vivo con
+    // openssl s_client -tls1_2 contra api.chequea.pe (2026-09-11, ADR-087).
+    // Mismo patrón ya usado por los demás clientes HTTPS de este backend
+    // (geocode_proxy.cpp, wms_proxy.cpp, whatsapp_client.cpp).
+    ssl::context ctx{ssl::context::tls_client};
     ctx.set_default_verify_paths();
     ctx.set_verify_mode(ssl::verify_peer);
 
