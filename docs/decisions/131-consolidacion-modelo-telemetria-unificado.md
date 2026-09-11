@@ -1,5 +1,48 @@
 # ADR-131 — Consolidación del modelo de telemetría (dim_* / telemetry_fact*) y capacidad a 5-10 años
 
+> **Actualización 2026-09-11 — explicación en lenguaje llano de las fases
+> 6/8/13 pendientes, a pedido explícito del developer (para sustentar la
+> autorización de ventana de despliegue ante Gerencia).** Las fases 0-5 y
+> 9-10 ya corrieron contra la base de datos — construyeron el modelo nuevo
+> y migraron el histórico con un script manual. Lo que falta desplegar es
+> distinto: toca el backend que está recibiendo datos de sensores en
+> producción ahora mismo, en tres pasos, en este orden:
+>
+> 1. **Fase 6 — "escritura doble" (`telemetry_ingest.cpp`)**: hoy, cuando
+>    llega un dato de un sensor, el backend lo guarda **solo** en las
+>    tablas viejas (`telemetry_raw`/`mineria_lecturas`). Este paso cambia
+>    el código para que lo guarde en las tablas viejas **y** en las nuevas
+>    (`telemetry_fact*`) al mismo tiempo, automáticamente. Estado actual
+>    sin este paso: los datos nuevos solo llegan a la tabla nueva si
+>    alguien vuelve a correr a mano el script de backfill
+>    (`78_telemetry_fact_backfill.sql`) — es un parche temporal, no la
+>    solución real, y cada corrida manual que se salta deja un hueco real
+>    de datos sin migrar.
+> 2. **Fase 8 — "cambio de lectura" (`sensor_service.cpp`,
+>    `kpi_service.cpp`, `sensor_telemetry_wizard.cpp`)**: una vez que la
+>    escritura doble lleva un tiempo funcionando y se verificó que los
+>    datos de ambas tablas coinciden (paridad), se cambia el código para
+>    que los reportes/dashboards/KPIs **lean** de la tabla nueva en vez de
+>    la vieja.
+> 3. **Fase 13 — retiro de tablas legacy**: recién **30 días** después de
+>    que los dos pasos anteriores funcionen sin incidentes, se borran las
+>    tablas viejas que ya no se necesitan.
+>
+> **Por qué hace falta una ventana de despliegue autorizada, y no un
+> cambio silencioso**: las fases 6 y 8 requieren **reiniciar el backend de
+> producción** — el mismo proceso que ingesta datos de sensores en tiempo
+> real, hasta 25.000 lecturas por segundo (ADR-108). Un reinicio mal
+> coordinado arriesga interrumpir el servicio o, en el peor caso, perder
+> datos en tránsito. Por eso se pide una ventana programada (horario de
+> bajo tráfico, con aviso previo), no un `git pull && restart` en
+> cualquier momento.
+>
+> **Qué se despliega en concreto**: una nueva versión del backend en C++
+> que ya tiene escrito el código de escritura doble y cambio de lectura —
+> el código existe, lo que falta es la autorización para instalarlo en el
+> servidor real y el momento acordado para hacerlo con el menor impacto
+> posible sobre la ingesta en vivo.
+
 > **Actualización 2026-08-30 (auditoría de trazabilidad ADR-129/136, ver
 > `README.md`)**: `backend/src/platform/platform_routes.cpp` implementa
 > `GET /api/platform/archive/query` (`handleQueryArchive`, registrada como

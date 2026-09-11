@@ -26,6 +26,16 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (novena pasada, mismo día): ADR-131 mejor
+> documentado en lenguaje llano.** A pedido explícito del developer, para
+> sustentar ante Gerencia la solicitud de ventana de despliegue de las
+> fases 6/8/13. Se agrega bloque de actualización explicando en términos
+> no técnicos qué hace cada fase (escritura doble, cambio de lectura,
+> retiro de tablas), por qué requiere un reinicio coordinado del backend
+> de producción (ingesta en vivo a 25k/s) y qué se despliega en concreto.
+> No cambia el estado ni el alcance de la decisión original — es una
+> mejora de documentación, sin editar el texto original de ADR-131.
+
 > **Actualización 2026-09-11 (octava pasada, mismo día): evaluación de
 > VPS/GPU declarada pendiente — ADR-170, nuevo pendiente de
 > infraestructura.** A pedido explícito del developer, motivado por
@@ -1248,7 +1258,7 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 | # | Slug | Status | Resumen |
 |---|---|---|---|
-| 131 | `consolidacion-modelo-telemetria-unificado` | 🟡 implemented (fases 0-5, 9-10); fases 6-8/13 pendientes de deploy backend | Consolida `dim_tenant`/`dim_site`/`dim_sensor`/`telemetry_fact*` para sostener 25k/s continuos, históricos de hasta 5 años y arquitectura a 10 años; extiende ADR-006/007/008/108/009/034. Dual-write, cutover de lecturas y retiro de tablas legacy quedan fuera de alcance de esta sesión. |
+| 131 | `consolidacion-modelo-telemetria-unificado` | 🟡 implemented (fases 0-5, 9-10); fases 6-8/13 pendientes de deploy backend | Consolida `dim_tenant`/`dim_site`/`dim_sensor`/`telemetry_fact*` para sostener 25k/s continuos, históricos de hasta 5 años y arquitectura a 10 años; extiende ADR-006/007/008/108/009/034. Dual-write (fase 6, escritura doble en `telemetry_ingest.cpp`), cutover de lecturas (fase 8, `sensor_service.cpp`/`kpi_service.cpp`/`sensor_telemetry_wizard.cpp`) y retiro de tablas legacy 30 días después (fase 13) quedan fuera de alcance de esta sesión — requieren reiniciar el backend de producción que ingesta en vivo a 25k/s, de ahí la ventana de despliegue pendiente de autorizar. Explicación en lenguaje llano agregada 2026-09-11. |
 | 136 | `telemetria-calculada-dashboard-simulacion` | ✅ implemented (esquema + endpoint de lectura); cómputo vía script externo interino | Nueva hypertable `telemetry_fact_calc` (métrica derivada por lectura de sensor: nivel de alerta, tasa de cambio, delta vs. umbral) + endpoint anti-IDOR de solo lectura + panel `SimulationMonitor.tsx` para observar en vivo la simulación de 1h contra `board.beemetry.com`. El cómputo lo puebla un script externo por decisión explícita del developer (no un scheduler nuevo en el backend); pendiente decidir si migra al backend C++ si deja de ser interino. |
 
 ### Ámbito `core-iot` — plataforma IoT del core C++
