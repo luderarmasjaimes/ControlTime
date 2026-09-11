@@ -6,7 +6,7 @@
 
 **Ámbito**: ia
 
-**Relación**: corrige un efecto colateral real de ADR-143 (parpadeo natural)
+**Relación**: corrige un efecto colateral real de ADR-145 (parpadeo natural)
 + ADR-148 (fusión de parpadeo/candado de lecturas), sin reabrir ninguno de
 los dos.
 
@@ -22,14 +22,14 @@ pantalla" y que aparezca el reto.
 Revisando el código tras ADR-148: el desafío activo sólo se arma/evalúa
 cuando `st.qualityGateReached` es `true`, y esa bandera exige AMBAS cosas:
 `captureCount`/`totalFramesSeen` completos (lecturas ICAO) Y
-`naturalBlink.observed` (parpadeo natural, ADR-143). Es decir, el diseño
+`naturalBlink.observed` (parpadeo natural, ADR-145). Es decir, el diseño
 original encadenaba las dos pruebas de vida EN SECUENCIA: primero ICAO,
 después esperar el parpadeo, y sólo entonces mostrar el desafío.
 
 El problema de fondo: las 5 lecturas ICAO toman en la práctica **~875ms**
 (5 frames a ~175ms de cadencia, la resolución de captura actual). Un
 parpadeo involuntario ocurre en promedio cada **2-4 segundos** (15-20
-parpadeos/minuto es la tasa fisiológica normal). El diseño de ADR-143 asumía
+parpadeos/minuto es la tasa fisiológica normal). El diseño de ADR-145 asumía
 implícitamente que el parpadeo ocurriría *durante* esa misma ventana de
 lecturas — pero la ventana es demasiado corta frente al intervalo real entre
 parpadeos, así que casi SIEMPRE terminaba esperándose un parpadeo que
@@ -42,7 +42,7 @@ espera pasó a ser real pero acotada (unos segundos) — visible ahora como
 
 ## Decisión
 
-El desafío activo (ADR-142/146) y el parpadeo natural (ADR-143) son **dos
+El desafío activo (ADR-142/146) y el parpadeo natural (ADR-145) son **dos
 pruebas de vida independientes** que no necesitan correr en secuencia — sólo
 el gate FINAL de `handleLoginFace`/`handleRegister`
 (`qualityGateReached && challenge.complete`, sin cambios en `main.cpp`)

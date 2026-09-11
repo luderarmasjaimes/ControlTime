@@ -7,7 +7,7 @@
 **Ámbito**: ia
 
 **Relación**: modifica ADR-142/126 (desafío activo 2-de-4: blink/mouth/turn_left/turn_right)
-y coexiste con ADR-143 (parpadeo natural pasivo, sin cambios).
+y coexiste con ADR-145 (parpadeo natural pasivo, sin cambios).
 
 ## Contexto
 
@@ -22,7 +22,7 @@ usuarios reales; se documenta directamente el diseño que sí se publicó.
 
 Motivación adicional (no sólo preferencia): el parpadeo YA queda cubierto
 —mejor, porque es pasivo e ininterrumpido— por el parpadeo NATURAL de
-ADR-143 durante las 5 lecturas ICAO. Pedirlo TAMBIÉN como desafío activo era
+ADR-145 durante las 5 lecturas ICAO. Pedirlo TAMBIÉN como desafío activo era
 redundante. Abrir la boca o inclinar sutilmente la cabeza, en cambio, son
 gestos menos manejables de ejecutar de forma consistente que acercarse o
 alejarse de la cámara — un movimiento grande, inequívoco y fácil de
@@ -79,7 +79,7 @@ Textos de instrucción nuevos: `liveness.challenge.moveCloser`
 
 El mecanismo de sorteo/timeout/reintento/reemplazo, la separación de fases
 respecto al gate de calidad ICAO (ADR-142), el parpadeo natural simultáneo
-(ADR-143), y el gate de `handleLoginFace`/`handleRegister`
+(ADR-145), y el gate de `handleLoginFace`/`handleRegister`
 (`qualityGateReached && challenge.complete`) quedan exactamente iguales —
 sólo cambió QUÉ gestos entran en la cola, CUÁNTOS hacen falta, y que ahora
 uno de los ejes de medición necesita una referencia por sesión en vez de un

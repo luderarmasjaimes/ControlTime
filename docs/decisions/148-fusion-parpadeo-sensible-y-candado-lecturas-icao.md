@@ -6,7 +6,7 @@
 
 **Ámbito**: ia
 
-**Relación**: corrige dos bugs reales en el mecanismo de ADR-143 (parpadeo
+**Relación**: corrige dos bugs reales en el mecanismo de ADR-145 (parpadeo
 natural simultáneo a las 5 lecturas ICAO) y ADR-146 (desafío activo de 1
 gesto), sin cambiar el diseño de ninguno de los dos.
 
@@ -34,7 +34,7 @@ chequeo ICAO real ("OJOS ABIERTOS" en pantalla, `frameValid` en
 una lectura ruidosa (reflejo, ángulo, pestaña). Es la fusión correcta para
 ese propósito.
 
-El problema: `updateNaturalBlink` (ADR-143) reutilizaba esa misma señal
+El problema: `updateNaturalBlink` (ADR-145) reutilizaba esa misma señal
 (`eyesOpen`/`bothOpen`) para decidir si hubo un parpadeo. Con esa fusión
 sesgada hacia "abierto", un parpadeo real de UN solo ojo —o incluso de
 ambos, si el segundo ojo da una lectura ligeramente distinta en el frame
@@ -123,7 +123,7 @@ corregido en la reactivación de ADR-145.
   acotado por el mismo mecanismo que ya protegía contra fotos con ojos
   siempre cerrados.
 - No se modificó `updateNaturalBlink` en sí (su lógica de tolerancia de
-  ventana sigue igual, ADR-143) — sólo cambió la señal de entrada que
+  ventana sigue igual, ADR-145) — sólo cambió la señal de entrada que
   recibe, y el candado de reseteo que lo rodea en `handleProcessFrame`.
 - Sin test unitario nuevo para el candado `icaoReadsLocked` en sí: vive en
   `handleProcessFrame` (`biometric_routes.cpp`), que depende de OpenCV/sesión

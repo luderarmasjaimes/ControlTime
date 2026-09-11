@@ -8,7 +8,7 @@
 
 **Relación**: ajusta ADR-142/146 (desafío activo server-side) y ADR-148/149
 (candado de lecturas ICAO y arranque en paralelo del reto). No reabre
-ADR-143 (parpadeo natural), que sigue igual.
+ADR-145 (parpadeo natural), que sigue igual.
 
 ## Contexto
 
@@ -27,7 +27,7 @@ Las tres tienen causa en el mismo archivo (`handleProcessFrame` +
 
 - El contador toleraba hasta 4 frames ICAO inválidos seguidos antes de
   resetearse (`captureInvalidStreak >= 5`). Esa tolerancia existía por el
-  parpadeo — pero ADR-143 ya resolvió el parpadeo aparte
+  parpadeo — pero ADR-145 ya resolvió el parpadeo aparte
   (`updateNaturalBlink`), así que sólo quedaba su efecto secundario: el
   progreso sobrevivía a frames malos, y un 3/5 podía llegar a 5/5
   intercalando frames que no cumplían las condiciones. Eso es exactamente lo
@@ -44,7 +44,7 @@ Las tres tienen causa en el mismo archivo (`handleProcessFrame` +
 `kIcaoInvalidFramesBeforeReset = 1` (antes 5): las 5 lecturas tienen que ser
 5 frames consecutivos con las CUATRO condiciones en OK; basta que una falle
 para volver a 0. Un parpadeo natural sigue sin contar como frame inválido
-(ADR-143), que era el único motivo real por el que existía la tolerancia.
+(ADR-145), que era el único motivo real por el que existía la tolerancia.
 
 **2. Cada intento de reto es un tipo distinto, sorteado al azar.**
 Al vencer la ventana, en vez de repetir el gesto que la persona acaba de no
