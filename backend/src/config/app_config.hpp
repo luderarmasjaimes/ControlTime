@@ -1,5 +1,23 @@
 #pragma once
 
+// NOTA (2026-09-08): NO definir HAS_LIBPQ acá. Se intentó (para arreglar
+// gpu_mutex.hpp en avatar_animation_client.cpp/ai_engine_client.cpp, ver
+// más abajo) pero rompió una invariante real y documentada de
+// CMakeLists.txt: el target liviano `beemetry_backend_tests` compila
+// permissions.cpp SIN el include dir de Postgres a propósito, para que
+// HAS_LIBPQ dé 0 ahí y userBelongsToTenant() caiga fail-closed a `false`
+// (comportamiento que test_sensor_anti_idor.cpp verifica explícitamente).
+// Como app_config.hpp se incluye ANTES del bloque de detección local de
+// permissions.cpp, y este archivo usaba el fallback calificado
+// `<postgresql/libpq-fe.h>` (que sí resuelve sin ese include dir), forzaba
+// HAS_LIBPQ=1 ahí también -- y como pg_pool.hpp/pg_result.hpp solo hacen el
+// include SIN calificar, el resultado era PGconn/PGresult nunca declarados
+// pese a "#if HAS_LIBPQ" dar verdadero: decenas de errores de compilación
+// en el target de tests. La detección de HAS_LIBPQ para el mutex de GPU se
+// agregó en su lugar directamente a avatar_animation_client.cpp y
+// ai_engine_client.cpp (ninguno de los dos es parte del target de tests),
+// mismo patrón per-archivo que el resto del backend.
+
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -91,6 +109,23 @@ struct AppConfig {
     const std::string &readUrl() const {
         return gReplicaDatabaseUrl.empty() ? gDatabaseUrl : gReplicaDatabaseUrl;
     }
+    // Conexión DIRECTA a Postgres (host=db), sin pasar por pgbouncer, para
+    // GpuInferenceMutex (storage/gpu_mutex.hpp). pgbouncer corre con
+    // POOL_MODE=transaction (ver docker-compose.yml, servicio pgbouncer):
+    // cada sentencia suelta que el backend manda puede aterrizar en una
+    // conexión física de Postgres distinta. pg_advisory_lock/unlock son
+    // locks de SESIÓN -- si el lock y el unlock_all del mutex de GPU caen en
+    // conexiones físicas distintas, el unlock no libera nada y el lock queda
+    // retenido para siempre en la conexión física original, que pgbouncer
+    // sigue reciclando para otras requests sin enterarse (incidente real,
+    // 2026-09-09/10: 6 hilos de fondo bloqueados 9-20 min esperando este
+    // lock tras un CUDA OOM en avatar_engine). Si no se define, cae al
+    // primario (gDatabaseUrl) para no romper entornos sin esta var seteada,
+    // aunque eso reintroduce el riesgo si ese primario va por pgbouncer.
+    std::string gGpuMutexDatabaseUrl;
+    const std::string &gpuMutexDatabaseUrl() const {
+        return gGpuMutexDatabaseUrl.empty() ? gDatabaseUrl : gGpuMutexDatabaseUrl;
+    }
     std::string gKpiExternalDatabaseUrl;
     std::string gKpiExternalQuery;
     BiometricProvider gBiometricProvider = BiometricProvider::Legacy;
@@ -108,6 +143,24 @@ struct AppConfig {
     // fue de infraestructura (ai_engine caído/timeout), nunca ante un rechazo
     // de seguridad (spoof/no-match) -- ver analyzeFaceImage en face_analysis.cpp.
     bool gDeepFaceSilentDermalogFallback = false;
+    // ADR-142: desafío de liveness activa PEDIDO (girar cabeza/abrir boca a
+    // propósito, en su propia fase secuencial DESPUÉS del gate de calidad
+    // ICAO) exigido server-side antes de aceptar login/registro facial.
+    // true = seguro por defecto. Pensado para poder desactivarse
+    // TEMPORALMENTE (p.ej. pruebas, demo) sin tocar código -- el gate de
+    // calidad ICAO (5 lecturas, ver kRequiredValidCaptureFrames) y el
+    // parpadeo natural (gNaturalBlinkRequired) se siguen exigiendo igual,
+    // sólo se salta el reto de gesto pedido. Ver handleProcessFrame en
+    // biometric_routes.cpp.
+    bool gLivenessChallengeRequired = true;
+    // ADR-143: parpadeo NATURAL (no pedido) evaluado en simultáneo durante
+    // la misma ventana de 5 lecturas ICAO -- distinto del desafío de
+    // arriba: no es una fase aparte, no le pide nada a la persona, y no se
+    // apaga junto con gLivenessChallengeRequired (a diferencia del desafío
+    // pedido, el parpadeo pasivo no molesta al usuario, así que se mantiene
+    // siempre activo en producción; interruptor propio sólo para debug).
+    // Ver NaturalBlinkState/updateNaturalBlink en liveness_challenge.hpp.
+    bool gNaturalBlinkRequired = true;
     bool gBiometricDnnEnabled = false;
     std::string gBiometricDnnModelPath;
     std::string gBiometricDnnLabelsCsv;
@@ -116,6 +169,16 @@ struct AppConfig {
     std::string gPdfExportUrl;
     int gPdfExportTimeoutMs = 45000;
     std::string gFrontendInternalOrigin;
+    // Origen público (dominio/IP alcanzable desde un celular fuera de la red
+    // Docker) -- gFrontendInternalOrigin de arriba solo resuelve DENTRO del
+    // bridge de Docker, no sirve para armar links que salen en un email/
+    // WhatsApp reales (ver fotocheck_routes.cpp). Vacío = esos links no se
+    // envían (mejor omitir el envío que mandar una URL rota).
+    std::string gPublicOrigin;
+    // Clave AES-256-GCM (32 bytes, base64) para cifrar el payload del QR del
+    // fotocheck -- ver fotocheck_crypto.cpp. Vacía = la feature del QR queda
+    // deshabilitada (nunca se cifra con una clave débil/por defecto).
+    std::string gFotocheckQrKeyBase64;
     // Export PPTX/MP4 (modo presentación, sobre el mismo sidecar Chromium que
     // PDF): directorio compartido backend<->sidecar donde caen los archivos
     // generados (report_export_job.storage_uri apunta dentro de esta raíz).
@@ -197,6 +260,14 @@ struct AppConfig {
     std::string gAiEngineUrl;
     int gAiEngineTimeoutMs = 500;
     int gAiEngineCartoonTimeoutMs = 8000;
+    // Avatar ANIMADO (ADR-150, avatar_animation_engine, SadTalker) --
+    // servicio APARTE de ai_engine/avatar_engine, ver docker-compose.yml
+    // perfil "avatar-animation". Vacío = deshabilitado (mismo criterio que
+    // gAiEngineUrl). Timeout en minutos, no segundos: 200-300s medidos
+    // reales (ADR-150), muy por encima de cualquier otro timeout de este
+    // archivo -- por eso NO reusa gAiEngineCartoonTimeoutMs.
+    std::string gAvatarAnimationEngineUrl;
+    int gAvatarAnimationTimeoutMs = 300000;
     // ADR-122: extracción de texto de CVs (Word/PDF) en /extract_cv_text --
     // mucho más lenta que analyze_eyes (500ms) o incluso cartoon_avatar
     // (8s): un PDF de varias páginas con pdfplumber puede tardar varios

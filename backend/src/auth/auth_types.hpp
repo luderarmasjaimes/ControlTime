@@ -35,6 +35,12 @@ struct AuthUser {
   std::string email;
   /** PNG/JPEG en base64 (sin prefijo data:), generado en registro desde recorte óvalo. */
   std::string avatarCartoonBase64;
+  /** JPEG en base64 (sin prefijo data:) de la foto REAL (no caricaturizada)
+   * capturada en el registro biométrico -- fuente: capturedBustRectBase64
+   * del frontend, mismo frame que ya alimenta avatarCartoonBase64. Usada por
+   * el fotocheck (fotocheck_routes.cpp). Vacía si el registro es anterior a
+   * db_scripts/91 o si el capturado no llegó. */
+  std::string idPhotoBase64;
   /** UUID tenants(tenant_id) para telemetría minera / informes (Postgres). */
   std::string tenantId;
   /** MFA/TOTP (ADR-135, db_scripts/81). Secreto Base32 en claro -- ver

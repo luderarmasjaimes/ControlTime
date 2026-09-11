@@ -312,6 +312,54 @@ describe('authApi', () => {
         })
     })
 
+    // ADR-142: el backend exige, tanto en login como en registro, que la
+    // sesión de captura (X-Capture-Session-Id) ya haya cruzado el gate de
+    // calidad ICAO y completado los 2 desafíos de liveness -- sin este
+    // header no puede saber a qué sesión de cámara corresponde el intento.
+    // Antes sólo viajaba en /api/process_frame y /api/status.
+    it('manda X-Capture-Session-Id en el login facial', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'authenticated', method: 'face', score: 0.94 }),
+        })
+
+        await loginWithFace({
+            company: 'Minera Raura',
+            username: '9637521',
+            imageBase64: 'BASE64JPEG==',
+        })
+
+        const [, options] = fetchMock.mock.calls[0]
+        expect(options.headers['X-Capture-Session-Id']).toBeTruthy()
+    })
+
+    it('manda el mismo X-Capture-Session-Id en registro y login (misma pestaña)', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        })
+
+        await registerUser({
+            company: 'Minera Raura',
+            firstName: 'Luder',
+            lastName: 'Armas',
+            dni: '12345678',
+            username: 'luder',
+            password: 'secret123',
+            faceImageBase64: 'BASE64JPEG==',
+        })
+        await loginWithFace({
+            company: 'Minera Raura',
+            username: 'luder',
+            imageBase64: 'BASE64JPEG==',
+        })
+
+        const registerSessionId = fetchMock.mock.calls[0][1].headers['X-Capture-Session-Id']
+        const loginSessionId = fetchMock.mock.calls[1][1].headers['X-Capture-Session-Id']
+        expect(registerSessionId).toBeTruthy()
+        expect(registerSessionId).toBe(loginSessionId)
+    })
+
     it('sends audit filters in query params', async () => {
         localStorage.setItem(
             'mining_auth_session_v1',

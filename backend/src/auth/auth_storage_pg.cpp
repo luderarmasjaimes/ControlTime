@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -177,6 +178,21 @@ ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS avatar_cartoon_base64 TEXT;
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS totp_enrolled_at TIMESTAMPTZ;
+-- db_scripts/91: foto real (no caricaturizada) tomada en el registro
+-- biométrico, usada por el fotocheck (ver fotocheck_routes.cpp). Igual
+-- criterio de sensibilidad que avatar_cartoon_base64, pero es la cara real
+-- de la persona, no un avatar estilizado.
+ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS id_photo_base64 TEXT;
+-- db_scripts/92: link opaco por usuario para ver/descargar su fotocheck sin
+-- sesión (se manda por email/WhatsApp) -- mismo patrón que
+-- report_pdf_share_links (ADR-138), sin expiración porque es una credencial
+-- personal, no una descarga puntual.
+CREATE TABLE IF NOT EXISTS fotocheck_share_links (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fotocheck_share_links_user ON fotocheck_share_links(user_id);
 
 CREATE TABLE IF NOT EXISTS auth_user_maintenance_audit (
     id BIGSERIAL PRIMARY KEY,
@@ -290,6 +306,77 @@ bool validateCompanyPg(const std::string &databaseUrl, const std::string &compan
       2, nullptr, params, nullptr, nullptr, 0)};
   bool exists = res.okTuples() && PQntuples(res.get()) > 0;
   return exists;
+}
+
+/**
+ * Pre-chequeo de disponibilidad de DNI ANTES de pedir la captura facial
+ * (hallazgo real 2026-09-04): sin esto, un DNI duplicado recién se detectaba
+ * al final de todo el flujo de captura (5 lecturas ICAO + parpadeo natural +
+ * desafío activo, ~1-2 minutos), un tiempo desperdiciado en algo que no
+ * depende de nada biométrico. Misma query EXACTA que el chequeo real de
+ * registerUserPg (dni UNIQUE global, sin importar la empresa -- un DNI
+ * identifica una sola cuenta en toda la plataforma) para que este
+ * pre-chequeo nunca diverja del resultado real del registro.
+ */
+bool checkDniExistsPg(const std::string &databaseUrl, const std::string &dni,
+                      bool &outExists, std::string &error) {
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    return false;
+  }
+  const char *params[1] = {dni.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn, "SELECT 1 FROM auth_users WHERE dni = $1 LIMIT 1", 1, nullptr,
+      params, nullptr, nullptr, 0)};
+  if (!res.okTuples()) {
+    error = "failed to validate dni";
+    return false;
+  }
+  outExists = PQntuples(res.get()) > 0;
+  return true;
+}
+
+/**
+ * Pre-chequeo de disponibilidad de username ANTES de pedir la captura
+ * facial (hallazgo real 2026-09-04, mismo motivo que checkDniExistsPg de
+ * arriba): un registro completo -- 5 lecturas ICAO + parpadeo natural +
+ * desafío activo, ~1-2 minutos -- terminaba rechazado recién al final con
+ * "username already exists in this company", una restricción que tampoco
+ * depende de nada biométrico. Misma query EXACTA que el chequeo real de
+ * registerUserPg (username UNIQUE por empresa, a diferencia del DNI que es
+ * global) para que este pre-chequeo nunca diverja del resultado real.
+ */
+bool checkUsernameExistsPg(const std::string &databaseUrl,
+                           const std::string &company,
+                           const std::string &username, bool &outExists,
+                           std::string &error) {
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    return false;
+  }
+  const char *params[2] = {company.c_str(), username.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "SELECT 1 FROM auth_users WHERE company_name = $1 AND username = $2 LIMIT 1",
+      2, nullptr, params, nullptr, nullptr, 0)};
+  if (!res.okTuples()) {
+    error = "failed to validate username";
+    return false;
+  }
+  outExists = PQntuples(res.get()) > 0;
+  return true;
 }
 
 bool setPendingTotpSecretPg(const std::string &databaseUrl, const std::string &userId,
@@ -445,7 +532,7 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
   const std::string tplStr = tpl.str();
   const std::string providerStr =
       user.faceTemplateProvider.empty() ? "unknown" : user.faceTemplateProvider;
-  const char *insParams[15] = {
+  const char *insParams[16] = {
       user.id.c_str(),
       user.company.c_str(),
       user.firstName.c_str(),
@@ -461,13 +548,14 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
       user.email.c_str(),
       user.avatarCartoonBase64.empty() ? nullptr
                                        : user.avatarCartoonBase64.c_str(),
-      providerStr.c_str()};
+      providerStr.c_str(),
+      user.idPhotoBase64.empty() ? nullptr : user.idPhotoBase64.c_str()};
   static const char *kInsertUserSql =
       "INSERT INTO auth_users(id,company_name,first_name,last_name,dni,"
       "username,role,password_hash,face_template,ruc,phone,mobile,email,"
-      "avatar_cartoon_base64,face_template_provider) "
-      "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15)";
-  storage::PgResult insRes{PQexecParams(conn, kInsertUserSql, 15, nullptr, insParams,
+      "avatar_cartoon_base64,face_template_provider,id_photo_base64) "
+      "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16)";
+  storage::PgResult insRes{PQexecParams(conn, kInsertUserSql, 16, nullptr, insParams,
                                         nullptr, nullptr, 0)};
   const bool insOk = insRes.okCommand();
   if (!insOk) {
@@ -717,7 +805,7 @@ std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
   storage::PgResult res{PQexecParams(
       conn,
       "SELECT id, company_name, first_name, last_name, dni, username, role, "
-      "avatar_cartoon_base64, account_status "
+      "avatar_cartoon_base64, account_status, email, mobile, phone, id_photo_base64 "
       "FROM auth_users WHERE id = $1::uuid LIMIT 1",
       1, nullptr, params, nullptr, nullptr, 0)};
   if (!res.okTuples() || PQntuples(res.get()) != 1) return std::nullopt;
@@ -734,6 +822,10 @@ std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
   u.username = PQgetvalue(res.get(), 0, 5);
   u.role = PQgetvalue(res.get(), 0, 6);
   if (!PQgetisnull(res.get(), 0, 7)) u.avatarCartoonBase64 = PQgetvalue(res.get(), 0, 7);
+  if (!PQgetisnull(res.get(), 0, 9)) u.email = PQgetvalue(res.get(), 0, 9);
+  if (!PQgetisnull(res.get(), 0, 10)) u.mobile = PQgetvalue(res.get(), 0, 10);
+  if (!PQgetisnull(res.get(), 0, 11)) u.phone = PQgetvalue(res.get(), 0, 11);
+  if (!PQgetisnull(res.get(), 0, 12)) u.idPhotoBase64 = PQgetvalue(res.get(), 0, 12);
   return u;
 }
 
@@ -1289,10 +1381,34 @@ bool executeUserMaintenancePg(const std::string &databaseUrl, const json::object
       updateParams = {until, targetUsername, company};
       detail = "Usuario suspendido hasta " + (until.empty() ? "indefinido" : until);
     } else if (action == "delete") {
-      updateSql = "UPDATE auth_users SET account_status = 'deleted' "
-                  "WHERE username = $1 AND company_name = $2";
+      // Corrección 2026-09-04 (hallazgo real, pedido explícito del usuario:
+      // "asegúrate que se esté borrando... el avatar... y las capturas de
+      // cámara"): la baja lógica solo marcaba account_status='deleted' --
+      // avatar_cartoon_base64 quedaba en la fila para siempre (visible a
+      // quien tenga acceso a la tabla, y servible vía GET
+      // /api/auth/avatar/hd mientras el master 2880x3840 siguiera en disco,
+      // ver limpieza de archivo más abajo). "Eliminar usuario" debe borrar
+      // también el derivado biométrico, no solo desactivar la cuenta -- son
+      // dos cosas distintas (retener el registro administrativo/de
+      // auditoría de que existió, vs. seguir guardando su rostro
+      // estilizado). RETURNING id para poder borrar el master HD del
+      // filesystem, que vive fuera de la fila (auth/avatars_hd/{id}.png).
+      // face_template (jsonb) es el embedding real que usa el login facial
+      // -- más sensible todavía que el avatar caricaturizado, y tampoco se
+      // limpiaba. auth_face_templates (historial versionado por captura) se
+      // revisó aparte: existe la tabla con ON DELETE CASCADE pero está
+      // vacía en este entorno (no hay código que le escriba todavía), así
+      // que no hace falta tocarla acá -- si en el futuro se empieza a
+      // poblar, un DELETE explícito por user_id debería agregarse acá
+      // también en vez de confiar en la cascada (la baja sigue siendo
+      // lógica, nunca hace DELETE de la fila en auth_users).
+      updateSql = "UPDATE auth_users SET account_status = 'deleted', "
+                  "avatar_cartoon_base64 = NULL, "
+                  "face_template = '[]'::jsonb "
+                  "WHERE username = $1 AND company_name = $2 "
+                  "RETURNING id";
       updateParams = {targetUsername, company};
-      detail = "Baja lógica de usuario.";
+      detail = "Baja lógica de usuario (incluye borrado del avatar y la plantilla biométrica).";
     } else if (action == "change_profile") {
       std::string role = json::value_to<std::string>(details.at("newRole"));
       updateSql = "UPDATE auth_users SET role = $1 "
@@ -1333,8 +1449,35 @@ bool executeUserMaintenancePg(const std::string &databaseUrl, const json::object
       storage::PgResult uRes{
           PQexecParams(conn, updateSql.c_str(), static_cast<int>(pv.size()),
                        nullptr, pv.data(), nullptr, nullptr, 0)};
-      if (uRes.okCommand() && std::atoi(PQcmdTuples(uRes.get())) > 0) {
+      // "delete" agrega RETURNING id (ver arriba) -- Postgres responde
+      // PGRES_TUPLES_OK para eso, no PGRES_COMMAND_OK, así que el chequeo de
+      // éxito para esa acción puntual mira okTuples()+ntuples en vez de
+      // PQcmdTuples (que da vacío/0 cuando hay RETURNING).
+      const bool deletedRow =
+          action == "delete" && uRes.okTuples() && PQntuples(uRes.get()) > 0;
+      if (deletedRow || (uRes.okCommand() && std::atoi(PQcmdTuples(uRes.get())) > 0)) {
         success = true;
+        if (deletedRow) {
+          // Master HD 2880x3840 vive en el filesystem, fuera de la fila
+          // (auth/avatars_hd/{id}.png, ver handleMyAvatarHd) -- borrar solo
+          // avatar_cartoon_base64 en la UPDATE de arriba no alcanza, o el
+          // archivo viejo sigue ahí (y seguiría sirviéndose si alguna vez se
+          // reutiliza el mismo id, aunque hoy los id son UUID nuevos por
+          // registro). Best-effort: un error acá no debe revertir la baja
+          // lógica ya confirmada en la fila.
+          try {
+            const std::string deletedId = PQgetvalue(uRes.get(), 0, 0);
+            const std::string dataRoot =
+                config::getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+            const std::filesystem::path hdPath =
+                std::filesystem::path(dataRoot) / "auth" / "avatars_hd" /
+                (deletedId + ".png");
+            std::error_code ec;
+            std::filesystem::remove(hdPath, ec);
+          } catch (...) {
+            // best-effort, ver comentario arriba
+          }
+        }
       } else if (!uRes) {
           error = PQerrorMessage(conn);
       } else {
@@ -1511,12 +1654,37 @@ std::optional<AuthUser> findValidRefreshTokenUserPg(const std::string &databaseU
     return std::nullopt;
   }
   (void)ensureAuthSchemaPg(conn);
+  // Hallazgo real, sesión 2026-09-09 (usuario 09637600/ALPAYANA, reproducido
+  // en vivo con un navegador propio): esta consulta nunca verificaba que
+  // `user_id` siguiera existiendo en `auth_users`. Cuenta eliminada y
+  // recreada con un id nuevo -> el refresh token de la cuenta VIEJA seguía
+  // vigente (rotándose sin parar, `revokeAllSessionsForUser` existe pero
+  // nada la invoca al eliminar una cuenta) -- cada POST /api/auth/refresh
+  // seguía emitiendo access tokens firmados y válidos para un user_id
+  // fantasma. El JWT resultante pasaba `resolveAuthSession` sin problema
+  // (solo valida firma/expiración, no existencia del usuario), así que la
+  // sesión SE VEÍA activa en el dashboard -- hasta que cualquier escritura
+  // real con FK a auth_users (ej. INSERT en avatar_animation_job) fallaba
+  // con "violates foreign key constraint", un 500 silencioso que el
+  // frontend trata como "no disponible" sin mostrar nada al usuario. Repetir
+  // login en la UI no lo arregla: el navegador nunca vuelve a pedir
+  // credenciales mientras la cookie de refresh HttpOnly siga viva, así que
+  // sigue renovando la identidad fantasma en vez de autenticar la cuenta
+  // nueva. `is_active` (no solo existencia) para que además una baja lógica
+  // corte el refresh de inmediato, no solo un DELETE físico.
   const char *params[1] = {tokenHash.c_str()};
   storage::PgResult res{PQexecParams(
       conn,
-      "SELECT user_id, username, company_name, role, tenant_id FROM "
-      "auth_refresh_tokens WHERE token_hash=$1 AND revoked_at IS NULL AND "
-      "expires_at > NOW()",
+      // u.id::text = rt.user_id (no rt.user_id::uuid): algunas filas viejas
+      // de esta tabla tienen user_id sin guiones (dato legado, ya inválido
+      // como uuid) -- castear el lado de rt haría fallar la query ENTERA con
+      // un error de Postgres para esas filas en vez de simplemente no
+      // matchear. Comparar como texto es seguro en ambas direcciones.
+      "SELECT rt.user_id, rt.username, rt.company_name, rt.role, rt.tenant_id "
+      "FROM auth_refresh_tokens rt "
+      "JOIN auth_users u ON u.id::text = rt.user_id "
+      "WHERE rt.token_hash=$1 AND rt.revoked_at IS NULL AND "
+      "rt.expires_at > NOW() AND u.is_active = true",
       1, nullptr, params, nullptr, nullptr, 0)};
   if (!res.okTuples() || PQntuples(res.get()) == 0) {
     return std::nullopt;

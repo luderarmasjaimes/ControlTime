@@ -165,6 +165,33 @@ std::string makeId() {
     return secureRandomHex(16);
 }
 
+std::string makeCanonicalUuid() {
+    // Corrección 2026-09-10: makeId() da 32 hex sin guiones -- Postgres
+    // acepta eso como entrada `uuid` pero lo NORMALIZA a formato canónico
+    // (8-4-4-4-12) al guardarlo. Cualquier código que use el id en memoria
+    // ANTES de un round-trip por la base (p.ej. nombrar un archivo en disco
+    // con el id de un usuario recién creado, ver AUTH_REGISTER_CARTOON_BG en
+    // main.cpp) termina con un string que ya no coincide con el que
+    // devuelve la sesión/JWT después (que sí vino de Postgres, con
+    // guiones) -- el archivo queda huérfano bajo el nombre viejo y
+    // cualquier lookup posterior por session->userId falla en silencio.
+    // Reproducido en vivo: avatar_animation_job.cpp fallaba con
+    // "avatar_hd_not_available" para todo usuario nuevo porque el HD se
+    // había guardado como "<32hex>.png" en vez de "<uuid-con-guiones>.png".
+    // Generar el id ya en formato canónico desde el origen evita el
+    // desajuste en cualquier consumidor futuro, no solo en el del avatar.
+    const std::string hex = secureRandomHex(16);
+    std::string out;
+    out.reserve(36);
+    for (std::size_t i = 0; i < hex.size(); ++i) {
+        if (i == 8 || i == 12 || i == 16 || i == 20) {
+            out.push_back('-');
+        }
+        out.push_back(hex[i]);
+    }
+    return out;
+}
+
 std::string secureRandomHex(std::size_t bytes) {
     if (bytes == 0) return {};
     if (bytes > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -605,7 +632,20 @@ http::response<http::string_body> makeJpegResponse(std::string jpegBytes) {
 http::response<http::string_body> makePngResponse(std::string pngBytes) {
     http::response<http::string_body> res{http::status::ok, 11};
     res.set(http::field::content_type, "image/png");
-    res.set(http::field::cache_control, "private, max-age=86400");
+    // Corrección 2026-09-04 (hallazgo real, avatar biométrico HD): era
+    // "private, max-age=86400" (24h). GET /api/auth/avatar/hd resuelve
+    // exclusivamente por sesión (nunca por user_id del cliente, ver
+    // handleMyAvatarHd) -- la URL es LA MISMA para cualquier usuario, sin
+    // ETag ni ningún identificador de contenido. En el mismo navegador, si
+    // una cuenta se da de baja y se vuelve a crear con el mismo DNI (nuevo
+    // user_id, avatar nuevo), el navegador podía seguir sirviendo el PNG de
+    // la cuenta ANTERIOR durante hasta 24h sin volver a pedirle nada al
+    // servidor -- no es solo mostrar la imagen "vieja", es una fuga real de
+    // un derivado biométrico de una identidad hacia la sesión de otra en el
+    // mismo dispositivo. "no-store" fuerza a pedir el archivo real en cada
+    // vista; es sensible por naturaleza (avatar biométrico), no vale la pena
+    // el riesgo por ahorrar una descarga.
+    res.set(http::field::cache_control, "private, no-store");
     applyCorsHeaders(res);
     res.set("X-Content-Type-Options", "nosniff");
     res.body() = std::move(pngBytes);

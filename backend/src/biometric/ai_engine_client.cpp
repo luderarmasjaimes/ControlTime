@@ -6,6 +6,21 @@
 #include "../auth/auth_session.hpp"
 #include "../onnx_cartoon.hpp"
 
+// HAS_LIBPQ se define POR ARCHIVO en este backend (ver nota en
+// app_config.hpp) -- este archivo no incluía ningún header que ya definiera
+// HAS_LIBPQ antes de gpu_mutex.hpp, así que "#if HAS_LIBPQ" ahí evaluaba
+// como macro no definida (0) y el mutex de exclusión GPU quedaba
+// compilado-fuera en silencio, nunca activo.
+#if __has_include(<libpq-fe.h>)
+#define HAS_LIBPQ 1
+#elif __has_include(<postgresql/libpq-fe.h>)
+#define HAS_LIBPQ 1
+#else
+#define HAS_LIBPQ 0
+#endif
+
+#include "../storage/gpu_mutex.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -229,6 +244,10 @@ analyzeFrameWithAiEngine(
     out.bothOpen = obj.if_contains("both_open") && obj.at("both_open").is_bool()
                        ? obj.at("both_open").as_bool()
                        : true;
+    if (obj.if_contains("blink_signal_open") && obj.at("blink_signal_open").is_bool()) {
+      out.hasBlinkSignalOpen = true;
+      out.blinkSignalOpen = obj.at("blink_signal_open").as_bool();
+    }
     out.mouthClosed =
         obj.if_contains("mouth_closed") && obj.at("mouth_closed").is_bool()
             ? obj.at("mouth_closed").as_bool()
@@ -317,6 +336,13 @@ analyzeFrameWithAiEngine(
                               ? obj.at("head_yaw_ratio").as_double()
                               : static_cast<double>(obj.at("head_yaw_ratio").as_int64());
     }
+    if (obj.if_contains("inter_eye_px") &&
+        (obj.at("inter_eye_px").is_double() || obj.at("inter_eye_px").is_int64())) {
+      out.hasInterEyePx = true;
+      out.interEyePx = obj.at("inter_eye_px").is_double()
+                            ? obj.at("inter_eye_px").as_double()
+                            : static_cast<double>(obj.at("inter_eye_px").as_int64());
+    }
     if (obj.if_contains("face_oval_points") && obj.at("face_oval_points").is_array()) {
       const auto &arr = obj.at("face_oval_points").as_array();
       out.faceOvalPoints.reserve(arr.size());
@@ -355,19 +381,55 @@ analyzeFrameWithAiEngine(
                   << ") max=(" << maxX << "," << maxY << ")" << std::endl;
       }
       if (out.hasFaceOvalPoints) {
-        try {
-          out.faceOvalEllipse = cv::fitEllipse(out.faceOvalPoints);
-          out.hasFaceOvalEllipse = true;
-          std::cerr << "[AI_OVAL] fitEllipse ok" << std::endl;
-          std::cerr << "[AI_OVAL] ellipse cx=" << out.faceOvalEllipse.center.x
-                    << " cy=" << out.faceOvalEllipse.center.y
-                    << " w=" << out.faceOvalEllipse.size.width
-                    << " h=" << out.faceOvalEllipse.size.height
-                    << " ang=" << out.faceOvalEllipse.angle << std::endl;
-        } catch (...) {
-          out.hasFaceOvalEllipse = false;
-          std::cerr << "[AI_OVAL] fitEllipse failed" << std::endl;
+        float minX = out.faceOvalPoints[0].x;
+        float maxX = out.faceOvalPoints[0].x;
+        float minY = out.faceOvalPoints[0].y;
+        float maxY = out.faceOvalPoints[0].y;
+        for (const auto &p : out.faceOvalPoints) {
+          minX = std::min(minX, p.x);
+          maxX = std::max(maxX, p.x);
+          minY = std::min(minY, p.y);
+          maxY = std::max(maxY, p.y);
         }
+
+        // Para UI/tracking/liveness necesitamos un óvalo estable que cubra el
+        // rostro útil completo. cv::fitEllipse sobre los puntos del contorno
+        // de MediaPipe es matemáticamente elegante, pero en webcams reales
+        // termina encogiendo el borde hacia mejillas/mentón y moviendo el
+        // centro hacia abajo (caso reportado 2026-09-07: el óvalo quedaba
+        // dentro de la cara y no seguía bien frente/cercanía). El bbox de los
+        // landmarks del óvalo conserva mejor el borde observable y evita que
+        // outliers puntuales roten/achaten la elipse.
+        //
+        // CORRECCIÓN 2026-09-08 (reportado en vivo con capturas reales): el
+        // ajuste de arriba sobrecorrigió. FACEMESH_FACE_OVAL traza la
+        // mandíbula de oreja a oreja hasta aprox. la altura de las cejas --
+        // el bbox crudo (bh) ya equivale a "cejas a mentón", no a "cabello a
+        // mentón". Con -0.16*bh de corrimiento hacia arriba + 1.42*bh de alto
+        // total, el óvalo terminaba con el borde superior bien por ENCIMA del
+        // cabello (fondo vacío) y el borde inferior mostrando cuello/hombros
+        // de más -- confirmado visualmente (el óvalo dejaba ver la pared
+        // sobre la cabeza y gran parte del pecho/cuello debajo del mentón).
+        // Proporción antropométrica típica (frente ≈ 1/3 del alto
+        // cejas-mentón): ~0.28*bh de margen arriba (para llegar al
+        // nacimiento del cabello) y ~0.08*bh abajo (margen de mandíbula,
+        // sin invadir el cuello) da un alto total de ~1.28*bh en vez de
+        // 1.42*bh, con un corrimiento de centro de solo ~0.08*bh en vez de
+        // 0.16*bh (la mitad). El ancho no fue parte del reporte, se mantiene.
+        const float bw = std::max(1.0f, maxX - minX);
+        const float bh = std::max(1.0f, maxY - minY);
+        const float cx = (minX + maxX) * 0.5f;
+        const float cy = (minY + maxY) * 0.5f - bh * 0.08f;
+        const float ovalW = bw * 1.26f;
+        const float ovalH = bh * 1.28f;
+        out.faceOvalEllipse =
+            cv::RotatedRect(cv::Point2f(cx, cy), cv::Size2f(ovalW, ovalH), 0.0f);
+        out.hasFaceOvalEllipse = true;
+        std::cerr << "[AI_OVAL] bboxOval cx=" << out.faceOvalEllipse.center.x
+                  << " cy=" << out.faceOvalEllipse.center.y
+                  << " w=" << out.faceOvalEllipse.size.width
+                  << " h=" << out.faceOvalEllipse.size.height
+                  << " ang=" << out.faceOvalEllipse.angle << std::endl;
       }
     }
     return out;
@@ -756,6 +818,19 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
   body.append(reinterpret_cast<const char *>(imageBytes.data()),
               static_cast<std::streamsize>(imageBytes.size()));
   body += "\r\n--" + boundary + "--\r\n";
+
+  // Mutex de GPU (ver storage/gpu_mutex.hpp): /cartoon_avatar en ai_engine
+  // puede internamente llamar a avatar_engine (SD1.5+ControlNet, ADR-141) si
+  // AVATAR_STYLE_ENGINE=diffusion -- serializa esa llamada contra cualquier
+  // otra inferencia GPU-pesada de este backend (incluida la del avatar
+  // animado, ADR-150) para no competir por los ~8GB de VRAM compartidos.
+  // best-effort a propósito: si Postgres no está disponible, no se bloquea
+  // esta función por eso (mismo criterio "nunca romper el registro" que ya
+  // aplica al resto de este archivo) -- degrada a sin-mutex, no a error.
+#if HAS_LIBPQ
+  storage::GpuInferenceMutex gpuLock(
+      config::AppConfig::instance().gpuMutexDatabaseUrl());
+#endif
 
   beast::error_code ec;
   asio::io_context ioc;

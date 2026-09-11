@@ -227,7 +227,18 @@ export async function authFetch(path: string, init: RequestInit = {}): Promise<R
  * localStorage, en el JWT ni durante cada render de la cabecera.
  */
 export async function fetchMyAvatarHd(): Promise<Blob> {
-    const response = await authFetch('/api/auth/avatar/hd')
+    // cache: 'no-store' (2026-09-04, hallazgo real): la URL es la misma para
+    // cualquier usuario (handleMyAvatarHd resuelve por sesión, nunca por
+    // user_id del cliente) y el backend antes cacheaba 24h sin ETag -- en el
+    // mismo navegador, dar de baja una cuenta y crear otra con el mismo DNI
+    // podía seguir mostrando el avatar de la cuenta ANTERIOR desde la caché
+    // HTTP del navegador, sin volver a pedirle nada al servidor. El backend
+    // ya corrigió el header (ver makePngResponse), pero un navegador que ya
+    // tenía la respuesta vieja cacheada con el header de 24h de antes de
+    // este fix seguiría sirviéndola igual sin este cache:'no-store' acá --
+    // es dato biométrico derivado, no vale la pena el riesgo de una fuga
+    // entre sesiones por ahorrar una descarga.
+    const response = await authFetch('/api/auth/avatar/hd', { cache: 'no-store' })
     if (!response.ok) {
         let message = `Avatar HD no disponible (HTTP ${response.status})`
         try {
@@ -245,7 +256,33 @@ export async function fetchMyAvatarHd(): Promise<Blob> {
     return blob
 }
 
-async function postJson(path: string, body: unknown, options: { timeoutMs?: number } = {}): Promise<any> {
+/**
+ * Miniatura del avatar del usuario autenticado, o null si el backend todavía
+ * la está generando ("pending").
+ *
+ * Complementa a fetchMyAvatarHd: aquí se pide la miniatura ligera (la misma
+ * que viaja en la sesión de login) para poder completar una sesión creada por
+ * registro, donde el avatar aún no existía al emitirse el token. Nunca lanza
+ * por "todavía no está": eso es un estado esperado, no un error.
+ */
+export async function fetchMyAvatarThumb(): Promise<string | null> {
+    const response = await authFetch('/api/auth/avatar/thumb', { cache: 'no-store' })
+    if (!response.ok) {
+        throw new Error(`Avatar no disponible (HTTP ${response.status})`)
+    }
+    const payload = await response.json()
+    if (payload?.status !== 'ready') {
+        return null
+    }
+    const b64 = payload?.avatar_cartoon_base64
+    return typeof b64 === 'string' && b64.trim() ? b64 : null
+}
+
+async function postJson(
+    path: string,
+    body: unknown,
+    options: { timeoutMs?: number; headers?: Record<string, string> } = {}
+): Promise<any> {
     const timeoutMs =
         Number.isFinite(options?.timeoutMs) && Number(options.timeoutMs) > 0
             ? Number(options.timeoutMs)
@@ -257,6 +294,7 @@ async function postJson(path: string, body: unknown, options: { timeoutMs?: numb
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(options.headers || {}),
             },
             body: JSON.stringify(body),
             signal: controller.signal,
@@ -264,14 +302,83 @@ async function postJson(path: string, body: unknown, options: { timeoutMs?: numb
         return parseJsonResponse(response)
     } catch (err) {
         if ((err as { name?: string })?.name === 'AbortError') {
-            throw new Error(
+            const timeoutErr = new Error(
                 `Tiempo de espera agotado (${Math.round(timeoutMs / 1000)}s). Verifique red/servidor e intente de nuevo.`
             )
+            // Marca de "falla transitoria" (red/timeout, nunca llegó respuesta
+            // del servidor) -- a diferencia de un rechazo real del servidor
+            // (ej. "usuario ya existe"), reintentar con los MISMOS datos sí
+            // puede tener éxito acá. Los llamadores que bloquean el reintento
+            // automático tras un error (ver AuthGateway.tsx::handleCaptureForRegistration)
+            // deben mirar esta marca para no dejar al usuario trabado sin
+            // forma de reintentar tras un timeout de red.
+            ;(timeoutErr as Error & { transient?: boolean }).transient = true
+            throw timeoutErr
         }
+        // Cualquier otra excepción en este catch (fetch nunca completó: DNS,
+        // conexión rechazada, CORS, etc.) tampoco tuvo respuesta del servidor
+        // -- misma marca de transitorio que el timeout.
+        ;(err as { transient?: boolean }).transient = true
         throw err
     } finally {
         clearTimeout(timeoutId)
     }
+}
+
+// ── Avatar ANIMADO (ADR-150, integración a producto) ───────────────────────
+// Job async -- el backend nunca corre SadTalker dentro del request
+// (200-300s reales medidos), ver auth_routes.cpp::handleCreateAvatarAnimation.
+
+export type AvatarAnimationKind = 'welcome' | 'onboarding' | 'report' | 'kpi' | 'alarm_loop'
+
+export interface AvatarAnimationJobStatus {
+    job_id: string
+    kind: AvatarAnimationKind
+    status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
+    error_message: string
+    created_at: string
+    started_at: string
+    completed_at: string
+}
+
+/** Crea el job (backend responde 202 de inmediato, el render corre en un
+ * hilo de fondo) -- devuelve el job_id para hacer polling con
+ * getAvatarAnimationStatus. `text` es el guion que SadTalker sincroniza con
+ * los labios (TTS local en avatar_animation_engine, el backend no tiene
+ * proveedor TTS propio); si se omite, el backend usa un guion por defecto
+ * según `kind`. */
+export async function createAvatarAnimation(
+    kind: AvatarAnimationKind = 'welcome',
+    text?: string,
+    transparentBg = true
+): Promise<{ job_id: string; status: string }> {
+    return postJson('/api/auth/avatar/animation', { kind, text, transparent_bg: transparentBg })
+}
+
+export async function getAvatarAnimationStatus(jobId: string): Promise<AvatarAnimationJobStatus> {
+    const response = await authFetch(`/api/auth/avatar/animation/${encodeURIComponent(jobId)}`, {
+        cache: 'no-store',
+    })
+    return parseJsonResponse(response)
+}
+
+/** Descarga el video/WebM final como Blob -- igual criterio que
+ * fetchMyAvatarHd: el endpoint exige sesión (Bearer en memoria, no cookie),
+ * así que no se puede apuntar un <video src> directo, hay que traer el Blob
+ * vía authFetch y crear un object URL en el componente que lo reproduce. */
+export async function fetchAvatarAnimationVideo(jobId: string): Promise<Blob> {
+    const response = await authFetch(
+        `/api/auth/avatar/animation/${encodeURIComponent(jobId)}/download`,
+        { cache: 'no-store' }
+    )
+    if (!response.ok) {
+        throw new Error(`Video del avatar no disponible (HTTP ${response.status})`)
+    }
+    const blob = await response.blob()
+    if (!blob.type.startsWith('video/')) {
+        throw new Error('La respuesta del avatar animado no es un video válido.')
+    }
+    return blob
 }
 
 export async function fetchCompanies(): Promise<any[]> {
@@ -512,13 +619,27 @@ export async function registerUser(payload: RegisterUserPayload): Promise<any> {
         body.face_bust_rect_base64 = payload.faceBustRectBase64
     }
 
+    // Hallazgo real 2026-09-10 (usuario real, DNI 09637600, "build dev"):
+    // pre_db_insert -> db_insert_ok tardó 65.3s en logs reales del backend
+    // (AUTH_REGISTER), por encima de los 45s de acá -- el fetch se abortaba
+    // (transient=true) MIENTRAS el POST seguía vivo del lado del servidor
+    // (abortar el cliente no cancela el trabajo ya en curso en el backend).
+    // El catch de AuthGateway.tsx trata todo error "transient" como
+    // reintentable y vuelve a armar el auto-envío con el MISMO payload, así
+    // que ese timeout disparaba un segundo /api/auth/register real para el
+    // mismo dni/empresa mientras el primero seguía corriendo -- exactamente
+    // la causa de la contención en GPU_MUTEX/Postgres que hizo lento al
+    // primero, visible en pantalla como "Enviando registro..." sin avanzar
+    // (nunca hubo cuelgue de verdad, era la carrera de dos intentos). 120s
+    // deja margen sobre el peor caso medido sin dejar de detectar una falla
+    // de red real.
     const t0 = typeof performance !== 'undefined' ? performance.now() : 0
     const out = await postJson(
         '/api/auth/register',
         {
             ...body,
         },
-        { timeoutMs: 45000 }
+        { timeoutMs: 120000, headers: { 'X-Capture-Session-Id': getCaptureSessionId() } }
     )
     if (t0 && typeof performance !== 'undefined') {
         const ms = Math.round(performance.now() - t0)
@@ -685,6 +806,75 @@ export async function checkLoginIdentity(company: string, identity: string): Pro
     }
 }
 
+/**
+ * Pre-chequeo de DNI ANTES de pedir la captura facial (hallazgo real
+ * 2026-09-04): a diferencia de checkLoginIdentity (que busca por empresa+
+ * identidad, pensado para login), el DNI es UNIQUE GLOBALMENTE en la base
+ * (una persona = una cuenta en toda la plataforma, sin importar la
+ * empresa) -- por eso hace falta un endpoint propio en vez de reusar
+ * check-identity, que hubiera dado falsos negativos si el DNI ya existe
+ * bajo OTRA empresa (reproducido en vivo: check-identity con la empresa
+ * correcta decía "no existe" para un DNI que sí estaba duplicado en otra).
+ */
+export async function checkDniAvailable(dni: string): Promise<{ exists: boolean }> {
+    const d = String(dni ?? '').trim()
+    if (!d) return { exists: false }
+    try {
+        const out = await postJson('/api/auth/register/check-dni', { dni: d })
+        return { exists: Boolean(out?.exists) }
+    } catch (err) {
+        log.warn('[AUTH_API] checkDniAvailable failed, continuing without pre-check', {
+            message: (err as Error)?.message || String(err),
+        })
+        return { exists: false }
+    }
+}
+
+/**
+ * Beacon de diagnóstico hacia /api/client-incident (hallazgo real
+ * 2026-09-04): `log.*` de logger.ts SOLO imprime en la consola del
+ * navegador (gateado a DEV/VITE_DEBUG) -- nunca llega a `docker logs`. Cada
+ * reporte de "la captura biométrica se cerró sola" investigado en esta
+ * sesión no dejaba NINGÚN rastro en el backend, y esa ausencia se venía
+ * interpretando como "el fallo es puramente del cliente" -- en realidad
+ * era que el logging que hubiera podido explicarlo nunca podía llegar ahí.
+ * Fire-and-forget a propósito (nunca debe poder afectar el flujo real de
+ * captura/registro/login por un fallo de red al reportar el incidente).
+ */
+export function reportClientIncident(tag: string, detail: Record<string, unknown>): void {
+    try {
+        void postJson('/api/client-incident', { tag, detail, at: new Date().toISOString() }).catch(() => {})
+    } catch {
+        /* nunca debe lanzar */
+    }
+}
+
+/**
+ * Pre-chequeo de username ANTES de pedir la captura facial (hallazgo real
+ * 2026-09-04, mismo motivo que checkDniAvailable): a diferencia del DNI, el
+ * username es UNIQUE POR EMPRESA en la base (mismo criterio que
+ * registerUserPg) -- reproducido en vivo, un registro completo (5 lecturas
+ * ICAO + parpadeo natural + desafío activo, ~1-2 minutos) recién terminaba
+ * rechazado al final con "username already exists in this company".
+ */
+export async function checkUsernameAvailable(
+    company: string,
+    username: string
+): Promise<{ exists: boolean }> {
+    const c = String(company ?? '').trim()
+    const u = String(username ?? '').trim()
+    if (!c || !u) return { exists: false }
+    try {
+        const out = await postJson('/api/auth/register/check-username', { company: c, username: u })
+        return { exists: Boolean(out?.exists) }
+    } catch (err) {
+        log.warn('[AUTH_API] checkUsernameAvailable failed, continuing without pre-check', {
+            message: (err as Error)?.message || String(err),
+        })
+        return { exists: false }
+    }
+}
+
 interface LoginWithFacePayload {
     company?: string;
     companyName?: string;
@@ -765,9 +955,11 @@ export async function loginWithFace(payload: LoginWithFacePayload): Promise<any>
         has_location: Boolean(body.location),
     })
 
-    return postJson('/api/auth/login/face', {
-        ...body,
-    })
+    return postJson(
+        '/api/auth/login/face',
+        { ...body },
+        { headers: { 'X-Capture-Session-Id': getCaptureSessionId() } }
+    )
 }
 
 export async function fetchAuthAudit({ page = 1, pageSize = 50, company, username, action, success }: {
@@ -850,7 +1042,14 @@ export async function verifyBiometricFrame(imageBase64: string): Promise<any> {
  * "sin lentes"/"ojos abiertos" con falsos negativos por contaminación cruzada).
  */
 let _captureSessionId: string | null = null
-function getCaptureSessionId(): string {
+/**
+ * También se manda en loginWithFace/registerUser (ADR-142): el backend usa
+ * este mismo id para exigir que la sesión haya cruzado el gate de calidad
+ * ICAO y completado los 2 desafíos de liveness antes de aceptar el login o
+ * el registro -- sin esto, ninguno de esos dos endpoints sabía qué sesión de
+ * captura corresponde al intento.
+ */
+export function getCaptureSessionId(): string {
     if (!_captureSessionId) {
         _captureSessionId =
             typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -877,6 +1076,23 @@ export async function processBiometricFrame(imageBase64: string): Promise<any> {
     return parseJsonResponse(response)
 }
 
+export async function trackBiometricFrameFast(imageBase64: string): Promise<any> {
+    const raw = atob(imageBase64)
+    const bytes = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i += 1) {
+        bytes[i] = raw.charCodeAt(i)
+    }
+    const response = await authFetch('/api/track_frame_fast', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'image/jpeg',
+            'X-Capture-Session-Id': getCaptureSessionId(),
+        },
+        body: bytes,
+    })
+    return parseJsonResponse(response)
+}
+
 export async function fetchBiometricStatus(): Promise<any> {
     const response = await authFetch('/api/status', {
         headers: { 'X-Capture-Session-Id': getCaptureSessionId() },
@@ -885,7 +1101,18 @@ export async function fetchBiometricStatus(): Promise<any> {
 }
 
 export async function resetBiometricCapture(): Promise<any> {
-    const response = await authFetch('/api/reset_capture')
+    // Bug real (2026-09-03): faltaba este header -- el backend
+    // (captureSessionIdFromRequest) caía al bucket genérico
+    // "_no_session_header" en vez de la sesión real de esta pestaña
+    // (X-Capture-Session-Id, la misma que usan processBiometricFrame/
+    // fetchBiometricStatus), así que este reset SIEMPRE limpiaba una sesión
+    // que nadie usaba. La sesión real nunca se reseteaba entre intentos: un
+    // segundo intento en la misma pestaña arrancaba con el captureCount/
+    // challenge del intento anterior todavía puestos (se veía "3/3" apenas
+    // cargaba la pantalla).
+    const response = await authFetch('/api/reset_capture', {
+        headers: { 'X-Capture-Session-Id': getCaptureSessionId() },
+    })
     return parseJsonResponse(response)
 }
 
@@ -1036,5 +1263,130 @@ export async function fetchPlatformUiLanguages(): Promise<any[]> {
         return list.length > 0 ? list : [...FALLBACK_UI_LANGUAGES]
     } catch {
         return [...FALLBACK_UI_LANGUAGES]
+    }
+}
+
+// ── Validación de contacto pre-registro (2FA de dirección) ─────────────────
+//
+// Flujo:
+//   1. sendContactOtp()   → servidor genera OTP de 6 dígitos y lo envía por
+//      email o SMS/WhatsApp al destino indicado. No requiere autenticación.
+//   2. verifyContactOtp() → el usuario ingresa el código recibido; el servidor
+//      lo valida y responde si era correcto.
+//
+// Si el destino no existe / el backend no puede entregar (SMS inválido, email
+// rebotado), la respuesta incluye `invalid_data: true` para que el frontend
+// reactive el campo y pida al usuario corregir el dato.
+//
+// Sin backend disponible (red caída, servidor abajo) estas funciones fallan
+// CERRADO: no hay ningún modo de simulación que dé por válido un código sin
+// que el servidor lo haya emitido y comprobado -- lo contrario anularía por
+// completo el propósito de esta validación (ADR-161).
+// ---------------------------------------------------------------------------
+
+export interface ContactOtpSendResult {
+    sent: boolean;
+    error?: string;
+}
+
+export interface ContactOtpVerifyResult {
+    valid: boolean;
+    /** true cuando el dato es inválido (email malo, teléfono inexistente, etc.)
+     *  → el frontend debe reactivar los campos para que el usuario los corrija. */
+    invalid_data?: boolean;
+    error?: string;
+}
+
+/**
+ * Solicita al servidor que genere y envíe un OTP de 6 dígitos al contacto
+ * indicado (email o SMS/WhatsApp). No requiere sesión activa.
+ *
+ * @param channel  'email' | 'sms'
+ * @param contact  Dirección de email o número de teléfono (e.g. '+51987654321')
+ */
+export async function sendContactOtp(
+    channel: 'email' | 'sms',
+    contact: string,
+): Promise<ContactOtpSendResult> {
+    try {
+        const response = await fetch(`${backendBaseUrl()}/api/auth/contact-otp/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel, contact }),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            return {
+                sent: false,
+                error: payload.error || 'No se pudo enviar el código de validación.',
+            }
+        }
+        return { sent: true }
+    } catch (err) {
+        log.error('[CONTACT_OTP] sendContactOtp error', { err })
+        return { sent: false, error: 'Error de red al enviar el código.' }
+    }
+}
+
+/**
+ * Verifica el OTP ingresado por el usuario contra el código que el servidor
+ * envió al canal correspondiente.
+ *
+ * @param channel  'email' | 'sms'
+ * @param contact  Mismo email o teléfono usado en sendContactOtp
+ * @param code     Código de 6 dígitos ingresado por el usuario
+ */
+export async function verifyContactOtp(
+    channel: 'email' | 'sms',
+    contact: string,
+    code: string,
+): Promise<ContactOtpVerifyResult> {
+    try {
+        const response = await fetch(`${backendBaseUrl()}/api/auth/contact-otp/verify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel, contact, code }),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            return {
+                valid: false,
+                invalid_data: payload.invalid_data === true,
+                error: payload.error || 'Código incorrecto.',
+            }
+        }
+        return { valid: payload.valid === true, invalid_data: false }
+    } catch (err) {
+        log.error('[CONTACT_OTP] verifyContactOtp error', { err })
+        return { valid: false, error: 'Error de red al verificar el código.' }
+    }
+}
+
+// ── Fotocheck: escaneo del QR para precargar el formulario ─────────────────
+// El QR viene CIFRADO (fotocheck_crypto.hpp, AES-256-GCM, clave solo en el
+// backend) -- este endpoint solo PRECARGA campos de texto, nunca autentica
+// ni envía contraseña alguna.
+
+export interface FotocheckQrScanResult {
+    ok: boolean;
+    fields?: Record<string, string>;
+    error?: string;
+}
+
+export async function scanFotocheckQr(imageBase64: string): Promise<FotocheckQrScanResult> {
+    try {
+        const response = await fetch(`${backendBaseUrl()}/api/fotocheck/scan-qr`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_base64: imageBase64 }),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok || payload.ok !== true) {
+            return { ok: false, error: payload.error || 'No se pudo leer el fotocheck.' }
+        }
+        return { ok: true, fields: payload.fields || {} }
+    } catch (err) {
+        log.error('[FOTOCHECK] scanFotocheckQr error', { err })
+        return { ok: false, error: 'Error de red al escanear el fotocheck.' }
     }
 }

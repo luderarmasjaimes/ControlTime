@@ -18,8 +18,20 @@ import {
     AlertTriangle,
     ScanLine,
     CheckCircle2,
+    ArrowLeftCircle,
+    ArrowRightCircle,
+    ZoomIn,
+    ZoomOut,
+    Volume2,
+    VolumeX,
+    Mail,
+    Smartphone,
+    Send,
+    RefreshCw,
+    Lock,
 } from 'lucide-react'
 import { DocumentScanCapture } from '../UI/DocumentScanCapture'
+import { FotocheckQrScanCapture } from '../UI/FotocheckQrScanCapture'
 import type { DniScanResult } from '../../auth/authApi'
 import {
     createSession,
@@ -27,16 +39,24 @@ import {
     type Session,
 } from '../../auth/authStorage'
 import {
+    checkDniAvailable,
+    checkUsernameAvailable,
     checkLoginIdentity,
     fetchCompanies,
     loginWithFace,
     loginWithPassword,
     loginWithMfaCode,
     processBiometricFrame,
+    trackBiometricFrameFast,
     fetchBiometricStatus,
     registerUser,
     resetBiometricCapture,
+    reportClientIncident,
     validateCompany,
+    sendContactOtp,
+    verifyContactOtp,
+    type ContactOtpSendResult,
+    type ContactOtpVerifyResult,
 } from '../../auth/authApi'
 import { getBestEffortLocation, type GeoLocationSample } from '../../auth/geolocation'
 import { FACIAL_ICAO } from '../../config/facialIcaoConfig'
@@ -52,30 +72,43 @@ import {
 } from '../../auth/faceTrackingUtils'
 import {
     buildFullFrameJpegBase64FromVideo,
+    drawVideoCoverCropped,
     computeBiometricOvalLayout,
     mapOvalLayoutVideoToStage,
     frameToTemplate,
     frameToJpegBase64,
     frameToOvalPortraitJpegBase64,
     frameToBustRectAroundOvalJpegBase64,
+    estimateAvatarFrameQuality,
     FACIAL_STRICT_OVAL_MODE,
     FACIAL_STRICT_OVAL_W_PCT,
     FACIAL_STRICT_OVAL_H_PCT,
 } from '../../auth/biometricOvalFrame'
 import { classifyCameraError } from '../../auth/cameraErrorPolicy'
+import { acquireFaceCameraStream } from '../../auth/adaptiveCameraCapture'
+import { AdaptiveEncodeResolution } from '../../auth/adaptiveEncodeResolution'
 import {
+    ensureFaceLandmarkerLoading,
+    getFaceLandmarker,
+    landmarksToFaceBox,
+} from '../../auth/mediapipeFaceTracker'
+import {
+    CHALLENGE_MAX_ATTEMPTS,
     createInitialChallengeState,
     currentChallenge,
     isChallengeSequenceComplete,
-    pickReplacementChallenge,
-    yawSatisfiesChallenge,
     challengeInstructionKey,
-    CHALLENGE_TIMEOUT_MS,
-    CHALLENGE_MAX_ATTEMPTS,
     ACTIVE_CHALLENGE_ENABLED,
     type LivenessChallengeState,
     type LivenessChallengeType,
 } from '../../auth/livenessChallenge'
+import {
+    speak,
+    stopSpeaking,
+    playChallengeArmedTone,
+    playChallengeSuccessTone,
+    playChallengeRetryTone,
+} from '../../auth/challengeVoiceGuide'
 import { PlatformBrandPanelHeader } from '../../brand/PlatformBrandMark'
 import PlatformRegionBar from '../Platform/PlatformRegionBar'
 import { useI18n } from '../../i18n/I18nProvider'
@@ -202,6 +235,11 @@ interface FaceGuideState {
     validFrames: number;
     captureCount: number;
     lastServerOk: boolean;
+    /** Espejo de status.quality_gate_reached (ADR-143): captureCount ya llegó
+     * al mínimo Y hubo al menos un parpadeo natural observado. Opcional para
+     * no tener que tocar cada reset de faceGuide -- ausente/undefined se
+     * trata como false (mismo criterio que challenge.complete). */
+    qualityGateReached?: boolean;
     icaoEyes: boolean | null;
     icaoMouth: boolean | null;
     icaoFrontal: boolean | null;
@@ -211,7 +249,7 @@ interface FaceGuideState {
     serverFaceOval: any;
 }
 
-/** Forma de trabajo interna de un bbox de rostro; `landmarks` es dinámico (FaceDetector/fallback, sin tipos oficiales). */
+/** Forma de trabajo interna de un bbox de rostro; `landmarks` queda vacío desde ADR-162 (MediaPipe local expone ear/mouthMarRatio/ovalPoints en vez de esa lista dinámica tipo FaceDetector). */
 interface WorkingFaceBox {
     x: number;
     y: number;
@@ -219,12 +257,21 @@ interface WorkingFaceBox {
     height: number;
     landmarks: any[];
     isFallback?: boolean;
+    /** EAR real (6 puntos) por ojo -- ver mediapipeFaceTracker.ts. Ausente = sin landmarks reales (fallback de piel o WASM aún cargando). */
+    ear?: { left: number; right: number };
+    /** Centro de cada ojo en píxeles -- para chequeo de roll/alineación (reemplaza el punto único de FaceDetector). */
+    eyeCenters?: { left: { x: number; y: number }; right: { x: number; y: number } };
+    /** Apertura vertical interna / ancho boca (misma fórmula que mar_inner_ratio() en ai_engine/eye_analyzer.py). */
+    mouthMarRatio?: number;
+    /** Contorno facial real (36 puntos, FACEMESH_FACE_OVAL) en píxeles de la grilla pw×ph. */
+    ovalPoints?: { x: number; y: number }[];
 }
 
 interface LoginProbe {
     template: number[];
     imageBase64: string;
     portraitOvalBase64?: string;
+    bustRectBase64?: string;
     score: number;
     capturedAt?: number;
 }
@@ -242,12 +289,217 @@ interface IcaoFour {
     noGlasses: boolean;
 }
 
+function faceBoxCenter(box: WorkingFaceBox) {
+    return {
+        x: box.x + box.width * 0.5,
+        y: box.y + box.height * 0.5,
+    }
+}
+
+function faceBoxIoU(a: WorkingFaceBox, b: WorkingFaceBox): number {
+    const ax2 = a.x + a.width
+    const ay2 = a.y + a.height
+    const bx2 = b.x + b.width
+    const by2 = b.y + b.height
+    const ix1 = Math.max(a.x, b.x)
+    const iy1 = Math.max(a.y, b.y)
+    const ix2 = Math.min(ax2, bx2)
+    const iy2 = Math.min(ay2, by2)
+    const iw = Math.max(0, ix2 - ix1)
+    const ih = Math.max(0, iy2 - iy1)
+    const inter = iw * ih
+    const union = a.width * a.height + b.width * b.height - inter
+    return union > 0 ? inter / union : 0
+}
+
+function predictFaceBox(prev: WorkingFaceBox, history: { nx: number; ny: number; nw: number; nh: number }[], frameW: number, frameH: number): WorkingFaceBox {
+    if (history.length < 2) {
+        return { ...prev, landmarks: [], isFallback: false }
+    }
+    const a = history[history.length - 2]
+    const b = history[history.length - 1]
+    const dx = (b.nx - a.nx) * frameW
+    const dy = (b.ny - a.ny) * frameH
+    const maxStep = Math.max(prev.width, prev.height) * 0.10
+    return {
+        ...prev,
+        x: Math.max(0, Math.min(frameW - prev.width, prev.x + Math.max(-maxStep, Math.min(maxStep, dx)))),
+        y: Math.max(0, Math.min(frameH - prev.height, prev.y + Math.max(-maxStep, Math.min(maxStep, dy)))),
+        landmarks: [],
+        isFallback: false,
+    }
+}
+
+function isImplausibleFaceJump(candidate: WorkingFaceBox, prev: WorkingFaceBox, frameW: number, frameH: number): boolean {
+    const c = faceBoxCenter(candidate)
+    const p = faceBoxCenter(prev)
+    const dist = Math.hypot(c.x - p.x, c.y - p.y)
+    const ref = Math.max(prev.width, prev.height, 1)
+    const jump = dist / ref
+    const iou = faceBoxIoU(candidate, prev)
+    const areaRatio = (candidate.width * candidate.height) / Math.max(1, prev.width * prev.height)
+    const aspect = candidate.width / Math.max(1, candidate.height)
+    const frameAreaRatio = (candidate.width * candidate.height) / Math.max(1, frameW * frameH)
+    if (aspect < 0.42 || aspect > 1.38 || frameAreaRatio < 0.035 || frameAreaRatio > 0.62) {
+        return true
+    }
+    if (jump > 0.52 && iou < 0.18) {
+        return true
+    }
+    if (jump > 0.34 && iou < 0.28 && (areaRatio < 0.62 || areaRatio > 1.62)) {
+        return true
+    }
+    return false
+}
+
 interface AuthGatewayProps {
     onAuthenticated: (session: Session) => void;
 }
 
+interface ContactOtpState {
+    emailSent: boolean; emailVerified: boolean; emailCode: string; emailError: string;
+    emailAttempts: number; sendingEmail: boolean; verifyingEmail: boolean;
+    smsSent: boolean; smsVerified: boolean; smsCode: string; smsError: string;
+    smsAttempts: number; sendingSms: boolean; verifyingSms: boolean;
+}
+
+const INITIAL_CONTACT_OTP_STATE: ContactOtpState = {
+    emailSent: false, emailVerified: false, emailCode: '', emailError: '',
+    emailAttempts: 0, sendingEmail: false, verifyingEmail: false,
+    smsSent: false, smsVerified: false, smsCode: '', smsError: '',
+    smsAttempts: 0, sendingSms: false, verifyingSms: false,
+}
+/** Intentos fallidos de verificación permitidos por canal antes de reactivar
+ * el campo para que el usuario corrija el dato (espeja MAX_VERIFY_FAILS en
+ * contact_otp_routes.cpp, aunque el backend ya bloquea por su cuenta). */
+const CONTACT_OTP_MAX_ATTEMPTS = 3
+
+/** Panel de validación de contacto pre-registro (ADR-161): una fila por canal
+ * (email y/o sms), cada una con su propio botón de envío/reenvío y, tras
+ * enviar, un input de 6 dígitos + botón de verificación. Definido fuera de
+ * `AuthGateway` para no recrearse en cada render. */
+function ContactOtpPanel({
+    channels,
+    contactOtp,
+    onSend,
+    onVerify,
+    onCodeChange,
+}: {
+    channels: Array<'email' | 'sms'>
+    contactOtp: ContactOtpState
+    onSend: (channel: 'email' | 'sms') => void
+    onVerify: (channel: 'email' | 'sms') => void
+    onCodeChange: (channel: 'email' | 'sms', value: string) => void
+}) {
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', margin: '0.25rem 0 0.5rem' }}>
+            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Validar contacto (requerido)
+            </span>
+            {channels.map((channel) => {
+                const isEmail = channel === 'email'
+                const sent = isEmail ? contactOtp.emailSent : contactOtp.smsSent
+                const verified = isEmail ? contactOtp.emailVerified : contactOtp.smsVerified
+                const code = isEmail ? contactOtp.emailCode : contactOtp.smsCode
+                const error = isEmail ? contactOtp.emailError : contactOtp.smsError
+                const sending = isEmail ? contactOtp.sendingEmail : contactOtp.sendingSms
+                const verifying = isEmail ? contactOtp.verifyingEmail : contactOtp.verifyingSms
+                const Icon = isEmail ? Mail : Smartphone
+                const label = isEmail ? 'Correo' : 'Celular'
+                return (
+                    <div key={channel} style={{
+                        display: 'flex', flexDirection: 'column', gap: '0.4rem',
+                        padding: '0.6rem 0.75rem', borderRadius: 10,
+                        border: '1px solid rgba(148, 163, 184, 0.2)',
+                        background: verified ? 'rgba(16, 185, 129, 0.08)' : 'rgba(15, 23, 42, 0.35)',
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#cbd5e1', fontWeight: 600 }}>
+                                <Icon size={14} /> {label}
+                            </span>
+                            {verified ? (
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#34d399', fontSize: '0.75rem', fontWeight: 700 }}>
+                                    <CheckCircle2 size={14} /> Validado
+                                </span>
+                            ) : !sent ? (
+                                <button
+                                    type="button"
+                                    onClick={() => onSend(channel)}
+                                    disabled={sending}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: '0.3rem',
+                                        padding: '0.35rem 0.7rem', borderRadius: 8, cursor: sending ? 'default' : 'pointer',
+                                        background: '#f07e41', color: '#0f172a', fontWeight: 700, fontSize: '0.72rem',
+                                        border: 'none', opacity: sending ? 0.6 : 1,
+                                    }}
+                                >
+                                    <Send size={12} /> {sending ? 'Enviando…' : `Validar ${label}`}
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={() => onSend(channel)}
+                                    disabled={sending}
+                                    title="Reenviar código"
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: '0.3rem',
+                                        padding: '0.3rem 0.6rem', borderRadius: 8, cursor: sending ? 'default' : 'pointer',
+                                        background: 'transparent', color: '#94a3b8', fontSize: '0.68rem', fontWeight: 600,
+                                        border: '1px solid rgba(148, 163, 184, 0.3)', opacity: sending ? 0.6 : 1,
+                                    }}
+                                >
+                                    <RefreshCw size={11} /> Reenviar
+                                </button>
+                            )}
+                        </div>
+
+                        {sent && !verified && (
+                            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                                <Lock size={12} style={{ color: '#64748b', flexShrink: 0 }} />
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    autoComplete="one-time-code"
+                                    maxLength={6}
+                                    value={code}
+                                    onChange={(e) => onCodeChange(channel, e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') onVerify(channel) }}
+                                    placeholder="000000"
+                                    style={{
+                                        flex: 1, fontSize: '1rem', letterSpacing: '0.35em', textAlign: 'center',
+                                        padding: '0.4rem', borderRadius: 6, border: '1px solid rgba(148, 163, 184, 0.35)',
+                                        background: '#020617', color: '#e2e8f0',
+                                    }}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => onVerify(channel)}
+                                    disabled={verifying || code.length !== 6}
+                                    style={{
+                                        padding: '0.4rem 0.7rem', borderRadius: 8, cursor: 'pointer',
+                                        background: '#4f46e5', color: '#fff', fontWeight: 700, fontSize: '0.72rem',
+                                        border: 'none', opacity: (verifying || code.length !== 6) ? 0.5 : 1, flexShrink: 0,
+                                    }}
+                                >
+                                    {verifying ? '…' : 'Verificar'}
+                                </button>
+                            </div>
+                        )}
+
+                        {error && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#fca5a5', fontSize: '0.68rem' }}>
+                                <AlertTriangle size={11} /> {error}
+                            </div>
+                        )}
+                    </div>
+                )
+            })}
+        </div>
+    )
+}
+
 const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
-    const { t, countryIso2: country, localizeMessage } = useI18n()
+    const { t, language, countryIso2: country, localizeMessage } = useI18n()
     const activePhonePrefix = phonePrefixForCountry(country, undefined)
     const [mode, setMode] = useState('login')
     const [registerTab, setRegisterTab] = useState('user')
@@ -268,6 +520,18 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const [mfaCode, setMfaCode] = useState('')
     const [mfaError, setMfaError] = useState('')
     const [showDniScan, setShowDniScan] = useState(false)
+    /** Escaneo del QR del fotocheck (precarga de formulario, ver
+     * FotocheckQrScanCapture.tsx) -- 'register' o 'login' según qué botón lo
+     * abrió, para saber en qué formulario volcar los campos leídos. */
+    const [showFotocheckScan, setShowFotocheckScan] = useState<'register' | 'login' | null>(null)
+
+    /** Validación 2FA de contacto pre-registro (ADR-161): antes de habilitar
+     * el paso biométrico facial, se confirma que el email y el celular
+     * ingresados le pertenecen al usuario, enviando un OTP de 6 dígitos por
+     * cada canal. `sent && !verified` bloquea el campo de contacto mientras
+     * se espera el código; al 3er intento fallido el backend devuelve
+     * `invalid_data`, lo que reactiva el campo para corregir el dato. */
+    const [contactOtp, setContactOtp] = useState<ContactOtpState>(INITIAL_CONTACT_OTP_STATE)
 
     const handleDniScanSuccess = (result: DniScanResult) => {
         setShowDniScan(false)
@@ -276,6 +540,34 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             dni: result.dni || prev.dni,
             firstName: result.first_name || prev.firstName,
             lastName: result.last_name || prev.lastName,
+        }))
+    }
+
+    /** Precarga de campos desde el QR del fotocheck -- NUNCA toca password ni
+     * dispara login/registro por sí solo, solo ahorra tecleo (ver
+     * fotocheck_crypto.hpp: el QR viene cifrado, esto solo refleja lo que el
+     * backend ya descifró y validó). */
+    const handleFotocheckScanSuccess = (fields: Record<string, string>) => {
+        const target = showFotocheckScan
+        setShowFotocheckScan(null)
+        if (target === 'login') {
+            setLoginForm((prev) => ({
+                ...prev,
+                company: fields.company || prev.company,
+                username: fields.username || prev.username,
+            }))
+            return
+        }
+        setRegisterForm((prev) => ({
+            ...prev,
+            company: fields.company || prev.company,
+            dni: fields.dni || prev.dni,
+            firstName: fields.first_name || prev.firstName,
+            lastName: fields.last_name || prev.lastName,
+            email: fields.email || prev.email,
+            mobile: fields.mobile || prev.mobile,
+            phone: fields.phone || prev.phone,
+            username: fields.username || prev.username,
         }))
     }
 
@@ -339,10 +631,14 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const [cameraStageSize, setCameraStageSize] = useState({ width: 0, height: 0 })
     const videoRef = useRef<HTMLVideoElement | null>(null)
     const streamRef = useRef<MediaStream | null>(null)
-    const detectorRef = useRef<any>(null)
     const prevMouthClosedLandmarkRef = useRef<boolean | null>(null)
     const lastSyncRef = useRef(0)
     const syncingRef = useRef(false)
+    /** Último disparo "fuera de turno" (bypass de VERIFY_SYNC_MS) por giro
+     * rápido detectado localmente -- ver bboxMotionHistRef / detección de
+     * giro más abajo. Cooldown propio para no saturar al backend si el
+     * usuario mueve la cabeza de forma sostenida. */
+    const lastTurnBurstAtRef = useRef(0)
     const smoothedFaceRef = useRef<WorkingFaceBox | null>(null)
     const lastVerifyOkRef = useRef(false)
     const lastIcaoFourRef = useRef<IcaoFour>({
@@ -351,6 +647,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         frontal: false,
         noGlasses: false,
     })
+    /** Último `reset_reason` ya mostrado al usuario (ver biometric_routes.cpp
+     * ADR 2026-09-08): evita repetir el mismo `setError` en cada ciclo de
+     * polling (~175-300ms) mientras la condición persiste -- solo se vuelve a
+     * mostrar si el motivo cambia o si el servidor deja de reportarlo. */
+    const lastShownResetReasonRef = useRef('')
     const livenessBlinkRef = useRef(0)
     const livenessMouthEventsRef = useRef(0)
     /** Liveness ACTIVA (challenge-response, ver ../../auth/livenessChallenge.ts):
@@ -366,107 +667,236 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         livenessChallengeRef.current
     )
     const challengesPassedRef = useRef(false)
+    /**
+     * Guía por voz de los retos (pedido explícito del usuario 2026-09-07):
+     * "indicaciones... entendibles tanto visualmente como con el audio".
+     * Silenciable (persiste en localStorage) para kioscos/espacios
+     * compartidos donde el audio no es deseable -- la guía visual (flechas,
+     * texto, cuenta regresiva) sigue funcionando igual estando en mute.
+     */
+    const [voiceGuideMuted, setVoiceGuideMuted] = useState<boolean>(() => {
+        try {
+            return window.localStorage.getItem('beemetry_biometric_voice_muted') === '1'
+        } catch {
+            return false
+        }
+    })
+    const toggleVoiceGuideMuted = useCallback(() => {
+        setVoiceGuideMuted((prev) => {
+            const next = !prev
+            try {
+                window.localStorage.setItem('beemetry_biometric_voice_muted', next ? '1' : '0')
+            } catch {
+                // Best-effort -- si localStorage no está disponible, el toggle
+                // sigue funcionando en memoria para esta sesión.
+            }
+            if (next) stopSpeaking()
+            return next
+        })
+    }, [])
+    /** Último {tipo, intento, estado} anunciado por voz -- evita repetir la
+     * misma locución en cada re-render mientras el estado no cambió (el
+     * polling de /api/status llega cada ~175ms). */
+    const lastAnnouncedChallengeRef = useRef<{ type: string | null; attempt: number; status: string }>({
+        type: null,
+        attempt: 0,
+        status: '',
+    })
+    useEffect(() => {
+        if (!ACTIVE_CHALLENGE_ENABLED || voiceGuideMuted) return
+        const chType = currentChallenge(challengeUiState)
+        const status = challengeUiState.status
+        const attempt = challengeUiState.attempt
+        const last = lastAnnouncedChallengeRef.current
+        if (last.type === chType && last.attempt === attempt && last.status === status) {
+            return
+        }
+        lastAnnouncedChallengeRef.current = { type: chType, attempt, status }
+        if (status === 'success') {
+            playChallengeSuccessTone()
+            speak(t('liveness.challenge.success'), language)
+        } else if (status === 'timeout') {
+            playChallengeRetryTone()
+            speak(t('liveness.challenge.retry'), language)
+        } else if (status === 'pending' && chType) {
+            playChallengeArmedTone()
+            speak(t(challengeInstructionKey(chType)), language)
+        }
+    }, [challengeUiState, language, t, voiceGuideMuted])
+    // Al desmontar (o al abandonar la pantalla de auth) no debe quedar una
+    // locución en curso hablando sola en segundo plano.
+    useEffect(() => {
+        return () => stopSpeaking()
+    }, [])
+    /**
+     * true en cuanto el servidor sortea el primer desafío activo, es decir en
+     * cuanto la captura entra en la ETAPA 2. Cierra la ventana de captura del
+     * candidato de avatar: la fuente del avatar sale exclusivamente de la
+     * etapa 1 (las 5 lecturas ICAO consecutivas), nunca de la etapa 2.
+     *
+     * Por qué (pedido explícito del usuario, 2026-09-04, ADR-158): en la
+     * etapa 2 la persona está EN MOVIMIENTO por definición -- los gestos son
+     * turn_left/turn_right/move_closer/move_away (ADR-146). Ahí no se puede
+     * garantizar ninguna de las condiciones que hacen buena a una foto de
+     * avatar: frontalidad, centrado, distancia y encuadre. `move_closer`
+     * termina literalmente con la persona pegada a la cámara -- ese es el
+     * primer plano descentrado que produjo el incidente de calidad.
+     *
+     * Vuelve a false solo si el servidor reinicia toda la captura a la etapa
+     * 1 (retos agotados, ver `exhausted`): ahí se abre una etapa 1 nueva y
+     * legítima.
+     */
+    const challengeStartedRef = useRef(false)
+    /** Último {index, attempt, type} reflejado del servidor -- para distinguir
+     * "avanzó de desafío" vs "se agotó el intento actual" vs "sin cambios"
+     * entre dos respuestas de /api/status. */
+    const lastSyncedChallengeRef = useRef<{ index: number; attempt: number; type: string | null }>({
+        index: -1,
+        attempt: 1,
+        type: null,
+    })
+    /** Mientras estamos mostrando el flash de éxito/timeout (ver abajo), no
+     * pisarlo con la siguiente respuesta del servidor (llega cada ~175ms,
+     * mucho más rápido que la duración del flash). */
+    const challengeFlashUntilRef = useRef(0)
 
-    const advanceOrCompleteChallenge = () => {
-        const st = livenessChallengeRef.current
-        const nextIndex = st.index + 1
-        const isLast = nextIndex >= st.queue.length
-        // Confirmación visual breve (ver overlay) antes de pasar al siguiente
-        // desafío o de cerrar la secuencia -- sin esto el cambio de
-        // instrucción se sentía abrupto en pruebas.
-        livenessChallengeRef.current = { ...st, status: 'success', deadlineAt: null }
-        setChallengeUiState(livenessChallengeRef.current)
-        if (isLast) {
+    /**
+     * ADR-142: el servidor (handleProcessFrame + evaluateLivenessChallenge en
+     * biometric_routes.cpp/biometric_types.cpp) es quien sortea la cola de 2
+     * desafíos y decide si cada uno se cumplió (parpadeo/boca por flanco
+     * cerrado->abierto visto por MediaPipe, giro por head_yaw_ratio) -- el
+     * cliente ya NO decide nada, sólo refleja `status.challenge` (GET
+     * /api/status) para la UI y para challengesPassedRef. Esto es justamente
+     * lo que cierra el hueco de fraude: antes un cliente scripteado podía
+     * fingir "ya parpadeé" sin que nadie hubiera visto un parpadeo real.
+     */
+    const syncChallengeFromServer = (challenge: unknown) => {
+        if (!ACTIVE_CHALLENGE_ENABLED) return
+        const c = (challenge && typeof challenge === 'object' ? challenge : {}) as Record<string, unknown>
+        const queue = Array.isArray(c.queue)
+            ? (c.queue.filter(
+                  (t): t is LivenessChallengeType =>
+                      t === 'turn_left' ||
+                      t === 'turn_right' ||
+                      t === 'shift_left' ||
+                      t === 'shift_right' ||
+                      t === 'move_closer' ||
+                      t === 'move_away'
+              ) as LivenessChallengeType[])
+            : []
+        const complete = Boolean(c.complete)
+        const index = Number(c.index ?? 0)
+        const attempt = Number(c.attempt ?? 1)
+        const maxAttempts = Number(c.max_attempts ?? CHALLENGE_MAX_ATTEMPTS) || CHALLENGE_MAX_ATTEMPTS
+        const deadlineMsRemaining = Number(c.deadline_ms_remaining ?? 0)
+
+        if (complete) {
             challengesPassedRef.current = true
-            livenessChallengeRef.current = { ...st, index: nextIndex, status: 'success', deadlineAt: null }
-            setChallengeUiState(livenessChallengeRef.current)
-            return
-        }
-        window.setTimeout(() => {
-            const cur = livenessChallengeRef.current
-            if (cur.index === st.index && cur.status === 'success') {
-                livenessChallengeRef.current = {
-                    ...cur,
-                    index: nextIndex,
-                    status: 'pending',
-                    deadlineAt: performance.now() + CHALLENGE_TIMEOUT_MS,
-                    attempt: 1,
-                }
-                setChallengeUiState(livenessChallengeRef.current)
-            }
-        }, 700)
-    }
-
-    /** Llamado desde los bordes de detección de parpadeo/boca ya existentes
-     * (no agrega un detector nuevo -- reutiliza el mismo evento que ya
-     * alimenta livenessBlinkRef/livenessMouthEventsRef). */
-    const trySatisfyGestureChallenge = (type: 'blink' | 'mouth') => {
-        const st = livenessChallengeRef.current
-        if (challengesPassedRef.current || st.status !== 'pending') {
-            return
-        }
-        if (currentChallenge(st) !== type) {
-            return
-        }
-        advanceOrCompleteChallenge()
-    }
-
-    /** Chequeo continuo (no de borde): el giro de cabeza se sostiene mientras
-     * dura el desafío, no es un evento puntual como el parpadeo. */
-    const trySatisfyYawChallenge = (headYawRatio: number) => {
-        const st = livenessChallengeRef.current
-        if (challengesPassedRef.current || st.status !== 'pending') {
-            return
-        }
-        const cur = currentChallenge(st)
-        if (cur !== 'turn_left' && cur !== 'turn_right') {
-            return
-        }
-        if (yawSatisfiesChallenge(cur, headYawRatio)) {
-            advanceOrCompleteChallenge()
-        }
-    }
-
-    /** Vencimiento del desafío actual: reintenta el mismo tipo hasta
-     * CHALLENGE_MAX_ATTEMPTS veces (evita que un gesto que le cuesta al
-     * usuario trabe la sesión), luego sortea un reemplazo para ese puesto. */
-    const checkChallengeTimeout = (now: number) => {
-        const st = livenessChallengeRef.current
-        if (challengesPassedRef.current || st.status !== 'pending' || st.deadlineAt == null) {
-            return
-        }
-        if (now < st.deadlineAt) {
-            return
-        }
-        if (st.attempt < CHALLENGE_MAX_ATTEMPTS) {
-            const attemptAfterTimeout = st.attempt + 1
-            livenessChallengeRef.current = { ...st, status: 'timeout', deadlineAt: null }
-            setChallengeUiState(livenessChallengeRef.current)
-            window.setTimeout(() => {
-                const cur = livenessChallengeRef.current
-                if (cur.index === st.index && cur.status === 'timeout') {
-                    livenessChallengeRef.current = {
-                        ...cur,
-                        status: 'pending',
-                        deadlineAt: performance.now() + CHALLENGE_TIMEOUT_MS,
-                        attempt: attemptAfterTimeout,
-                    }
-                    setChallengeUiState(livenessChallengeRef.current)
-                }
-            }, 1200)
-        } else {
-            const replacement = pickReplacementChallenge(st.queue)
-            const newQueue = [...st.queue]
-            newQueue[st.index] = replacement
+            // La etapa 2 existió y terminó: la ventana de captura del avatar
+            // quedó cerrada desde que se sorteó el primer reto.
+            challengeStartedRef.current = true
+            const finalQueue = queue.length ? queue : livenessChallengeRef.current.queue
+            lastSyncedChallengeRef.current = { index: finalQueue.length, attempt: 1, type: null }
             livenessChallengeRef.current = {
-                ...st,
-                queue: newQueue,
-                status: 'pending',
-                deadlineAt: performance.now() + CHALLENGE_TIMEOUT_MS,
+                queue: finalQueue,
+                index: finalQueue.length,
+                status: 'success',
+                deadlineAt: null,
                 attempt: 1,
+                maxAttempts,
+            }
+            setChallengeUiState(livenessChallengeRef.current)
+            return
+        }
+
+        if (queue.length === 0) {
+            // ADR-156: cola vacía puede ser una de dos cosas. (a) El servidor
+            // todavía no cruzó su gate de lecturas ICAO y no sorteó nada aún
+            // -- no hay nada que reflejar. (b) Se agotaron los
+            // CHALLENGE_MAX_ATTEMPTS retos y el servidor devolvió TODA la
+            // captura a la etapa 1, limpiando el desafío: ahí hay que limpiar
+            // también el estado local, o el cartel del último reto se queda
+            // pegado en pantalla mientras la persona rehace la lectura ICAO,
+            // pidiéndole un gesto que el servidor ya no está evaluando.
+            if (livenessChallengeRef.current.queue.length > 0) {
+                livenessChallengeRef.current = createInitialChallengeState()
+                setChallengeUiState(livenessChallengeRef.current)
+                challengesPassedRef.current = !ACTIVE_CHALLENGE_ENABLED
+                // El servidor devolvió la captura a la etapa 1 (contador ICAO
+                // a 0/5): se abre una etapa 1 nueva, así que vuelve a
+                // permitirse capturar el candidato de avatar.
+                challengeStartedRef.current = false
+                lastSyncedChallengeRef.current = { index: -1, attempt: 1, type: null }
+                challengeFlashUntilRef.current = 0
+            }
+            return
+        }
+
+        const currentType = queue[index] ?? null
+        const last = lastSyncedChallengeRef.current
+        const indexAdvanced = last.index >= 0 && index > last.index
+        // ADR-156: cada intento nuevo trae un tipo de reto DISTINTO al que
+        // acaba de vencer, así que ya no se puede exigir
+        // `last.type === currentType` para reconocer un reintento -- alcanza
+        // con que suba el número de intento.
+        const retriedWithNewChallenge =
+            !indexAdvanced && last.index === index && attempt > last.attempt
+        // El servidor agotó los CHALLENGE_MAX_ATTEMPTS retos y devolvió TODA
+        // la captura a la etapa 1 (contador ICAO a 0/5, ver `exhausted` en
+        // handleProcessFrame): vuelve a sortear desde el intento 1. Hay que
+        // reflejarlo, o el flash de timeout anterior quedaría pegado encima
+        // de un reto que ya no es el que el servidor está pidiendo, y
+        // challengesPassedRef seguiría con el valor de la ronda vieja.
+        const serverRestarted = last.index >= 0 && (index < last.index || attempt < last.attempt)
+        lastSyncedChallengeRef.current = { index, attempt, type: currentType }
+        // Hay cola sorteada: la captura está en la ETAPA 2 (persona en
+        // movimiento). Desde aquí ya no se admiten candidatos de avatar; el
+        // que se haya guardado en la etapa 1 es el que se usa.
+        challengeStartedRef.current = true
+        if (serverRestarted) {
+            challengesPassedRef.current = !ACTIVE_CHALLENGE_ENABLED
+            challengeStartedRef.current = false
+            challengeFlashUntilRef.current = 0
+        }
+
+        const applyPending = () => {
+            livenessChallengeRef.current = {
+                queue,
+                index,
+                status: 'pending',
+                deadlineAt: deadlineMsRemaining > 0 ? performance.now() + deadlineMsRemaining : null,
+                attempt,
+                maxAttempts,
             }
             setChallengeUiState(livenessChallengeRef.current)
         }
+
+        if (indexAdvanced) {
+            // Confirmación visual breve antes de mostrar el siguiente desafío
+            // -- mismo timing que antes (700ms), ahora disparado por el índice
+            // que ya avanzó en el servidor en vez de una detección local.
+            challengeFlashUntilRef.current = performance.now() + 700
+            livenessChallengeRef.current = { queue, index: index - 1, status: 'success', deadlineAt: null, attempt: 1, maxAttempts }
+            setChallengeUiState(livenessChallengeRef.current)
+            window.setTimeout(applyPending, 700)
+            return
+        }
+        if (retriedWithNewChallenge) {
+            // El servidor agotó la ventana del intento actual y sorteó OTRO
+            // reto distinto (ADR-156) -- mismo flash de timeout de 1200ms que
+            // antes, ahora antes de mostrar la instrucción nueva.
+            challengeFlashUntilRef.current = performance.now() + 1200
+            livenessChallengeRef.current = { queue, index, status: 'timeout', deadlineAt: null, attempt, maxAttempts }
+            setChallengeUiState(livenessChallengeRef.current)
+            window.setTimeout(applyPending, 1200)
+            return
+        }
+        if (performance.now() < challengeFlashUntilRef.current) {
+            // Ya se está mostrando un flash de éxito/timeout -- no lo cortes
+            // a mitad de camino con la siguiente respuesta del servidor.
+            return
+        }
+        applyPending()
     }
 
     const prevEyesOpenLandmarkRef = useRef<boolean | null>(null)
@@ -475,7 +905,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const livenessScoreRef = useRef(0)
     const livenessFallbackRef = useRef(0)
     /** Micro-movimiento del bbox (FaceDetector sin landmarks o parpadeo no detectado). */
-    const bboxMotionHistRef = useRef<{ nx: number; ny: number }[]>([])
+    const bboxMotionHistRef = useRef<{ nx: number; ny: number; nw: number; nh: number }[]>([])
     const motionLivenessPtsRef = useRef(0)
     const lastMotionLivenessBoostAtRef = useRef(0)
     const eyesBlinkHystRef = useRef(true)
@@ -484,8 +914,27 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const cameraRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const cameraStageRef = useRef<HTMLDivElement | null>(null)
     const faceBoxHistoryRef = useRef<WorkingFaceBox[]>([])
-    /** 640×480: misma rejilla que C:\FACIAL\www\main.js (process-canvas) y que el JPEG de /api/process_frame */
+    const pendingFaceJumpRef = useRef<WorkingFaceBox | null>(null)
+    const pendingFaceJumpCountRef = useRef(0)
+    /** Canvas de trabajo local (tracking + JPEG de /api/process_frame) -- su
+     * tamaño ya NO es fijo, ver adaptiveEncodeRef/lastSentFrameSizeRef. */
     const processFrameCanvasRef = useRef<HTMLCanvasElement | null>(null)
+    /** Resolución de ENVÍO adaptativa (pedido explícito del usuario
+     * 2026-09-07): arranca en la resolución NATIVA de la cámara y sólo baja
+     * si /api/process_frame da señales de problema de procesamiento (ver
+     * adaptiveEncodeResolution.ts). Vive en un ref porque cambia frame a
+     * frame según latencia real, no según un render de React. */
+    const adaptiveEncodeRef = useRef(new AdaptiveEncodeResolution())
+    /** Tamaño REAL del último frame efectivamente enviado a
+     * /api/process_frame -- reemplaza el supuesto fijo de 960×720 al
+     * interpretar `face_oval` del servidor (ver ovalForStage más abajo): con
+     * resolución de envío adaptativa, ese tamaño ya no es una constante. */
+    const lastSentFrameSizeRef = useRef({
+        width: FACIAL_ICAO.CAMERA.width.ideal,
+        height: FACIAL_ICAO.CAMERA.height.ideal,
+    })
+    const fastTrackInFlightRef = useRef(false)
+    const lastFastTrackAtRef = useRef(0)
     const trackingFallbackCanvasRef = useRef<HTMLCanvasElement | null>(null)
     const validFramesRef = useRef(0)
     const missedDetectorFramesRef = useRef(0)
@@ -527,6 +976,32 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const registrationApiInFlightRef = useRef(false)
     /** Registro empresa: envío automático solo al pasar canRegister de false → true (evita bucle si el API falla). */
     const prevCompanyCanRegisterRef = useRef(false)
+    /**
+     * Corrección 2026-09-09: la pestaña/app puede pasar a segundo plano
+     * (cambio de app, bloqueo de pantalla, minimizar navegador) en medio de
+     * una captura biométrica. Los `setInterval` que descuentan el contador
+     * de 120s se throttlean mientras la página está oculta, pero siguen
+     * calculando el tiempo transcurrido con `Date.now()` real -- al volver a
+     * la pestaña, el primer tick ve `elapsed > 120000ms` y dispara un reset
+     * inmediato con el mensaje de timeout, aunque no hubiera ninguna
+     * petición en curso (ver [CLIENT_INCIDENT] register_user_capture_reset_unexpected
+     * con visibility="hidden", registrationApiInFlight=false, isProcessing=false).
+     * Para el usuario esto se ve como que el widget "se cuelga" (última
+     * muestra pintada antes de ocultarse la pestaña) y después falla sin
+     * explicación. Se trata igual que `isProcessing`: congela el reloj de
+     * sesión mientras `document.hidden` es true.
+     */
+    const [pageHidden, setPageHidden] = useState<boolean>(
+        typeof document !== 'undefined' ? document.hidden : false
+    )
+    useEffect(() => {
+        if (typeof document === 'undefined') {
+            return
+        }
+        const onVisibilityChange = () => setPageHidden(document.hidden)
+        document.addEventListener('visibilitychange', onVisibilityChange)
+        return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+    }, [])
 
     const endLoginFaceSession = useCallback((opts?: { errorMessage?: string }) => {
         const errorMessage = opts?.errorMessage
@@ -557,6 +1032,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
 
     const endRegisterFaceSession = useCallback((opts?: { errorMessage?: string }) => {
         const errorMessage = opts?.errorMessage
+        captureResetReasonRef.current = errorMessage
+            ? 'end_session_with_error'
+            : 'end_session_no_error'
         setRegisterUserBiometricStep('form')
         setRegisterCompanyBiometricStep('form')
         setRegisterSessionSecondsLeft(null)
@@ -607,6 +1085,98 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     useEffect(() => {
         isProcessingRef.current = isProcessing
     }, [isProcessing])
+
+    // Watchdog de diagnóstico (hallazgo real 2026-09-04): varios reportes de
+    // "la captura biométrica se cerró sola" (registro y login) no dejaban
+    // NINGÚN rastro en `docker logs` -- se rastreó la causa a que
+    // logger.ts (log.info/warn) SOLO imprime en la consola del navegador,
+    // gateada a DEV/VITE_DEBUG, y nunca llega al servidor. En vez de asumir
+    // "el fallo es puramente del cliente" cada vez que no aparece nada en
+    // el backend, este watchdog reporta con reportClientIncident() (ver
+    // authApi.ts) el momento EXACTO en que la captura vuelve a 'form' SIN
+    // que haya sido un registro/login exitoso (que además cambia `mode` a
+    // 'login'/muestra "Ingreso autorizado" en el mismo tick, así que ese
+    // caso legítimo queda excluido solo). Cubre CUALQUIER camino que
+    // provoque el reset -- timeout de sesión, el efecto de cambio de modo/
+    // pestaña, o algo todavía no identificado -- sin tener que instrumentar
+    // cada callsite por separado.
+    /** ADR-156: por qué volvió la captura a 'form'. El watchdog de abajo ya
+     * reportaba el MOMENTO del reset, pero no el CAMINO -- y los dos cierres
+     * silenciosos vistos en vivo (2026-09-04 21:41:50 / 21:42:07, `error:""`)
+     * no se pueden atribuir a ninguna ruta concreta sin esto: el timeout de
+     * sesión siempre deja mensaje, así que fue otra. Se marca en cada sitio
+     * que hace el reset y se adjunta al incidente. */
+    const captureResetReasonRef = useRef<string>('unknown')
+    /** Espejo de [mode, registerTab, loginTab] para poder decir CUÁL de los
+     * tres cambió cuando el reset viene del efecto que depende de ellos. */
+    const prevModeTabsRef = useRef({ mode, registerTab, loginTab })
+    const prevRegisterUserStepRef = useRef(registerUserBiometricStep)
+    useEffect(() => {
+        const prev = prevRegisterUserStepRef.current
+        if (prev === 'capture' && registerUserBiometricStep === 'form' && mode === 'register') {
+            reportClientIncident('register_user_capture_reset_unexpected', {
+                registerTab,
+                elapsedMs: registerFaceSessionClockRef.current.start
+                    ? Date.now() - registerFaceSessionClockRef.current.start
+                    : null,
+                captureCount: Number(faceGuide.captureCount || 0),
+                qualityGateReached: Boolean(faceGuide.qualityGateReached),
+                challengesPassed: challengesPassedRef.current,
+                registrationApiInFlight: registrationApiInFlightRef.current,
+                registerAutoSubmitTriggered: registerAutoSubmitTriggeredRef.current,
+                isProcessing,
+                error,
+                message,
+                dniLen: String(registerForm.dni || '').trim().length,
+                company: String(registerForm.company || '').trim(),
+                resetReason: captureResetReasonRef.current,
+                cameraReady,
+                visibility: typeof document !== 'undefined' ? document.visibilityState : 'unknown',
+                modeTabs: `${mode}/${registerTab}/${loginTab}`,
+            })
+            captureResetReasonRef.current = 'unknown'
+        }
+        prevRegisterUserStepRef.current = registerUserBiometricStep
+    }, [registerUserBiometricStep, mode])
+
+    const prevRegisterCompanyStepRef = useRef(registerCompanyBiometricStep)
+    useEffect(() => {
+        const prev = prevRegisterCompanyStepRef.current
+        if (prev === 'capture' && registerCompanyBiometricStep === 'form' && mode === 'register') {
+            reportClientIncident('register_company_capture_reset_unexpected', {
+                elapsedMs: registerFaceSessionClockRef.current.start
+                    ? Date.now() - registerFaceSessionClockRef.current.start
+                    : null,
+                captureCount: Number(faceGuide.captureCount || 0),
+                qualityGateReached: Boolean(faceGuide.qualityGateReached),
+                challengesPassed: challengesPassedRef.current,
+                isProcessing,
+                error,
+                message,
+                company: String(registerForm.company || '').trim(),
+            })
+        }
+        prevRegisterCompanyStepRef.current = registerCompanyBiometricStep
+    }, [registerCompanyBiometricStep, mode])
+
+    const prevLoginBiometricSessionRef = useRef(loginBiometricSession)
+    useEffect(() => {
+        const prev = prevLoginBiometricSessionRef.current
+        const authorized = message.includes('Ingreso autorizado')
+        if (prev === true && loginBiometricSession === false && mode === 'login' && !authorized) {
+            reportClientIncident('login_face_session_reset_unexpected', {
+                loginTab,
+                captureCount: Number(faceGuide.captureCount || 0),
+                qualityGateReached: Boolean(faceGuide.qualityGateReached),
+                challengesPassed: challengesPassedRef.current,
+                isProcessing,
+                error,
+                message,
+                company: String(loginForm.company || '').trim(),
+            })
+        }
+        prevLoginBiometricSessionRef.current = loginBiometricSession
+    }, [loginBiometricSession, mode])
 
     const registerUserCaptureView =
         mode === 'register' &&
@@ -671,14 +1241,20 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     /** El panel muestra muestras del servidor (captureCount); qualityReady es local y puede desincronizarse. */
     const { hasRequiredBiometricSamples, loginBiometricGate } = useMemo(() => {
         const n = Number(faceGuide.captureCount || 0)
-        const hasReq = n >= FACIAL_ICAO.REQUIRED_VALID_FRAMES
+        // ADR-143: además de las N lecturas, el servidor exige parpadeo
+        // natural observado antes de dar el gate de calidad por cruzado --
+        // sin esto, el auto-login/registro podía dispararse apenas
+        // captureCount llegaba al máximo aunque el parpadeo aún no se
+        // hubiera visto, y el servidor lo iba a rechazar igual (rechazo que
+        // el usuario vería como un intento fallido sin explicación).
+        const hasReq = n >= FACIAL_ICAO.REQUIRED_VALID_FRAMES && Boolean(faceGuide.qualityGateReached)
         return {
             hasRequiredBiometricSamples: hasReq,
             loginBiometricGate:
                 Boolean(faceGuide.qualityReady) ||
                 (hasReq && Boolean(faceGuide.lastServerOk)),
         }
-    }, [faceGuide.qualityReady, faceGuide.captureCount, faceGuide.lastServerOk])
+    }, [faceGuide.qualityReady, faceGuide.captureCount, faceGuide.lastServerOk, faceGuide.qualityGateReached])
     const selectedLoginBgUrl = useMemo(() => {
         const key = normalizeCompanyKey(loginForm.company)
         return LOGIN_BG_BY_COMPANY[key] || DEFAULT_LOGIN_BG_URL
@@ -690,37 +1266,59 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         const fw = frameMetrics.width
         const fh = frameMetrics.height
         const so = faceGuide.serverFaceOval
-        const serverSourceW = Number(FACIAL_ICAO.CAMERA.width.ideal || 640)
-        const serverSourceH = Number(FACIAL_ICAO.CAMERA.height.ideal || 480)
-        if (
-            so &&
-            Number.isFinite(Number(so.cx)) &&
-            Number.isFinite(Number(so.cy)) &&
-            Number.isFinite(Number(so.w)) &&
-            Number.isFinite(Number(so.h)) &&
-            fw > 0 &&
-            fh > 0
-        ) {
-            const serverLayout = {
-                leftPct: (Number(so.cx) / Math.max(1, serverSourceW)) * 100,
-                topPct: (Number(so.cy) / Math.max(1, serverSourceH)) * 100,
-                wPct: (Number(so.w) / Math.max(1, serverSourceW)) * 100,
-                hPct: (Number(so.h) / Math.max(1, serverSourceH)) * 100,
-                transform: `translate(-50%, -50%) rotate(${Number(so.angle_deg || 0)}deg)`,
-            }
-            if (FACIAL_STRICT_OVAL_MODE) {
-                return serverLayout
-            }
-            return mapOvalLayoutVideoToStage(
-                serverLayout,
-                serverSourceW,
-                serverSourceH,
-                sw,
-                sh
-            )
-        }
+
+        // ADR-162: el óvalo VISIBLE es siempre el tracking local (MediaPipe en
+        // el navegador, sub-frame, sin round-trip) mientras haya `liveFaceBox`.
+        // Antes se le daba prioridad al óvalo que manda /api/process_frame
+        // cuando venía de `opencv_realtime_tracker` (Haar cascade en el
+        // backend) -- esa rama es justamente la que atava el borde visible a
+        // la cadencia de red (VERIFY_SYNC_MS) pese a que el tracking local ya
+        // era más rápido y preciso. El óvalo de servidor queda solo como
+        // último recurso, abajo, para cuando no hay tracking local en
+        // absoluto (arranque, WASM aún cargando sin fallback de piel activo).
         const layout = computeBiometricOvalLayout(liveFaceBox, fw, fh)
         if (!layout) {
+            const serverSourceW = Math.max(
+                1,
+                Number(
+                    so?.source_w ||
+                        lastSentFrameSizeRef.current.width ||
+                        fw ||
+                        FACIAL_ICAO.CAMERA.width.ideal ||
+                        640
+                )
+            )
+            const serverSourceH = Math.max(
+                1,
+                Number(
+                    so?.source_h ||
+                        lastSentFrameSizeRef.current.height ||
+                        fh ||
+                        FACIAL_ICAO.CAMERA.height.ideal ||
+                        480
+                )
+            )
+            if (
+                so &&
+                Number.isFinite(Number(so.cx)) &&
+                Number.isFinite(Number(so.cy)) &&
+                Number.isFinite(Number(so.w)) &&
+                Number.isFinite(Number(so.h))
+            ) {
+                return mapOvalLayoutVideoToStage(
+                    {
+                        leftPct: (Number(so.cx) / serverSourceW) * 100,
+                        topPct: (Number(so.cy) / serverSourceH) * 100,
+                        wPct: (Number(so.w) / serverSourceW) * 100,
+                        hPct: (Number(so.h) / serverSourceH) * 100,
+                        transform: `translate(-50%, -50%) rotate(${Number(so.angle_deg || 0)}deg)`,
+                    },
+                    serverSourceW,
+                    serverSourceH,
+                    sw,
+                    sh
+                )
+            }
             return null
         }
         if (FACIAL_STRICT_OVAL_MODE) {
@@ -894,40 +1492,21 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 clearTimeout(cameraRetryTimerRef.current)
                 cameraRetryTimerRef.current = null
             }
+            const video = videoRef.current
+            if (!video) {
+                return
+            }
             try {
-                let stream: MediaStream
-                try {
-                    stream = await navigator.mediaDevices.getUserMedia({
-                        video: {
-                            facingMode: 'user',
-                            // 960x720 (no 640x480): más píxeles reales para MediaPipe en
-                            // el mismo encuadre físico -- a distancia media/lejana, el EAR
-                            // medido a 640x480 se degrada y el blink blendshape se eleva
-                            // por falta de resolución en la región del ojo, no porque los
-                            // ojos estén cerrados (confirmado con datos reales, 2026-08-19).
-                            width: { ideal: FACIAL_ICAO.CAMERA.width.ideal, min: 320 },
-                            height: { ideal: FACIAL_ICAO.CAMERA.height.ideal, min: 240 },
-                            aspectRatio: { ideal: 4 / 3 },
-                            frameRate: FACIAL_ICAO.CAMERA.frameRate,
-                        },
-                        audio: false,
-                    })
-                } catch {
-                    try {
-                        stream = await navigator.mediaDevices.getUserMedia({
-                            video: {
-                                facingMode: 'user',
-                                ...FACIAL_ICAO.CAMERA,
-                            },
-                            audio: false,
-                        })
-                    } catch {
-                        stream = await navigator.mediaDevices.getUserMedia({
-                            video: { facingMode: 'user' },
-                            audio: false,
-                        })
-                    }
-                }
+                // Prueba una escalera de resoluciones de mayor a menor y
+                // verifica en cada escalón que realmente llegue un frame
+                // decodificado (no solo que getUserMedia resuelva la
+                // Promise) -- ver adaptiveCameraCapture.ts para el hallazgo
+                // real 2026-09-04 que motivó esto: a una única resolución
+                // "ideal" fija de 1280x960, ciertos drivers UVC/Windows
+                // Media Foundation concedían el permiso y "resolvían" pero
+                // nunca pintaban un frame real, dejando la UI en "Activa"
+                // con el video en negro hasta el timeout de sesión.
+                const stream = await acquireFaceCameraStream(video, () => cancelled)
 
                 if (cancelled) {
                     stream.getTracks().forEach((track) => track.stop())
@@ -935,23 +1514,22 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 }
 
                 streamRef.current = stream
-                if (videoRef.current) {
-                    videoRef.current.srcObject = stream
-                    videoRef.current.muted = true
-                    videoRef.current.setAttribute('playsinline', '')
-                    await videoRef.current.play().catch(() => {})
-                }
-
                 setCameraReady(true)
                 setError('')
-                if (videoRef.current) {
-                    videoRef.current.onloadedmetadata = () => {
-                        videoRef.current?.play().catch((e) =>
-                            log.warn('Reproducción automática:', e)
-                        )
-                    }
+                video.onloadedmetadata = () => {
+                    video.play().catch((e) =>
+                        log.warn('Reproducción automática:', e)
+                    )
                 }
             } catch (err: any) {
+                if (cancelled) {
+                    // acquireFaceCameraStream lanza AbortError cuando este
+                    // mismo efecto ya se canceló mientras negociaba la
+                    // cámara (re-disparo/desmontaje) -- no es un error real
+                    // de cámara, así que no debe pisar el estado con
+                    // setError/setCameraReady de una ejecución obsoleta.
+                    return
+                }
                 setCameraReady(false)
                 const { messageKey, shouldRetry } = classifyCameraError(err?.name || '')
                 setError(t(messageKey))
@@ -992,6 +1570,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         // del código de desafíos queda intacto pero inerte.
         livenessChallengeRef.current = createInitialChallengeState()
         challengesPassedRef.current = !ACTIVE_CHALLENGE_ENABLED
+        challengeStartedRef.current = false
+        lastSyncedChallengeRef.current = { index: -1, attempt: 1, type: null }
+        challengeFlashUntilRef.current = 0
         setChallengeUiState(livenessChallengeRef.current)
 
         // Si el permiso ya está "granted" (concedido en una visita anterior,
@@ -1073,6 +1654,19 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             captureCount: 0,
             serverFaceOval: null,
         }))
+        // ADR-156: este efecto depende de [mode, registerTab, loginTab] y
+        // resetea la captura SIN mensaje de error -- candidato principal a los
+        // cierres silenciosos. Deja constancia de cuál de los tres cambió.
+        {
+            const prevTabs = prevModeTabsRef.current
+            const changed = [
+                prevTabs.mode !== mode ? `mode:${prevTabs.mode}->${mode}` : '',
+                prevTabs.registerTab !== registerTab ? `registerTab:${prevTabs.registerTab}->${registerTab}` : '',
+                prevTabs.loginTab !== loginTab ? `loginTab:${prevTabs.loginTab}->${loginTab}` : '',
+            ].filter(Boolean).join(',')
+            captureResetReasonRef.current = `mode_tab_effect(${changed || 'mount_or_no_change'})`
+            prevModeTabsRef.current = { mode, registerTab, loginTab }
+        }
         setRegisterUserBiometricStep('form')
         setRegisterCompanyBiometricStep('form')
         setRegistrationCompleteSession(null)
@@ -1107,9 +1701,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     }, [mode, loginBiometricSession])
 
     useEffect(() => {
+        const shouldPause = isProcessing || pageHidden
         if (mode === 'login' && loginBiometricSession) {
             const c = sessionClockRef.current
-            if (isProcessing) {
+            if (shouldPause) {
                 if (!c.pauseSince) {
                     c.pauseSince = Date.now()
                 }
@@ -1120,7 +1715,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         }
         if (anyRegisterCaptureView) {
             const r = registerFaceSessionClockRef.current
-            if (isProcessing) {
+            if (shouldPause) {
                 if (!r.pauseSince) {
                     r.pauseSince = Date.now()
                 }
@@ -1129,7 +1724,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 r.pauseSince = null
             }
         }
-    }, [isProcessing, mode, loginBiometricSession, anyRegisterCaptureView])
+    }, [isProcessing, pageHidden, mode, loginBiometricSession, anyRegisterCaptureView])
 
     useEffect(() => {
         if (!loginBiometricSession || mode !== 'login') {
@@ -1227,10 +1822,18 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             try {
                 let bestFace: WorkingFaceBox | null = null
 
-                const pw = FACIAL_ICAO.CAMERA.width.ideal
-                const ph = FACIAL_ICAO.CAMERA.height.ideal
-                const vw = video.videoWidth
-                const vh = video.videoHeight
+                // Resolución de trabajo ADAPTATIVA (pedido explícito del
+                // usuario 2026-09-07): ya no un 960×720 fijo -- se deriva de
+                // la resolución NATIVA real del video (preservando su
+                // aspecto siempre), recortada sólo si adaptiveEncodeRef bajó
+                // de escalón por problemas de procesamiento reales. Mismo
+                // tamaño se usa más abajo para el frame que se manda a
+                // /api/process_frame, así ambos quedan siempre en la MISMA
+                // grilla de coordenadas.
+                const { width: pw, height: ph } = adaptiveEncodeRef.current.targetSize(
+                    video.videoWidth,
+                    video.videoHeight
+                )
 
                 const pCanvas =
                     processFrameCanvasRef.current || document.createElement('canvas')
@@ -1243,7 +1846,13 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     return
                 }
                 pCtx.filter = 'none'
-                pCtx.drawImage(video, 0, 0, vw, vh, 0, 0, pw, ph)
+                // Recorte "cover" en vez de estirar (hallazgo real 2026-09-07,
+                // ver drawVideoCoverCropped): con una cámara nativamente 16:9
+                // estirar a 4:3 deformaba el frame que ve el FaceDetector
+                // local/heurístico de respaldo, produciendo un bbox de rostro
+                // con aspecto distorsionado -- óvalo de guía "más circular" o
+                // achatado, sin relación con la forma real del rostro.
+                drawVideoCoverCropped(pCtx, video, pw, ph)
 
                 const lightSample = pCtx.getImageData(0, 0, pw, ph)
                 const rawMean = meanLuminanceImageData(lightSample)
@@ -1266,37 +1875,27 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     setFrameMetrics({ width: pw, height: ph })
                 }
 
-                const hasNativeFaceDetector = 'FaceDetector' in window
-                if (hasNativeFaceDetector) {
-                    if (!detectorRef.current) {
-                        detectorRef.current = new (window as any).FaceDetector({
-                            maxDetectedFaces: 1,
-                        })
-                    }
-
-                    const detections = await detectorRef.current.detect(pCanvas)
-                    if (detections.length > 0) {
+                // ADR-162: tracking local vía MediaPipe Tasks Vision (WASM) en vez de
+                // `window.FaceDetector` (Shape Detection API nativa de Chromium, serializaba
+                // el bitmap completo por IPC a un proceso aparte en cada llamada -- causa real
+                // de la lentitud reportada). Carga perezosa no bloqueante; mientras no esté
+                // lista cae al fallback heurístico de piel de abajo, igual que antes.
+                ensureFaceLandmarkerLoading()
+                const landmarker = getFaceLandmarker()
+                let hasMeshDetector = false
+                if (landmarker.instance) {
+                    hasMeshDetector = true
+                    const result = landmarker.instance.detectForVideo(pCanvas, timestamp)
+                    const faceLandmarks = result.faceLandmarks?.[0]
+                    if (faceLandmarks && faceLandmarks.length > 0) {
                         missedDetectorFramesRef.current = 0
-                        const box = detections[0].boundingBox
-                        bestFace = {
-                            x: box.x,
-                            y: box.y,
-                            width: box.width,
-                            height: box.height,
-                            landmarks: (detections[0].landmarks || []).map((l: any) => ({
-                                ...l,
-                                locations: l.locations.map((loc: any) => ({
-                                    x: loc.x,
-                                    y: loc.y,
-                                })),
-                            })),
-                        }
+                        bestFace = landmarksToFaceBox(faceLandmarks, pw, ph)
                     } else {
                         missedDetectorFramesRef.current += 1
                     }
                 }
 
-                if (!bestFace && !hasNativeFaceDetector) {
+                if (!bestFace && !hasMeshDetector) {
                     const canvas =
                         trackingFallbackCanvasRef.current ||
                         document.createElement('canvas')
@@ -1336,15 +1935,34 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     }
                 }
 
-                if (!bestFace && smoothedFaceRef.current && missedDetectorFramesRef.current <= 6) {
-                    bestFace = {
-                        ...smoothedFaceRef.current,
-                        landmarks: [],
-                        isFallback: false,
+                if (bestFace && smoothedFaceRef.current && !bestFace.isFallback) {
+                    const prev = smoothedFaceRef.current
+                    if (isImplausibleFaceJump(bestFace, prev, pw, ph)) {
+                        const pending = pendingFaceJumpRef.current
+                        const repeated =
+                            pending &&
+                            faceBoxIoU(bestFace, pending) > 0.42 &&
+                            faceCenterJumpRatio(bestFace, pending) < 0.22
+                        pendingFaceJumpRef.current = bestFace
+                        pendingFaceJumpCountRef.current = repeated
+                            ? pendingFaceJumpCountRef.current + 1
+                            : 1
+                        if (pendingFaceJumpCountRef.current < 2) {
+                            bestFace = predictFaceBox(prev, bboxMotionHistRef.current, pw, ph)
+                        }
+                    } else {
+                        pendingFaceJumpRef.current = null
+                        pendingFaceJumpCountRef.current = 0
                     }
                 }
 
-                    if (bestFace) {
+                if (!bestFace && smoothedFaceRef.current && missedDetectorFramesRef.current <= 3) {
+                    bestFace = {
+                        ...predictFaceBox(smoothedFaceRef.current, bboxMotionHistRef.current, pw, ph),
+                    }
+                }
+
+                if (bestFace) {
                     const hist = faceBoxHistoryRef.current
                     const histMax = difficultActive
                         ? FACIAL_ICAO.NIGHT_FACE_BOX_HISTORY_LEN
@@ -1365,6 +1983,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     }
                     const rawLm = bestFace.landmarks
                     const rawFb = bestFace.isFallback
+                    const rawEar = bestFace.ear
+                    const rawEyeCenters = bestFace.eyeCenters
+                    const rawMouthMarRatio = bestFace.mouthMarRatio
+                    const rawOvalPoints = bestFace.ovalPoints
                     if (hist.length >= medianMin) {
                         const med = medianFaceBoundingBox(hist)
                         if (med) {
@@ -1372,6 +1994,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 ...med,
                                 landmarks: rawLm,
                                 isFallback: rawFb,
+                                ear: rawEar,
+                                eyeCenters: rawEyeCenters,
+                                mouthMarRatio: rawMouthMarRatio,
+                                ovalPoints: rawOvalPoints,
                             }
                         }
                     }
@@ -1448,6 +2074,13 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             alpha = Math.max(alpha, 0.28)
                         }
                         const prev = smoothedFaceRef.current
+                        const ovalPoints =
+                            bestFace.ovalPoints && prev.ovalPoints && prev.ovalPoints.length === bestFace.ovalPoints.length
+                                ? bestFace.ovalPoints.map((p, i) => ({
+                                      x: prev.ovalPoints![i].x + alpha * (p.x - prev.ovalPoints![i].x),
+                                      y: prev.ovalPoints![i].y + alpha * (p.y - prev.ovalPoints![i].y),
+                                  }))
+                                : bestFace.ovalPoints
                         bestFace = {
                             x: prev.x + alpha * (bestFace.x - prev.x),
                             y: prev.y + alpha * (bestFace.y - prev.y),
@@ -1455,6 +2088,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             height: prev.height + alpha * (bestFace.height - prev.height),
                             landmarks: bestFace.landmarks,
                             isFallback: bestFace.isFallback,
+                            ear: bestFace.ear,
+                            eyeCenters: bestFace.eyeCenters,
+                            mouthMarRatio: bestFace.mouthMarRatio,
+                            ovalPoints,
                         }
                     }
                     smoothedFaceRef.current = bestFace
@@ -1465,52 +2102,28 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                         aspect > FACIAL_ICAO.FRONTAL_ASPECT_MIN &&
                         aspect < FACIAL_ICAO.FRONTAL_ASPECT_MAX
 
-                    hasLandmarks = bestFace.landmarks.length > 0
-                    const leftEye = bestFace.landmarks.find(
-                        (l: any) => l.type === 'leftEye' || l.type === 'eye'
-                    )
-                    const rightEye = bestFace.landmarks.find((l: any) => l.type === 'rightEye')
+                    // ADR-162: landmarks reales de MediaPipe (EAR de 6 puntos, mouth MAR) en
+                    // vez de los puntos dispersos tipo {type,locations} de FaceDetector --
+                    // disponibles en TODOS los navegadores, ya no solo Chrome desktop.
+                    hasLandmarks = Boolean(bestFace.ear && bestFace.eyeCenters)
                     const eyeYRatio = FACIAL_ICAO.MAX_EYE_Y_DELTA_RATIO
-                    const eyesAligned = hasLandmarks
-                        ? leftEye && rightEye
-                            ? Math.abs(leftEye.locations[0].y - rightEye.locations[0].y) <
+                    const eyesAligned =
+                        hasLandmarks && bestFace.eyeCenters
+                            ? Math.abs(bestFace.eyeCenters.left.y - bestFace.eyeCenters.right.y) <
                               bestFace.height * eyeYRatio
                             : true
-                        : true
 
-                    const eyeOpenness = (eye: any) => {
-                        if (!eye || !Array.isArray(eye.locations) || eye.locations.length < 2)
-                            return 0.5
-                        const ys = eye.locations.map((p: any) => p.y)
-                        const xs = eye.locations.map((p: any) => p.x)
-                        return (
-                            (Math.max(...ys) - Math.min(...ys)) /
-                            Math.max(1, Math.max(...xs) - Math.min(...xs))
-                        )
-                    }
-                    const mouth = bestFace.landmarks.find((l: any) => l.type === 'mouth')
-                    const mouthRatio = (() => {
-                        if (!mouth || !Array.isArray(mouth.locations) || mouth.locations.length < 2)
-                            return 0.08
-                        const ys = mouth.locations.map((p: any) => p.y)
-                        const xs = mouth.locations.map((p: any) => p.x)
-                        return (
-                            (Math.max(...ys) - Math.min(...ys)) /
-                            Math.max(1, Math.max(...xs) - Math.min(...xs))
-                        )
-                    })()
+                    const mouthRatio = hasLandmarks && bestFace.mouthMarRatio != null ? bestFace.mouthMarRatio : 0.04
 
                     const earHint = FACIAL_ICAO.EAR_OPEN_HINT
-                    eyesOpen = hasLandmarks
-                        ? eyeOpenness(leftEye) > earHint && eyeOpenness(rightEye) > earHint
-                        : false
+                    eyesOpen =
+                        hasLandmarks && bestFace.ear
+                            ? bestFace.ear.left > earHint && bestFace.ear.right > earHint
+                            : false
                     /** Histéresis sobre apertura mínima (evita que el ratio quede siempre “abierto” y no cuente parpadeos). */
                     let blinkGateOpen = eyesOpen
-                    if (hasLandmarks && leftEye && rightEye) {
-                        const eyeMin = Math.min(
-                            eyeOpenness(leftEye),
-                            eyeOpenness(rightEye)
-                        )
+                    if (hasLandmarks && bestFace.ear) {
+                        const eyeMin = Math.min(bestFace.ear.left, bestFace.ear.right)
                         const hi = 0.2
                         const lo = 0.1
                         if (eyesBlinkHystRef.current) {
@@ -1540,10 +2153,31 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     mhist.push({
                         nx: (bestFace.x + bestFace.width / 2) / vwM,
                         ny: (bestFace.y + bestFace.height / 2) / vhM,
+                        nw: bestFace.width / vwM,
+                        nh: bestFace.height / vhM,
                     })
                     while (mhist.length > 30) {
                         mhist.shift()
                     }
+                    // Desplazamiento horizontal reciente del centro del faceBox (~470ms,
+                    // 6 muestras a ritmo de este loop) -- señal LOCAL, disponible cada
+                    // frame de tracking (no depende del viaje de ida y vuelta a
+                    // /api/process_frame). Pedido explícito del usuario 2026-09-04: el
+                    // giro izquierda/derecha se percibía lento porque el desafío solo se
+                    // resuelve con el headYawRatio que llega en el próximo ciclo de
+                    // VERIFY_SYNC_MS (175ms) MÁS el tiempo real de ida/vuelta con
+                    // ai_engine -- este valor no decide nada por sí solo (el servidor
+                    // sigue siendo la autoridad, ver ADR-142), solo se usa para adelantar
+                    // el próximo envío cuando ya hay un giro claro en curso, en vez de
+                    // esperar el próximo tick del throttle normal.
+                    const fastTurnDx =
+                        mhist.length >= 6
+                            ? mhist[mhist.length - 1].nx - mhist[mhist.length - 6].nx
+                            : 0
+                    const fastScaleDz =
+                        mhist.length >= 6
+                            ? mhist[mhist.length - 1].nw - mhist[mhist.length - 6].nw
+                            : 0
                     if (mhist.length >= 8) {
                         const mx =
                             mhist.reduce((s, p) => s + p.nx, 0) / mhist.length
@@ -1587,7 +2221,6 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             const dtBlink = now - blinkCloseStartedAtRef.current
                             if (dtBlink > 80 && dtBlink < 700) {
                                 livenessBlinkRef.current += 1
-                                trySatisfyGestureChallenge('blink')
                             }
                             blinkCloseStartedAtRef.current = null
                         }
@@ -1606,13 +2239,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                         }
                         if (mouthWasOpenPhaseRef.current && mouthClosed) {
                             livenessMouthEventsRef.current += 1
-                            trySatisfyGestureChallenge('mouth')
                             mouthWasOpenPhaseRef.current = false
                         }
                         prevMouthClosedLandmarkRef.current = mouthClosed
                     }
-
-                    checkChallengeTimeout(now)
 
                     const lvPts =
                         livenessBlinkRef.current * FACIAL_ICAO.LIVENESS_POINTS_PER_BLINK +
@@ -1627,31 +2257,102 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
 
                     const nowSync = performance.now()
                     const isFirstSync = lastSyncRef.current === 0
+                    // Adelanta el envío (se salta el throttle normal de VERIFY_SYNC_MS)
+                    // cuando el reto activo ya muestra movimiento local claro. El
+                    // servidor sigue siendo autoridad; esto sólo manda el frame cerca
+                    // del pico del gesto para que giro/desplazamiento/acercamiento no
+                    // se sientan lentos ni imprecisos por esperar el próximo tick.
+                    const activeChallengeType =
+                        livenessChallengeRef.current.status === 'pending'
+                            ? livenessChallengeRef.current.queue[
+                                  livenessChallengeRef.current.index
+                              ] ?? null
+                            : null
+                    const isTurnChallengeActive =
+                        activeChallengeType === 'turn_left' || activeChallengeType === 'turn_right'
+                    const isShiftChallengeActive =
+                        activeChallengeType === 'shift_left' || activeChallengeType === 'shift_right'
+                    const isMoveChallengeActive =
+                        activeChallengeType === 'move_closer' || activeChallengeType === 'move_away'
+                    const turnBurstReady =
+                        isTurnChallengeActive &&
+                        Math.abs(fastTurnDx) > 0.045 &&
+                        nowSync - lastTurnBurstAtRef.current > 220
+                    const shiftBurstReady =
+                        isShiftChallengeActive &&
+                        Math.abs(fastTurnDx) > 0.030 &&
+                        nowSync - lastTurnBurstAtRef.current > 180
+                    const moveBurstReady =
+                        isMoveChallengeActive &&
+                        Math.abs(fastScaleDz) > 0.020 &&
+                        nowSync - lastTurnBurstAtRef.current > 180
+                    // Hallazgo real 2026-09-10: el envío final (login/registro)
+                    // hace un solo POST a /api/auth/login/face o
+                    // /api/auth/register que dispara, del lado del ai_engine,
+                    // un /face_embedding -- pero este loop de detección NUNCA
+                    // se detiene mientras esa llamada está en vuelo, así que
+                    // sigue mandando /api/process_frame cada VERIFY_SYNC_MS
+                    // (175ms) contra el MISMO proceso ai_engine. Ese proceso
+                    // serializa su trabajo pesado con locks globales
+                    // (_mediapipe_lock/_lock, ver eye_analyzer.py/
+                    // face_embedding_insight.py) -- la ráfaga continua de
+                    // frames en vivo hacía cola por delante del embedding en
+                    // curso y lo estiraba a 27-61s reales (visto en
+                    // [AUTH_REGISTER] embedding_ai_engine_begin/end de los
+                    // logs del backend), exactamente el "se quedó colgado en
+                    // 5/5" reportado -- la captura ya había terminado, era el
+                    // envío final el que esperaba detrás de su propio tráfico
+                    // de fondo. Frenar el envío de frames mientras
+                    // isProcessingRef/registrationApiInFlightRef estén en
+                    // true deja a la llamada final sola contra ai_engine.
+                    const finalSubmitInFlight =
+                        isProcessingRef.current || registrationApiInFlightRef.current
                     if (
                         hasFaceNow &&
                         !syncingRef.current &&
+                        !finalSubmitInFlight &&
                         (isFirstSync ||
-                            nowSync - lastSyncRef.current > FACIAL_ICAO.VERIFY_SYNC_MS)
+                            nowSync - lastSyncRef.current > FACIAL_ICAO.VERIFY_SYNC_MS ||
+                            turnBurstReady ||
+                            shiftBurstReady ||
+                            moveBurstReady)
                     ) {
                         syncingRef.current = true
                         lastSyncRef.current = nowSync
+                        if (turnBurstReady || shiftBurstReady || moveBurstReady) {
+                            lastTurnBurstAtRef.current = nowSync
+                        }
 
-                        // Motor (/api/process_frame): JPEG 640×480 misma escala que process-canvas en C:\FACIAL\www\main.js
-                        // y que el FaceDetector (processFrameCanvasRef).
+                        // Motor (/api/process_frame): misma grilla adaptativa
+                        // (pw×ph) que el canvas de tracking local de arriba --
+                        // ya no un 960×720 fijo, ver adaptiveEncodeRef.
                         // Parpadeo/boca en cliente siguen usando landmarks del FaceDetector sobre el bbox.
-                        const tw = FACIAL_ICAO.CAMERA.width.ideal
-                        const th = FACIAL_ICAO.CAMERA.height.ideal
                         const base64 = buildFullFrameJpegBase64FromVideo(
                             video,
-                            tw,
-                            th,
+                            pw,
+                            ph,
                             FACIAL_ICAO.VERIFY_JPEG_QUALITY
                         )
+                        lastSentFrameSizeRef.current = { width: pw, height: ph }
+                        const roundTripStartedAt = performance.now()
 
+                        // Hallazgo real 2026-09-07 ("la detección... tiene que
+                        // ser rápida a tiempo real"): antes este ciclo hacía
+                        // POST /api/process_frame Y LUEGO, encadenado, GET
+                        // /api/status -- dos round-trips de red SECUENCIALES
+                        // por cada frame. El backend ahora devuelve el mismo
+                        // payload rico directamente en la respuesta de
+                        // process_frame (ver buildBiometricStatusJson en
+                        // biometric_routes.cpp), así que ya no hace falta el
+                        // segundo pedido -- reduce a la mitad la latencia
+                        // percibida de cada ciclo.
                         processBiometricFrame(base64)
-                            .then(() => fetchBiometricStatus())
                             .then((status) => {
                                 syncingRef.current = false
+                                adaptiveEncodeRef.current.reportRoundTrip(
+                                    performance.now() - roundTripStartedAt,
+                                    true
+                                )
                                 const icao = status?.icao || {}
                                 const four: IcaoFour = {
                                     eyes: Boolean(icao.eyes_open),
@@ -1669,10 +2370,22 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         four.noGlasses
                                 )
                                 lastIcaoFourRef.current = four
-                                const headYawRatio = Number(status?.head_yaw_ratio ?? 0)
-                                if (Number.isFinite(headYawRatio)) {
-                                    trySatisfyYawChallenge(headYawRatio)
+                                // ADR 2026-09-08: el servidor puede reiniciar la
+                                // captura a la etapa 1 en cualquier momento (incluso
+                                // tras completar ICAO + reto) si confirma lentes
+                                // puestos con la histéresis lenta de ai_engine --
+                                // antes esto no tenía ningún mensaje específico y se
+                                // veía como "se colgó" en un reintento silencioso.
+                                const resetReason = String(status?.reset_reason || '')
+                                if (resetReason === 'glasses_detected') {
+                                    if (lastShownResetReasonRef.current !== resetReason) {
+                                        lastShownResetReasonRef.current = resetReason
+                                        setError('Se detectaron lentes puestos. Retírelos para continuar con la captura.')
+                                    }
+                                } else {
+                                    lastShownResetReasonRef.current = ''
                                 }
+                                syncChallengeFromServer(status?.challenge)
                                 if (hasLandmarks) {
                                     if (!lastVerifyOkRef.current) {
                                         livenessFallbackRef.current = 0
@@ -1690,6 +2403,10 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     ...prev,
                                     lastServerOk: lastVerifyOkRef.current,
                                     captureCount: Number(status?.capture_count || 0),
+                                    // ADR-143: además de las 5 lecturas, exige parpadeo
+                                    // natural observado -- evita que el auto-login/registro
+                                    // dispare un intento que el servidor va a rechazar.
+                                    qualityGateReached: Boolean(status?.quality_gate_reached),
                                     icaoEyes: four.eyes,
                                     icaoMouth: four.mouth,
                                     icaoFrontal: four.frontal,
@@ -1772,23 +2489,76 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             qualityReady,
                         }
 
-                        if (updated.qualityReady && hasFaceNow && bestFace) {
+                        // CAMBIO 2026-09-04 (ADR-158, pedido explícito del usuario): la
+                        // fuente del avatar se elige EXCLUSIVAMENTE entre los frames de la
+                        // ETAPA 1 -- los que forman las 5 lecturas ICAO consecutivas
+                        // (`qualityReady`), donde las 4 condiciones (frontal, ojos, boca,
+                        // sin lentes) + zona objetivo se cumplen al 100% frame a frame.
+                        //
+                        // Antes esta condición era `challengesPassedRef.current`, o sea lo
+                        // OPUESTO: sólo se capturaba DESPUÉS de completar el desafío. Como
+                        // un gesto rompe la frontalidad y resetea el contador a 0/5, los
+                        // candidatos salían siempre de los 5 frames que la persona
+                        // acumulaba mientras volvía a acomodarse tras el gesto -- y con
+                        // `move_closer` eso significa literalmente la cara pegada a la
+                        // cámara. Es la causa de los primeros planos descentrados que
+                        // llegaban al pipeline de avatar (face_too_large h=0.81 en los logs
+                        // reales de ai_engine).
+                        //
+                        // Esto NO debilita la prueba de vida: el desafío sigue siendo
+                        // obligatorio para ENVIAR (challengesPassedRef gatea el auto-envío
+                        // de login y el de registro, sin cambios). Lo único que cambia es
+                        // de qué etapa sale el píxel del avatar.
+                        //
+                        // El comentario anterior de esta condición (no capturar en pleno
+                        // gesto) sigue cumpliéndose, y de forma más fuerte: ahora ni
+                        // siquiera se llega a la etapa del gesto con la ventana abierta.
+                        // No capturar el candidato de avatar mientras el desafío activo de
+                        // liveness (turn_left/turn_right/move_closer/move_away) sigue en
+                        // curso -- pedido explícito del usuario 2026-09-04: el gate ICAO de
+                        // "frontal" tolera hasta headYawRatio=0.42 (ver face_frontal_from_points
+                        // en eye_analyzer.py) mientras que un giro ya cuenta como completado
+                        // el desafío desde 0.20 (kLivenessHeadYawTurnThreshold) -- entre esos
+                        // dos umbrales el frame sigue siendo "válido" para el contador de 5/5
+                        // pero la cabeza ya está claramente girada, así que sin este gate se
+                        // podía capturar un frame en pleno gesto como fuente del avatar.
+                        // challengesPassedRef arranca en !ACTIVE_CHALLENGE_ENABLED (ver arriba),
+                        // así que con los desafíos desactivados este gate no cambia nada.
+                        if (updated.qualityReady && hasFaceNow && bestFace && !challengeStartedRef.current) {
                             const template = frameToTemplate(video, bestFace)
                             const imageBase64 = frameToJpegBase64(video, bestFace)
                             const portraitOvalBase64 = frameToOvalPortraitJpegBase64(
                                 video,
                                 bestFace
                             )
+                            const bustRectBase64 = frameToBustRectAroundOvalJpegBase64(
+                                video,
+                                bestFace
+                            )
+                            const visualQuality = estimateAvatarFrameQuality(video, bestFace)
+                            // Con la ventana de captura confinada a la etapa 1 (ADR-158),
+                            // TODOS los candidatos ya cumplen lo mismo: 5/5 lecturas ICAO
+                            // consecutivas (frontal + ojos + boca + sin lentes + dentro de
+                            // la zona objetivo) y `lastVerifyOk` del servidor. Esos dos
+                            // términos ya casi no discriminan -- son constantes entre
+                            // candidatos -- así que el desempate real tiene que venir de la
+                            // calidad visual (nitidez, exposición, tamaño de rostro,
+                            // centrado y penalizaciones de encuadre, ver
+                            // estimateAvatarFrameQuality). De ahí el peso x2: es
+                            // exactamente el criterio que decide cuál de los frames buenos
+                            // se convierte en el avatar.
                             const candidateScore =
                                 Number(lv || 0) +
                                 (lastVerifyOkRef.current ? 35 : 0) +
-                                Number(validFramesRef.current || 0) * 10
+                                Number(validFramesRef.current || 0) * 10 +
+                                visualQuality * 2
                             const prevBest = bestLoginProbeRef.current
-                            if (!prevBest || candidateScore >= prevBest.score) {
+                            if (!prevBest || candidateScore > prevBest.score) {
                                 bestLoginProbeRef.current = {
                                     template,
                                     imageBase64,
                                     portraitOvalBase64,
+                                    bustRectBase64,
                                     score: candidateScore,
                                     capturedAt: Date.now(),
                                 }
@@ -1977,7 +2747,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             loginSubmitTriggeredRef.current = false
             authFaceAutoDiagAtRef.current = 0
             validFramesRef.current = 0
-            resetBiometricCapture().catch(() => {})
+            // Ver comentario en startRegisterUserFaceCapture (hallazgo real
+            // 2026-09-04): esperar el reset antes de abrir la cámara evita la
+            // carrera con una sesión de captura previa completa en la misma
+            // pestaña.
+            await resetBiometricCapture().catch(() => {})
             setFaceGuide((prev) => ({
                 ...prev,
                 qualityReady: false,
@@ -2073,9 +2847,48 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             setMessage(t('message.faceAuthorized', { score: (score * 100).toFixed(1) }))
             onAuthenticated(session)
         } catch (err: any) {
-            loginSubmitTriggeredRef.current = false
+            // Hallazgo real 2026-09-04: a diferencia del registro
+            // (releaseRegisterAutoTrigger, ver handleCaptureForRegistration),
+            // acá el trigger se liberaba SIEMPRE, sin importar el motivo del
+            // rechazo -- un rechazo DETERMINÍSTICO del servidor (ej. "Se
+            // detectaron lentes/gafas puestos", la plantilla guardada no
+            // tiene lentes y no va a coincidir mientras la persona no se los
+            // quite) reintentaba cada
+            // FACIAL_ICAO.LOGIN_FACE_RETRY_COOLDOWN_MS (2.5s) con el MISMO
+            // frame condenado a fallar otra vez, hasta agotar el rate limit
+            // de la cuenta (5 intentos, ver loginRateCheck en main.cpp) --
+            // visto en vivo como "se queda en 5/5, no sale por ningún lado":
+            // el mensaje real ("quítese los lentes") quedaba tapado en
+            // segundos por el genérico "demasiados intentos" del rate limit.
+            // Igual que en el registro, sólo un error transitorio (sin
+            // respuesta real del servidor, ver postJson en authApi.ts)
+            // justifica reintentar solo -- cualquier OTRO rechazo exige que
+            // la persona corrija algo (sacarse los lentes, etc.) y reactive
+            // la verificación facial a mano.
+            if (err?.transient) {
+                loginSubmitTriggeredRef.current = false
+            } else if (err?.message === 'liveness_challenge_incomplete') {
+                // Hallazgo real 2026-09-07 (mismo caso ya resuelto del lado
+                // del registro, ver handleRegister/releaseRegisterAutoTrigger
+                // más abajo): esto es una carrera de TIMING, no un rechazo
+                // definitivo -- el envío se dispara con el estado local
+                // (challengesPassedRef) que tenía el cliente en ese instante,
+                // pero el servidor puede confirmar
+                // qualityGateReached/challenge.complete unos milisegundos/
+                // segundos después. Sin liberar el trigger acá, un solo
+                // rechazo dejaba el login facial colgado para siempre (nunca
+                // reintentaba) con este error fijo en pantalla, aunque el
+                // servidor volviera a quedar completo enseguida -- incidente
+                // real: usuario cumplió el reto y quedó "colgado" en 5/5 sin
+                // pasar nunca a la etapa 3. El backend ya no cuenta este
+                // rechazo contra el límite de intentos de la cuenta (ver
+                // handleLoginFace en main.cpp), así que reintentar acá es
+                // seguro.
+                loginSubmitTriggeredRef.current = false
+            }
             log.warn('[AUTH_FACE_UI] login failed', {
                 message: err?.message || String(err),
+                transient: Boolean(err?.transient),
                 company: String(loginForm.company || '').trim(),
                 identity: id,
             })
@@ -2214,16 +3027,94 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             )
         }
 
-        const template = frameToTemplate(videoRef.current, liveFaceBox)
-        const imageBase64 = frameToJpegBase64(videoRef.current, liveFaceBox)
-        const portraitOvalBase64 = frameToOvalPortraitJpegBase64(
-            videoRef.current,
-            liveFaceBox
-        )
-        const bustRectBase64 = frameToBustRectAroundOvalJpegBase64(
-            videoRef.current,
-            liveFaceBox
-        )
+        const bestProbe = bestLoginProbeRef.current
+        // 8s -> 20s -> 90s (2026-09-04) -> 20 min (2026-09-09). El salto a
+        // 90s fue consecuencia de ADR-158: el candidato se captura en la
+        // ETAPA 1, ANTES del desafío activo, así que entre su captura y el
+        // envío ocurre todo el desafío -- hasta 5 intentos de 8s
+        // (kLivenessChallengeTimeoutMs x kLivenessChallengeMaxAttempts = 40s)
+        // más el tiempo de completar el formulario.
+        //
+        // Hallazgo real 2026-09-09 (usuario real, DNI 09637600, avatar con
+        // la cabeza claramente inclinada/en movimiento, exactamente el
+        // patrón que este mecanismo existe para evitar): 90s sigue sin ser
+        // suficiente -- el tiempo de completar el resto del formulario de
+        // registro (nombre, DNI, empresa, rol, contraseña) para una persona
+        // real supera holgadamente 90s, así que el candidato bueno vencía
+        // igual y se caía a la captura en vivo justo al final del gesto,
+        // con la cabeza todavía en movimiento/asentándose. A diferencia del
+        // `template` (usado para el matching biométrico en sí), reusar un
+        // `bestProbe` "viejo" para las imágenes del avatar no tiene el mismo
+        // riesgo de seguridad -- sigue siendo la misma sesión de cámara en
+        // vivo ininterrumpida de la misma persona, solo un frame de más
+        // atrás en el tiempo, y uno YA validado como estático/frontal en
+        // vez de uno fresco pero potencialmente en movimiento.
+        //
+        // Razón original del mecanismo: el puntaje solo se actualiza mientras
+        // qualityReady sigue en true frame a frame: si el usuario tarda en
+        // completar el resto del formulario y la calidad flaquea un
+        // instante (parpadeo, se corre del encuadre), el mejor candidato
+        // deja de refrescarse y podía "vencer" a los 8s aunque siguiera
+        // siendo la mejor captura disponible -- forzando una captura del
+        // frame en vivo SIN comparar nada, volviendo exactamente al
+        // comportamiento que este mecanismo existe para evitar (ver ADR-074
+        // y hallazgo real 2026-09-04, incidentes de encuadre/zoom).
+        const bestProbeAgeMs = bestProbe?.capturedAt ? Date.now() - bestProbe.capturedAt : null
+        const bestProbeIsFresh = Boolean(bestProbeAgeMs !== null && bestProbeAgeMs < 1_200_000)
+        if (bestProbe && !bestProbeIsFresh) {
+            log.warn('[AUTH_REGISTER_FLOW] bestLoginProbe vencido, usando captura en vivo sin comparar', {
+                bestProbeAgeMs,
+            })
+        } else if (!bestProbe) {
+            log.warn('[AUTH_REGISTER_FLOW] sin bestLoginProbe acumulado, usando captura en vivo sin comparar')
+        }
+        // Hallazgo real 2026-09-10 (usuario real, cuenta de prueba DNI
+        // 09637600): cuando bestProbe está vencido o nunca se acumuló (ver
+        // comentario arriba), este bloque caía a `frameToJpegBase64`/
+        // `frameToOvalPortraitJpegBase64`/`frameToBustRectAroundOvalJpegBase64`
+        // sobre el video EN VIVO en el instante exacto del envío, SIN pasar
+        // por ningún chequeo de calidad -- a diferencia de cada frame que sí
+        // suma al contador 5/5 (baseChecksOk arriba exige I.noGlasses igual
+        // que ojos/boca/frontal), este frame de respaldo podía tener lentes
+        // puestos (o ojos cerrados, fuera de foco, etc.) y terminar de todos
+        // modos como la foto real del avatar/plantilla facial -- confirmado
+        // en vivo: el avatar de esa cuenta salió con lentes pese a que el
+        // desafío de vida los había bloqueado repetidamente en otros
+        // intentos. `lastIcaoFourRef` ya trae la señal de calidad del ÚLTIMO
+        // frame en vivo (mismo ref que alimenta baseChecksOk) -- se
+        // reutiliza acá para exigirle al frame de respaldo el mismo mínimo
+        // que ya exige el contador 5/5, en vez de aceptarlo sin mirar.
+        if (!bestProbeIsFresh) {
+            const liveQuality = lastIcaoFourRef.current
+            const liveQualityOk =
+                liveQuality.eyes && liveQuality.mouth && liveQuality.frontal && liveQuality.noGlasses
+            if (!liveQualityOk) {
+                setError(t('error.faceQuality'))
+                log.warn('[AUTH_REGISTER_FLOW] blocked: fallback frame fails live quality check', {
+                    eyes: liveQuality.eyes,
+                    mouth: liveQuality.mouth,
+                    frontal: liveQuality.frontal,
+                    noGlasses: liveQuality.noGlasses,
+                })
+                releaseRegisterAutoTrigger('fallback_frame_quality')
+                return
+            }
+        }
+        // El auto-envío ocurre después de acumular frames válidos. Reutilizar
+        // el de mayor calidad evita capturar justo un parpadeo o movimiento en
+        // el instante final, que era la fuente real del avatar anterior.
+        const template = bestProbeIsFresh
+            ? bestProbe!.template
+            : frameToTemplate(videoRef.current, liveFaceBox)
+        const imageBase64 = bestProbeIsFresh
+            ? bestProbe!.imageBase64
+            : frameToJpegBase64(videoRef.current, liveFaceBox)
+        const portraitOvalBase64 = bestProbeIsFresh && bestProbe!.portraitOvalBase64
+            ? bestProbe!.portraitOvalBase64
+            : frameToOvalPortraitJpegBase64(videoRef.current, liveFaceBox)
+        const bustRectBase64 = bestProbeIsFresh && bestProbe!.bustRectBase64
+            ? bestProbe!.bustRectBase64
+            : frameToBustRectAroundOvalJpegBase64(videoRef.current, liveFaceBox)
 
         if (isUserRegisterCapture) {
             registrationApiInFlightRef.current = true
@@ -2270,6 +3161,21 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 setCapturedPortraitOvalBase64('')
                 setCapturedBustRectBase64('')
                 setMessage(t('message.registerComplete'))
+                // ADR-164: flag leído por AvatarWidget.tsx para disparar
+                // "onboarding" en vez de "welcome" en el primer login tras
+                // registrarse. El envío auto-disparado (este bloque) es el
+                // único camino real a un registro exitoso -- la pantalla
+                // "success"/"Entrar al sistema" de este mismo archivo
+                // (registerUserBiometricStep === 'success') nunca se llega a
+                // mostrar (registerUserBiometricStep nunca se fija en
+                // 'success'), así que poner el flag solo ahí lo dejaba
+                // muerto: todo registro caía siempre al guion genérico de
+                // "welcome" en el primer login, nunca al de "onboarding".
+                try {
+                    sessionStorage.setItem('beemetry_avatar_just_registered_v1', '1')
+                } catch {
+                    // No crítico -- si falla, esa sesión cae al "welcome" normal.
+                }
                 setMode('login')
                 setError('')
                 registerAutoSubmitTriggeredRef.current = false
@@ -2279,19 +3185,46 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 setCapturedPortraitOvalBase64('')
                 setCapturedBustRectBase64('')
                 setError(localizeMessage(err.message))
-                // NO releaseRegisterAutoTrigger aqui (a diferencia de los otros
-                // early-return de esta funcion): el servidor ya rechazo esta
-                // solicitud (ej. "username already exists"), reenviar los
-                // MISMOS datos automaticamente nunca va a tener exito. Sin este
-                // guard, el useEffect de auto-envio (captureCount se mantiene
-                // en 3/3 mientras la camara siga corriendo) reintentaba cada
-                // ~2-3s con el mismo payload, y cada intento hacia setError('')
-                // al arrancar -- el mensaje de error quedaba visible una
-                // fraccion de segundo y se borraba solo, viendose como un
-                // parpadeo sin error real. Dejar el trigger armado obliga a
-                // salir de la captura (cambia usuario/dni) para reintentar.
+                if (err?.transient) {
+                    // Timeout/red (ver postJson en authApi.ts) -- nunca hubo
+                    // respuesta del servidor, así que SÍ tiene sentido
+                    // reintentar con los mismos datos (a diferencia del caso
+                    // de abajo). Sin esto, un timeout dejaba la captura
+                    // trabada para siempre con "verifique red e intente de
+                    // nuevo" en pantalla sin que el reintento fuera posible
+                    // -- hallazgo real 2026-09-04.
+                    releaseRegisterAutoTrigger('transient_error')
+                } else if (err?.message === 'liveness_challenge_incomplete') {
+                    // Hallazgo real 2026-09-04: a diferencia de "username
+                    // already exists" (rechazo permanente, reintentar con los
+                    // mismos datos NUNCA tiene éxito), este es un problema de
+                    // TIMING -- el envío se dispara con el estado de
+                    // challengesPassedRef que tenía el cliente en ese
+                    // instante, pero el servidor (gBiometricCaptureState)
+                    // puede completar qualityGateReached/challenge.complete
+                    // unos milisegundos/segundos después de que el cliente ya
+                    // vio "5/5" y disparó el envío. El servidor SÍ vuelve a
+                    // quedar completo poco después (confirmado en vivo:
+                    // /api/status siguió reportando challengeComplete=true
+                    // tras el rechazo), pero sin liberar el trigger acá la
+                    // pantalla quedaba atascada para siempre con este error
+                    // fijo en pantalla aunque el reto ya estuviera cumplido.
+                    releaseRegisterAutoTrigger('liveness_challenge_incomplete')
+                }
+                // Para cualquier OTRO error (el servidor sí respondió y
+                // rechazó, ej. "username already exists"), NO se libera el
+                // trigger: reenviar los MISMOS datos automáticamente nunca va
+                // a tener éxito. Sin este guard, el useEffect de auto-envío
+                // (captureCount se mantiene en 3/3 mientras la cámara siga
+                // corriendo) reintentaba cada ~2-3s con el mismo payload, y
+                // cada intento hacía setError('') al arrancar -- el mensaje
+                // de error quedaba visible una fracción de segundo y se
+                // borraba solo, viéndose como un parpadeo sin error real.
+                // Dejar el trigger armado obliga a salir de la captura
+                // (cambia usuario/dni) para reintentar.
                 log.warn('[AUTH_REGISTER_FLOW] registerUser error', {
                     message: err?.message || String(err),
+                    transient: Boolean(err?.transient),
                     stack: err?.stack || null,
                 })
             } finally {
@@ -2309,7 +3242,109 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         setError('')
     }
 
-    const startRegisterUserFaceCapture = () => {
+    /** Envía (o reenvía) el OTP de validación de contacto por el canal dado. */
+    const handleSendContactOtp = async (channel: 'email' | 'sms') => {
+        const contact =
+            channel === 'email'
+                ? String(registerForm.email || '').trim()
+                : formatInternationalTel(registerForm.mobile, activePhonePrefix)
+        if (channel === 'email' && contact.length < 5) {
+            setError(t('error.email'))
+            return
+        }
+        if (channel === 'sms' && String(registerForm.mobile || '').trim().length < 6) {
+            setError(t('error.mobile'))
+            return
+        }
+        setError('')
+        setContactOtp((prev) => ({
+            ...prev,
+            ...(channel === 'email'
+                ? { sendingEmail: true, emailError: '' }
+                : { sendingSms: true, smsError: '' }),
+        }))
+        const result: ContactOtpSendResult = await sendContactOtp(channel, contact)
+        setContactOtp((prev) => ({
+            ...prev,
+            ...(channel === 'email'
+                ? {
+                      sendingEmail: false,
+                      emailSent: result.sent,
+                      emailVerified: false,
+                      emailCode: '',
+                      emailAttempts: 0,
+                      emailError: result.sent ? '' : (result.error || 'No se pudo enviar el código al correo.'),
+                  }
+                : {
+                      sendingSms: false,
+                      smsSent: result.sent,
+                      smsVerified: false,
+                      smsCode: '',
+                      smsAttempts: 0,
+                      smsError: result.sent ? '' : (result.error || 'No se pudo enviar el código por SMS/WhatsApp.'),
+                  }),
+        }))
+    }
+
+    const handleContactOtpCodeChange = (channel: 'email' | 'sms', value: string) => {
+        if (channel === 'email') {
+            setContactOtp((prev) => ({ ...prev, emailCode: value }))
+        } else {
+            setContactOtp((prev) => ({ ...prev, smsCode: value }))
+        }
+    }
+
+    /** Verifica el código de 6 dígitos ingresado para el canal dado. */
+    const handleVerifyContactOtp = async (channel: 'email' | 'sms') => {
+        const contact =
+            channel === 'email'
+                ? String(registerForm.email || '').trim()
+                : formatInternationalTel(registerForm.mobile, activePhonePrefix)
+        const code = channel === 'email' ? contactOtp.emailCode : contactOtp.smsCode
+        if (code.trim().length !== 6) return
+        setContactOtp((prev) => ({
+            ...prev,
+            ...(channel === 'email' ? { verifyingEmail: true } : { verifyingSms: true }),
+        }))
+        const result: ContactOtpVerifyResult = await verifyContactOtp(channel, contact, code.trim())
+        setContactOtp((prev) => {
+            const attemptsKey = channel === 'email' ? 'emailAttempts' : 'smsAttempts'
+            const nextAttempts = prev[attemptsKey] + (result.valid ? 0 : 1)
+            const lockedOut = result.invalid_data || nextAttempts >= CONTACT_OTP_MAX_ATTEMPTS
+            return {
+                ...prev,
+                ...(channel === 'email'
+                    ? {
+                          verifyingEmail: false,
+                          emailVerified: result.valid,
+                          emailAttempts: nextAttempts,
+                          // Se reactiva el campo (emailSent=false) si se bloqueó por
+                          // demasiados intentos o el backend marcó el dato inválido.
+                          emailSent: result.valid ? true : !lockedOut,
+                          emailCode: result.valid ? prev.emailCode : '',
+                          emailError: result.valid
+                              ? ''
+                              : lockedOut
+                                ? 'Demasiados intentos fallidos. Corrija el correo y vuelva a intentar.'
+                                : (result.error || 'Código incorrecto.'),
+                      }
+                    : {
+                          verifyingSms: false,
+                          smsVerified: result.valid,
+                          smsAttempts: nextAttempts,
+                          smsSent: result.valid ? true : !lockedOut,
+                          smsCode: result.valid ? prev.smsCode : '',
+                          smsError: result.valid
+                              ? ''
+                              : lockedOut
+                                ? 'Demasiados intentos fallidos. Corrija el celular y vuelva a intentar.'
+                                : (result.error || 'Código incorrecto.'),
+                      }),
+            }
+        })
+    }
+
+    const startRegisterUserFaceCapture = async () => {
         if (registerTab !== 'user') {
             return
         }
@@ -2351,6 +3386,62 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             setError(t('error.usernameLength'))
             return
         }
+
+        // Corrección 2026-09-04: DNI y username duplicados se detectaban
+        // recién DESPUÉS de completar toda la captura facial (5 lecturas +
+        // parpadeo natural + desafío activo), un flujo de ~1-2 minutos que
+        // el backend iba a rechazar igual -- reproducido en vivo las DOS
+        // veces, primero con "DNI ya existe" y luego, ya corregido ese
+        // caso, con "username already exists in this company" en un
+        // registro distinto. Ninguna de las dos restricciones depende de
+        // nada biométrico: se validan ANTES de siquiera pedir la cámara.
+        // checkDniAvailable (no checkLoginIdentity: el DNI es UNIQUE GLOBAL
+        // en auth_users, no por empresa -- checkLoginIdentity con la
+        // empresa correcta daba falso negativo para un DNI duplicado bajo
+        // OTRA empresa, reproducido en vivo) y checkUsernameAvailable
+        // (username UNIQUE por empresa, mismo criterio que
+        // registerUserPg) nunca lanzan (ver authApi.ts), así que no hace
+        // falta try/catch acá: una falla de red simplemente no bloquea, el
+        // backend igual rechaza duplicados al final como red de seguridad.
+        // En paralelo (Promise.all) para no duplicar la latencia de red de
+        // dos round-trips secuenciales.
+        {
+            const registerDni = String(registerForm.dni || '').trim()
+            const registerCompany = String(registerForm.company || '').trim()
+            const registerUsername = String(registerForm.username || '').trim()
+            setError('')
+            setMessage('')
+            setIsProcessing(true)
+            const [dniCheck, usernameCheck] = await Promise.all([
+                checkDniAvailable(registerDni),
+                checkUsernameAvailable(registerCompany, registerUsername),
+            ])
+            setIsProcessing(false)
+            if (dniCheck.exists) {
+                setError(t('error.dniAlreadyRegistered'))
+                log.warn('[AUTH_REGISTER_FLOW] DNI ya registrado, no se abre la cámara', {
+                    dniLen: registerDni.length,
+                })
+                return
+            }
+            if (usernameCheck.exists) {
+                setError(t('error.usernameAlreadyRegistered'))
+                log.warn('[AUTH_REGISTER_FLOW] username ya registrado en esta empresa, no se abre la cámara', {
+                    usernameLen: registerUsername.length,
+                })
+                return
+            }
+        }
+
+        // ADR-161: el email y el celular deben quedar validados por OTP antes
+        // de abrir la cámara -- mismo criterio que el bloque de arriba (nunca
+        // dejar avanzar al paso biométrico, más largo y costoso, con datos que
+        // ya sabemos que están mal).
+        if (!contactOtp.emailVerified || !contactOtp.smsVerified) {
+            setError('Valide el correo y el celular con el código enviado antes de continuar.')
+            return
+        }
+
         setError('')
         setMessage('')
         setCapturedTemplate(null)
@@ -2359,7 +3450,20 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         setCapturedBustRectBase64('')
         bestLoginProbeRef.current = null
         validFramesRef.current = 0
-        resetBiometricCapture().catch(() => {})
+        // Hallazgo real 2026-09-04: este reset NUNCA se esperaba (fire-and-
+        // forget) antes de abrir la cámara -- si la MISMA pestaña ya tenía
+        // una sesión de captura previa completa (challenge.complete=true,
+        // ej. tras una verificación biométrica de admin momentos antes de
+        // borrar y volver a registrar el mismo DNI), la cámara podía abrir y
+        // los primeros /api/process_frame llegar ANTES de que este reset
+        // aterrizara en el servidor -- la sesión "vieja" seguía marcada
+        // completa, el auto-envío disparaba de inmediato, y el registro real
+        // (que sí corre contra la sesión ya reseteada segundos después)
+        // volvía con "liveness_challenge_incomplete" sin que la persona
+        // hubiera hecho nada mal: la cámara parecía "cerrarse sola" y volver
+        // al formulario. Esperar el reset ANTES de abrir la cámara elimina la
+        // carrera de raíz.
+        await resetBiometricCapture().catch(() => {})
         setFaceGuide((prev) => ({
             ...prev,
             qualityReady: false,
@@ -2379,7 +3483,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         setRegisterUserBiometricStep('capture')
     }
 
-    const startRegisterCompanyFaceCapture = () => {
+    const startRegisterCompanyFaceCapture = async () => {
         if (registerTab !== 'company') {
             return
         }
@@ -2426,6 +3530,13 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             setError(t('error.usernameLength'))
             return
         }
+        // ADR-161: pestaña empresa solo pide celular (no hay campo de email
+        // en este formulario) -- ver comentario equivalente en
+        // startRegisterUserFaceCapture.
+        if (!contactOtp.smsVerified) {
+            setError('Valide el celular con el código enviado antes de continuar.')
+            return
+        }
         setError('')
         setMessage('')
         setCapturedTemplate(null)
@@ -2434,7 +3545,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         setCapturedBustRectBase64('')
         bestLoginProbeRef.current = null
         validFramesRef.current = 0
-        resetBiometricCapture().catch(() => {})
+        // Ver comentario en startRegisterUserFaceCapture (hallazgo real
+        // 2026-09-04): esperar el reset antes de abrir la cámara evita la
+        // carrera con una sesión de captura previa completa en la misma
+        // pestaña.
+        await resetBiometricCapture().catch(() => {})
         setFaceGuide((prev) => ({
             ...prev,
             qualityReady: false,
@@ -2664,7 +3779,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             {/* Marco: mismo tamaño que cv::ellipse en C:\FACIAL (FaceDetectionEngine::getMainFaceOval). border-radius 50% = elipse en rectángulo ow×oh. */}
                             {ovalForStage && (
                                 <div
-                                    className="absolute pointer-events-none transition-all duration-100 ease-out biometric-oval"
+                                    className="absolute pointer-events-none biometric-oval"
                                     style={{
                                         borderRadius: '50%',
                                         left: `${ovalForStage.leftPct}%`,
@@ -2760,6 +3875,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             className="absolute left-1/2 top-3 -translate-x-1/2 flex flex-col items-center gap-1 px-4 py-2 rounded-xl text-center"
                                             style={{
                                                 zIndex: 25,
+                                                position: 'absolute',
                                                 background: isSuccess
                                                     ? 'rgba(22, 101, 52, 0.92)'
                                                     : isTimeout
@@ -2775,10 +3891,41 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                 minWidth: 220,
                                             }}
                                         >
+                                            {/* Silenciar/activar la guía por voz (pedido explícito
+                                                del usuario 2026-09-07) -- la guía visual (flechas,
+                                                texto, cuenta regresiva) sigue igual en mute. */}
+                                            <button
+                                                type="button"
+                                                onClick={toggleVoiceGuideMuted}
+                                                aria-label={
+                                                    voiceGuideMuted
+                                                        ? t('liveness.challenge.unmute')
+                                                        : t('liveness.challenge.mute')
+                                                }
+                                                title={
+                                                    voiceGuideMuted
+                                                        ? t('liveness.challenge.unmute')
+                                                        : t('liveness.challenge.mute')
+                                                }
+                                                className="absolute top-1 right-1 p-1 rounded-full hover:bg-white/10 pointer-events-auto"
+                                                style={{ zIndex: 26 }}
+                                            >
+                                                {voiceGuideMuted ? (
+                                                    <VolumeX size={14} className="text-slate-300" />
+                                                ) : (
+                                                    <Volume2 size={14} className="text-sky-300" />
+                                                )}
+                                            </button>
+                                            {/* ADR-156: con CHALLENGE_COUNT=1 el "desafío 1 de 1"
+                                                no decía nada; lo útil para quien está frente a la
+                                                cámara es cuántos pedidos le quedan antes de que la
+                                                captura se reinicie sola. */}
                                             <span className="text-[10px] tracking-wider uppercase text-sky-300">
-                                                {t('liveness.challenge.progress', {
-                                                    current: String(challengeUiState.index + 1),
-                                                    total: String(challengeUiState.queue.length),
+                                                {t('liveness.challenge.attempt', {
+                                                    current: String(challengeUiState.attempt),
+                                                    total: String(
+                                                        challengeUiState.maxAttempts || CHALLENGE_MAX_ATTEMPTS
+                                                    ),
                                                 })}
                                             </span>
                                             <span className="text-white text-sm font-bold flex items-center gap-2">
@@ -2793,6 +3940,56 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                       ? t('liveness.challenge.retry')
                                                       : t(challengeInstructionKey(chType))}
                                             </span>
+                                            {/* Flecha grande animada (ADR-149, ampliada 2026-09-07
+                                                a shift_left/shift_right): ayuda visual para los 4
+                                                gestos laterales -- puramente decorativa
+                                                (pointer-events-none, capa CSS sobre el video), la
+                                                captura real lee el frame del <video>/canvas
+                                                directamente y nunca incluye este overlay. */}
+                                            {!isSuccess &&
+                                                !isTimeout &&
+                                                (chType === 'turn_left' ||
+                                                    chType === 'turn_right' ||
+                                                    chType === 'shift_left' ||
+                                                    chType === 'shift_right') && (
+                                                    <div
+                                                        className={`turn-challenge-arrow turn-challenge-arrow-${
+                                                            chType === 'turn_left' || chType === 'shift_left'
+                                                                ? 'left'
+                                                                : 'right'
+                                                        } pointer-events-none`}
+                                                        aria-hidden="true"
+                                                    >
+                                                        {chType === 'turn_left' || chType === 'shift_left' ? (
+                                                            <ArrowLeftCircle size={56} className="text-sky-300" />
+                                                        ) : (
+                                                            <ArrowRightCircle size={56} className="text-sky-300" />
+                                                        )}
+                                                    </div>
+                                                )}
+                                            {/* Icono pulsante para move_closer/move_away -- mismo
+                                                criterio que las flechas de arriba: puramente
+                                                decorativo, la captura real nunca lo incluye. Escala
+                                                (grande->chico o viceversa) para reforzar visualmente
+                                                "acércate"/"aléjate" además del ícono y el texto. */}
+                                            {!isSuccess &&
+                                                !isTimeout &&
+                                                (chType === 'move_closer' || chType === 'move_away') && (
+                                                    <div
+                                                        className={
+                                                            chType === 'move_closer'
+                                                                ? 'liveness-zoom-pulse liveness-zoom-pulse-in'
+                                                                : 'liveness-zoom-pulse liveness-zoom-pulse-out'
+                                                        }
+                                                        aria-hidden="true"
+                                                    >
+                                                        {chType === 'move_closer' ? (
+                                                            <ZoomIn size={56} className="text-sky-300" />
+                                                        ) : (
+                                                            <ZoomOut size={56} className="text-sky-300" />
+                                                        )}
+                                                    </div>
+                                                )}
                                             {challengeUiState.status === 'pending' && (
                                                 <span className="text-[11px] text-amber-200 font-mono">
                                                     {secondsLeft}s
@@ -2801,6 +3998,38 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         </div>
                                     )
                                 })()}
+
+                            {/* Después de "Confirmado" el overlay del desafío desaparece
+                                (isChallengeSequenceComplete pasa a true) y el auto-envío de
+                                registerUser() queda en curso (isProcessing): sin este cartel
+                                la pantalla se veía IDÉNTICA a una que se colgó -- ICAO 5/5,
+                                liveness 100%, cronómetro pausado (ver el efecto de
+                                sessionClockRef que pausa mientras isProcessing) y ningún
+                                indicio de que el pedido al servidor sigue en vuelo. Hallazgo
+                                real 2026-09-10: usuario reportó la captura "congelada" tras
+                                el "Confirmado" del reto, que en realidad terminó en
+                                REGISTRO COMPLETADO unos segundos/minutos después -- nunca
+                                hubo cuelgue, sólo ausencia de feedback visual. */}
+                            {mode === 'register' &&
+                                registerTab === 'user' &&
+                                registerUserBiometricStep === 'capture' &&
+                                isProcessing && (
+                                    <div
+                                        className="absolute left-1/2 top-3 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-xl text-center"
+                                        style={{
+                                            zIndex: 25,
+                                            position: 'absolute',
+                                            background: 'rgba(15, 23, 42, 0.88)',
+                                            border: '1px solid #38bdf8',
+                                            minWidth: 220,
+                                        }}
+                                    >
+                                        <RefreshCw size={16} className="animate-spin text-sky-300" />
+                                        <span className="text-white text-sm font-bold">
+                                            {t('auth.sendingRegistration')}
+                                        </span>
+                                    </div>
+                                )}
 
                             {!cameraReady && (
                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 text-white gap-3 px-4 text-center" style={{ zIndex: 20 }}>
@@ -3002,6 +4231,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 setRegisterTab('user')
                                 setRegisterUserBiometricStep('form')
                                 setRegisterCompanyBiometricStep('form')
+                                setContactOtp(INITIAL_CONTACT_OTP_STATE)
                                 setError('')
                                 setMessage('')
                             }}
@@ -3073,6 +4303,19 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                     autoComplete="username"
                                 />
                             </label>
+                            <button
+                                type="button"
+                                onClick={() => setShowFotocheckScan('login')}
+                                title="Escanear fotocheck (precarga empresa y usuario)"
+                                style={{
+                                    display: 'flex', alignItems: 'center', gap: '6px',
+                                    background: 'transparent', border: 'none', color: '#818cf8',
+                                    fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+                                    padding: '2px 0', textTransform: 'uppercase', letterSpacing: '.03em',
+                                }}
+                            >
+                                <ScanLine size={13} /> Escanear fotocheck
+                            </button>
                             <label className="field-label">
                                 <KeyRound size={14} /> {t('auth.password')}
                                 <input
@@ -3206,6 +4449,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         setRegisterTab('user')
                                         setRegisterCompanyBiometricStep('form')
                                         setRegisterUserBiometricStep('form')
+                                        setContactOtp(INITIAL_CONTACT_OTP_STATE)
                                         setError('')
                                     }}
                                 >
@@ -3226,6 +4470,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             ...prev,
                                             contractorLegalName: '',
                                         }))
+                                        setContactOtp(INITIAL_CONTACT_OTP_STATE)
                                         setError('')
                                     }}
                                 >
@@ -3302,6 +4547,17 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         disabled={!registrationCompleteSession || isProcessing}
                                         onClick={() => {
                                             if (registrationCompleteSession) {
+                                                // Flag leído por AvatarWidget.tsx (ADR-164) al montar el
+                                                // shell principal -- dispara "onboarding" en vez de
+                                                // "welcome" en la primera entrada tras un registro.
+                                                try {
+                                                    sessionStorage.setItem(
+                                                        'beemetry_avatar_just_registered_v1',
+                                                        '1',
+                                                    )
+                                                } catch {
+                                                    // No crítico -- si falla, esa sesión cae al "welcome" normal.
+                                                }
                                                 onAuthenticated(registrationCompleteSession)
                                             }
                                         }}
@@ -3420,6 +4676,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                  <button type="button" onClick={() => setShowDniScan(true)} title="Escanear DNI con la cámara" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '38px', height: '38px', borderRadius: '8px', border: '1px solid rgba(240,126,65,.4)', background: 'rgba(240,126,65,.1)', color: '#f07e41', cursor: 'pointer', flexShrink: 0 }}>
                                                      <ScanLine size={16} />
                                                  </button>
+                                                 <button type="button" onClick={() => setShowFotocheckScan('register')} title="Escanear fotocheck (precarga sus datos)" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '38px', height: '38px', borderRadius: '8px', border: '1px solid rgba(99,102,241,.4)', background: 'rgba(99,102,241,.1)', color: '#818cf8', cursor: 'pointer', flexShrink: 0 }}>
+                                                     <ScanLine size={16} />
+                                                 </button>
                                              </div>
                                          </label>
                                          <div style={{display: 'flex', gap: '10px'}}>
@@ -3444,10 +4703,32 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                  {t('auth.mobile')}
                                                  <div className="field-tel-wrap">
                                                      <span className="field-tel-prefix">+{activePhonePrefix}</span>
-                                                     <input type="tel" inputMode="tel" value={registerForm.mobile} onChange={(e) => setRegisterForm((prev) => ({ ...prev, mobile: e.target.value }))} required />
+                                                     <input
+                                                         type="tel"
+                                                         inputMode="tel"
+                                                         value={registerForm.mobile}
+                                                         onChange={(e) => {
+                                                             setRegisterForm((prev) => ({ ...prev, mobile: e.target.value }))
+                                                             if (contactOtp.smsSent || contactOtp.smsVerified) {
+                                                                 setContactOtp((prev) => ({
+                                                                     ...prev, smsSent: false, smsVerified: false,
+                                                                     smsCode: '', smsError: '', smsAttempts: 0,
+                                                                 }))
+                                                             }
+                                                         }}
+                                                         disabled={contactOtp.smsSent && !contactOtp.smsVerified}
+                                                         required
+                                                     />
                                                  </div>
                                              </label>
                                          </div>
+                                         <ContactOtpPanel
+                                             channels={['sms']}
+                                             contactOtp={contactOtp}
+                                             onSend={handleSendContactOtp}
+                                             onVerify={handleVerifyContactOtp}
+                                             onCodeChange={handleContactOtpCodeChange}
+                                         />
                                     </div>
                                 ) : (
                                     <div className="register-person-fields">
@@ -3493,6 +4774,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                 <button type="button" onClick={() => setShowDniScan(true)} title="Escanear DNI con la cámara" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '38px', height: '38px', borderRadius: '8px', border: '1px solid rgba(240,126,65,.4)', background: 'rgba(240,126,65,.1)', color: '#f07e41', cursor: 'pointer', flexShrink: 0 }}>
                                                     <ScanLine size={16} />
                                                 </button>
+                                                <button type="button" onClick={() => setShowFotocheckScan('register')} title="Escanear fotocheck (precarga sus datos)" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '38px', height: '38px', borderRadius: '8px', border: '1px solid rgba(99,102,241,.4)', background: 'rgba(99,102,241,.1)', color: '#818cf8', cursor: 'pointer', flexShrink: 0 }}>
+                                                    <ScanLine size={16} />
+                                                </button>
                                             </div>
                                         </label>
                                         <label className="field-label reg-grid-nombres">
@@ -3528,12 +4812,19 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                             <input
                                                 type="email"
                                                 value={registerForm.email}
-                                                onChange={(e) =>
+                                                onChange={(e) => {
                                                     setRegisterForm((prev) => ({
                                                         ...prev,
                                                         email: e.target.value,
                                                     }))
-                                                }
+                                                    if (contactOtp.emailSent || contactOtp.emailVerified) {
+                                                        setContactOtp((prev) => ({
+                                                            ...prev, emailSent: false, emailVerified: false,
+                                                            emailCode: '', emailError: '', emailAttempts: 0,
+                                                        }))
+                                                    }
+                                                }}
+                                                disabled={contactOtp.emailSent && !contactOtp.emailVerified}
                                                 required
                                             />
                                         </label>
@@ -3545,16 +4836,32 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                     type="tel"
                                                     inputMode="tel"
                                                     value={registerForm.mobile}
-                                                    onChange={(e) =>
+                                                    onChange={(e) => {
                                                         setRegisterForm((prev) => ({
                                                             ...prev,
                                                             mobile: e.target.value,
                                                         }))
-                                                    }
+                                                        if (contactOtp.smsSent || contactOtp.smsVerified) {
+                                                            setContactOtp((prev) => ({
+                                                                ...prev, smsSent: false, smsVerified: false,
+                                                                smsCode: '', smsError: '', smsAttempts: 0,
+                                                            }))
+                                                        }
+                                                    }}
+                                                    disabled={contactOtp.smsSent && !contactOtp.smsVerified}
                                                     required
                                                 />
                                             </div>
                                         </label>
+                                        <div className="reg-grid-full">
+                                            <ContactOtpPanel
+                                                channels={['email', 'sms']}
+                                                contactOtp={contactOtp}
+                                                onSend={handleSendContactOtp}
+                                                onVerify={handleVerifyContactOtp}
+                                                onCodeChange={handleContactOtpCodeChange}
+                                            />
+                                        </div>
                                         <label className="field-label reg-grid-full">
                                             {t('auth.role')}
                                             <select
@@ -3717,6 +5024,11 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 isOpen={showDniScan}
                 onClose={() => setShowDniScan(false)}
                 onSuccess={handleDniScanSuccess}
+            />
+            <FotocheckQrScanCapture
+                isOpen={showFotocheckScan !== null}
+                onClose={() => setShowFotocheckScan(null)}
+                onSuccess={handleFotocheckScanSuccess}
             />
             {mfaPending && (
                 <div

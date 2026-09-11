@@ -132,6 +132,17 @@ export function getSession(): Session | null {
 export function clearSession(): void {
     localStorage.removeItem(SESSION_KEY)
     clearInMemoryAccessToken()
+    // Hallazgo real, sesión 2026-09-09: AvatarWidget.tsx guarda "welcome ya
+    // se disparó" en una variable de módulo (para sobrevivir remontes,
+    // ver su propio comentario) y en sessionStorage -- ninguno de los dos
+    // se limpiaba al cerrar sesión, así que un logout + login DENTRO de la
+    // misma pestaña nunca volvía a mostrar el avatar de bienvenida
+    // ("hice login nuevo pero no veo ni escucho nada", sin ningún error).
+    // Evento en vez de importar AvatarWidget.tsx acá directo -- ese
+    // componente ya importa de este archivo, un import inverso crearía un
+    // ciclo. AvatarWidget escucha este mismo evento también en
+    // `createSession()` más abajo (login real), no solo acá.
+    window.dispatchEvent(new CustomEvent('beemetry-auth-session-cleared'))
 }
 
 function computeExpiresAt(expiresInSeconds?: number): string | undefined {
@@ -201,6 +212,11 @@ export function createSession(user: SessionUser, loginType = 'user'): Session {
         }
     }
     localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    // Ver comentario largo en clearSession() -- mismo evento, disparado acá
+    // también: un login real (no solo un logout) debe poder volver a
+    // mostrar el avatar de bienvenida aunque ya se hubiera mostrado antes
+    // en esta misma pestaña para OTRA cuenta.
+    window.dispatchEvent(new CustomEvent('beemetry-auth-session-cleared'))
     return session
 }
 
@@ -260,6 +276,29 @@ export function updateSessionTenant(tenantId: string, company: string, role?: st
     if (typeof role === 'string' && role) {
         session.role = role.toLowerCase()
     }
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    return session
+}
+
+/**
+ * @brief Completa la sesión guardada con el avatar que el backend terminó de
+ * generar DESPUÉS del registro (hilo asíncrono AUTH_REGISTER_CARTOON_BG).
+ *
+ * La respuesta de /api/auth/register nunca trae avatar: se genera en 15-40 s
+ * en segundo plano para no bloquear el alta. Sin esto, la sesión recién
+ * creada se quedaba para siempre sin avatar y el usuario veía el placeholder
+ * de iniciales hasta cerrar sesión y volver a entrar (bug real, 2026-09-04).
+ */
+export function updateSessionAvatar(avatarBase64: string): Session | null {
+    const session = getSession()
+    if (!session) {
+        return null
+    }
+    const av = String(avatarBase64 || '').replace(/\s/g, '').trim()
+    if (!av) {
+        return session
+    }
+    session.avatarCartoonBase64 = av
     localStorage.setItem(SESSION_KEY, JSON.stringify(session))
     return session
 }

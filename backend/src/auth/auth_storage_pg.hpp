@@ -65,6 +65,23 @@ bool validateCompanyPg(const std::string &databaseUrl,
                        const std::string &companyName,
                        const std::string &ruc, std::string &error);
 
+/** @brief Pre-chequeo de disponibilidad de DNI antes de la captura facial
+ * (ADR pendiente 2026-09-04) -- misma query que el chequeo real de
+ * registerUserPg (UNIQUE global, no por empresa). @return false sólo si la
+ * consulta en sí falló (ver `error`); el resultado real va en `outExists`. */
+bool checkDniExistsPg(const std::string &databaseUrl, const std::string &dni,
+                      bool &outExists, std::string &error);
+
+/** @brief Pre-chequeo de disponibilidad de username antes de la captura
+ * facial (hallazgo real 2026-09-04, mismo motivo que checkDniExistsPg):
+ * misma query que el chequeo real de registerUserPg (UNIQUE por empresa,
+ * `company_name` + `username`). @return false sólo si la consulta en sí
+ * falló (ver `error`); el resultado real va en `outExists`. */
+bool checkUsernameExistsPg(const std::string &databaseUrl,
+                           const std::string &company,
+                           const std::string &username, bool &outExists,
+                           std::string &error);
+
 /** @brief Inserta un nuevo `AuthUser` (con plantilla facial) tras validar que el DNI no exista ya. Registra el intento (éxito o fallo) en la auditoría. @return true si el INSERT tuvo éxito. */
 bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
                     std::string &error,

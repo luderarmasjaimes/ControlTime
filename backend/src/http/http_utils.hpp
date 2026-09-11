@@ -43,6 +43,14 @@ std::vector<std::string> splitCsvLower(const std::string &csv);
 /** Identificador no secreto: 128 bits, 32 caracteres hexadecimales. */
 std::string makeId();
 
+/** Identificador no secreto en formato UUID canónico (8-4-4-4-12, con
+ * guiones) -- mismos 128 bits que makeId(), pero ya en el formato que
+ * Postgres devuelve para una columna `uuid`. Usar para cualquier id que se
+ * vaya a insertar en una columna `uuid` Y también se use en memoria antes
+ * de volver a leerse de la base (p.ej. para nombrar un archivo), para que
+ * ambas representaciones coincidan siempre. */
+std::string makeCanonicalUuid();
+
 /** Secreto criptográfico generado con OpenSSL RAND_bytes. Falla cerrado. */
 std::string secureRandomHex(std::size_t bytes);
 

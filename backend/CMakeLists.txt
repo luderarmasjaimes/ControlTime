@@ -123,13 +123,22 @@ set(AUTH_MODULES
   src/auth/tax_registry_client.cpp
   src/auth/totp.cpp
   src/auth/mfa_routes.cpp
+  src/auth/contact_otp_routes.cpp
+  src/auth/fotocheck_crypto.cpp
+  src/auth/fotocheck_share_links.cpp
+  src/auth/fotocheck_routes.cpp
+  src/auth/avatar_animation_storage_pg.cpp
+  src/auth/avatar_animation_job.cpp
 )
 
 # Módulos biométricos
 set(BIOMETRIC_MODULES
   src/biometric/biometric_types.cpp
+  src/biometric/liveness_challenge.cpp
+  src/biometric/realtime_face_tracker.cpp
   src/biometric/face_analysis.cpp
   src/biometric/ai_engine_client.cpp
+  src/biometric/avatar_animation_client.cpp
   src/biometric/biometric_routes.cpp
 )
 
@@ -344,6 +353,7 @@ if(Catch2_FOUND)
     tests/test_whatsapp_webhook_signature.cpp
     tests/test_sensor_anti_idor.cpp
     tests/test_alarm_rule_evaluator.cpp
+    tests/test_liveness_challenge.cpp
     src/http/http_utils.cpp
     src/config/app_config.cpp
     src/map/wms_proxy_security.cpp
@@ -355,6 +365,7 @@ if(Catch2_FOUND)
     src/mining/alarm_rule_evaluator.cpp
     src/support/whatsapp_menu.cpp
     src/support/whatsapp_signature.cpp
+    src/biometric/liveness_challenge.cpp
   )
   # NOTA (2026-09-02): tests/test_sensor_anti_idor.cpp (SPEC-021 T7) ya
   # compila en este target liviano. El intento anterior (2026-08-30, ver

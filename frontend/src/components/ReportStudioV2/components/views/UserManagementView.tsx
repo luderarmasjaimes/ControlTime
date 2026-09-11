@@ -15,6 +15,15 @@ import type { DniScanResult } from '../../../../auth/authApi';
 import { fetchOrgAccessCandidates, grantOrgAccess, revokeOrgAccess, type OrgAccessCandidateTenant } from '../../../../auth/authApi';
 import { usePermissions } from '../../../../auth/usePermissions';
 import { FACIAL_ICAO } from '../../../../config/facialIcaoConfig';
+import { acquireFaceCameraStream } from '../../../../auth/adaptiveCameraCapture';
+import { useLivenessChallengeSync } from '../../../../auth/useLivenessChallengeSync';
+import { createBestFrameCollector, faceBoxFromServerOval } from '../../../../auth/bestBiometricFrame';
+import {
+  ACTIVE_CHALLENGE_ENABLED,
+  challengeInstructionKey,
+  currentChallenge,
+  isChallengeSequenceComplete,
+} from '../../../../auth/livenessChallenge';
 import './accessAdministration.css';
 // Modal movido internamente para evitar errores de resolucion dinamica en tiempo de ejecucion
 
@@ -392,8 +401,21 @@ function UserManagementView() {
     const streamRef = useRef<MediaStream | null>(null);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const isVerifyingRef = useRef(false);
+    const cameraCancelledRef = useRef(false);
     const [serverOval, setServerOval] = useState<any>(null);
     const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+    const { challengeUiState, challengesPassedRef, challengeStartedRef, syncChallengeFromServer, resetChallengeState } =
+      useLivenessChallengeSync();
+    /**
+     * ADR-158: el frame que se verifica sale del mejor de la ETAPA 1 (5
+     * lecturas ICAO consecutivas), no del frame en vivo del instante en que
+     * se cumple el gate -- que es el final del gesto del desafío activo.
+     */
+    const bestFrameRef = useRef(
+      createBestFrameCollector<{ imageBase64: string; template: number[] | undefined }>({
+        label: 'USER_MGMT_BIO',
+      })
+    );
 
     useEffect(() => {
       if (isOpen) {
@@ -401,17 +423,25 @@ function UserManagementView() {
           try {
             setBioLoading(true);
             setBioError('');
+            resetChallengeState();
+      bestFrameRef.current.reset();
             const { resetBiometricCapture } = await import('../../../../auth/authApi');
             await resetBiometricCapture();
-            const stream = await navigator.mediaDevices.getUserMedia({
-              video: {
-                width: { ideal: FACIAL_ICAO.CAMERA.width.ideal, min: 320 },
-                height: { ideal: FACIAL_ICAO.CAMERA.height.ideal, min: 240 },
-                frameRate: FACIAL_ICAO.CAMERA.frameRate,
-              },
-            }).catch(() => navigator.mediaDevices.getUserMedia({ video: true }));
+            if (!videoRef.current) {
+              throw new Error('No se pudo inicializar el elemento de video.');
+            }
+            // Escalera adaptativa de resoluciones (ver adaptiveCameraCapture.ts):
+            // prueba de mayor a menor y verifica que realmente llegue un frame
+            // real antes de aceptar cada escalón, en vez de una única
+            // resolución "ideal" fija que en ciertos drivers "resuelve" pero
+            // nunca pinta imagen.
+            cameraCancelledRef.current = false;
+            const stream = await acquireFaceCameraStream(videoRef.current, () => cameraCancelledRef.current);
+            if (cameraCancelledRef.current) {
+              stream.getTracks().forEach(t => t.stop());
+              return;
+            }
             streamRef.current = stream;
-            if (videoRef.current) videoRef.current.srcObject = stream;
             setCameraActive(true);
             setBioLoading(false);
             setTimeLeft(60);
@@ -439,23 +469,64 @@ function UserManagementView() {
                   noGlasses: !!status.icao?.no_glasses,
                   qualityReady: !!status.icao?.is_ready
                 });
-                if ((status.capture_count || 0) >= FACIAL_ICAO.REQUIRED_VALID_FRAMES && !isVerifyingRef.current) {
+                syncChallengeFromServer(status.challenge);
+
+                // ETAPA 1 (ADR-158): candidatos sólo mientras el servidor no
+                // haya sorteado el desafío y las 4 condiciones ICAO estén en
+                // verde. El desempate lo hace la calidad visual dentro del
+                // colector (nitidez, exposición, centrado, encuadre).
+                if (!challengeStartedRef.current && status.icao?.is_ready && videoRef.current) {
+                  const video = videoRef.current;
+                  const { buildFullFrameJpegBase64FromVideo, frameToTemplate } = await import('../../../../auth/biometricOvalFrame');
+                  bestFrameRef.current.consider({
+                    video,
+                    faceBox: faceBoxFromServerOval(status.face_oval, video),
+                    build: () => ({
+                      imageBase64: buildFullFrameJpegBase64FromVideo(
+                        video,
+                        FACIAL_ICAO.CAMERA.width.ideal,
+                        FACIAL_ICAO.CAMERA.height.ideal,
+                        0.9
+                      ),
+                      template: frameToTemplate(video, null),
+                    }),
+                  });
+                }
+                // ADR-146: además de las N muestras, el servidor exige
+                // completar el desafío activo (girar cabeza/acercarse-
+                // alejarse) -- sin este chequeo, esta pantalla disparaba
+                // loginWithFace apenas llegaba a N muestras y el backend lo
+                // rechazaba siempre con liveness_challenge_incomplete, sin
+                // mostrar nunca el gesto pedido (regresión real tras
+                // reactivar BEEMETRY_LIVENESS_CHALLENGE_REQUIRED).
+                if (
+                  (status.capture_count || 0) >= FACIAL_ICAO.REQUIRED_VALID_FRAMES &&
+                  challengesPassedRef.current &&
+                  !isVerifyingRef.current
+                ) {
                   isVerifyingRef.current = true;
                   verifyAction();
                 }
               } catch (e) {}
             }, 600);
           } catch (err) {
+            if (cameraCancelledRef.current) {
+              // El modal se cerró mientras acquireFaceCameraStream negociaba
+              // la cámara -- no es un error real, no pisar el estado.
+              return;
+            }
             setBioError("No se pudo iniciar la camara: " + (err as Error).message);
             setBioLoading(false);
           }
         })();
       } else {
+        cameraCancelledRef.current = true;
         if (timerRef.current) clearInterval(timerRef.current);
         if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
         setCameraActive(false);
       }
       return () => {
+        cameraCancelledRef.current = true;
         if (timerRef.current) clearInterval(timerRef.current);
         if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
       };
@@ -483,8 +554,16 @@ function UserManagementView() {
         setBioLoading(true);
         const { buildFullFrameJpegBase64FromVideo, frameToTemplate } = await import('../../../../auth/biometricOvalFrame');
         const { loginWithFace } = await import('../../../../auth/authApi');
-        const img = buildFullFrameJpegBase64FromVideo(videoRef.current!, FACIAL_ICAO.CAMERA.width.ideal, FACIAL_ICAO.CAMERA.height.ideal, 0.9);
-        const tmp = frameToTemplate(videoRef.current!, null);
+        // ADR-158: mejor frame de la etapa 1; sólo si no hay (o venció) se
+        // cae a la captura en vivo, que es el comportamiento anterior.
+        const bestFrame = bestFrameRef.current.takeFresh();
+        if (!bestFrame) {
+          log.warn('[USER_MGMT_BIO] sin mejor candidato de etapa 1, usando captura en vivo');
+        }
+        const img = bestFrame
+          ? bestFrame.payload.imageBase64
+          : buildFullFrameJpegBase64FromVideo(videoRef.current!, FACIAL_ICAO.CAMERA.width.ideal, FACIAL_ICAO.CAMERA.height.ideal, 0.9);
+        const tmp = bestFrame ? bestFrame.payload.template : frameToTemplate(videoRef.current!, null);
         const res = await loginWithFace({ company, username: operatorUsername, imageBase64: img, template: tmp });
         if (res.status === 'authenticated' || res.ok || res.success) onSuccess(res);
         else { setBioError(res.message || "Falla biometria"); isVerifyingRef.current = false; }
@@ -550,9 +629,24 @@ function UserManagementView() {
              <div className="absolute top-4 left-4 flex flex-col gap-1">
                 <div className="bg-[var(--a11y-bg-form)]/80 backdrop-blur px-3 py-1.5 rounded-xl border border-[var(--a11y-border-form)] flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-[9px] font-black text-white uppercase tracking-wider">{faceSamples}/3 Muestras</span>
+                  <span className="text-[9px] font-black text-white uppercase tracking-wider">{faceSamples}/{FACIAL_ICAO.REQUIRED_VALID_FRAMES} Muestras</span>
                 </div>
              </div>
+
+             {ACTIVE_CHALLENGE_ENABLED && cameraActive && !isChallengeSequenceComplete(challengeUiState) && (() => {
+               const chType = currentChallenge(challengeUiState);
+               if (!chType) return null;
+               return (
+                 <div className="absolute top-4 right-4 max-w-[70%] bg-indigo-950/90 backdrop-blur px-3 py-2 rounded-xl border border-indigo-400/40 flex flex-col gap-0.5 z-20">
+                   <span className="text-[8px] font-black text-indigo-300 uppercase tracking-widest">
+                     Desafío {challengeUiState.index + 1} de {challengeUiState.queue.length}
+                   </span>
+                   <span className="text-[11px] font-black text-white uppercase leading-tight">
+                     {t(challengeInstructionKey(chType))}
+                   </span>
+                 </div>
+               );
+             })()}
 
              {!cameraActive && !bioError && (
                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 gap-3">

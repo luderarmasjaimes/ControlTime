@@ -91,6 +91,20 @@ void AppConfig::loadFromEnv() {
     gDatabaseUrl = getenvOr("BEEMETRY_DATABASE_URL", "");
     // Réplica read-only: si no se define, readUrl() usará el primario.
     gReplicaDatabaseUrl = getenvOr("BEEMETRY_REPLICA_DATABASE_URL", "");
+    // Directa a Postgres (sin pgbouncer) para GpuInferenceMutex -- ver
+    // comentario en app_config.hpp junto a gGpuMutexDatabaseUrl.
+    gGpuMutexDatabaseUrl = getenvOr("BEEMETRY_GPU_MUTEX_DATABASE_URL", "");
+    if (gGpuMutexDatabaseUrl.empty() && !gDatabaseUrl.empty()) {
+        // Visible al arrancar el contenedor, no solo por request: si esta
+        // var no está seteada, GpuInferenceMutex cae de nuevo a gDatabaseUrl
+        // (típicamente pgbouncer en POOL_MODE=transaction), reintroduciendo
+        // el riesgo de lock fantasma documentado en gpu_mutex.hpp.
+        std::cerr << "[APP_CONFIG] BEEMETRY_GPU_MUTEX_DATABASE_URL no está "
+                     "definida -- GpuInferenceMutex usará gDatabaseUrl "
+                     "(pgbouncer); ver storage/gpu_mutex.hpp para el riesgo "
+                     "de lock fantasma que esto reintroduce."
+                  << std::endl;
+    }
     gKpiExternalDatabaseUrl = getenvOr("BEEMETRY_KPI_EXTERNAL_DATABASE_URL", "");
     gKpiExternalQuery = getenvOr("BEEMETRY_KPI_EXTERNAL_QUERY", "");
     gSessionTtlMinutes =
@@ -174,6 +188,10 @@ void AppConfig::loadFromEnv() {
         "BEEMETRY_DEEPFACE_SILENTFACE_REQUIRED", "true")) == "true";
     gDeepFaceSilentDermalogFallback = toLowerCopy(getenvOr(
         "BEEMETRY_DEEPFACE_SILENTFACE_DERMALOG_FALLBACK", "false")) == "true";
+    gLivenessChallengeRequired = toLowerCopy(getenvOr(
+        "BEEMETRY_LIVENESS_CHALLENGE_REQUIRED", "true")) == "true";
+    gNaturalBlinkRequired = toLowerCopy(getenvOr(
+        "BEEMETRY_NATURAL_BLINK_REQUIRED", "true")) == "true";
     try {
         gDeepFaceSilentTimeoutMs = std::clamp(
             std::stoi(getenvOr("BEEMETRY_DEEPFACE_SILENTFACE_TIMEOUT_MS", "25000")),
@@ -203,6 +221,8 @@ void AppConfig::loadFromEnv() {
         toLowerCopy(getenvOr("BEEMETRY_BIOMETRIC_DNN_ENABLE", "false")) == "true";
     gPdfExportUrl = getenvOr("BEEMETRY_PDF_EXPORT_URL", "");
     gFrontendInternalOrigin = getenvOr("BEEMETRY_FRONTEND_INTERNAL_ORIGIN", "http://frontend");
+    gPublicOrigin = getenvOr("BEEMETRY_PUBLIC_ORIGIN", "");
+    gFotocheckQrKeyBase64 = getenvOr("BEEMETRY_FOTOCHECK_QR_KEY", "");
     try {
         // Clamp máximo antes 120000 (2 min) -- el sidecar espera CADA
         // widget/gráfico individual (`data-export-ready`) antes de capturar,
@@ -318,6 +338,14 @@ void AppConfig::loadFromEnv() {
     gOllamaChatbotModel = getenvOr("BEEMETRY_OLLAMA_CHATBOT_MODEL", "gemma2:2b");
     gAiEngineUrl = getenvOr("BEEMETRY_AI_ENGINE_URL", "");
     gCartoonOnnxModelPath = getenvOr("BEEMETRY_CARTOON_ONNX_MODEL", "");
+    gAvatarAnimationEngineUrl = getenvOr("BEEMETRY_AVATAR_ANIMATION_ENGINE_URL", "");
+    try {
+        gAvatarAnimationTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_AVATAR_ANIMATION_TIMEOUT_MS", "300000")), 30000,
+            900000);
+    } catch (...) {
+        gAvatarAnimationTimeoutMs = 300000;
+    }
     try {
         gAiEngineTimeoutMs = std::clamp(
             std::stoi(getenvOr("BEEMETRY_AI_ENGINE_TIMEOUT_MS", "500")), 50, 5000);

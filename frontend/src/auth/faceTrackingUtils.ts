@@ -274,6 +274,8 @@ export interface FaceBox {
     height: number;
     landmarks?: unknown;
     isFallback?: boolean;
+    /** Contorno facial real (36 puntos, FACEMESH_FACE_OVAL) en píxeles -- ver mediapipeFaceTracker.ts (ADR-162). */
+    ovalPoints?: { x: number; y: number }[];
 }
 
 /**

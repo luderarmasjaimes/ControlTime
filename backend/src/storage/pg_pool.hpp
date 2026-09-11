@@ -100,6 +100,18 @@ public:
         return inst;
     }
 
+    // Pool SEPARADO y pequeño para GpuInferenceMutex (storage/gpu_mutex.hpp).
+    // Va directo a Postgres (host=db), sin pgbouncer -- ver comentario en
+    // app_config.hpp junto a gGpuMutexDatabaseUrl. Debe ser un pool propio
+    // por el mismo motivo que replica(): mezclar esta URL con instance()
+    // (que sí va por pgbouncer) devolvería conexiones al servidor
+    // equivocado.
+    /** @brief Pool singleton dedicado a GpuInferenceMutex, conectado directo a Postgres (sin pgbouncer). Nunca compartir con `instance()`/`replica()`. */
+    static PgPool& gpuMutex() {
+        static PgPool inst;
+        return inst;
+    }
+
     /** @brief Toma prestada una conexión idle (o crea una nueva hasta `max_size_`) hacia `conn_str`; bloquea si el pool está lleno y sin conexiones idle. @return Un `Lease` RAII — la conexión vuelve al pool (o se descarta si quedó en mal estado) al destruirse. */
     Lease acquire(const std::string& conn_str) {
         std::unique_lock<std::mutex> lk(mtx_);

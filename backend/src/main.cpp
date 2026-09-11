@@ -41,6 +41,10 @@
 #include "auth/auth_routes.hpp"
 #include "auth/org_access_routes.hpp"
 #include "auth/mfa_routes.hpp"
+#include "auth/contact_otp_routes.hpp"
+#include "auth/fotocheck_routes.hpp"
+#include "auth/fotocheck_share_links.hpp"
+#include "notify/notify_service.hpp"
 #include "auth/totp.hpp"
 #include "auth/tax_id.hpp"
 #include "auth/jwt.hpp"
@@ -50,6 +54,7 @@
 #include "biometric/face_analysis.hpp"
 #include "biometric/ai_engine_client.hpp"
 #include "biometric/biometric_routes.hpp"
+#include "biometric/realtime_face_tracker.hpp"
 #include "mining/mining_routes.hpp"
 #include "mining/mining_gateway.hpp"
 #include "mining/telemetry_ingest.hpp"
@@ -104,6 +109,7 @@ using http_utils::makeJsonResponse;
 using http_utils::makeCsvResponse;
 using http_utils::makeJpegResponse;
 using http_utils::makeId;
+using http_utils::makeCanonicalUuid;
 using http_utils::hashPassword;
 using http_utils::nowIso8601;
 using http_utils::isValidDni;
@@ -160,6 +166,7 @@ using biometric::buildFaceLoginProbe;
 using biometric::fetchFaceEmbeddingFromAiEngine;
 using biometric::fetchCartoonAvatarBestEffort;
 using biometric::getAccessoryDnnContext;
+using biometric::resetRealtimeFaceTracker;
 
 // ── compile-time constants ─────────────────────────────────────────────────
 static constexpr const char *kAuthUserNotFoundMsg    = AppConfig::kAuthUserNotFoundMsg;
@@ -233,6 +240,7 @@ handleResetCapture(const http::request<http::string_body> &req,
     auto &slot = getOrCreateBiometricCaptureSession(sessionId);
     slot.state = BiometricCaptureRuntimeState{};
     slot.capturedImages.clear();
+    resetRealtimeFaceTracker(sessionId);
     return makeJsonResponse(http::status::ok, json::object{{"status", "reset"}});
 }
 
@@ -381,6 +389,26 @@ handleRegister(const http::request<http::string_body> &req,
                 json::object{{"error", "face_template or face_image_base64 is required"}});
         }
 
+        // ADR-142: mismo gate que handleLoginFace -- registrar una plantilla
+        // biométrica también exige haber cruzado el gate de calidad ICAO (3
+        // lecturas) y completado los 2 desafíos de liveness, verificados
+        // server-side en /api/process_frame. Sin esto, cualquiera podía
+        // enrolar la "cara" de otra persona (foto/máscara) sin nunca haber
+        // demostrado estar vivo frente a la cámara.
+        {
+            const std::string captureSessionId = captureSessionIdFromRequest(req);
+            std::scoped_lock lk(gBiometricCaptureMutex);
+            auto &slot = getOrCreateBiometricCaptureSession(captureSessionId);
+            if (!slot.state.qualityGateReached || !slot.state.challenge.complete) {
+                return makeJsonResponse(
+                    http::status::bad_request,
+                    json::object{{"error", "liveness_challenge_incomplete"},
+                                 {"detail",
+                                  "Complete la validación facial (lecturas ICAO y "
+                                  "desafíos de vida) antes de registrarse."}});
+            }
+        }
+
         const std::string company   = json::value_to<std::string>(obj.at("company"));
         const std::string firstName = json::value_to<std::string>(obj.at("first_name"));
         const std::string lastName  = json::value_to<std::string>(obj.at("last_name"));
@@ -433,18 +461,20 @@ handleRegister(const http::request<http::string_body> &req,
             (void)decodeBase64(bustPayloadEarly, bustBytes);
         }
 
-        // El avatar debe salir del recorte del óvalo (solo rostro, sin fondo
-        // real) -- portraitBytes es la fuente correcta. bustBytes/rawRegImage
-        // quedan solo como fallback si el óvalo no llegó o el AI engine lo
-        // rechaza (ver cadena de fallback más abajo).
+        // Cambiado 2026-09-04 (hallazgo real, ver ADR-141/spec 008): el
+        // avatar salía primero del recorte OVAL (portraitBytes), que el
+        // servidor Python vuelve a recortar con landmarks
+        // (_bust_roi_mask_from_mediapipe) porque llega ya enmascarado sobre
+        // negro. Los tres incidentes reales de encuadre de esta sesión
+        // (falso positivo de formato óvalo, oclusión con fondo blanco, zoom
+        // excesivo) salieron todos de ese doble recorte -- el camino
+        // rectangular (bustBytes, ya encuadrado en el cliente con la misma
+        // geometría del óvalo guía, sin máscara ni segundo recorte del lado
+        // servidor) no produjo ninguno. bustBytes pasa a ser la fuente
+        // primaria; portraitBytes/rawRegImage quedan como fallback si el
+        // rectángulo no llegó o el AI engine lo rechaza (ver cadena de
+        // fallback más abajo).
         std::optional<std::future<biometric::AiEngineCartoonResult>> cartoonFut;
-        if (!portraitBytes.empty()) {
-            std::vector<unsigned char> portraitCopy = portraitBytes;
-            cartoonFut.emplace(std::async(std::launch::async, [portraitCopy]() {
-                return fetchCartoonAvatarBestEffort(portraitCopy);
-            }));
-            regLog("cartoon_async_started_parallel_with_embedding");
-        }
 
         std::vector<double> faceTemplate;
         // Hallazgo de seguridad 2026-08-10 (db_scripts/53): un face_template
@@ -497,6 +527,30 @@ handleRegister(const http::request<http::string_body> &req,
                 biometricProvider = face.provider;
                 qualityScore = face.qualityScore;
             }
+        }
+
+        // Hallazgo real 2026-09-09: este disparo vivía ANTES de
+        // fetchFaceEmbeddingFromAiEngine, "en paralelo" a propósito -- pero
+        // /cartoon_avatar y /face_embedding pegan al MISMO proceso ai_engine
+        // (BEEMETRY_AI_ENGINE_URL, ver docker-compose.yml), así que la
+        // generación de avatar (pesada de GPU, con reintentos de fallback
+        // visibles como [AVATAR_DIFFUSION] classic_fallback status=500)
+        // competía por el mismo proceso/GPU con el embedding facial que
+        // gatea la respuesta HTTP. Confirmado en logs reales:
+        // embedding_ai_engine_begin -> embedding_ai_engine_end tardando
+        // 40-56s (normal: <2s) exactamente en registros donde este future se
+        // armaba antes -- la persona veía la captura "colgada" en 5/5 hasta
+        // que el cliente cortaba por su propio timeout de 120s. Mover el
+        // arranque a DESPUÉS de resolver faceTemplate no cambia nada del
+        // resultado (sigue siendo best-effort y se recolecta en el hilo de
+        // fondo más abajo, nunca bloquea la respuesta) -- sólo evita que
+        // compita por el mismo proceso mientras el embedding está en vuelo.
+        if (!bustBytes.empty()) {
+            std::vector<unsigned char> bustCopy = bustBytes;
+            cartoonFut.emplace(std::async(std::launch::async, [bustCopy]() {
+                return fetchCartoonAvatarBestEffort(bustCopy);
+            }));
+            regLog("cartoon_async_started_after_embedding");
         }
 
         if (faceTemplate.size() < 100) {
@@ -592,7 +646,7 @@ handleRegister(const http::request<http::string_body> &req,
         regLog("post_validate");
 
         AuthUser created;
-        created.id           = makeId();
+        created.id           = makeCanonicalUuid();
         created.company      = company;
         created.firstName    = firstName;
         created.lastName     = lastName;
@@ -608,6 +662,11 @@ handleRegister(const http::request<http::string_body> &req,
         created.mobile       = mobile;
         created.email        = email;
         created.avatarCartoonBase64.clear();
+        // Fotocheck (ADR-161-fotocheck): foto real, no caricaturizada, del
+        // mismo recorte rectangular (bustPayloadEarly) que ya alimenta el
+        // avatar cartoon -- ver comentario largo arriba sobre por qué el
+        // bust-rect es la fuente primaria (sin doble recorte/máscara).
+        created.idPhotoBase64 = bustPayloadEarly;
 
         regLog("pre_db_insert");
 
@@ -707,16 +766,16 @@ handleRegister(const http::request<http::string_body> &req,
 
         const bool deferCartoonWork = cartoonFut.has_value() ||
                                       !rawRegImage.empty() ||
-                                      !bustBytes.empty();
+                                      !portraitBytes.empty();
         if (deferCartoonWork) {
             auto bgCartoonOpt = std::move(cartoonFut);
-            std::vector<unsigned char> bgRawReg = std::move(rawRegImage);
-            std::vector<unsigned char> bgBust   = std::move(bustBytes);
+            std::vector<unsigned char> bgRawReg    = std::move(rawRegImage);
+            std::vector<unsigned char> bgPortrait  = std::move(portraitBytes);
             const auto storageModeCapture = cfg.gAuthStorageMode;
             const auto dbUrlCapture       = cfg.gDatabaseUrl;
             std::thread(
                 [bgCartoonOpt = std::move(bgCartoonOpt),
-                 bgRawReg = std::move(bgRawReg), bgBust = std::move(bgBust),
+                 bgRawReg = std::move(bgRawReg), bgPortrait = std::move(bgPortrait),
                  userId = created.id, regDni = dni, regUser = username,
                  regCompany = company, dataRoot,
                  storageModeCapture, dbUrlCapture]() mutable {
@@ -736,7 +795,7 @@ handleRegister(const http::request<http::string_body> &req,
                     if (bgCartoonOpt.has_value()) {
                         try {
                             auto cartoonP = bgCartoonOpt->get();
-                            bgLog("portrait_future_done");
+                            bgLog("bust_future_done");
                             if (cartoonP.ok()) {
                                 b64 = std::move(cartoonP.imageBase64);
                                 hdB64 = std::move(cartoonP.imageHdBase64);
@@ -748,9 +807,9 @@ handleRegister(const http::request<http::string_body> &req,
                             std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: unknown\n";
                         }
                     }
-                    if (b64.empty() && !bgBust.empty()) {
-                        bgLog("cartoon_sync_bust_bg");
-                        auto cartoon = fetchCartoonAvatarBestEffort(bgBust);
+                    if (b64.empty() && !bgPortrait.empty()) {
+                        bgLog("cartoon_sync_portrait_bg");
+                        auto cartoon = fetchCartoonAvatarBestEffort(bgPortrait);
                         if (cartoon.ok()) {
                             b64 = std::move(cartoon.imageBase64);
                             hdB64 = std::move(cartoon.imageHdBase64);
@@ -838,6 +897,50 @@ handleRegister(const http::request<http::string_body> &req,
                 })
                 .detach();
             regLog("cartoon_bg_detached");
+        }
+
+        // Fotocheck (2026-09-08): link opaco + email/WhatsApp de aviso, en
+        // background -- no debe agregar latencia (SMTP/WhatsApp Graph API)
+        // ni poder fallar la respuesta de registro que el usuario ya está
+        // esperando. Solo Postgres (fotocheck_share_links no existe en modo
+        // File) y solo si realmente se capturó una foto para mostrar.
+        if (cfg.gAuthStorageMode == AuthStorageMode::Postgres && !created.idPhotoBase64.empty()) {
+            const auto dbUrlCapture = cfg.gDatabaseUrl;
+            const auto publicOriginCapture = cfg.gPublicOrigin;
+            std::thread(
+                [userId = created.id, dbUrlCapture, publicOriginCapture,
+                 email = created.email, mobile = created.mobile]() {
+                    if (publicOriginCapture.empty()) {
+                        std::cerr << "[FOTOCHECK] BEEMETRY_PUBLIC_ORIGIN no configurado -- "
+                                     "se omite el envío del link (evita mandar una URL rota)"
+                                  << std::endl;
+                        return;
+                    }
+                    std::string linkError;
+                    const std::string token =
+                        auth::fotocheck::getOrCreateFotocheckShareLinkPg(dbUrlCapture, userId,
+                                                                         linkError);
+                    if (token.empty()) {
+                        std::cerr << "[FOTOCHECK] link: " << linkError << std::endl;
+                        return;
+                    }
+                    const std::string url = publicOriginCapture + "/api/fotocheck/" + token;
+                    notify::NotifyRequest req;
+                    req.recipientEmail = email;
+                    // El canal "whatsapp" de notify::dispatch lee
+                    // recipientPhoneE164 -- acá va el CELULAR real de la
+                    // persona (mobile del formulario de registro), no un
+                    // fijo opcional.
+                    req.recipientPhoneE164 = mobile;
+                    req.title = "Tu fotocheck Beemetry";
+                    req.body = "Aquí está tu fotocheck: " + url +
+                               " -- puedes mostrarlo desde tu celular o imprimirlo.";
+                    req.channels = {"email", "whatsapp"};
+                    req.sourceApp = "fotocheck";
+                    (void)notify::dispatch(dbUrlCapture, req);
+                })
+                .detach();
+            regLog("fotocheck_bg_detached");
         }
 
         const auto sessionToken = issueAuthSession(created);
@@ -1385,6 +1488,50 @@ handleLoginFace(const http::request<http::string_body> &req,
                   << " has_template=" << (hasTemplate ? "1" : "0")
                   << " has_image=" << (hasImage ? "1" : "0")
                   << " has_location=" << (geoAuditSuffix.empty() ? "0" : "1") << std::endl;
+
+        // ADR-142: el login facial exige una sesión de captura
+        // (X-Capture-Session-Id) que ya haya cruzado el gate de calidad ICAO
+        // (3 lecturas válidas, ver kRequiredValidCaptureFrames) Y completado
+        // los 2 desafíos de liveness activa (parpadeo/boca/giro, verificados
+        // con MediaPipe frame a frame en /api/process_frame -- nunca los
+        // decide el cliente). Sin esto, tanto face_image_base64 como el
+        // face_template crudo (ver comentario abajo: "el camino de menor
+        // resistencia de todo el sistema de auth") se podían enviar sin que
+        // nadie hubiera probado nunca estar frente a una cámara con vida.
+        //
+        // Hallazgo real 2026-09-07: este chequeo vivía DESPUÉS de armar
+        // LoginAttemptGuard/loginRateCheck (más abajo), así que cada vez que
+        // el cliente disparaba el login una fracción de segundo antes de que
+        // el servidor terminara de confirmar qualityGateReached/
+        // challenge.complete (una carrera de TIMING normal, no un rechazo
+        // real -- el propio servidor vuelve a quedar completo poco después,
+        // sin que la persona haga nada distinto), el destructor de
+        // LoginAttemptGuard contaba ese rechazo como un intento FALLIDO
+        // contra el límite de 5 intentos de la cuenta. Un reintento
+        // automático del cliente (para autocurar esa misma carrera) podía
+        // entonces agotar el cupo real en segundos y bloquear la cuenta 5
+        // minutos por un problema que nunca fue del usuario. Se adelanta el
+        // chequeo a ANTES del rate limiting -- de esta forma nunca consume
+        // cupo, igual que ya hace handleRegister con el mismo gate.
+        {
+            const std::string captureSessionId = captureSessionIdFromRequest(req);
+            std::scoped_lock lk(gBiometricCaptureMutex);
+            auto &slot = getOrCreateBiometricCaptureSession(captureSessionId);
+            if (!slot.state.qualityGateReached || !slot.state.challenge.complete) {
+                std::cout << "[AUTH_FACE] reject: liveness challenge incomplete "
+                             "(quality_gate="
+                          << (slot.state.qualityGateReached ? "1" : "0")
+                          << " challenges_complete="
+                          << (slot.state.challenge.complete ? "1" : "0") << ")"
+                          << std::endl;
+                return makeJsonResponse(
+                    http::status::bad_request,
+                    json::object{{"error", "liveness_challenge_incomplete"},
+                                 {"detail",
+                                  "Complete la validación facial (lecturas ICAO y "
+                                  "desafíos de vida) antes de intentar el login."}});
+            }
+        }
 
         // Rate limiting a nivel de cuenta, igual que el login por contraseña
         // (auditoría de seguridad 2026-08-02). Este endpoint acepta un
@@ -2468,6 +2615,8 @@ int main() {
         auth::registerRoutes(gRouter);
         auth::org_access::registerRoutes(gRouter);
         auth::mfa::registerRoutes(gRouter);
+        auth::contact_otp::registerRoutes(gRouter);  // OTP validación contacto pre-registro (ADR-2026-09-07)
+        auth::fotocheck::registerRoutes(gRouter);    // credencial foto+QR cifrado (2026-09-08)
         biometric::registerRoutes(gRouter);
         mining::registerRoutes(gRouter);
         mining_iot::registerRoutes(gRouter);
@@ -2513,7 +2662,9 @@ int main() {
                   << ", deepface_silentface required: "
                   << (cfg.gDeepFaceSilentRequired ? "true" : "false")
                   << ", deepface_silentface dermalog fallback: "
-                  << (cfg.gDeepFaceSilentDermalogFallback ? "true" : "false") << std::endl;
+                  << (cfg.gDeepFaceSilentDermalogFallback ? "true" : "false")
+                  << ", liveness challenge required: "
+                  << (cfg.gLivenessChallengeRequired ? "true" : "false") << std::endl;
         auto &dnnCtx = getAccessoryDnnContext();
         std::cout << "biometric dnn: "
                   << (cfg.gBiometricDnnEnabled ? "enabled" : "disabled")

@@ -3,9 +3,12 @@
 #include "auth_session.hpp"
 #include "auth_storage_pg.hpp"
 #include "auth_storage_file.hpp"
+#include "avatar_animation_job.hpp"
+#include "avatar_animation_storage_pg.hpp"
 #include "permissions.hpp"
 #include "tax_id.hpp"
 #include "tax_registry_client.hpp"
+#include "../biometric/avatar_animation_client.hpp"
 #include "../biometric/face_analysis.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
@@ -19,18 +22,21 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "storage/pg_pool.hpp"
 #include "storage/pg_result.hpp"
 
 using http_utils::makeJsonResponse;
+using http_utils::makeOctetResponse;
 using http_utils::makePngResponse;
 using http_utils::routePathOnly;
 using config::AppConfig;
@@ -118,6 +124,97 @@ static http::response<http::string_body> buildAuthLoginCheckIdentityResponse(
   return makeJsonResponse(
       http::status::ok,
       json::object{{"ok", true}, {"username", lu.resolvedUsername}});
+}
+
+/**
+ * Pre-chequeo de DNI disponible ANTES de la captura facial (hallazgo real
+ * 2026-09-04): sin esto, un DNI duplicado recién se detectaba al final de
+ * todo el flujo de registro (5 lecturas ICAO + parpadeo natural + desafío
+ * activo, ~1-2 minutos) -- una restricción que no depende de nada
+ * biométrico. `dni` es UNIQUE globalmente en auth_users (una persona, una
+ * cuenta en toda la plataforma, sin importar la empresa), así que esto NO
+ * se puede resolver reusando check-identity (que sí es por-empresa) -- ver
+ * checkDniExistsPg, misma query exacta que el chequeo real de registerUserPg
+ * para que este pre-chequeo nunca diverja del resultado final.
+ */
+static http::response<http::string_body> buildAuthRegisterCheckDniResponse(
+    std::string dniRaw) {
+  auto &cfg = AppConfig::instance();
+  const std::string dni = trimAuthParam(std::move(dniRaw));
+  if (dni.empty()) {
+    return makeJsonResponse(
+        http::status::bad_request,
+        json::object{{"ok", false}, {"reason", "bad_request"}, {"error", "Indique el DNI."}});
+  }
+  if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+    // Modo archivo: sin tabla auth_users, no hay nada que pre-chequear --
+    // el registro real en este modo tampoco impone unicidad global de DNI.
+    return makeJsonResponse(http::status::ok,
+                            json::object{{"ok", true}, {"exists", false}});
+  }
+#if HAS_LIBPQ
+  bool exists = false;
+  std::string error;
+  if (!checkDniExistsPg(cfg.gDatabaseUrl, dni, exists, error)) {
+    return makeJsonResponse(
+        http::status::internal_server_error,
+        json::object{{"ok", false},
+                     {"reason", "server_error"},
+                     {"error", error.empty() ? "No se pudo comprobar el DNI." : error}});
+  }
+  return makeJsonResponse(http::status::ok,
+                          json::object{{"ok", true}, {"exists", exists}});
+#else
+  return makeJsonResponse(http::status::not_implemented,
+                          json::object{{"error", "postgres_required"}});
+#endif
+}
+
+/**
+ * Pre-chequeo de username disponible ANTES de la captura facial (hallazgo
+ * real 2026-09-04, mismo motivo que buildAuthRegisterCheckDniResponse de
+ * arriba): reproducido en vivo -- un registro completo (5 lecturas ICAO +
+ * parpadeo natural + desafío activo) recién terminaba rechazado al final
+ * con "username already exists in this company". A diferencia del DNI
+ * (UNIQUE global), el username es UNIQUE por empresa -- ver
+ * checkUsernameExistsPg, misma query exacta que el chequeo real de
+ * registerUserPg para que este pre-chequeo nunca diverja del resultado
+ * final.
+ */
+static http::response<http::string_body> buildAuthRegisterCheckUsernameResponse(
+    std::string companyRaw, std::string usernameRaw) {
+  auto &cfg = AppConfig::instance();
+  const std::string company = trimAuthParam(std::move(companyRaw));
+  const std::string username = trimAuthParam(std::move(usernameRaw));
+  if (company.empty() || username.empty()) {
+    return makeJsonResponse(
+        http::status::bad_request,
+        json::object{{"ok", false},
+                     {"reason", "bad_request"},
+                     {"error", "Indique la empresa y el usuario."}});
+  }
+  if (cfg.gAuthStorageMode != AuthStorageMode::Postgres) {
+    // Modo archivo: sin tabla auth_users, no hay nada que pre-chequear --
+    // el registro real en este modo tampoco impone esta unicidad.
+    return makeJsonResponse(http::status::ok,
+                            json::object{{"ok", true}, {"exists", false}});
+  }
+#if HAS_LIBPQ
+  bool exists = false;
+  std::string error;
+  if (!checkUsernameExistsPg(cfg.gDatabaseUrl, company, username, exists, error)) {
+    return makeJsonResponse(
+        http::status::internal_server_error,
+        json::object{{"ok", false},
+                     {"reason", "server_error"},
+                     {"error", error.empty() ? "No se pudo comprobar el usuario." : error}});
+  }
+  return makeJsonResponse(http::status::ok,
+                          json::object{{"ok", true}, {"exists", exists}});
+#else
+  return makeJsonResponse(http::status::not_implemented,
+                          json::object{{"error", "postgres_required"}});
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +489,7 @@ handleAdminCreateUser(const http::request<http::string_body> &req,
   if (const auto *v = obj.if_contains("mobile")) if (v->is_string()) mobile = json::value_to<std::string>(*v);
 
   AuthUser created;
-  created.id           = http_utils::makeId();
+  created.id           = http_utils::makeCanonicalUuid();
   created.company       = session->company;   // misma empresa/tenant del admin que crea
   created.firstName     = firstName;
   created.lastName      = lastName;
@@ -678,6 +775,59 @@ static std::optional<AuthUser> findCurrentAvatarUser(
                            : std::optional<AuthUser>(*it);
 }
 
+/** GET /api/auth/avatar/thumb
+ * Miniatura (base64) del avatar del usuario de la sesión, o `pending` si
+ * todavía no existe.
+ *
+ * Existe por un problema real reportado tras un registro (2026-09-04): el
+ * avatar se genera en un hilo detached posterior al alta
+ * (AUTH_REGISTER_CARTOON_BG en main.cpp, 15-40 s entre los 3 niveles de
+ * fallback y las 3 seeds de difusión), así que la respuesta de
+ * /api/auth/register sale SIN avatar a propósito -- para no bloquear el
+ * alta. Pero el frontend guardaba esa sesión en localStorage y no volvía a
+ * consultar nunca: el usuario recién registrado veía el placeholder de
+ * iniciales durante toda su primera sesión, y el avatar recién aparecía
+ * tras cerrar sesión y volver a entrar (el login sí lee la fila ya
+ * actualizada). Este endpoint permite al cliente completar la sesión en
+ * cuanto el avatar está listo, sin re-login.
+ *
+ * Mismas garantías que /api/auth/avatar/hd: resuelve por sesión, nunca por
+ * un user_id del cliente (evita IDOR), y revalida que el usuario siga
+ * activo antes de devolver nada.
+ */
+static http::response<http::string_body> handleMyAvatarThumb(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+  if (!isSafeAvatarUserId(session->userId)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_user_id"}});
+  }
+  auto &cfg = AppConfig::instance();
+  const std::string dataRoot =
+      config::getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+  const auto user = findCurrentAvatarUser(cfg, dataRoot, session->userId);
+  if (!user) {
+    return makeJsonResponse(http::status::not_found,
+                            json::object{{"error", "avatar_not_available"}});
+  }
+  if (user->avatarCartoonBase64.empty()) {
+    // 200 + "pending", no 404: la ausencia es un estado legítimo y esperado
+    // durante los primeros segundos de vida de la cuenta, no un error que
+    // el cliente deba tratar como fallo.
+    return makeJsonResponse(http::status::ok,
+                            json::object{{"status", "pending"}});
+  }
+  return makeJsonResponse(
+      http::status::ok,
+      json::object{{"status", "ready"},
+                   {"avatar_cartoon_base64", user->avatarCartoonBase64}});
+}
+
 /** GET /api/auth/avatar/hd
  * Devuelve exclusivamente el avatar del usuario de la sesión. Nunca acepta
  * un user_id del cliente: evita IDOR y mantiene el derivado biométrico privado.
@@ -787,6 +937,222 @@ static http::response<http::string_body> handleMyAvatarHd(
         json::object{{"error", "avatar_hd_generation_failed"},
                      {"detail", ex.what()}});
   }
+}
+
+// ── Avatar ANIMADO (ADR-150, integración a producto) ───────────────────────
+// Job async (nunca corre SadTalker dentro del request -- 200-300s reales
+// medidos, mismo razonamiento ADR-023 ya aplicado a report_export_jobs.cpp).
+
+/** POST /api/auth/avatar/animation
+ * Crea el job en 'queued' y dispara el worker en un hilo de fondo. Body JSON
+ * opcional: {"kind": "welcome"|"onboarding"|"report"|"kpi"|"alarm_loop"}
+ * (default "welcome"; welcome/onboarding/report/alarm_loop cableados a
+ * producto desde ADR-164, "kpi" sigue sin disparador real en la UI -- ver
+ * defaultScriptForKind en avatar_animation_job.cpp),
+ * {"text": "..."} (guion para TTS local; si se omite, guion por defecto
+ * según kind), {"transparent_bg": bool} (default true). */
+static http::response<http::string_body> handleCreateAvatarAnimation(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+  if (!isSafeAvatarUserId(session->userId)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_user_id"}});
+  }
+  if (AppConfig::instance().gAvatarAnimationEngineUrl.empty()) {
+    return makeJsonResponse(http::status::service_unavailable,
+                            json::object{{"error", "avatar_animation_disabled"}});
+  }
+
+  std::string kind = "welcome";
+  std::string text;
+  bool transparentBg = true;
+  try {
+    if (!req.body().empty()) {
+      auto payload = json::parse(req.body());
+      if (payload.is_object()) {
+        const auto &obj = payload.as_object();
+        if (obj.if_contains("kind") && obj.at("kind").is_string()) {
+          kind = json::value_to<std::string>(obj.at("kind"));
+        }
+        if (obj.if_contains("text") && obj.at("text").is_string()) {
+          text = json::value_to<std::string>(obj.at("text"));
+        }
+        if (obj.if_contains("transparent_bg") && obj.at("transparent_bg").is_bool()) {
+          transparentBg = obj.at("transparent_bg").as_bool();
+        }
+      }
+    }
+  } catch (...) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_body"}});
+  }
+  static const std::set<std::string> kValidKinds = {
+      "welcome", "onboarding", "report", "kpi", "alarm_loop"};
+  if (!kValidKinds.count(kind)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_kind"}});
+  }
+
+  // Guard anti-duplicado real (hallazgo sesión 2026-09-09, ver comentario en
+  // avatar_animation_storage_pg.hpp): pase lo que pase del lado del cliente
+  // (remonte del widget, doble click, lo que sea), nunca lanzar un segundo
+  // SadTalker real mientras uno para el mismo (userId, kind) ya está
+  // 'queued'/'running' -- se devuelve el job existente en vez de crear otro.
+  {
+    AvatarAnimationJob inProgress;
+    if (findInProgressAvatarAnimationJobPg(AppConfig::instance().gDatabaseUrl,
+                                           session->userId, kind, inProgress)) {
+      return makeJsonResponse(
+          http::status::accepted,
+          json::object{{"job_id", inProgress.jobId}, {"status", inProgress.status}});
+    }
+  }
+
+  // Cache de video (hallazgo real, sesión 2026-09-09: usuario reportó ~4 min
+  // de espera en CADA login para el mismo saludo). El guion por defecto de
+  // cada kind es fijo (defaultScriptForKind, avatar_animation_job.cpp) --
+  // sin `text` custom, el resultado es el mismo mientras no cambie el
+  // avatar HD fuente. Reusar el último job exitoso evita pagar los ~227s
+  // reales de SadTalker+matting otra vez; el archivo de video se compara
+  // contra la fecha del avatar HD en disco para invalidar el cache
+  // automáticamente si el usuario regeneró su avatar después.
+  if (text.empty()) {
+    AvatarAnimationJob cached;
+    if (findLatestSuccessfulAvatarAnimationJobPg(AppConfig::instance().gDatabaseUrl,
+                                                  session->userId, kind, cached)) {
+      try {
+        const std::string dataRoot =
+            config::getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+        const std::filesystem::path videoPath(cached.storageUri);
+        const std::filesystem::path avatarHdPath =
+            std::filesystem::path(dataRoot) / "auth" / "avatars_hd" /
+            (session->userId + ".png");
+        if (std::filesystem::is_regular_file(videoPath)) {
+          const auto videoTime = std::filesystem::last_write_time(videoPath);
+          bool stillFresh = true;
+          if (std::filesystem::is_regular_file(avatarHdPath)) {
+            stillFresh = std::filesystem::last_write_time(avatarHdPath) <= videoTime;
+          }
+          if (stillFresh) {
+            return makeJsonResponse(
+                http::status::accepted,
+                json::object{{"job_id", cached.jobId}, {"status", "success"}, {"cached", true}});
+          }
+        }
+      } catch (const std::exception &) {
+        // Cualquier error de filesystem (permisos, path raro) -- degrada a
+        // generar uno nuevo, nunca bloquea al usuario por el cache.
+      }
+    }
+  }
+
+  std::string jobId, error;
+  if (!createAvatarAnimationJobPg(AppConfig::instance().gDatabaseUrl, session->userId,
+                                  session->tenantId, kind, jobId, error)) {
+    // Diagnóstico real (hallazgo sesión 2026-09-08): este 500 se reproducía
+    // en vivo (3 intentos reales en el log de nginx) sin ningún rastro en
+    // los logs del backend -- el detalle solo viajaba al cliente en el JSON
+    // de error, nunca a stderr. Logueado acá para no repetir esa
+    // investigación a ciegas la próxima vez.
+    std::cerr << "[AVATAR_ANIMATION] createAvatarAnimationJobPg falló userId="
+              << session->userId << " tenantId='" << session->tenantId
+              << "' kind=" << kind << " error=" << error << std::endl;
+    return makeJsonResponse(
+        http::status::internal_server_error,
+        json::object{{"error", "avatar_animation_job_create_failed"}, {"detail", error}});
+  }
+
+  std::thread(runAvatarAnimationJob, jobId, session->userId, kind, text, transparentBg)
+      .detach();
+
+  return makeJsonResponse(http::status::accepted,
+                          json::object{{"job_id", jobId}, {"status", "queued"}});
+}
+
+/** GET /api/auth/avatar/animation/{jobId}[/download]
+ * Polling (shape pending/ready, mismo criterio que handleMyAvatarThumb) y
+ * descarga del video/WebM final. Job SIEMPRE filtrado por el userId de la
+ * sesión (guard IDOR, mismo criterio que handleMyAvatarHd) -- nunca por un
+ * user_id del cliente. */
+static http::response<http::string_body> handleGetAvatarAnimation(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+
+  const std::string path = routePathOnly(std::string(req.target()));
+  static const std::string kPrefix = "/api/auth/avatar/animation/";
+  if (path.size() <= kPrefix.size() || path.compare(0, kPrefix.size(), kPrefix) != 0) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "missing_job_id"}});
+  }
+  std::string rest = path.substr(kPrefix.size());
+  static const std::string kDownloadSuffix = "/download";
+  bool wantsDownload = false;
+  if (rest.size() > kDownloadSuffix.size() &&
+      rest.compare(rest.size() - kDownloadSuffix.size(), kDownloadSuffix.size(),
+                  kDownloadSuffix) == 0) {
+    wantsDownload = true;
+    rest = rest.substr(0, rest.size() - kDownloadSuffix.size());
+  }
+  if (rest.empty() || rest.find('/') != std::string::npos) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "missing_job_id"}});
+  }
+
+  AvatarAnimationJob job;
+  std::string error;
+  if (!getAvatarAnimationJobPg(AppConfig::instance().gDatabaseUrl, rest, session->userId, job,
+                               error)) {
+    return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+  }
+
+  if (!wantsDownload) {
+    return makeJsonResponse(
+        http::status::ok,
+        json::object{{"job_id", job.jobId},   {"kind", job.kind},
+                     {"status", job.status},   {"error_message", job.errorMessage},
+                     {"created_at", job.createdAt}, {"started_at", job.startedAt},
+                     {"completed_at", job.completedAt}});
+  }
+
+  if (job.status != "success" || job.storageUri.empty()) {
+    return makeJsonResponse(http::status::conflict,
+                            json::object{{"error", "avatar_animation_job_not_ready"}});
+  }
+  std::ifstream ifs(job.storageUri, std::ios::binary);
+  if (!ifs) {
+    return makeJsonResponse(http::status::internal_server_error,
+                            json::object{{"error", "avatar_animation_file_missing"}});
+  }
+  std::string bytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  const bool isWebm = job.storageUri.size() >= 5 &&
+      job.storageUri.compare(job.storageUri.size() - 5, 5, ".webm") == 0;
+  // NO usar makeOctetResponse acá (hallazgo real, sesión 2026-09-09): pone
+  // Content-Type: application/octet-stream a propósito para descargas
+  // genéricas (informes/exports, ver report_routes.cpp) -- pero
+  // fetchAvatarAnimationVideo() en el frontend (authApi.ts) valida
+  // `blob.type.startsWith('video/')` antes de aceptar la respuesta, así que
+  // CADA descarga fallaba esa validación pese a que el archivo bajaba
+  // perfectamente bien (200 OK, bytes reales) -- el widget nunca podía
+  // mostrar un video ya generado con éxito, reintentando en un bucle hasta
+  // agotar el sondeo. Respuesta propia con el Content-Type real del video.
+  http::response<http::string_body> res{http::status::ok, 11};
+  res.set(http::field::content_type, isWebm ? "video/webm" : "video/mp4");
+  res.set(http::field::content_disposition,
+         "inline; filename=\"avatar_animado" + std::string(isWebm ? ".webm" : ".mp4") + "\"");
+  res.set("X-Content-Type-Options", "nosniff");
+  res.body() = std::move(bytes);
+  res.prepare_payload();
+  return res;
 }
 
 // /api/auth/companies/{company_id} — mismo patrón que usernameFromTenantsPath:
@@ -1250,6 +1616,90 @@ void registerRoutes(router::Router &r) {
 #endif
         });
 
+  // POST /api/auth/register/check-dni — pre-chequeo de DNI, sin sesión (se
+  // usa ANTES de crear la cuenta), ver buildAuthRegisterCheckDniResponse.
+  r.post("/api/auth/register/check-dni",
+         [](const http::request<http::string_body> &req,
+            const std::unordered_map<std::string, std::string> &) {
+           try {
+             auto val = json::parse(req.body());
+             if (!val.is_object()) {
+               return makeJsonResponse(
+                   http::status::bad_request,
+                   json::object{{"ok", false}, {"reason", "bad_request"}, {"error", "invalid JSON body"}});
+             }
+             const auto &obj = val.as_object();
+             std::string dni = obj.if_contains("dni") && obj.at("dni").is_string()
+                                    ? json::value_to<std::string>(obj.at("dni"))
+                                    : std::string();
+             return buildAuthRegisterCheckDniResponse(std::move(dni));
+           } catch (const std::exception &ex) {
+             return makeJsonResponse(http::status::bad_request,
+                                     json::object{{"ok", false}, {"reason", "bad_request"}, {"error", ex.what()}});
+           }
+         });
+
+  // POST /api/auth/register/check-username — pre-chequeo de username, sin
+  // sesión (se usa ANTES de crear la cuenta), ver
+  // buildAuthRegisterCheckUsernameResponse.
+  r.post("/api/auth/register/check-username",
+         [](const http::request<http::string_body> &req,
+            const std::unordered_map<std::string, std::string> &) {
+           try {
+             auto val = json::parse(req.body());
+             if (!val.is_object()) {
+               return makeJsonResponse(
+                   http::status::bad_request,
+                   json::object{{"ok", false}, {"reason", "bad_request"}, {"error", "invalid JSON body"}});
+             }
+             const auto &obj = val.as_object();
+             std::string company = obj.if_contains("company") && obj.at("company").is_string()
+                                        ? json::value_to<std::string>(obj.at("company"))
+                                        : std::string();
+             std::string username = obj.if_contains("username") && obj.at("username").is_string()
+                                         ? json::value_to<std::string>(obj.at("username"))
+                                         : std::string();
+             return buildAuthRegisterCheckUsernameResponse(std::move(company), std::move(username));
+           } catch (const std::exception &ex) {
+             return makeJsonResponse(http::status::bad_request,
+                                     json::object{{"ok", false}, {"reason", "bad_request"}, {"error", ex.what()}});
+           }
+         });
+
+  // POST /api/client-incident — beacon de diagnóstico, hallazgo real
+  // 2026-09-04: `log.info/warn` del frontend (frontend/src/lib/logger.ts)
+  // SOLO imprime en la consola del NAVEGADOR, gateado a DEV/VITE_DEBUG --
+  // nunca llega al servidor. Cada vez que un usuario reportaba "la captura
+  // se cerró sola" sin ningún rastro en `docker logs`, eso NO era evidencia
+  // de que el fallo fuera puramente del cliente: era que el único logging
+  // que hubiera podido explicarlo nunca podía aparecer ahí. Este endpoint
+  // no reemplaza esos logs -- les da un canal real hacia el servidor
+  // específicamente para el evento que hace falta diagnosticar (un aborto
+  // inesperado de la captura biométrica), sin depender de que alguien
+  // tenga la consola del navegador abierta en el momento exacto en que
+  // ocurre. Público a propósito (puede dispararse en la pantalla de
+  // registro, antes de tener sesión); nunca debe poder tumbar el request
+  // del cliente, así que cualquier error acá se traga y responde 204 igual.
+  r.post("/api/client-incident",
+         [](const http::request<http::string_body> &req,
+            const std::unordered_map<std::string, std::string> &) {
+           try {
+             const std::string ip = http_utils::getClientIp(req);
+             // Límite generoso pero acotado -- este endpoint es de
+             // diagnóstico, no debe poder usarse para llenar el log del
+             // servidor con payloads arbitrariamente grandes.
+             std::string body = req.body();
+             if (body.size() > 4096) {
+               body.resize(4096);
+             }
+             std::cout << "[CLIENT_INCIDENT] ip=" << ip << " body=" << body
+                       << std::endl;
+           } catch (...) {
+             // Nunca debe fallar por esto -- es puramente diagnóstico.
+           }
+           return makeJsonResponse(http::status::ok, json::object{{"ok", true}});
+         });
+
   // GET /api/auth/login/check-identity
   r.get("/api/auth/login/check-identity",
         [](const http::request<http::string_body> &,
@@ -1459,6 +1909,9 @@ void registerRoutes(router::Router &r) {
   // Multi-tenant: listar unidades mineras del usuario + cambiar tenant activo
   // sin reautenticar (ver handlers arriba, antes de registerRoutes).
   r.get("/api/auth/avatar/hd", handleMyAvatarHd);
+  r.get("/api/auth/avatar/thumb", handleMyAvatarThumb);
+  r.post("/api/auth/avatar/animation", handleCreateAvatarAnimation);
+  r.get("/api/auth/avatar/animation/", handleGetAvatarAnimation);  // prefix match for /{jobId}[/download]
   r.get("/api/auth/tenants", handleListMyTenants);
   r.post("/api/auth/tenants/switch", handleSwitchTenant);
 

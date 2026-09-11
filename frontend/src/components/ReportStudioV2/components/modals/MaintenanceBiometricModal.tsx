@@ -7,6 +7,17 @@ import {
   loginWithFace
 } from '../../../../auth/authApi';
 import { computeBiometricOvalLayout, buildFullFrameJpegBase64FromVideo, frameToTemplate } from '../../../../auth/biometricOvalFrame';
+import { createBestFrameCollector, faceBoxFromServerOval } from '../../../../auth/bestBiometricFrame';
+import { acquireFaceCameraStream } from '../../../../auth/adaptiveCameraCapture';
+import { FACIAL_ICAO } from '../../../../config/facialIcaoConfig';
+import { useLivenessChallengeSync } from '../../../../auth/useLivenessChallengeSync';
+import {
+  ACTIVE_CHALLENGE_ENABLED,
+  challengeInstructionKey,
+  currentChallenge,
+  isChallengeSequenceComplete,
+} from '../../../../auth/livenessChallenge';
+import { useI18n } from '../../../../i18n/I18nProvider';
 
 import { log } from '../../../../lib/logger';
 
@@ -51,13 +62,29 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isVerifyingRef = useRef(false);
+  const cameraCancelledRef = useRef(false);
 
   const [serverOval, setServerOval] = useState<{ cx: number; cy: number; w: number; h: number; angle_deg?: number } | null>(null);
+  const { t } = useI18n();
+  const { challengeUiState, challengesPassedRef, challengeStartedRef, syncChallengeFromServer, resetChallengeState } =
+    useLivenessChallengeSync();
+  /**
+   * ADR-158: el frame que se manda a verificar sale del mejor de la ETAPA 1
+   * (5 lecturas ICAO consecutivas), no del frame en vivo del instante en que
+   * se cumple el gate -- que es justo el final del gesto del desafío, con la
+   * persona en movimiento y, con `move_closer`, pegada a la cámara.
+   */
+  const bestFrameRef = useRef(
+    createBestFrameCollector<{ imageBase64: string; template: ReturnType<typeof frameToTemplate> }>({
+      label: 'MAINTENANCE_BIO',
+    })
+  );
 
   const stopCamera = () => {
+    cameraCancelledRef.current = true;
     if (timerRef.current) clearInterval(timerRef.current);
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current.getTracks().forEach(track => track.stop());
     }
     setCameraActive(false);
     setFaceSamples(0);
@@ -65,6 +92,7 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
     setError('');
     setServerOval(null);
     isVerifyingRef.current = false;
+    bestFrameRef.current.reset();
   };
 
   const handleAutoVerify = async () => {
@@ -72,8 +100,22 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
       setLoading(true);
       setError('');
 
-      const highResBase64 = buildFullFrameJpegBase64FromVideo(videoRef.current!, 640, 480, 0.9);
-      const template = frameToTemplate(videoRef.current!, null);
+      // ADR-158: el mejor frame de la etapa 1. Sólo si no hay ninguno (o
+      // venció) se cae a la captura en vivo, que es el comportamiento
+      // anterior -- peor, porque este instante es el final del gesto.
+      const bestFrame = bestFrameRef.current.takeFresh();
+      if (!bestFrame) {
+        log.warn('[MAINTENANCE_BIO_UI] sin mejor candidato de etapa 1, usando captura en vivo');
+      }
+      const highResBase64 = bestFrame
+        ? bestFrame.payload.imageBase64
+        : buildFullFrameJpegBase64FromVideo(
+            videoRef.current!,
+            FACIAL_ICAO.CAMERA.width.ideal,
+            FACIAL_ICAO.CAMERA.height.ideal,
+            0.9
+          );
+      const template = bestFrame ? bestFrame.payload.template : frameToTemplate(videoRef.current!, null);
 
       log.debug("[MAINTENANCE_BIO_UI] Attempting verification with engine...", {
         operator: operatorUsername,
@@ -115,19 +157,27 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
         throw new Error('Su navegador no soporta acceso a la cámara o no está en un entorno seguro (HTTPS).');
       }
 
+      resetChallengeState();
+      bestFrameRef.current.reset();
       await resetBiometricCapture();
 
-      const constraints = {
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
-        }
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (!videoRef.current) {
+        throw new Error('No se pudo inicializar el elemento de video.');
+      }
+      // Antes una única resolución fija -- esta es una verificación biométrica
+      // de identidad (re-auth de admin para acciones sensibles) igual de
+      // crítica que el login/registro facial, así que usa la misma escalera
+      // adaptativa de resoluciones (ver adaptiveCameraCapture.ts): prueba de
+      // mayor a menor y verifica que realmente llegue un frame real antes de
+      // aceptar cada escalón, en vez de una única resolución "ideal" fija que
+      // en ciertos drivers "resuelve" pero nunca pinta imagen.
+      cameraCancelledRef.current = false;
+      const stream = await acquireFaceCameraStream(videoRef.current, () => cameraCancelledRef.current);
+      if (cameraCancelledRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       streamRef.current = stream;
-      if (videoRef.current) videoRef.current.srcObject = stream;
       setCameraActive(true);
       setLoading(false);
       setTimeLeft(60);
@@ -136,11 +186,15 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
       timerRef.current = setInterval(async () => {
         if (!videoRef.current || isVerifyingRef.current) return;
 
-        const canvas = document.createElement('canvas');
-        canvas.width = 640; canvas.height = 480;
-        const ctx = canvas.getContext('2d')!;
-        ctx.drawImage(videoRef.current, 0, 0);
-        const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+        // Antes canvas fijo 640x480 (perdía la resolución real negociada
+        // arriba) -- mismo helper que usa el login/registro facial, a la
+        // misma resolución configurada.
+        const base64 = buildFullFrameJpegBase64FromVideo(
+          videoRef.current,
+          FACIAL_ICAO.CAMERA.width.ideal,
+          FACIAL_ICAO.CAMERA.height.ideal,
+          FACIAL_ICAO.VERIFY_JPEG_QUALITY
+        );
 
         try {
           await processBiometricFrame(base64);
@@ -159,8 +213,39 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
             noGlasses: !!status.icao?.no_glasses,
             qualityReady: !!status.icao?.is_ready
           });
+          syncChallengeFromServer(status.challenge);
 
-          if (currentSamples >= 3 && !isVerifyingRef.current) {
+          // ETAPA 1 (ADR-158): mientras el servidor no haya sorteado el
+          // desafío y las 4 condiciones ICAO estén en verde, cada frame es
+          // candidato. El desempate lo hace la calidad visual (nitidez,
+          // exposición, centrado, encuadre) dentro del colector.
+          if (!challengeStartedRef.current && status.icao?.is_ready) {
+            bestFrameRef.current.consider({
+              video: videoRef.current,
+              faceBox: faceBoxFromServerOval(status.face_oval, videoRef.current),
+              build: () => ({
+                imageBase64: buildFullFrameJpegBase64FromVideo(
+                  videoRef.current!,
+                  FACIAL_ICAO.CAMERA.width.ideal,
+                  FACIAL_ICAO.CAMERA.height.ideal,
+                  0.9
+                ),
+                template: frameToTemplate(videoRef.current!, null),
+              }),
+            });
+          }
+
+          // ADR-146: además de las N muestras, el servidor exige completar
+          // el desafío activo -- sin este chequeo, esta pantalla disparaba
+          // loginWithFace apenas llegaba a N muestras y el backend lo
+          // rechazaba siempre con liveness_challenge_incomplete, sin
+          // mostrar nunca el gesto pedido (regresión real tras reactivar
+          // BEEMETRY_LIVENESS_CHALLENGE_REQUIRED).
+          if (
+            currentSamples >= FACIAL_ICAO.REQUIRED_VALID_FRAMES &&
+            challengesPassedRef.current &&
+            !isVerifyingRef.current
+          ) {
             isVerifyingRef.current = true;
             handleAutoVerify();
           }
@@ -168,6 +253,11 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
       }, 700);
 
     } catch (err: any) {
+      if (cameraCancelledRef.current) {
+        // El modal se cerró mientras acquireFaceCameraStream negociaba la
+        // cámara -- no es un error real, no pisar el estado.
+        return;
+      }
       log.error("Camera Error:", err);
       let msg = 'No se pudo acceder a la cámara.';
       if (err.name === 'NotAllowedError') msg = 'Acceso a la cámara denegado. Por favor, habilite los permisos en su navegador.';
@@ -270,8 +360,24 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
              {/* Contador de Muestras */}
              <div className="absolute top-4 right-4 px-3 py-1.5 bg-black/60 backdrop-blur-md rounded-xl text-[11px] font-black text-white uppercase flex items-center gap-2 border border-white/10">
                <div className={`w-2 h-2 rounded-full ${faceSamples > 0 ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-               <span>{faceSamples}/3 Muestras</span>
+               <span>{faceSamples}/{FACIAL_ICAO.REQUIRED_VALID_FRAMES} Muestras</span>
              </div>
+
+             {/* Desafío de liveness activo (ADR-142/145/146) */}
+             {ACTIVE_CHALLENGE_ENABLED && cameraActive && !isChallengeSequenceComplete(challengeUiState) && (() => {
+               const chType = currentChallenge(challengeUiState);
+               if (!chType) return null;
+               return (
+                 <div className="absolute top-4 left-4 max-w-[65%] bg-indigo-950/90 backdrop-blur px-3 py-2 rounded-xl border border-indigo-400/40 flex flex-col gap-0.5 z-20">
+                   <span className="text-[8px] font-black text-indigo-300 uppercase tracking-widest">
+                     Desafío {challengeUiState.index + 1} de {challengeUiState.queue.length}
+                   </span>
+                   <span className="text-[11px] font-black text-white uppercase leading-tight">
+                     {t(challengeInstructionKey(chType))}
+                   </span>
+                 </div>
+               );
+             })()}
 
              {loading && (
                <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center">

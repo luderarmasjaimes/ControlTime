@@ -8,8 +8,29 @@
 import { FACIAL_ICAO } from '../config/facialIcaoConfig'
 import type { FaceBox } from './faceTrackingUtils'
 
-const FACIAL_CPP_OVAL_W_FACTOR = 0.89
-const FACIAL_CPP_OVAL_H_FACTOR = 1.57
+/**
+ * Óvalo local para seguimiento visual inmediato -- se dibuja en cada frame de
+ * cámara, sin depender del round-trip de /api/process_frame ni del tracker
+ * Haar del backend (ADR-162: ese óvalo de servidor solo se usa ahora como
+ * último recurso si no hay tracking local en absoluto).
+ *
+ * Fuente preferida: contorno facial REAL de MediaPipe (`box.ovalPoints`, 36
+ * puntos FACEMESH_FACE_OVAL calculados en el navegador, ver
+ * mediapipeFaceTracker.ts) -- ese contorno ya incluye la frente (el punto 10
+ * cae en la línea de nacimiento del pelo), así que solo se le da un margen
+ * chico de aire visual, no un factor de inflado adivinado.
+ *
+ * Los factores de abajo (FACIAL_OVAL_W_FACTOR/H_FACTOR) quedan como fallback
+ * SOLO para cuando aún no hay `ovalPoints` (WASM cargando o falló y se usa el
+ * heurístico de color de piel) -- ahí no hay contorno real del que partir, y
+ * usar alto fijo + aspecto fijo produjo los óvalos altos/angostos reportados
+ * el 2026-09-07, de ahí derivar ancho y alto del bbox del fallback con
+ * expansión y límites de aspecto en vez de un tamaño fijo.
+ */
+const FACIAL_OVAL_W_FACTOR = 1.14
+const FACIAL_OVAL_H_FACTOR = 1.34
+const FACIAL_OVAL_MIN_ASPECT = 0.70
+const FACIAL_OVAL_MAX_ASPECT = 0.92
 const OVAL_UI_CENTER_OFFSET_LEFT_FRAC = 0.022
 export const FACIAL_STRICT_OVAL_MODE = false
 export const FACIAL_STRICT_OVAL_W_PCT = 31
@@ -25,6 +46,14 @@ export interface OvalVideoMetrics {
     oh: number;
 }
 
+/** Mínimo de puntos de contorno real para confiar en su bbox en vez del inflado de bbox facial (36 esperados, ver FACE_OVAL_INDICES). */
+const MIN_OVAL_CONTOUR_POINTS = 20
+/** Margen sobre el bbox del contorno REAL (no un factor de inflado a ciegas: el contorno ya
+ * incluye la frente -- punto 10 de FACEMESH_FACE_OVAL cae en la línea de nacimiento del pelo).
+ * Solo da un poco de aire visual alrededor del óvalo dibujado. */
+const OVAL_CONTOUR_PAD_W_FRAC = 0.04
+const OVAL_CONTOUR_PAD_H_FRAC = 0.03
+
 export function getBiometricOvalVideoMetrics(box: FaceBox | null | undefined, vw: number, vh: number): OvalVideoMetrics | null {
     if (vw < 32 || vh < 32) {
         return null
@@ -39,10 +68,43 @@ export function getBiometricOvalVideoMetrics(box: FaceBox | null | undefined, vw
     if (!box) {
         return null
     }
-    const cx = box.x + box.width / 2
-    const cy = box.y + box.height / 2
-    let ow = box.width * FACIAL_CPP_OVAL_W_FACTOR
-    let oh = box.height * FACIAL_CPP_OVAL_H_FACTOR
+    let cx: number
+    let cy: number
+    let ow: number
+    let oh: number
+    if (box.ovalPoints && box.ovalPoints.length >= MIN_OVAL_CONTOUR_POINTS) {
+        // ADR-162: contorno facial real (MediaPipe FACEMESH_FACE_OVAL) en vez de
+        // inflar el bbox facial con un factor adivinado -- resuelve de raíz el
+        // "no cubre toda la frente" que ningún factor fijo lograba acertar para
+        // todas las caras/distancias.
+        let minX = Infinity
+        let minY = Infinity
+        let maxX = -Infinity
+        let maxY = -Infinity
+        for (const p of box.ovalPoints) {
+            if (p.x < minX) minX = p.x
+            if (p.x > maxX) maxX = p.x
+            if (p.y < minY) minY = p.y
+            if (p.y > maxY) maxY = p.y
+        }
+        const bw = Math.max(1, maxX - minX)
+        const bh = Math.max(1, maxY - minY)
+        cx = (minX + maxX) / 2
+        cy = (minY + maxY) / 2
+        ow = bw * (1 + OVAL_CONTOUR_PAD_W_FRAC)
+        oh = bh * (1 + OVAL_CONTOUR_PAD_H_FRAC)
+    } else {
+        cx = box.x + box.width / 2
+        cy = box.y + box.height / 2 - box.height * 0.13
+        ow = box.width * FACIAL_OVAL_W_FACTOR
+        oh = box.height * FACIAL_OVAL_H_FACTOR
+        const aspect = ow / Math.max(1, oh)
+        if (aspect < FACIAL_OVAL_MIN_ASPECT) {
+            ow = oh * FACIAL_OVAL_MIN_ASPECT
+        } else if (aspect > FACIAL_OVAL_MAX_ASPECT) {
+            oh = ow / FACIAL_OVAL_MAX_ASPECT
+        }
+    }
     const maxW = vw * 0.96
     const maxH = vh * 0.96
     const s = Math.min(1, maxW / Math.max(ow, 1e-6), maxH / Math.max(oh, 1e-6))
@@ -117,6 +179,54 @@ export function buildVerifyFrameJpegBase64FromVideo(
 }
 
 /**
+ * Dibuja `video` en `ctx` recortando el CENTRO al aspecto ancho:alto de
+ * destino (tw:th) antes de escalar -- mismo criterio que CSS
+ * `object-fit: cover`. Hallazgo real 2026-09-07: `drawImage(video, 0, 0,
+ * vw, vh, 0, 0, tw, th)` con tw:th fijo en 4:3 (FACIAL_ICAO.CAMERA,
+ * 960×720) ESTIRABA el frame cuando el aspecto nativo de la cámara no era
+ * 4:3 -- muy común en webcams/laptops modernas, nativamente 16:9. Esa
+ * imagen distorsionada es la que de verdad procesa MediaPipe en el motor
+ * IA: el óvalo facial que ajusta cv::fitEllipse sobre los puntos del
+ * contorno (ai_engine_client.cpp) heredaba la deformación, viéndose "más
+ * circular" o achatado según el sentido del estiramiento -- no era un
+ * problema de proporción del óvalo en sí, sino de la imagen fuente ya
+ * deformada antes de que el motor la viera. Recortar en vez de estirar
+ * mantiene el tamaño de salida (tw×th) sin tocar ningún supuesto aguas
+ * abajo (backend, avatar, plantilla) que ya asume esas dimensiones -- sólo
+ * cambia el encuadre capturado cuando la cámara no es nativamente 4:3
+ * (pierde algo de campo de visión en el eje más largo, en vez de deformar).
+ */
+export function drawVideoCoverCropped(
+    ctx: CanvasRenderingContext2D,
+    video: HTMLVideoElement,
+    tw: number,
+    th: number
+): void {
+    const vw = video.videoWidth
+    const vh = video.videoHeight
+    if (vw < 1 || vh < 1 || tw < 1 || th < 1) {
+        ctx.drawImage(video, 0, 0, Math.max(1, tw), Math.max(1, th))
+        return
+    }
+    const srcAspect = vw / vh
+    const dstAspect = tw / th
+    let sx = 0
+    let sy = 0
+    let sw = vw
+    let sh = vh
+    if (srcAspect > dstAspect) {
+        // Fuente más ancha que el destino -- recorta los costados, centrado.
+        sw = vh * dstAspect
+        sx = (vw - sw) / 2
+    } else if (srcAspect < dstAspect) {
+        // Fuente más alta que el destino -- recorta arriba/abajo, centrado.
+        sh = vw / dstAspect
+        sy = (vh - sh) / 2
+    }
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, tw, th)
+}
+
+/**
  * Frame completo (sin máscara de óvalo), alineado al enfoque de C:\rostro.
  */
 export function buildFullFrameJpegBase64FromVideo(video: HTMLVideoElement, tw: number, th: number, jpegQuality: number): string {
@@ -124,10 +234,121 @@ export function buildFullFrameJpegBase64FromVideo(video: HTMLVideoElement, tw: n
     canvas.width = tw
     canvas.height = th
     const ctx = canvas.getContext('2d')!
-    const vw = video.videoWidth
-    const vh = video.videoHeight
-    ctx.drawImage(video, 0, 0, vw, vh, 0, 0, tw, th)
+    drawVideoCoverCropped(ctx, video, tw, th)
     return canvas.toDataURL('image/jpeg', jpegQuality).split(',')[1]
+}
+
+/**
+ * Puntaje 0..100 para escoger el mejor fotograma ya aprobado por los gates
+ * ICAO/liveness. Mide el recorte facial, no el fondo: nitidez (varianza de
+ * Laplaciano), exposición, clipping y tamaño útil del rostro.
+ */
+export function estimateAvatarFrameQuality(
+    video: HTMLVideoElement,
+    faceBox: FaceBox | null | undefined,
+): number {
+    const vw = video.videoWidth || 0
+    const vh = video.videoHeight || 0
+    if (!faceBox || vw < 32 || vh < 32 || faceBox.width < 16 || faceBox.height < 16) {
+        return 0
+    }
+    const padX = faceBox.width * 0.12
+    const padY = faceBox.height * 0.12
+    const x0 = Math.max(0, Math.floor(faceBox.x - padX))
+    const y0 = Math.max(0, Math.floor(faceBox.y - padY))
+    const x1 = Math.min(vw, Math.ceil(faceBox.x + faceBox.width + padX))
+    const y1 = Math.min(vh, Math.ceil(faceBox.y + faceBox.height + padY))
+    const sw = Math.max(1, x1 - x0)
+    const sh = Math.max(1, y1 - y0)
+    const size = 96
+    const canvas = document.createElement('canvas')
+    canvas.width = size
+    canvas.height = size
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return 0
+    ctx.drawImage(video, x0, y0, sw, sh, 0, 0, size, size)
+    const rgba = ctx.getImageData(0, 0, size, size).data
+    const gray = new Float32Array(size * size)
+    let sum = 0
+    let clipped = 0
+    for (let i = 0, p = 0; i < rgba.length; i += 4, p += 1) {
+        const lum = rgba[i] * 0.299 + rgba[i + 1] * 0.587 + rgba[i + 2] * 0.114
+        gray[p] = lum
+        sum += lum
+        if (lum < 12 || lum > 245) clipped += 1
+    }
+    const mean = sum / gray.length
+    let lapSum = 0
+    let lapSqSum = 0
+    let lapCount = 0
+    for (let y = 1; y < size - 1; y += 1) {
+        for (let x = 1; x < size - 1; x += 1) {
+            const i = y * size + x
+            const lap =
+                4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - size] - gray[i + size]
+            lapSum += lap
+            lapSqSum += lap * lap
+            lapCount += 1
+        }
+    }
+    const lapMean = lapSum / Math.max(1, lapCount)
+    const lapVariance = Math.max(0, lapSqSum / Math.max(1, lapCount) - lapMean * lapMean)
+    const sharpness = Math.min(1, lapVariance / 850)
+    const exposure = Math.max(0, 1 - Math.abs(mean - 135) / 115)
+    const clipping = clipped / gray.length
+    const faceScale = Math.min(1, faceBox.width / Math.max(1, vw * 0.34))
+    // Penaliza el recorte de frente: el óvalo del busto (frameToBustRectAroundOvalJpegBase64)
+    // extiende el crop por encima del faceBox (30% del alto del óvalo desde
+    // 2026-09-09, subido de 0.12 tras un segundo incidente real de pelo
+    // cortado en línea recta -- ver comentario de esa función), así que un
+    // faceBox ya pegado al borde superior del frame (mirar hacia abajo cerca
+    // de la cámara, típico de webcam de laptop por encima de la pantalla)
+    // termina con la frente/coronilla cortada en el avatar aunque el frame
+    // pase el gate ICAO (pitch_ratio tolera hasta 0.95, ver eye_analyzer.py)
+    // -- hallazgo real 2026-09-04 (incidente DNI 09637600). No se bloquea el
+    // frame, solo se penaliza fuerte para que un frame mejor encuadrado gane
+    // el puntaje si existe uno entre los ya aprobados por ICAO/liveness.
+    const topMarginRatio = faceBox.y / Math.max(1, vh)
+    const framingPenalty =
+        topMarginRatio < 0.1 ? (0.1 - topMarginRatio) / 0.1 : 0
+    // Ampliación 2026-09-04 (incidente real "HHJ HJHJ"): además del recorte de
+    // frente, otras dos formas de mal encuadre llegaban intactas al avatar
+    // porque ningún gate ICAO las mira -- el resultado era un primer plano
+    // descentrado que el pipeline de estilizado no puede arreglar (ver
+    // _diffusion_reframe_pad en ai_engine/eye_analyzer.py: puede dar aire
+    // alrededor del rostro, no puede recuperar lo que la cámara no capturó).
+    //
+    // 1) Demasiado cerca: por encima de ~0.45 del ancho del frame el busto
+    //    sale sin cuello ni hombros y la coronilla queda fuera. Ojo: faceScale
+    //    premia rostros grandes hasta 0.34 del ancho -- sin esta penalización
+    //    "más cerca" era siempre "mejor puntaje", sin techo.
+    // 2) Descentrado horizontal: el óvalo se compone alrededor del rostro, así
+    //    que un rostro pegado a un borde arrastra medio fondo al avatar.
+    //
+    // Igual que la penalización de frente: NO bloquea el frame (un encuadre
+    // imperfecto sigue siendo mejor que no poder registrarse en una webcam de
+    // laptop), solo hace que gane un frame mejor encuadrado si existe alguno
+    // entre los ya aprobados por ICAO/liveness.
+    const faceWidthRatio = faceBox.width / Math.max(1, vw)
+    const tooCloseRatio = 0.45
+    const tooClosePenalty =
+        faceWidthRatio > tooCloseRatio
+            ? Math.min(1, (faceWidthRatio - tooCloseRatio) / 0.25)
+            : 0
+    const faceCenterX = (faceBox.x + faceBox.width * 0.5) / Math.max(1, vw)
+    const offCenter = Math.abs(faceCenterX - 0.5)
+    const offCenterPenalty = offCenter > 0.1 ? Math.min(1, (offCenter - 0.1) / 0.2) : 0
+    return Math.max(
+        0,
+        Math.min(
+            100,
+            100 * (0.56 * sharpness + 0.29 * exposure + 0.15 * faceScale) -
+                45 * clipping -
+                60 * framingPenalty -
+                50 * tooClosePenalty -
+                40 * offCenterPenalty,
+        ),
+    )
 }
 
 export interface OvalLayout {
@@ -262,7 +483,7 @@ export function frameToOvalPortraitJpegBase64(
             Math.min(vw, 960),
             Math.min(vh, 720),
             jpegQuality
-        ).split(',')[1]
+        )
     }
     const maskCanvas = renderOvalMaskedFrameToCanvas(videoElement, oval, vw, vh)
     const { cx, cy, ow, oh } = oval
@@ -296,11 +517,29 @@ export function frameToOvalPortraitJpegBase64(
  * Recorte rectangular SIN máscara negra: incluye el óvalo biométrico ampliado
  * (cuello y algo de hombros) desde el frame nativo de la cámara.
  * Pensado para generar avatar cartoon en servidor (fondo real del recorte; el motor pone blanco).
+ *
+ * Actualización 2026-09-09: el usuario reportó, con el avatar 4K real ya
+ * compuesto, el pelo cortado en línea recta arriba -- confirmado que NO es
+ * un problema del compuesto en `ai_engine/eye_analyzer.py` (ese margen ya se
+ * subió de 0.06 a 0.22*fh en una sesión anterior): el corte es recto, no
+ * sigue el contorno del pelo, señal de que el recorte ocurre ACÁ, en el
+ * frame que se manda al servidor, antes de que exista cualquier máscara --
+ * si el pelo ya no está en este JPEG, ningún fix del lado servidor puede
+ * recuperarlo. `top = cy - oh/2 - oh*0.12` dejaba solo 12% del alto del
+ * óvalo de aire arriba, insuficiente para volumen de pelo real (mismo
+ * hallazgo que motivó subir el margen equivalente del lado servidor a
+ * 0.22, acá se sube más porque además hay que sobrevivir el recorte
+ * adicional del backend encima de este). `maxLongSide` en 1280 también
+ * limitaba la nitidez por debajo de lo que la cámara ya negocia
+ * (`acquireFaceCameraStream`, escalera hasta 1920×1440) -- pedido explícito
+ * del usuario de usar la máxima resolución de cámara disponible para la
+ * fuente del avatar: subido a 1920, el techo real de esa escalera (subirlo
+ * más solo escalaría el JPEG sin agregar detalle real).
  */
 export function frameToBustRectAroundOvalJpegBase64(
     videoElement: HTMLVideoElement,
     faceBox: FaceBox | null | undefined,
-    maxLongSide = 1280,
+    maxLongSide = 1920,
     jpegQuality = 0.93
 ): string {
     const vw = videoElement.videoWidth || 960
@@ -313,7 +552,7 @@ export function frameToBustRectAroundOvalJpegBase64(
     }
     const { cx, cy, ow, oh } = oval
     const halfW = (ow / 2) * 1.58
-    const top = cy - oh / 2 - oh * 0.12
+    const top = cy - oh / 2 - oh * 0.3
     const bottom = cy + oh / 2 + oh * 1.02
     const x0 = Math.max(0, Math.floor(cx - halfW))
     const x1 = Math.min(vw, Math.ceil(cx + halfW))
