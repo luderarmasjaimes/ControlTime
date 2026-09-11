@@ -1,0 +1,30 @@
+INFORME DE ENTRENAMIENTO — clasificador gafas (ONNX)
+============================================================
+Inicio (UTC): 2026-09-10T08:01:50.278171+00:00
+Fin (UTC):    2026-09-10T08:26:32.442338+00:00
+Tiempo total: 1482.2 s (24.7 min)
+Dispositivo:  cpu
+
+Dataset
+  with_glasses:    32690
+  without_glasses: 17391
+  train / val:     42584 / 7514
+
+Hiperparámetros
+  epochs=4 batch=32 lr=0.0001 input=224
+  mejor val_acc:    0.9437
+
+Avance por época (% tiempo y métricas)
+------------------------------------------------------------
+  época 1/4 | progreso  25.0% | t=  401.8s | loss=0.2857 | val_acc=0.9127
+  época 2/4 | progreso  50.0% | t=  754.5s | loss=0.2004 | val_acc=0.9356
+  época 3/4 | progreso  75.0% | t= 1128.6s | loss=0.1875 | val_acc=0.9405
+  época 4/4 | progreso 100.0% | t= 1481.6s | loss=0.1745 | val_acc=0.9437
+------------------------------------------------------------
+Salidas
+  ONNX:  D:\InformeCliente\ai_engine\models\glasses_classifier_checkpoint_50107.onnx
+  meta:  D:\InformeCliente\ai_engine\models\glasses_classifier_checkpoint_50107_meta.json
+  JSON:  D:\InformeCliente\ai_engine\models\glasses_classifier_checkpoint_50107_training_report.json
+
+Docker / ai_engine:
+  GLASSES_ONNX_PATH=D:/InformeCliente/ai_engine/models/glasses_classifier_checkpoint_50107.onnx

@@ -11,6 +11,7 @@
 #   - softmax con dim=1 explícito (el original lo deja implícito, que emite
 #     warning de deprecación en versiones recientes de PyTorch; mismo resultado).
 import os
+import threading
 import cv2
 import math
 import torch
@@ -38,6 +39,17 @@ class Detection:
         deploy = os.path.join(model_dir, "deploy.prototxt")
         self.detector = cv2.dnn.readNetFromCaffe(deploy, caffemodel)
         self.detector_confidence = 0.6
+        # cv2.dnn.Net no es thread-safe para uso concurrente: setInput() muta
+        # estado interno compartido que forward() lee a continuación -- dos
+        # threads llamando get_bbox() al mismo tiempo sobre la MISMA
+        # instancia pueden intercalar su propio setInput/forward y producir
+        # una salida corrupta (confirmado en runtime bajo carga concurrente
+        # real, 2026-09-03: coordenadas "inf" -> OverflowError al convertir a
+        # int). Serializa solo esta sección -- el forward de PyTorch de
+        # MiniFASNet más abajo en el pipeline SÍ tolera concurrencia (cada
+        # llamada crea sus propios tensores, sin mutar estado compartido) y
+        # queda sin lock a propósito.
+        self._detector_lock = threading.Lock()
 
     def get_bbox(self, img):
         height, width = img.shape[0], img.shape[1]
@@ -48,8 +60,9 @@ class Detection:
                                int(192 / math.sqrt(aspect_ratio))), interpolation=cv2.INTER_LINEAR)
 
         blob = cv2.dnn.blobFromImage(img, 1, mean=(104, 117, 123))
-        self.detector.setInput(blob, 'data')
-        out = self.detector.forward('detection_out').squeeze()
+        with self._detector_lock:
+            self.detector.setInput(blob, 'data')
+            out = self.detector.forward('detection_out').squeeze()
         max_conf_index = np.argmax(out[:, 2])
         left, top, right, bottom = out[max_conf_index, 3] * width, out[max_conf_index, 4] * height, \
                                     out[max_conf_index, 5] * width, out[max_conf_index, 6] * height

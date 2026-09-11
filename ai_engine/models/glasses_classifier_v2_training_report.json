@@ -1,0 +1,111 @@
+{
+  "status": "completed",
+  "started_at_utc": "2026-09-05T05:56:16.871306+00:00",
+  "finished_at_utc": "2026-09-05T06:45:07.340411+00:00",
+  "total_elapsed_sec": 2930.47,
+  "device": "cpu",
+  "dataset": {
+    "data_root": "D:\\InformeCliente\\data\\glasses_dataset",
+    "with_glasses_count": 15624,
+    "without_glasses_count": 20311,
+    "total_images": 35935,
+    "train_samples": 30545,
+    "val_samples": 5390
+  },
+  "hyperparameters": {
+    "epochs": 8,
+    "batch_size": 32,
+    "lr": 0.0001,
+    "val_ratio": 0.15,
+    "input_size": 224,
+    "seed": 42,
+    "backbone": "mobilenet_v2_imagenet"
+  },
+  "best_val_accuracy": 0.9823747680890538,
+  "outputs": {
+    "onnx": "D:\\InformeCliente\\ai_engine\\models\\glasses_classifier_v2.onnx",
+    "meta": "D:\\InformeCliente\\ai_engine\\models\\glasses_classifier_v2_meta.json"
+  },
+  "epochs_timeline": [
+    {
+      "epoch": 1,
+      "epochs_total": 8,
+      "progress_pct": 12.5,
+      "elapsed_sec": 378.33,
+      "epoch_duration_sec": 378.33,
+      "train_loss": 0.277913,
+      "val_acc": 0.972171,
+      "best_val_acc_so_far": 0.972171
+    },
+    {
+      "epoch": 2,
+      "epochs_total": 8,
+      "progress_pct": 25.0,
+      "elapsed_sec": 712.68,
+      "epoch_duration_sec": 334.34,
+      "train_loss": 0.136345,
+      "val_acc": 0.974026,
+      "best_val_acc_so_far": 0.974026
+    },
+    {
+      "epoch": 3,
+      "epochs_total": 8,
+      "progress_pct": 37.5,
+      "elapsed_sec": 1071.6,
+      "epoch_duration_sec": 358.92,
+      "train_loss": 0.110381,
+      "val_acc": 0.978293,
+      "best_val_acc_so_far": 0.978293
+    },
+    {
+      "epoch": 4,
+      "epochs_total": 8,
+      "progress_pct": 50.0,
+      "elapsed_sec": 1443.28,
+      "epoch_duration_sec": 371.67,
+      "train_loss": 0.098104,
+      "val_acc": 0.979592,
+      "best_val_acc_so_far": 0.979592
+    },
+    {
+      "epoch": 5,
+      "epochs_total": 8,
+      "progress_pct": 62.5,
+      "elapsed_sec": 1813.13,
+      "epoch_duration_sec": 369.84,
+      "train_loss": 0.088778,
+      "val_acc": 0.981447,
+      "best_val_acc_so_far": 0.981447
+    },
+    {
+      "epoch": 6,
+      "epochs_total": 8,
+      "progress_pct": 75.0,
+      "elapsed_sec": 2189.69,
+      "epoch_duration_sec": 376.56,
+      "train_loss": 0.084701,
+      "val_acc": 0.979963,
+      "best_val_acc_so_far": 0.981447
+    },
+    {
+      "epoch": 7,
+      "epochs_total": 8,
+      "progress_pct": 87.5,
+      "elapsed_sec": 2560.27,
+      "epoch_duration_sec": 370.57,
+      "train_loss": 0.083993,
+      "val_acc": 0.982375,
+      "best_val_acc_so_far": 0.982375
+    },
+    {
+      "epoch": 8,
+      "epochs_total": 8,
+      "progress_pct": 100.0,
+      "elapsed_sec": 2929.8,
+      "epoch_duration_sec": 369.53,
+      "train_loss": 0.081559,
+      "val_acc": 0.981633,
+      "best_val_acc_so_far": 0.982375
+    }
+  ]
+}

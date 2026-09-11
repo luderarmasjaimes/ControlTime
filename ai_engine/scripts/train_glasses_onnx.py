@@ -58,6 +58,12 @@ def main() -> int:
     )
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
+        "--num_workers",
+        type=int,
+        default=0,
+        help="Workers del DataLoader (paraleliza decode/resize/jitter -- 0 = igual que antes)",
+    )
+    ap.add_argument(
         "--report_json",
         type=str,
         default="",
@@ -141,10 +147,14 @@ def main() -> int:
     val_subset = Subset(val_full, val_indices)
 
     train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=False
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, pin_memory=False,
+        persistent_workers=args.num_workers > 0,
     )
     val_loader = DataLoader(
-        val_subset, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=False
+        val_subset, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=False,
+        persistent_workers=args.num_workers > 0,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

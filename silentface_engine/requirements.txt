@@ -1,0 +1,23 @@
+# Servicio aislado a propósito (Opción C, ADR-141 actualización 2026-09-03,
+# y el mismo motivo documentado para avatar_engine): Silent-Face-Anti-
+# Spoofing (MiniFASNet, PyTorch) vivía en el mismo proceso que TensorFlow
+# (DeepFace) en ai_engine/eye_analyzer.py. torch==2.11.0+cu128 exige
+# nvidia-cudnn-cu12==9.19.0.56 (major 9); tensorflow[and-cuda]==2.15.1 exige
+# nvidia-cudnn-cu12==8.9.4.25 (major 8) -- conflicto real e irreconciliable
+# de major version, confirmado con evidencia pública (TensorFlow rechaza en
+# runtime cualquier cuDNN de major distinto al que fue compilado). Subir
+# TensorFlow a 2.18 (primera línea con cuDNN 9.x) se probó y falló por un
+# motivo distinto y más profundo: TF 2.18 no tiene kernels CUDA para la GPU
+# Blackwell (RTX 5060, compute capability 12.0) -- CUDA_ERROR_INVALID_PTX
+# real, confirmado en runtime. Este servicio NO instala tensorflow ni
+# mediapipe ni insightface: solo necesita torch/torchvision, así que el
+# cuDNN 9.x que trae no compite con nadie acá.
+flask
+waitress
+numpy>=1.24,<3
+opencv-python-headless==4.11.0.86
+requests
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128

@@ -1,0 +1,19 @@
+# Archivo de PRUEBA, no productivo -- valida la Opción A del ADR-141
+# (subir TensorFlow a una linea que ya pida cuDNN 9.x, alineado con
+# torch==2.11.0+cu128, en vez de aislar PyTorch en otro proceso).
+# TensorFlow 2.16/2.17 siguen pidiendo cuDNN 8.9 (no resuelve nada);
+# 2.18.0 es la primera release que pide cuDNN 9.3.0.75 -- mismo major que
+# torch (9.19.0.56), minor menor, cumple la regla de TF sin forzar nada
+# (confirmado via PyPI JSON API, 2026-09-03).
+numpy>=1.26.0,<2.1.0
+opencv-python-headless==4.11.0.86
+
+tensorflow[and-cuda]==2.18.0
+# Keras 3 es el default desde TF 2.16 y rompe a DeepFace (KerasTensor
+# error, confirmado en multiples issues reales de serengil/deepface).
+# tf-keras restaura la API de Keras 2 via TF_USE_LEGACY_KERAS=1.
+tf-keras~=2.18
+deepface>=0.0.85,<0.1
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128

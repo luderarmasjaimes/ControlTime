@@ -1,8 +1,10 @@
 """
 Adaptador local para el proveedor biométrico primario: liveness pasivo con
-Silent-Face-Anti-Spoofing (MiniFASNet, PyTorch) + identidad con DeepFace
-(Facenet512, detector YuNet). Reemplaza a SeetaFace6 como proveedor local por
-defecto -- ver ADR (docs/decisions/) y specs/008-biometria-facial-login/spec.md.
+Silent-Face-Anti-Spoofing (MiniFASNet, PyTorch, vía el servicio aparte
+`silentface_engine` -- ver silentface_client.py y ADR-141 actualización
+2026-09-03 para el porqué) + identidad con DeepFace (Facenet512, detector
+YuNet, en este mismo proceso). Reemplaza a SeetaFace6 como proveedor local
+por defecto -- ver ADR (docs/decisions/) y specs/008-biometria-facial-login/spec.md.
 
 Mismo contrato de salida que seetaface6_adapter.py (status()/analyze()) para
 reutilizar el parser existente en el backend C++
@@ -11,181 +13,37 @@ fetchSeetaFaceAnalysisFromAiEngine): quality.score, quality.issues, template,
 pass, error.
 
 Todo el procesamiento es local: los pesos (.caffemodel de detección, .pth de
-anti-spoofing, pesos de Facenet512/YuNet de DeepFace) se montan read-only
-desde fuera de la imagen (ver Dockerfile.ai / docker-compose.yml), nunca se
-descargan en runtime.
+anti-spoofing -- ahora en silentface_engine --, pesos de Facenet512/YuNet de
+DeepFace) se montan read-only desde fuera de la imagen (ver Dockerfile.ai /
+docker-compose.yml), nunca se descargan en runtime.
 """
 from __future__ import annotations
 
 import os
 import threading
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
 
-ANTISPOOF_MODEL_DIR = Path(
-    os.environ.get("SILENTFACE_ANTISPOOF_MODEL_DIR", "/opt/deepface_silentface/models/anti_spoof")
-)
-DETECTION_MODEL_DIR = Path(
-    os.environ.get("SILENTFACE_DETECTION_MODEL_DIR", "/opt/deepface_silentface/models/detection")
-)
-REQUIRED_DETECTION_FILES = ("Widerface-RetinaFace.caffemodel", "deploy.prototxt")
+import silentface_client
 
 _lock = threading.Lock()
-_predictor = None  # type: Optional[Any]
-_predictor_error: Optional[str] = None
-_cached_model_instances: Dict[str, Any] = {}  # model_path -> loaded torch.nn.Module (evita recargar pesos por request)
 _deepface_ready = False
 _deepface_error: Optional[str] = None
 
 
-def _antispoof_model_files() -> List[Path]:
-    if not ANTISPOOF_MODEL_DIR.is_dir():
-        return []
-    return sorted(p for p in ANTISPOOF_MODEL_DIR.iterdir() if p.suffix == ".pth")
-
-
 def status() -> Dict[str, Any]:
-    missing_detection = [
-        name for name in REQUIRED_DETECTION_FILES if not (DETECTION_MODEL_DIR / name).is_file()
-    ]
-    antispoof_files = _antispoof_model_files()
-    try:
-        import torch
-
-        cuda_available = bool(torch.cuda.is_available())
-    except Exception:  # noqa: BLE001
-        cuda_available = False
+    remote = silentface_client.remote_status()
     return {
-        "available": not missing_detection and bool(antispoof_files) and _deepface_error is None,
+        "available": bool(remote.get("ready")) and _deepface_error is None,
         "provider": "deepface_silentface",
-        "detection_model_dir": str(DETECTION_MODEL_DIR),
-        "antispoof_model_dir": str(ANTISPOOF_MODEL_DIR),
-        "antispoof_models_found": [p.name for p in antispoof_files],
-        "missing_detection_models": missing_detection,
+        "silentface_engine": remote,
         "deepface_ready": _deepface_ready,
         "deepface_error": _deepface_error,
-        "cuda_available": cuda_available,
         "external_apis": False,
         "certification_claim": False,
     }
-
-
-def _get_predictor():
-    """Instancia única de AntiSpoofPredict (detector RetinaFace + device
-    torch), reutilizada entre requests -- evita reabrir el modelo Caffe de
-    detección en cada llamada."""
-    global _predictor, _predictor_error
-    with _lock:
-        if _predictor is not None or _predictor_error is not None:
-            return _predictor, _predictor_error
-        try:
-            from silentface.anti_spoof_predict import AntiSpoofPredict
-
-            device_id = int(os.environ.get("SILENTFACE_DEVICE_ID", "0") or "0")
-            _predictor = AntiSpoofPredict(device_id)
-        except Exception as e:  # noqa: BLE001
-            _predictor_error = str(e)
-            print(f"[DEEPFACE_SILENT] Error cargando detector Silent-Face: {e}", flush=True)
-        return _predictor, _predictor_error
-
-
-def _load_cached_model(predictor, model_path: str):
-    """Igual que AntiSpoofPredict._load_model, pero cachea la instancia por
-    ruta de archivo -- el código vendorizado original recarga los pesos desde
-    disco en cada predict() (fiel al repo original, pensado para uso batch,
-    no para servir requests en tiempo real); aquí se cachea para cumplir el
-    objetivo de latencia <1s de SPEC-008."""
-    from silentface.anti_spoof_predict import MODEL_MAPPING
-    from silentface.utility import get_kernel, parse_model_name
-
-    cached = _cached_model_instances.get(model_path)
-    if cached is not None:
-        return cached
-
-    model_name = os.path.basename(model_path)
-    h_input, w_input, model_type, _scale = parse_model_name(model_name)
-    kernel_size = get_kernel(h_input, w_input)
-    model = MODEL_MAPPING[model_type](conv6_kernel=kernel_size).to(predictor.device)
-
-    import torch
-
-    state_dict = torch.load(model_path, map_location=predictor.device)
-    first_layer_name = next(iter(state_dict))
-    if first_layer_name.find("module.") >= 0:
-        from collections import OrderedDict
-
-        new_state_dict = OrderedDict()
-        for key, value in state_dict.items():
-            new_state_dict[key[7:]] = value
-        model.load_state_dict(new_state_dict)
-    else:
-        model.load_state_dict(state_dict)
-    model.eval()
-    _cached_model_instances[model_path] = model
-    return model
-
-
-def _check_liveness(predictor, img_bgr: np.ndarray) -> Tuple[bool, float, str]:
-    """Ensamble sobre todos los .pth de ANTISPOOF_MODEL_DIR, misma lógica que
-    check_liveness_silent_face() del script probado por el usuario: bbox del
-    detector RetinaFace, patches recortados por modelo (escala fijada en el
-    nombre de archivo), softmax promedio, clase 1 = piel viva real."""
-    from silentface.generate_patches import CropImage
-
-    image_bbox = predictor.get_bbox(img_bgr)
-    h_img, w_img = img_bgr.shape[:2]
-    print(f"[DEEPFACE_SILENT_DEBUG] img={w_img}x{h_img} bbox={image_bbox}", flush=True)
-    if image_bbox == [0, 0, 0, 0]:
-        return False, 0.0, "no_face_detected"
-
-    model_files = _antispoof_model_files()
-    if not model_files:
-        return False, 0.0, "silentface_models_missing"
-
-    cropper = CropImage()
-    prediction = np.zeros((1, 3))
-    import torch
-    import torch.nn.functional as F
-    from silentface.utility import parse_model_name
-
-    for model_path in model_files:
-        h_input, w_input, _model_type, scale = parse_model_name(model_path.name)
-        param = {
-            "org_img": img_bgr,
-            "bbox": image_bbox,
-            "scale": scale,
-            "out_w": w_input,
-            "out_h": h_input,
-            "crop": True,
-        }
-        if scale is None:
-            param["crop"] = False
-        cropped = cropper.crop(**param)
-
-        model = _load_cached_model(predictor, str(model_path))
-        from torchvision import transforms as trans
-
-        tensor = trans.ToTensor()(cropped).unsqueeze(0).to(predictor.device)
-        with torch.no_grad():
-            out = model.forward(tensor)
-            sm = F.softmax(out, dim=1).cpu().numpy()
-            prediction += sm
-        print(
-            f"[DEEPFACE_SILENT_DEBUG] modelo={model_path.name} scale={scale} "
-            f"crop_shape={cropped.shape} cropped_mean_bgr={cropped.reshape(-1,3).mean(axis=0)} "
-            f"softmax={sm.tolist()}",
-            flush=True,
-        )
-
-    label = int(np.argmax(prediction))
-    confidence = float(prediction[0][label] / len(model_files))
-    print(f"[DEEPFACE_SILENT_DEBUG] prediction_total={prediction.tolist()} label={label} confidence={confidence}", flush=True)
-    if label == 1:
-        return True, confidence, ""
-    return False, confidence, "spoof_or_screen_detected"
 
 
 def _ensure_deepface_ready() -> Optional[str]:
@@ -205,7 +63,9 @@ def _ensure_deepface_ready() -> Optional[str]:
 
 
 def warmup() -> None:
-    _get_predictor()
+    """Calienta solo el lado DeepFace/TensorFlow en este proceso --
+    silentface_engine se calienta a sí mismo antes de aceptar tráfico
+    (preload síncrono en su propio server.py, ver ADR-141)."""
     _ensure_deepface_ready()
 
 
@@ -214,10 +74,6 @@ def analyze(raw: bytes, mode: str) -> Dict[str, Any]:
         return {"ok": False, "pass": False, "error": "invalid_mode"}
     if not raw:
         return {"ok": False, "pass": False, "error": "empty_image"}
-
-    predictor, predictor_error = _get_predictor()
-    if predictor is None:
-        return {"ok": False, "pass": False, "error": "silentface_unavailable", "detail": predictor_error}
 
     deepface_error = _ensure_deepface_ready()
     if deepface_error is not None:
@@ -231,10 +87,27 @@ def analyze(raw: bytes, mode: str) -> Dict[str, Any]:
     if width > 8192 or height > 8192:
         return {"ok": False, "pass": False, "error": "image_dimensions_too_large"}
 
-    try:
-        is_real, confidence, liveness_error = _check_liveness(predictor, img_bgr)
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "pass": False, "error": "silentface_inference_failed", "detail": str(e)}
+    liveness_result = silentface_client.check_liveness(raw)
+    if liveness_result["status"] == "unavailable":
+        # Fail-closed: mismo error que cuando el detector in-process no
+        # cargaba en el código original -- nunca se trata como "pase".
+        return {
+            "ok": False,
+            "pass": False,
+            "error": "silentface_unavailable",
+            "detail": liveness_result.get("detail"),
+        }
+    if liveness_result["status"] == "inference_failed":
+        return {
+            "ok": False,
+            "pass": False,
+            "error": "silentface_inference_failed",
+            "detail": liveness_result.get("detail"),
+        }
+
+    is_real = liveness_result["real"]
+    confidence = liveness_result["confidence"]
+    liveness_error = liveness_result.get("liveness_error", "")
 
     liveness_threshold = float(os.environ.get("SILENTFACE_LIVENESS_THRESHOLD", "0.60"))
     liveness_payload = {"real": is_real, "confidence": round(confidence, 4), "threshold": liveness_threshold}

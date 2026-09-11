@@ -155,9 +155,13 @@ def _enhance_low_light_bgr(img_bgr: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
-def extract_normed_embedding_bgr(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[str]]:
+def _detect_best_face(img_bgr: np.ndarray) -> Tuple[Optional[Any], Optional[str]]:
     """
-    Devuelve vector L2-normalizado (típ. dim 512) o (None, código/mensaje error).
+    Detecta rostros y devuelve el objeto Face de mayor área que supere
+    FACE_EMBED_MIN_DET_SCORE, o (None, código de error). Compartido por
+    extract_normed_embedding_bgr (embedding) y extract_face_bbox_bgr (bbox
+    para el control de calidad de avatar, ver eye_analyzer.py) -- misma
+    detección, sin duplicar la llamada a fa.get().
     """
     if img_bgr is None or img_bgr.size == 0:
         return None, "empty_image"
@@ -186,11 +190,36 @@ def extract_normed_embedding_bgr(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarr
             best_face = f
     if best_face is None:
         return None, "low_det_score"
+    return best_face, None
+
+
+def extract_normed_embedding_bgr(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """
+    Devuelve vector L2-normalizado (típ. dim 512) o (None, código/mensaje error).
+    """
+    best_face, err = _detect_best_face(img_bgr)
+    if best_face is None:
+        return None, err
     emb = np.asarray(best_face.normed_embedding, dtype=np.float64)
     n = float(np.linalg.norm(emb))
     if n > 1e-9:
         emb = emb / n
     return emb, None
+
+
+def extract_face_bbox_bgr(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """
+    Devuelve el bbox [x0, y0, x1, y1] (float, px) del rostro de mayor área
+    detectado, o (None, código/mensaje error). Usado por el control de
+    calidad de avatar (eye_analyzer.py::_avatar_composed_quality_ok) para
+    aplicar el mismo veto de fondo-blanco-dentro-del-recorte que ya se
+    aplica con la malla de MediaPipe, cuando MediaPipe no detecta nada pero
+    InsightFace sí -- ver incidente ALPAYANA/09637600, 2026-09-03.
+    """
+    best_face, err = _detect_best_face(img_bgr)
+    if best_face is None:
+        return None, err
+    return np.asarray(best_face.bbox, dtype=np.float32), None
 
 
 def warmup_face_embedding() -> None:

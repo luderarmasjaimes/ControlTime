@@ -1,0 +1,11 @@
+# Imagen de PRUEBA, no productiva. Reutiliza informe-ai-engine:latest tal
+# cual (dependencias ya instaladas, incluida su torch/tensorflow con el
+# cuDNN de compromiso ya resuelto en ese build) y solo copia encima el
+# código fuente actual (avatar_diffusion.py nuevo, eye_analyzer.py con el
+# wiring de AVATAR_STYLE_ENGINE). No corre `pip install` de nuevo -- por
+# eso no toca ni depende de resolver el conflicto de cuDNN documentado en
+# ADR-141 (torch cu128 vs tensorflow[and-cuda], build oficial bloqueado).
+# Sirve SOLO para validar que el cliente HTTP hacia avatar_engine funciona
+# de verdad, sin arriesgar el contenedor real `beemetry-ai-vision`.
+FROM informe-ai-engine:latest
+COPY . .

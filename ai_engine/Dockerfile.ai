@@ -61,38 +61,41 @@ COPY requirements.txt .
 COPY vendor-wheels /tmp/vendor-wheels
 RUN --mount=type=cache,target=/root/.cache/pip pip install --find-links=/tmp/vendor-wheels --timeout 300 --retries 12 -r requirements.txt
 # python-pptx (extraccion de CV en PowerPoint, ADR-129) se instala en un paso
-# APARTE, con --no-deps, en vez de vivir en requirements.txt: agregarlo ahi
-# hizo que el resolver de pip reexplorara el arbol completo del paso de
-# arriba y sacara a la luz un conflicto real (preexistente, no causado por
-# python-pptx) entre torch==2.11.0+cu128 (nvidia-cudnn-cu12==9.19.0.56) y
-# tensorflow[and-cuda]==2.15.1 (nvidia-cudnn-cu12==8.9.4.25) -- build
-# reventado tras ~24 min de backtracking (confirmado en runtime,
-# 2026-08-21). --no-deps evita que pip vuelva a comparar nada contra ese
-# stack: instala python-pptx y sus 3 dependencias directas (lxml, Pillow,
-# XlsxWriter) sin resolver nada mas.
+# APARTE, con --no-deps, en vez de vivir en requirements.txt. Originalmente
+# esto evitaba reabrir un conflicto real entre torch y tensorflow (ver abajo
+# "Silent-Face-Anti-Spoofing se movió..."); ese conflicto ya no puede
+# ocurrir en este Dockerfile porque torch ya no está en requirements.txt,
+# pero se deja el paso separado igual -- ya funciona, tocarlo sin necesidad
+# real no vale el riesgo.
 RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps "python-pptx>=1.0,<2" lxml Pillow XlsxWriter
-# torch (cu128) y tensorflow[and-cuda] (CUDA 11.8) instalan nvidia-nccl-cu12
-# Y nvidia-nccl-cu11 en el MISMO path de paquete namespace
-# (site-packages/nvidia/nccl/lib/libnccl.so.2) -- torch 2.11.0+cu128 depende
-# de nvidia-nccl-cu12==2.28.9, pero tensorflow[and-cuda] instala
-# nvidia-nccl-cu11==2.16.5 DESPUES en esta misma capa, pisando fisicamente el
-# .so mas nuevo con el mas viejo -- pip no detecta el conflicto porque ambos
-# paquetes "declaran" ser dueños del mismo archivo. Resultado confirmado en
-# runtime: import torch revienta con "undefined symbol: ncclCommRegister"
-# (2.16.5 no tiene ese simbolo, agregado en NCCL 2.19). Reinstalar cu12 al
-# final, sin dependencias, garantiza que su .so quede como el ultimo escrito
-# en disco sin importar el orden de resolucion de pip. Si sube la version de
-# torch en requirements.txt, revisar tambien esta version (debe coincidir
-# con lo que declare torch en ese momento -- `pip show nvidia-nccl-cu12`
-# tras instalar torch a secas).
-RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps --force-reinstall --no-cache-dir nvidia-nccl-cu12==2.28.9
+# Silent-Face-Anti-Spoofing (PyTorch) se movió a un servicio propio,
+# silentface_engine/ (Opción C, ADR-141 actualización 2026-09-03): torch
+# exigía nvidia-cudnn-cu12==9.19.0.56 (major 9) y tensorflow[and-cuda]
+# nvidia-cudnn-cu12==8.9.4.25 (major 8) en el MISMO proceso -- conflicto de
+# major version irreconciliable, confirmado con evidencia pública
+# (TensorFlow rechaza en runtime cualquier cuDNN de major distinto al que
+# fue compilado). Se probó primero subir TensorFlow a 2.18 (primera línea
+# con cuDNN 9.x) para alinear ambos, pero falló por un motivo más profundo:
+# TF 2.18 no tiene kernels CUDA para la GPU Blackwell de este host
+# (CUDA_ERROR_INVALID_PTX real, confirmado en runtime). Con torch fuera de
+# este Dockerfile, el conflicto de cuDNN/NCCL desaparece de raíz -- ya no
+# hace falta el paso de reinstalación forzada de nvidia-nccl-cu12 que vivía
+# acá (existía solo para el choque de archivo .so entre el NCCL de torch y
+# el de TensorFlow).
 
 COPY . .
 COPY --from=seetaface_builder /opt/seetaface6 /opt/seetaface6
 RUN cp -a /opt/seetaface6/lib/. /usr/local/lib/ && ldconfig
 
 # Invalida caché de capas cuando cambia el pipeline de avatar (rebuild --no-cache recomendado).
-LABEL informe.ai_engine.cartoon_pipeline="v6-local-clahe-no-kmeans"
+# v9: el estilizador por difusión (ADR-141) se movió a un servicio propio,
+# avatar_engine/ (torch+diffusers, sin tensorflow) -- este contenedor solo
+# le habla por HTTP (avatar_diffusion.py acá es un cliente, no el pipeline).
+# Ver la actualización 2026-09-03 del ADR: conflicto real e irreconciliable
+# de cuDNN (major 8 vs 9) entre torch==2.11.0+cu128 y
+# tensorflow[and-cuda]==2.15.1 en el mismo proceso -- por eso ya no viven
+# juntos.
+LABEL informe.ai_engine.cartoon_pipeline="v9-diffusion-via-avatar-engine-sidecar"
 
 # Modelo entrenado incluido en la imagen (entrenar antes del build si faltan archivos).
 # Desactivar comprobación: docker build --build-arg VERIFY_GLASSES_ONNX=0 ...
@@ -112,9 +115,10 @@ ENV SEETAFACE6_TIMEOUT_SECONDS=20
 RUN mkdir -p /app/.insightface
 
 # Proveedor biométrico primario (deepface_silentface_adapter.py). Pesos de
-# Facenet512/YuNet (DeepFace) y de detección/anti-spoofing (Silent-Face) se
-# montan read-only en runtime -- nunca se descargan en el contenedor (ver
-# docs/integration/DEEPFACE_SILENTFACE_LOCAL_DOCKER.md).
+# Facenet512/YuNet (DeepFace) se montan read-only en runtime -- nunca se
+# descargan en el contenedor (ver docs/integration/DEEPFACE_SILENTFACE_LOCAL_DOCKER.md).
+# Los pesos de detección/anti-spoofing (Silent-Face) ya no viven acá --
+# silentface_engine/ tiene su propio Dockerfile con sus propios ENV/mounts.
 # DEEPFACE_HOME=/app (NO /app/.deepface): deepface.commons.folder_utils
 # .initialize_folder() siempre hace home + "/.deepface/weights" -- con
 # DEEPFACE_HOME=/app/.deepface esa cuenta resuelve a /app/.deepface/.deepface,
@@ -126,9 +130,7 @@ RUN mkdir -p /app/.insightface
 # sobre este ENV), pero se corrige aquí también para quien use la imagen sin
 # compose.
 ENV DEEPFACE_HOME=/app
-ENV SILENTFACE_DETECTION_MODEL_DIR=/opt/deepface_silentface/models/detection
-ENV SILENTFACE_ANTISPOOF_MODEL_DIR=/opt/deepface_silentface/models/anti_spoof
-RUN mkdir -p /app/.deepface /opt/deepface_silentface/models/detection /opt/deepface_silentface/models/anti_spoof
+RUN mkdir -p /app/.deepface
 
 # cuDNN (TensorFlow/DeepFace) hace dlopen("libnvrtc.so") -- sin sufijo de
 # version -- para compilar kernels PTX en GPUs mas nuevas que los cubin

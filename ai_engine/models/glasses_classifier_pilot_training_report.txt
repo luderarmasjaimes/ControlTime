@@ -1,0 +1,34 @@
+INFORME DE ENTRENAMIENTO — clasificador gafas (ONNX)
+============================================================
+Inicio (UTC): 2026-09-09T23:06:07.147921+00:00
+Fin (UTC):    2026-09-09T23:07:26.067008+00:00
+Tiempo total: 78.9 s (1.3 min)
+Dispositivo:  cpu
+
+Dataset
+  with_glasses:    561
+  without_glasses: 483
+  train / val:     889 / 156
+
+Hiperparámetros
+  epochs=8 batch=32 lr=0.0001 input=224
+  mejor val_acc:    0.8782
+
+Avance por época (% tiempo y métricas)
+------------------------------------------------------------
+  época 1/8 | progreso  12.5% | t=   12.3s | loss=0.6344 | val_acc=0.7564
+  época 2/8 | progreso  25.0% | t=   20.2s | loss=0.5423 | val_acc=0.8205
+  época 3/8 | progreso  37.5% | t=   28.4s | loss=0.4735 | val_acc=0.8526
+  época 4/8 | progreso  50.0% | t=   38.4s | loss=0.4445 | val_acc=0.8590
+  época 5/8 | progreso  62.5% | t=   48.6s | loss=0.4126 | val_acc=0.8654
+  época 6/8 | progreso  75.0% | t=   58.3s | loss=0.3838 | val_acc=0.8782
+  época 7/8 | progreso  87.5% | t=   68.0s | loss=0.3590 | val_acc=0.8782
+  época 8/8 | progreso 100.0% | t=   78.1s | loss=0.3505 | val_acc=0.8782
+------------------------------------------------------------
+Salidas
+  ONNX:  D:\InformeCliente\ai_engine\models\glasses_classifier_pilot.onnx
+  meta:  D:\InformeCliente\ai_engine\models\glasses_classifier_pilot_meta.json
+  JSON:  D:\InformeCliente\ai_engine\models\glasses_classifier_pilot_training_report.json
+
+Docker / ai_engine:
+  GLASSES_ONNX_PATH=D:/InformeCliente/ai_engine/models/glasses_classifier_pilot.onnx

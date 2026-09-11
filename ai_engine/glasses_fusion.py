@@ -92,7 +92,15 @@ def _glasses_class_index_for_path(onnx_path: str) -> int:
 
 
 def _ensure_session() -> None:
-    global _session, _input_name, _output_name, _load_error, _loaded_onnx_path
+    global _session, _input_name, _output_name, _load_error, _loaded_onnx_path, _glasses_class_index_cached
+    # ADR-156: `_glasses_class_index_cached` faltaba en este `global` -- la
+    # asignacion de mas abajo (antes del print de diagnostico) creaba una
+    # variable LOCAL que tapaba la del modulo durante toda esta funcion, asi
+    # que el log siempre imprimia "idx_gafas=None" aunque el indice real
+    # (usado por infer_glasses_prob_onnx, que si declara el global en su
+    # propio scope) se resolviera bien. Bug solo de diagnostico, nunca de
+    # inferencia -- pero tapaba la senal justo cuando hacia falta confirmar
+    # que el modelo v2 cargo con el indice correcto.
     path = os.environ.get("GLASSES_ONNX_PATH", "").strip()
     if not path:
         _load_error = None

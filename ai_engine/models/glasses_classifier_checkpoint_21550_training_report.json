@@ -1,0 +1,71 @@
+{
+  "status": "completed",
+  "started_at_utc": "2026-09-10T06:35:06.514525+00:00",
+  "finished_at_utc": "2026-09-10T06:48:09.650178+00:00",
+  "total_elapsed_sec": 783.14,
+  "device": "cpu",
+  "dataset": {
+    "data_root": "D:\\InformeCliente\\data\\glasses_dataset_curated",
+    "with_glasses_count": 18641,
+    "without_glasses_count": 2894,
+    "total_images": 21535,
+    "train_samples": 18310,
+    "val_samples": 3231
+  },
+  "hyperparameters": {
+    "epochs": 4,
+    "batch_size": 32,
+    "lr": 0.0001,
+    "val_ratio": 0.15,
+    "input_size": 224,
+    "seed": 42,
+    "backbone": "mobilenet_v2_imagenet"
+  },
+  "best_val_accuracy": 0.9613122872175797,
+  "outputs": {
+    "onnx": "D:\\InformeCliente\\ai_engine\\models\\glasses_classifier_checkpoint_21550.onnx",
+    "meta": "D:\\InformeCliente\\ai_engine\\models\\glasses_classifier_checkpoint_21550_meta.json"
+  },
+  "epochs_timeline": [
+    {
+      "epoch": 1,
+      "epochs_total": 4,
+      "progress_pct": 25.0,
+      "elapsed_sec": 220.88,
+      "epoch_duration_sec": 220.88,
+      "train_loss": 0.284037,
+      "val_acc": 0.925101,
+      "best_val_acc_so_far": 0.925101
+    },
+    {
+      "epoch": 2,
+      "epochs_total": 4,
+      "progress_pct": 50.0,
+      "elapsed_sec": 426.86,
+      "epoch_duration_sec": 205.97,
+      "train_loss": 0.178187,
+      "val_acc": 0.95048,
+      "best_val_acc_so_far": 0.95048
+    },
+    {
+      "epoch": 3,
+      "epochs_total": 4,
+      "progress_pct": 75.0,
+      "elapsed_sec": 604.28,
+      "epoch_duration_sec": 177.42,
+      "train_loss": 0.151923,
+      "val_acc": 0.956051,
+      "best_val_acc_so_far": 0.956051
+    },
+    {
+      "epoch": 4,
+      "epochs_total": 4,
+      "progress_pct": 100.0,
+      "elapsed_sec": 782.56,
+      "epoch_duration_sec": 178.27,
+      "train_loss": 0.137995,
+      "val_acc": 0.961312,
+      "best_val_acc_so_far": 0.961312
+    }
+  ]
+}

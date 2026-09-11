@@ -84,6 +84,12 @@ onnx>=1.15.0,<1.17
 pyzbar>=0.1.9
 pytesseract>=0.3.10
 mrz>=0.6.1
+# Generación del QR del fotocheck (fotocheck_render.py) -- puro Python, sin
+# dependencias nativas. Solo se usa el algoritmo de codificación
+# (QRCode.get_matrix()); el render a píxeles se hace a mano con numpy/OpenCV
+# para NO depender de Pillow (el factory de imagen por defecto de qrcode sí
+# la necesita, este repo no la tiene y prefiere no agregarla).
+qrcode>=7.4,<8
 
 # Extracción de texto plano de CVs (Word/PDF) -- ADR-122, /extract_cv_text.
 # Sin LLM ni interpretación de contenido acá: solo texto crudo, la
@@ -105,32 +111,18 @@ pdfplumber>=0.11,<1
 # ---------------------------------------------------------------------------
 # Proveedor biométrico primario: DeepFace (Facenet512) + Silent-Face-Anti-
 # Spoofing (MiniFASNet). Reemplaza a SeetaFace6 como proveedor local por
-# defecto -- ver ai_engine/deepface_silentface_adapter.py y
-# ai_engine/silentface/ (código vendorizado de inferencia, MIT).
+# defecto -- ver ai_engine/deepface_silentface_adapter.py.
 #
-# torch/torchvision: se instalan desde el índice oficial de PyTorch con
-# ruedas CUDA embebidas (--extra-index-url abajo) en vez de cambiar la imagen
-# base a una con CUDA preinstalado -- las ruedas de PyTorch traen su propio
-# runtime CUDA/cuDNN desde hace varias versiones, así que solo hace falta el
-# driver NVIDIA + nvidia-container-toolkit en el host. Si no hay GPU visible,
-# torch.cuda.is_available() es False y todo corre en CPU sin fallar (mismo
-# patrón que el script probado por el usuario).
+# torch/torchvision YA NO viven acá (Opción C, ADR-141 actualización
+# 2026-09-03): Silent-Face-Anti-Spoofing se movió a un servicio propio,
+# silentface_engine/ (aislado de TensorFlow por el mismo conflicto real de
+# cuDNN documentado en el ADR -- torch exige cuDNN major 9, TensorFlow
+# major 8, irreconciliable). ai_engine/deepface_silentface_adapter.py ahora
+# le habla por HTTP (silentface_client.py). El paso final de reinstalación
+# forzada de nvidia-nccl-cu12 que vivía en Dockerfile.ai también se retiró:
+# existía solo para el choque de archivo entre el NCCL de torch y el de
+# TensorFlow, que ya no compiten en este proceso.
 #
-# cu128 (no cu121): confirmado en runtime, 2026-08-18, con una GPU real
-# (NVIDIA RTX 5060 Laptop, arquitectura Blackwell / compute capability
-# sm_120). torch==2.2.2+cu121 SÍ detecta la GPU (torch.cuda.is_available()
-# True) pero solo trae kernels precompilados hasta sm_90 -- cualquier
-# operación real revienta con "CUDA error: no kernel image is available for
-# execution on the device" (a diferencia de TensorFlow, que sí compila PTX
-# al vuelo vía el driver; torch no tiene ese fallback automático). torch
-# 2.11.0+cu128 SÍ trae kernels para sm_120 -- probado con una multiplicación
-# de matrices real en GPU, sin errores. Downgrade a cu121 solo si se
-# confirma que el hardware de despliegue es anterior a Blackwell (ver
-# tabla de compute capability en la doc de NVIDIA antes de tocar esto).
---extra-index-url https://download.pytorch.org/whl/cu128
-torch==2.11.0+cu128
-torchvision==0.26.0+cu128
-
 # tensorflow[and-cuda]: DeepFace usa tf.keras para construir/cargar Facenet512.
 # El extra "and-cuda" trae las librerías CUDA/cuDNN como dependencias pip
 # (mismo razonamiento que torch arriba). Se fija <2.16 para evitar el cambio

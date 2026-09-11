@@ -1,0 +1,7 @@
+# Sin [and-cuda]: evita que pip vea el pin nvidia-cudnn-cu12==9.3.0.75 de
+# TensorFlow y choque contra el nvidia-cudnn-cu12==9.19.0.56 de torch.
+numpy>=1.26.0,<2.1.0
+opencv-python-headless==4.11.0.86
+tensorflow==2.18.0
+tf-keras~=2.18
+deepface>=0.0.85,<0.1
