@@ -287,6 +287,16 @@ struct AppConfig {
     // número está configurado).
     std::string gHrCvEmailTo;
     std::size_t gAiEngineMaxImageBytes = 450000;
+    // Piloto del avatar por difusión (ADR-141/143, decisión de Gerencia
+    // 2026-09-11, ver actualización de ADR-167): AVATAR_STYLE_ENGINE=diffusion
+    // sigue siendo la llave global de ai_engine, pero mientras no se autorice
+    // producción completa, solo las cuentas de esta lista reciben el estilo
+    // generativo real en su avatar de bienvenida -- el resto cae a clásico
+    // aunque el flag global esté en "diffusion" (lista vacía = nadie, no
+    // "todos"). AVATAR_DIFFUSION_QA_USERNAMES: usernames separados por coma,
+    // comparación case-insensitive.
+    std::vector<std::string> gAvatarDiffusionQaUsernames;
+    bool isAvatarDiffusionQaUser(const std::string &username) const;
     std::string gCartoonOnnxModelPath;
     static constexpr std::size_t kFaceEmbeddingVectorDim = 512;
     double gFaceEmbeddingCosineThreshold = 0.45;

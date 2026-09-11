@@ -1,6 +1,47 @@
 # ADR-167 — Avatar de soporte: alcance v1 acotado a saludo de bienvenida; hoja de ruta y justificación de la inversión en IA
 
-**Status**: accepted (alcance de negocio v1); hoja de ruta ampliada queda `proposed`/diferida
+> **Actualización 2026-09-11 (segunda pasada, mismo día) — piloto QA
+> implementado: avatar por difusión solo para bienvenida, solo cuentas de
+> prueba de QA/certificación.** A pedido explícito del developer, se
+> implementa el mecanismo que faltaba para autorizar producción de forma
+> acotada (ADR-141/143), sin abrir el riesgo a todos los usuarios reales
+> todavía:
+>
+> 1. **"Solo para la bienvenida" ya era la arquitectura real, verificado
+>    leyendo el código**: las tres llamadas a `fetchCartoonAvatarBestEffort`
+>    (`backend/src/main.cpp`) viven exclusivamente dentro de `handleRegister`
+>    — es la MISMA generación (con reintentos) que arma el avatar de
+>    bienvenida; `report`/`alarm_loop` (ADR-164) reutilizan esa imagen ya
+>    generada, nunca vuelven a llamar a `ai_engine`. No hizo falta cambio de
+>    código para esta parte.
+> 2. **Nuevo gate por cuenta**: `AVATAR_DIFFUSION_QA_USERNAMES` (backend,
+>    `AppConfig::isAvatarDiffusionQaUser`) — lista de usernames separados
+>    por coma, comparación case-insensitive, vacía por defecto (nadie, no
+>    "todos"). El backend calcula `avatarForceClassic` una vez por registro
+>    y lo envía a `ai_engine` como campo `style` (`classic`/`diffusion`) en
+>    el mismo POST multipart que ya existía a `/cartoon_avatar`.
+>    `_cartoonify_face_bgr()` (`ai_engine/eye_analyzer.py`) respeta ese
+>    override sobre el flag global `AVATAR_STYLE_ENGINE` — cuentas fuera de
+>    la lista caen a clásico aunque el flag global esté en `diffusion`
+>    (como está hoy en este entorno).
+> 3. **Build y verificación real, no solo lectura de código**: `docker
+>    compose build web` limpio (encontró y corrigió un error propio de
+>    namespace, `http_utils::splitCsvLower`); `docker compose build
+>    ai_engine` limpio; redeploy de ambos contenedores. Probado en vivo
+>    contra `POST /cartoon_avatar` con una foto real de prueba: `style:
+>    "classic"` → `generator: "local_mediapipe_opencv"` (clásico, correcto);
+>    `style: "diffusion"` → `generator: "local_sd15_controlnet"` (difusión,
+>    correcto). **No se probó el flujo completo de registro en vivo** (ICAO
+>    + liveness + captura real vía navegador) — la verificación cubre el
+>    contrato backend↔ai_engine, no el pipeline de captura de punta a punta;
+>    queda como pendiente de QA antes de asignar cuentas reales a la lista.
+> 4. **Nadie está en la lista todavía**: `AVATAR_DIFFUSION_QA_USERNAMES`
+>    queda vacía en `.env.example` (documentado, sin valor) y sin definir en
+>    el `.env` local de este entorno — el developer debe decidir qué
+>    usernames de prueba/certificación agregar antes de que el piloto tenga
+>    a alguien real dentro.
+
+**Status**: accepted (alcance de negocio v1); piloto QA implementado y verificado (2026-09-11); producción completa sigue sin autorizar
 
 **Fecha**: 2026-09-11
 

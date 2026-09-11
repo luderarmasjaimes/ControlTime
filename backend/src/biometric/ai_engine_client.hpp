@@ -26,11 +26,18 @@ FaceAnalysis fetchSeetaFaceAnalysisFromAiEngine(
 FaceAnalysis fetchDeepFaceSilentAnalysisFromAiEngine(
     const std::vector<unsigned char> &imageBytes, const std::string &mode);
 
+/** forceClassicStyle=true fuerza el estilo clásico en ai_engine (campo
+ * "style"=classic) aunque AVATAR_STYLE_ENGINE=diffusion esté activo
+ * globalmente -- piloto de avatar por difusión limitado a cuentas QA/
+ * certificación, ver AppConfig::isAvatarDiffusionQaUser (ADR-141/143,
+ * actualización 2026-09-11 de ADR-167). */
 AiEngineCartoonResult
-fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes);
+fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes,
+                               bool forceClassicStyle = false);
 
 AiEngineCartoonResult
-fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes);
+fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes,
+                             bool forceClassicStyle = false);
 
 /** @brief Lectura de DNI por cámara (PDF417/MRZ, ver ai_engine/dni_scan.py).
  * No consulta RENIEC/SUNAT — solo decodifica lo ya impreso en el documento. */

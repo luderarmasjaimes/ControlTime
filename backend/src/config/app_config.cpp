@@ -1,4 +1,5 @@
 #include "app_config.hpp"
+#include "../http/http_utils.hpp"
 
 #include <openssl/rand.h>
 
@@ -381,6 +382,8 @@ void AppConfig::loadFromEnv() {
     } catch (...) {
         gAiEngineMaxImageBytes = 450000;
     }
+    gAvatarDiffusionQaUsernames = http_utils::splitCsvLower(
+        getenvOr("AVATAR_DIFFUSION_QA_USERNAMES", ""));
     try {
         gFaceEmbeddingCosineThreshold = std::clamp(
             std::stod(getenvOr("BEEMETRY_FACE_EMBEDDING_COSINE_THRESHOLD", "0.45")), 0.20,
@@ -466,6 +469,13 @@ const WhatsappLine *AppConfig::defaultWhatsappLine() const {
 bool AppConfig::isWhatsappAdminPhone(const std::string &phoneE164) const {
     return std::find(gWhatsappAdminPhones.begin(), gWhatsappAdminPhones.end(), phoneE164) !=
            gWhatsappAdminPhones.end();
+}
+
+bool AppConfig::isAvatarDiffusionQaUser(const std::string &username) const {
+    if (gAvatarDiffusionQaUsernames.empty()) return false;
+    const std::string needle = toLowerCopy(username);
+    return std::find(gAvatarDiffusionQaUsernames.begin(), gAvatarDiffusionQaUsernames.end(),
+                      needle) != gAvatarDiffusionQaUsernames.end();
 }
 
 } // namespace config

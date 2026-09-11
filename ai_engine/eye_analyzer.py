@@ -2419,7 +2419,9 @@ def _diffusion_stylize_with_quality_retry(
     return best_candidate
 
 
-def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[Tuple[str, str, str]]:
+def _cartoonify_face_bgr(
+    img_bgr: np.ndarray, style_override: Optional[str] = None
+) -> Optional[Tuple[str, str, str]]:
     """
     Un único avatar PNG por imagen, 100 % local: segmentación selfie / GrabCut,
     fondo blanco, y estilo con CLAHE + realce suave (por defecto, ver
@@ -2428,6 +2430,14 @@ def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[Tuple[str, str, str]]:
     primero un estilizador generativo real (SD1.5 img2img + ControlNet-Canny,
     avatar_diffusion.py) y se cae al estilo clásico si falla por cualquier
     motivo (pesos no descargados, sin GPU y demasiado lento, OOM, etc.).
+
+    style_override (piloto QA, ADR-141/143, actualización 2026-09-11 de
+    ADR-167): el backend C++ lo envía por request ("classic"/"diffusion")
+    según si la cuenta que se registra está en AVATAR_DIFFUSION_QA_USERNAMES.
+    "classic" fuerza el estilo clásico aunque AVATAR_STYLE_ENGINE=diffusion
+    esté activo globalmente; cualquier otro valor (incl. None, para llamadores
+    que no lo envían todavía) preserva el comportamiento previo, gateado solo
+    por el flag global.
     """
     if img_bgr is None or img_bgr.size == 0:
         return None
@@ -2534,7 +2544,7 @@ def _cartoonify_face_bgr(img_bgr: np.ndarray) -> Optional[Tuple[str, str, str]]:
             out = cv2.bilateralFilter(flat, 3, 20, 20)
         else:
             out = None
-            if avatar_diffusion_enabled():
+            if style_override != "classic" and avatar_diffusion_enabled():
                 out = _diffusion_stylize_with_quality_retry(
                     work_wb, a, alpha_sm, matte_oval
                 )
@@ -2627,7 +2637,13 @@ def cartoon_avatar():
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({"ok": False, "error": "invalid_image"}), 400
-    avatars = _cartoonify_face_bgr(img)
+    # Piloto QA de avatar por difusión (ADR-141/143, actualización 2026-09-11
+    # de ADR-167): el backend C++ envía "style" ("classic"/"diffusion") según
+    # AVATAR_DIFFUSION_QA_USERNAMES; cualquier otro valor se ignora (None,
+    # mismo comportamiento previo gateado solo por el flag global).
+    style_raw = (request.form.get("style") or "").strip().lower()
+    style_override = style_raw if style_raw in ("classic", "diffusion") else None
+    avatars = _cartoonify_face_bgr(img, style_override=style_override)
     if not avatars:
         return jsonify({"ok": False, "error": "cartoonify_failed"}), 200
     thumb_b64, hd_b64, generator_name = avatars

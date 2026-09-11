@@ -545,11 +545,19 @@ handleRegister(const http::request<http::string_body> &req,
         // resultado (sigue siendo best-effort y se recolecta en el hilo de
         // fondo más abajo, nunca bloquea la respuesta) -- sólo evita que
         // compita por el mismo proceso mientras el embedding está en vuelo.
+        // Piloto QA de avatar por difusión (ADR-141/143, actualización
+        // 2026-09-11 de ADR-167): mientras no se autorice producción
+        // completa, solo las cuentas en AVATAR_DIFFUSION_QA_USERNAMES ven
+        // el estilo generativo real en su avatar de bienvenida; el resto
+        // cae a clásico aunque AVATAR_STYLE_ENGINE=diffusion esté activo
+        // globalmente (comportamiento hoy en este entorno).
+        const bool avatarForceClassic = !cfg.isAvatarDiffusionQaUser(username);
         if (!bustBytes.empty()) {
             std::vector<unsigned char> bustCopy = bustBytes;
-            cartoonFut.emplace(std::async(std::launch::async, [bustCopy]() {
-                return fetchCartoonAvatarBestEffort(bustCopy);
-            }));
+            cartoonFut.emplace(std::async(
+                std::launch::async, [bustCopy, avatarForceClassic]() {
+                    return fetchCartoonAvatarBestEffort(bustCopy, avatarForceClassic);
+                }));
             regLog("cartoon_async_started_after_embedding");
         }
 
@@ -778,7 +786,7 @@ handleRegister(const http::request<http::string_body> &req,
                  bgRawReg = std::move(bgRawReg), bgPortrait = std::move(bgPortrait),
                  userId = created.id, regDni = dni, regUser = username,
                  regCompany = company, dataRoot,
-                 storageModeCapture, dbUrlCapture]() mutable {
+                 storageModeCapture, dbUrlCapture, avatarForceClassic]() mutable {
                     const auto t0 = std::chrono::steady_clock::now();
                     auto bgLog = [&](const char *tag) {
                         const auto ms =
@@ -809,7 +817,7 @@ handleRegister(const http::request<http::string_body> &req,
                     }
                     if (b64.empty() && !bgPortrait.empty()) {
                         bgLog("cartoon_sync_portrait_bg");
-                        auto cartoon = fetchCartoonAvatarBestEffort(bgPortrait);
+                        auto cartoon = fetchCartoonAvatarBestEffort(bgPortrait, avatarForceClassic);
                         if (cartoon.ok()) {
                             b64 = std::move(cartoon.imageBase64);
                             hdB64 = std::move(cartoon.imageHdBase64);
@@ -817,7 +825,7 @@ handleRegister(const http::request<http::string_body> &req,
                     }
                     if (b64.empty() && !bgRawReg.empty()) {
                         bgLog("cartoon_sync_raw_bg");
-                        auto cartoon2 = fetchCartoonAvatarBestEffort(bgRawReg);
+                        auto cartoon2 = fetchCartoonAvatarBestEffort(bgRawReg, avatarForceClassic);
                         if (cartoon2.ok()) {
                             b64 = std::move(cartoon2.imageBase64);
                             hdB64 = std::move(cartoon2.imageHdBase64);

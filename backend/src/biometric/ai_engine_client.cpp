@@ -791,7 +791,8 @@ FaceAnalysis fetchDeepFaceSilentAnalysisFromAiEngine(
 }
 
 AiEngineCartoonResult
-fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
+fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes,
+                               bool forceClassicStyle) {
   AiEngineCartoonResult out;
   if (gAiEngineUrl.empty()) {
     out.error = "ai_engine_disabled";
@@ -817,6 +818,14 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
   body += "Content-Type: image/jpeg\r\n\r\n";
   body.append(reinterpret_cast<const char *>(imageBytes.data()),
               static_cast<std::streamsize>(imageBytes.size()));
+  body += "\r\n--" + boundary + "\r\n";
+  // Piloto QA de avatar por difusión (ADR-141/143, actualización 2026-09-11
+  // de ADR-167): "classic" fuerza el estilo clásico en ai_engine
+  // (_cartoonify_face_bgr) aunque AVATAR_STYLE_ENGINE=diffusion esté activo
+  // globalmente; "diffusion" preserva el comportamiento previo (decide el
+  // flag global). Ver eye_analyzer.py::cartoon_avatar().
+  body += "Content-Disposition: form-data; name=\"style\"\r\n\r\n";
+  body += (forceClassicStyle ? "classic" : "diffusion");
   body += "\r\n--" + boundary + "--\r\n";
 
   // Mutex de GPU (ver storage/gpu_mutex.hpp): /cartoon_avatar en ai_engine
@@ -914,10 +923,12 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes) {
 }
 
 AiEngineCartoonResult
-fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes) {
+fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes,
+                             bool forceClassicStyle) {
   // El sidecar local conserva la silueta con MediaPipe y entrega miniatura +
   // maestro 4K. Se prefiere para evitar ampliar un tensor AnimeGAN de 512 px.
-  AiEngineCartoonResult sidecar = fetchCartoonAvatarFromAiEngine(imageBytes);
+  AiEngineCartoonResult sidecar =
+      fetchCartoonAvatarFromAiEngine(imageBytes, forceClassicStyle);
   if (sidecar.ok()) {
     return sidecar;
   }
