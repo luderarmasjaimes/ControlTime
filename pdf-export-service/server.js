@@ -455,6 +455,7 @@ async function capturePdfPagesOnWorker(scopedUrl, pageNumbers, jobLabel, workerL
             targetsThisRun: pageNumbers.length,
             elapsedMs: Date.now() - sharedState.startedAt,
           }));
+          saveJobProgress(sharedState.realJobId, sharedState.capturedFromCheckpoint + sharedState.capturedCount, sharedState.totalPages);
         }
       } catch (pageErr) {
         sharedState.captureFailures += 1;
@@ -476,7 +477,7 @@ async function capturePdfPagesOnWorker(scopedUrl, pageNumbers, jobLabel, workerL
  * con checkpoint propio. Devuelve `{ buffer, page, pageCount }`: `page` es
  * SIEMPRE la misma que entró (nunca se recicla la de descubrimiento) --  el
  * caller la cierra en su `finally` como siempre. */
-async function renderReportPages(page, url) {
+async function renderReportPages(page, url, realJobId) {
   // Sin binding -- solo valida que haya al menos una página (lanza
   // `no_pages_to_render` si no), el array en sí lo recalcula cada worker.
   await reportPageSizes(page);
@@ -512,6 +513,10 @@ async function renderReportPages(page, url) {
     remaining: remainingPageNumbers.length,
     parallelism: chunks.length,
   }));
+  // `realJobId` viene `undefined` para `/render` (síncrono, sin job propio
+  // -- ver comentario de `saveJobProgress`, que no escribe nada en ese
+  // caso). `/render-pdf` (async) SÍ lo pasa.
+  await saveJobProgress(realJobId, alreadyCaptured.size, allPageNumbers.length);
 
   const sharedState = {
     capturedPageNumbers,
@@ -521,6 +526,8 @@ async function renderReportPages(page, url) {
     sinceLastManifestSave: 0,
     capturedFromCheckpoint: alreadyCaptured.size,
     startedAt: Date.now(),
+    realJobId,
+    totalPages: allPageNumbers.length,
     flushManifest: () => savePdfManifest(contentHash, capturedPageNumbers, allPageNumbers.length).catch((err) => {
       console.warn('[PDF_EXPORT] checkpoint_manifest_save_failed', String(err));
     }),
@@ -572,6 +579,7 @@ async function renderReportPages(page, url) {
   await clearPdfCheckpoint(contentHash).catch((clearErr) => {
     console.warn('[PDF_EXPORT] checkpoint_clear_failed', String(clearErr));
   });
+  await clearJobProgress(realJobId);
   return { buffer: Buffer.from(await merged.save()), page, pageCount: allPageNumbers.length };
 }
 
@@ -837,7 +845,7 @@ app.post('/render-pdf', async (req, res) => {
   try {
     const browser = await getBrowser();
     page = await openReportPage(browser, url);
-    const rendered = await renderReportPages(page, url);
+    const rendered = await renderReportPages(page, url, jobId);
     page = rendered.page;
     let pdfBuffer = rendered.buffer;
 
@@ -1157,6 +1165,7 @@ app.post('/render-pptx', async (req, res) => {
       parallelism: chunks.length,
       virtualized,
     });
+    await saveJobProgress(jobId, alreadyCaptured.size, slidePageNumbers.length);
 
     let capturedCount = 0;
     let captureFailures = 0;
@@ -1231,6 +1240,7 @@ app.post('/render-pptx', async (req, res) => {
               missingHandleCount,
               elapsedMs: Date.now() - exportStartedAt,
             }));
+            saveJobProgress(jobId, alreadyCaptured.size + capturedCount, slidePageNumbers.length);
           }
         } catch (slideErr) {
           captureFailures += 1;
@@ -1405,6 +1415,7 @@ app.post('/render-pptx', async (req, res) => {
     await clearPptxCheckpoint(contentHash).catch((clearErr) => {
       console.warn('[PPTX_EXPORT] checkpoint_clear_failed', String(clearErr));
     });
+    await clearJobProgress(jobId);
     res.json({ storage_path: outPath });
   } catch (err) {
     console.error('[PPTX_EXPORT] render_failed:', err && err.stack ? err.stack : err);
@@ -1650,6 +1661,40 @@ async function runInBatches(items, batchSize, run) {
   }
 }
 
+// ── Progreso de job (barra visible para el usuario) ────────────────────────
+// A diferencia de los checkpoints (indexados por HASH DEL CONTENIDO, para
+// sobrevivir reintentos), esto es solo para que el FRONTEND muestre una
+// barra de avance mientras el export corre -- indexado por el `job_id` REAL
+// (el que ya conoce el backend/frontend vía `report_export_job`), en un
+// archivo JSON chico sobre el MISMO volumen compartido
+// (`./data:/data` -- ver EXPORT_DATA_ROOT) que ya monta el backend C++, así
+// que este último puede leerlo directo del disco sin necesitar un endpoint
+// HTTP nuevo en el sidecar ni credenciales cruzadas. Se actualiza con la
+// MISMA cadencia que los logs `progress` ya existentes -- no agrega
+// escrituras de disco extra significativas, solo values agregados a esas
+// mismas. `jobId` puede venir `null` (el `/render` síncrono no tiene un job
+// real que trackear, ver `renderReportPages`) -- en ese caso no se escribe
+// nada, no hay frontend haciendo polling de un job que no existe.
+const JOB_PROGRESS_ROOT = path.join(EXPORT_DATA_ROOT, 'progress');
+
+async function saveJobProgress(jobId, captured, total) {
+  if (!jobId) return;
+  try {
+    await fs.mkdir(JOB_PROGRESS_ROOT, { recursive: true });
+    const tmpPath = path.join(JOB_PROGRESS_ROOT, `${jobId}.json.tmp`);
+    const finalPath = path.join(JOB_PROGRESS_ROOT, `${jobId}.json`);
+    await fs.writeFile(tmpPath, JSON.stringify({ captured, total, updatedAt: new Date().toISOString() }));
+    await fs.rename(tmpPath, finalPath);
+  } catch (err) {
+    console.warn('[EXPORT] job_progress_save_failed', jobId, String(err));
+  }
+}
+
+async function clearJobProgress(jobId) {
+  if (!jobId) return;
+  await fs.rm(path.join(JOB_PROGRESS_ROOT, `${jobId}.json`), { force: true }).catch(() => {});
+}
+
 // ── Checkpoints reanudables de captura DOCX ────────────────────────────────
 // Un export de miles de páginas puede tardar horas; sin esto, cualquier
 // caída (reinicio del contenedor, del host, un crash de Chromium) pierde
@@ -1866,6 +1911,7 @@ app.post('/render-docx', async (req, res) => {
       virtualized,
       elementReadyTimeoutMs: DOCX_ELEMENT_READY_TIMEOUT_MS,
     }));
+    await saveJobProgress(jobId, alreadyCaptured.size, allTargets.length);
 
     /** Recorre `targets` (un tramo de `captureTargets`) sobre `workerPage`,
      * su PROPIA página de Puppeteer -- estado de activación de página
@@ -1904,6 +1950,9 @@ app.post('/render-docx', async (req, res) => {
                 nodeRssBytes: memory.rss,
                 nodeHeapUsedBytes: memory.heapUsed,
               }));
+              // Fire-and-forget -- ver comentario de `saveJobProgress` más
+              // arriba, nunca bloquea la captura misma.
+              saveJobProgress(jobId, alreadyCaptured.size + capturedCount, allTargets.length);
             }
           } catch (activateErr) {
             // DIAGNÓSTICO TEMPORAL -- ver diag de arriba. `Promise.allSettled`
@@ -2124,6 +2173,7 @@ app.post('/render-docx', async (req, res) => {
     await clearCheckpoint(contentHash).catch((clearErr) => {
       console.warn('[DOCX_EXPORT] checkpoint_clear_failed', String(clearErr));
     });
+    await clearJobProgress(jobId);
     res.json({ storage_path: outPath });
   } catch (err) {
     console.error('[DOCX_EXPORT] render_failed:', err && err.stack ? err.stack : err);

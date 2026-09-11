@@ -4,8 +4,21 @@ WORKDIR /app
 ARG BUILD_STAMP=dev
 ENV VITE_BUILD_STAMP=$BUILD_STAMP
 COPY package*.json ./
+# Causa real de los timeouts de red repetidos (confirmado en vivo,
+# 2026-09-08): `playwright` es devDependency (solo para test:e2e, nunca se
+# ejecuta dentro de esta imagen) y su postinstall intenta descargar los
+# binarios de Chromium/Firefox/WebKit (cientos de MB) desde una CDN aparte
+# del registry de npm -- esa descarga, no los paquetes de npm en sí, era la
+# que se colgaba 15-20 min y terminaba en ECONNRESET/EIDLETIMEOUT. Variable
+# oficial de Playwright para saltarla en entornos que no van a correr sus
+# tests (build de producción, CI de otro tipo).
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 # use npm ci for reproducible, faster installs
-RUN npm ci --legacy-peer-deps --prefer-offline --no-audit
+# --mount=type=cache: además de lo anterior, persiste /root/.npm entre builds
+# -- un reintento por cualquier otra falla de red sólo vuelve a pedir lo que
+# faltó, no todo el árbol de paquetes desde cero.
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps --prefer-offline --no-audit
 COPY . .
 RUN npm run build
 

@@ -90,6 +90,29 @@ static std::string resolveAllowedReportTenant(
   return session.tenantId;
 }
 
+/** @brief Lee el progreso (captured/total) de un job de export DOCX/PPTX/PDF
+ * desde el archivo que el sidecar (pdf-export-service/server.js,
+ * `saveJobProgress`) va escribiendo periódicamente en
+ * `EXPORT_DATA_ROOT/progress/<jobId>.json` -- mismo volumen compartido
+ * (`./data:/data`) que este backend ya monta para leer el archivo final del
+ * export, así que no hace falta ningún endpoint HTTP nuevo en el sidecar ni
+ * credenciales cruzadas: solo una lectura de disco. Devuelve `null` (no un
+ * error) si el archivo no existe todavía -- normal antes de la primera
+ * escritura periódica, o después de que el job ya terminó y el sidecar lo
+ * borró. */
+static json::value readExportJobProgress(const std::string &jobId) {
+  const std::filesystem::path progressPath =
+      std::filesystem::path(AppConfig::instance().gExportDataRoot) / "progress" / (jobId + ".json");
+  std::ifstream ifs(progressPath, std::ios::binary);
+  if (!ifs) return nullptr;
+  std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  try {
+    return json::parse(raw);
+  } catch (...) {
+    return nullptr;
+  }
+}
+
 // ── GET /api/reports ─────────────────────────────────────────────────
 static http::response<http::string_body>
 handleGetReports(const http::request<http::string_body>& req,
@@ -340,6 +363,14 @@ handleGetReportById(const http::request<http::string_body>& req,
                               json::object{{"error", "export_job_not_found"}});
     }
     if (!wantsDownload) {
+      // Progreso (barra visible al usuario, ver `readExportJobProgress`)
+      // solo tiene sentido mientras el job sigue activo -- para un job ya
+      // terminado el sidecar ya borró su archivo (o nunca aplica, p.ej.
+      // 'mp4' no lo escribe), así que `null` es el resultado normal y
+      // esperado en esos casos.
+      const json::value progress = (job.status == "queued" || job.status == "running")
+          ? readExportJobProgress(job.jobId)
+          : nullptr;
       return makeJsonResponse(
           http::status::ok,
           json::object{{"job_id", job.jobId},
@@ -349,7 +380,8 @@ handleGetReportById(const http::request<http::string_body>& req,
                        {"error_message", job.errorMessage},
                        {"created_at", job.createdAt},
                        {"started_at", job.startedAt},
-                       {"completed_at", job.completedAt}});
+                       {"completed_at", job.completedAt},
+                       {"progress", progress}});
     }
     if (job.status != "success" || job.storageUri.empty()) {
       return makeJsonResponse(http::status::conflict,

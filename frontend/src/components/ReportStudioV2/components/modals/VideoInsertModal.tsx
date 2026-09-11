@@ -34,10 +34,15 @@ function blobToDataUrl(blob: Blob): Promise<string> {
  */
 async function getUserMediaWithAudioFallback(): Promise<{ stream: MediaStream; hasAudio: boolean }> {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    // Sin ideal de resolución, el navegador elegía su default (a menudo
+    // 640x480) para un video que termina insertado en el informe.
+    const videoConstraints = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+    const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
     return { stream, hasAudio: stream.getAudioTracks().length > 0 };
   } catch {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
+    });
     return { stream, hasAudio: false };
   }
 }

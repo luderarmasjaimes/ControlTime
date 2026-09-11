@@ -297,6 +297,23 @@ textarea {
     height: 36px;
     border-radius: 999px;
     object-fit: cover;
+    /* Hallazgo real, sesión 2026-09-09 (usuario 09637600/ALPAYANA, "el
+       rostro debe aparecer centrado en el círculo"): medido con MediaPipe
+       sobre un avatar real (768×1024) -- el nivel de ojos cae a 22.2% de
+       la altura de la imagen, con contenido real (busto) solo hasta ~54%
+       (el resto es el margen blanco de la composición, ver ADR-141). Con
+       `object-position` por defecto (50% 50%, centro geométrico de TODA
+       la imagen), el recorte cuadrado que hace `cover` queda centrado en
+       la MITAD de la imagen completa -- deja los ojos a ~13% de la altura
+       del propio recorte, casi pegados al borde superior, no al centro.
+       `top` (0%) es el mejor punto alcanzable solo con CSS dado que el
+       recorte cuadrado de `cover` mide el 75% de la altura de la imagen
+       (768/1024) y el nivel de ojos (22.2%) está más arriba que el centro
+       de esa ventana aunque se alinee completamente arriba -- lleva los
+       ojos a ~30% de la altura del recorte, mucho más centrado que el
+       ~13% anterior. No llega al 50% exacto porque la imagen fuente en sí
+       tiene ese margen en blanco real debajo del busto. */
+    object-position: top;
     border: 2px solid rgba(251, 146, 60, 0.65);
     box-shadow: 0 4px 12px rgba(2, 6, 23, 0.4);
     flex-shrink: 0;
@@ -1444,6 +1461,15 @@ textarea {
     min-width: 0;
     height: 39px;
     padding: 2px 3px 2px 5px;
+    /* Defensa en profundidad (2026-09-10): el fix real vive en
+       AvatarWidget.tsx (TOP_SAFE_ZONE, evita que el widget se pueda
+       arrastrar/posicionar sobre esta franja) -- esto es un respaldo en caso
+       de que algo más algún día se posicione encima con z-index alto:
+       position+z-index acá garantiza que los botones de navegación (incluido
+       "Informes/Reportes") sigan siendo clicables aunque algo quede
+       visualmente por debajo o encima sin querer. */
+    position: relative;
+    z-index: 10000;
     border: 1px solid rgba(71, 85, 105, 0.44);
     border-radius: 12px;
     background:
@@ -2817,6 +2843,57 @@ textarea {
     aspect-ratio: 16 / 9;
     object-fit: contain;
     background: #02050c;
+}
+
+/* Flecha animada del desafío activo turn_left/turn_right (ADR-149): overlay
+   puramente visual sobre .camera-stage -- la captura real lee el frame
+   directo del <video>/canvas (ver buildFullFrameJpegBase64FromVideo en
+   AuthGateway.tsx), nunca una foto del DOM renderizado, así que esto nunca
+   puede llegar a formar parte de la imagen procesada/enviada al backend. */
+@keyframes turn-challenge-nudge-left {
+    0%, 100% { transform: translateX(0); opacity: 0.6; }
+    50% { transform: translateX(-16px); opacity: 1; }
+}
+@keyframes turn-challenge-nudge-right {
+    0%, 100% { transform: translateX(0); opacity: 0.6; }
+    50% { transform: translateX(16px); opacity: 1; }
+}
+.turn-challenge-arrow {
+    animation-duration: 0.9s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+}
+.turn-challenge-arrow.turn-challenge-arrow-left {
+    animation-name: turn-challenge-nudge-left;
+}
+.turn-challenge-arrow.turn-challenge-arrow-right {
+    animation-name: turn-challenge-nudge-right;
+}
+
+/* Icono pulsante del desafío move_closer/move_away (2026-09-07, pedido
+   explícito del usuario: ayuda visual para los 6 tipos de reto) -- mismo
+   criterio que turn-challenge-arrow: overlay puramente decorativo, nunca
+   forma parte del frame procesado/enviado al backend. */
+@keyframes liveness-zoom-pulse-in-anim {
+    0%, 100% { transform: scale(0.75); opacity: 0.6; }
+    50% { transform: scale(1.15); opacity: 1; }
+}
+@keyframes liveness-zoom-pulse-out-anim {
+    0%, 100% { transform: scale(1.15); opacity: 0.6; }
+    50% { transform: scale(0.75); opacity: 1; }
+}
+.liveness-zoom-pulse {
+    animation-duration: 0.9s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+}
+.liveness-zoom-pulse-in {
+    animation-name: liveness-zoom-pulse-in-anim;
+}
+.liveness-zoom-pulse-out {
+    animation-name: liveness-zoom-pulse-out-anim;
 }
 
 .camera-stage {

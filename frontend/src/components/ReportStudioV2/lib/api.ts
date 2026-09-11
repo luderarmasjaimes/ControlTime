@@ -1168,6 +1168,12 @@ export interface ExportJobStatus {
   created_at: string;
   started_at: string;
   completed_at: string;
+  // Solo viene poblado mientras el job está 'queued'/'running' -- lo escribe
+  // el sidecar periódicamente (pdf-export-service/server.js,
+  // `saveJobProgress`) y el backend lo lee del volumen compartido
+  // (`readExportJobProgress`, report_routes.cpp). `null` es normal: antes
+  // de la primera escritura periódica, o para formatos que no lo reportan.
+  progress: { captured: number; total: number } | null;
 }
 
 /**

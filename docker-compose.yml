@@ -444,6 +444,18 @@ services:
       # silencioso que el frontend corta a los 30-45s igual, pero ya con el
       # backend entero bloqueado para todos.
       - BEEMETRY_DATABASE_URL=host=pgbouncer port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)} connect_timeout=5
+      # Directa a "db" (SIN pgbouncer) solo para GpuInferenceMutex
+      # (storage/gpu_mutex.hpp). pgbouncer corre en POOL_MODE=transaction: dos
+      # PQexec sueltos de la misma conexión lógica del pool pueden caer en
+      # conexiones físicas de Postgres distintas, y pg_advisory_lock/unlock
+      # son locks de SESIÓN -- si el lock y el unlock_all() del mutex de GPU
+      # no caen en la misma conexión física, el unlock no libera nada y el
+      # lock queda retenido para siempre (incidente real 2026-09-09/10: 6
+      # hilos de fondo bloqueados 9-20 min generando avatares tras un CUDA
+      # OOM en avatar_engine, ver [GPU_MUTEX] en logs de este contenedor).
+      # Va directo a "db" en vez de "pgbouncer" a propósito -- es la única
+      # conexión de todo el backend con esta excepción.
+      - BEEMETRY_GPU_MUTEX_DATABASE_URL=host=db port=5432 dbname=sensors_db user=sensors password=${BEEMETRY_DB_PASSWORD:?Definir BEEMETRY_DB_PASSWORD en .env (ver .env.example)} connect_timeout=5
       # Hilos del mining_gateway TLS (ingesta 10K sensores). 6 = casi todo el cap
       # de CPU (8), deja 2 para HTTP y resto.
       - BEEMETRY_MINING_GATEWAY_THREADS=8
@@ -506,6 +518,25 @@ services:
       - BEEMETRY_SEETAFACE6_REQUIRED=${BEEMETRY_SEETAFACE6_REQUIRED:-true}
       - BEEMETRY_SEETAFACE6_TIMEOUT_MS=${BEEMETRY_SEETAFACE6_TIMEOUT_MS:-20000}
       - BEEMETRY_FACE_SEETAFACE6_COSINE_THRESHOLD=${BEEMETRY_FACE_SEETAFACE6_COSINE_THRESHOLD:-0.80}
+      # ADR-142/143/146: desafío de liveness activa PEDIDO (1 gesto sorteado
+      # entre girar la cabeza izquierda/derecha o acercarse/alejarse de la
+      # cámara, en secuencia DESPUÉS de las 5 lecturas ICAO + parpadeo
+      # natural), server-side y no falseable por el cliente. REACTIVADO el
+      # 2026-09-03 a pedido explícito del usuario para cerrar la validación
+      # biométrica de cara a producción (necesario para bloquear un video
+      # pre-grabado de la persona real reproducido desde un celular -- el
+      # parpadeo natural solo no alcanza contra eso, ver ADR-143). ADR-146
+      # bajó la cantidad de 2 a 1 y reemplazó blink/mouth/inclinar-cabeza por
+      # acercarse/alejarse (más manejable). Métricas de calibración
+      # (armado/cumplido/vencido por tipo de gesto) en
+      # GET /api/auth/biometric/status.
+      - BEEMETRY_LIVENESS_CHALLENGE_REQUIRED=${BEEMETRY_LIVENESS_CHALLENGE_REQUIRED:-true}
+      # ADR-143: parpadeo NATURAL (pasivo, sin pedir ningún gesto) evaluado
+      # en simultáneo durante las mismas 5 lecturas ICAO de arriba -- prueba
+      # de vida contra fotos/máscaras estáticas. Independiente del
+      # interruptor de arriba a propósito: no molesta al usuario, así que se
+      # mantiene siempre activo en producción.
+      - BEEMETRY_NATURAL_BLINK_REQUIRED=${BEEMETRY_NATURAL_BLINK_REQUIRED:-true}
       - BEEMETRY_DERMALOG_REQUIRED=false
       - BEEMETRY_DERMALOG_CLI_PATH=/opt/dermalog/bin/dermalog-face-cli
       - BEEMETRY_DERMALOG_SDK_DIR=/opt/dermalog
@@ -514,28 +545,45 @@ services:
       - BEEMETRY_BIOMETRIC_DNN_LABELS=${BEEMETRY_BIOMETRIC_DNN_LABELS:-glasses,hat,mask,makeup,eyes_closed,mouth_open,non_frontal}
       - BEEMETRY_BIOMETRIC_DNN_THRESHOLD=${BEEMETRY_BIOMETRIC_DNN_THRESHOLD:-0.72}
       - BEEMETRY_AI_ENGINE_URL=http://ai_engine:5000
+      # ADR-150: avatar ANIMADO (SadTalker) -- servicio APARTE, gateado por
+      # el perfil Compose "avatar-animation" (ver el bloque avatar_animation_engine
+      # más abajo). Sin ese perfil activo el hostname no resuelve y
+      # fetchAnimatedAvatar devuelve avatar_animation_resolve_failed --
+      # mismo criterio "sin depends_on hard, falla con error claro" que
+      # BEEMETRY_PDF_EXPORT_URL ya usa.
+      - BEEMETRY_AVATAR_ANIMATION_ENGINE_URL=http://avatar_animation_engine:5003
+      - BEEMETRY_AVATAR_ANIMATION_TIMEOUT_MS=${BEEMETRY_AVATAR_ANIMATION_TIMEOUT_MS:-300000}
       # ADR-016: export PDF server-side (sidecar Chromium headless). Sin
       # depends_on hard: si el sidecar no está listo, el export falla con un
       # error claro en vez de bloquear el arranque del backend.
       - BEEMETRY_PDF_EXPORT_URL=http://pdf_export:4000
-      # 650000 (~10.8 min) da margen por encima del PDF_RENDER_TIMEOUT_MS del
-      # sidecar (600000, ver servicio pdf_export más abajo) para que el
-      # backend no se rinda esperando ANTES de que el sidecar termine o
-      # devuelva su propio error de timeout -- informes de cientos de páginas
-      # con más de mil gráficos de sensor en vivo tardan varios minutos reales
-      # en renderizar (reproducido en vivo: 45000 producía 502 con un informe
-      # de 378 páginas / 1120 diagramas).
-      - BEEMETRY_PDF_EXPORT_TIMEOUT_MS=650000
+      # 5400000 (90 min, antes 650000/~10.8 min): con la Fase 1+2 de captura
+      # (checkpoints + N workers dedicados, ver DOCX_CAPTURE_PARALLELISM en
+      # server.js) un documento de 2104 páginas/6302 gráficos mide en vivo
+      # ~24-36 min reales de principio a fin -- 650000 quedaba corto para eso
+      # aunque NO se notaba antes porque `stream.expires_after()` (Beast) no
+      # aplica de forma confiable a las llamadas SÍNCRONAS que usa
+      # `postJsonToSidecar`/`exportReportPdf` (bug real, corregido con
+      # SO_RCVTIMEO/SO_SNDTIMEO explícitos -- ver esas funciones). Con el
+      # timeout ahora sí aplicando de verdad, hay que subirlo por encima del
+      # peor caso medido, con margen real para documentos aún más grandes.
+      - BEEMETRY_PDF_EXPORT_TIMEOUT_MS=5400000
       # Export PPTX/MP4 (modo presentación, mismo sidecar Chromium): carpeta
       # compartida con pdf_export (mismo volumen ./data:/data que ya monta
       # este servicio) donde caen los archivos generados. Vacío = deshabilitado.
       - BEEMETRY_EXPORT_DATA_ROOT=/data/export
-      - BEEMETRY_PPTX_EXPORT_TIMEOUT_MS=650000
-      - BEEMETRY_DOCX_EXPORT_TIMEOUT_MS=650000
+      - BEEMETRY_PPTX_EXPORT_TIMEOUT_MS=5400000
+      - BEEMETRY_DOCX_EXPORT_TIMEOUT_MS=5400000
       - BEEMETRY_VIDEO_EXPORT_TIMEOUT_MS=180000
       # Origen público desde el que Chromium debe llegar al frontend para
       # renderizar el informe (nombre de servicio interno, no localhost).
       - BEEMETRY_FRONTEND_INTERNAL_ORIGIN=http://frontend
+      # Fotocheck (credencial foto+QR cifrado): origen PÚBLICO real (celular
+      # fuera de la red Docker), a diferencia del interno de arriba -- ver
+      # fotocheck_routes.cpp. Vacío = se omite el envío del link por email/
+      # WhatsApp (nunca se manda una URL rota).
+      - BEEMETRY_PUBLIC_ORIGIN=${BEEMETRY_PUBLIC_ORIGIN:-}
+      - BEEMETRY_FOTOCHECK_QR_KEY=${BEEMETRY_FOTOCHECK_QR_KEY:-}
       # LanguageTool on-premise (servicio Docker). El backend centraliza /api/text/*.
       - BEEMETRY_LANGUAGETOOL_URL=http://languagetool:8010
       - BEEMETRY_LANGUAGETOOL_TIMEOUT_MS=60000
@@ -609,7 +657,16 @@ services:
       # Ventana de contexto del chatbot (options.num_ctx). Debe coincidir con
       # OLLAMA_CONTEXT_LENGTH del servicio `ollama` -- ver el comentario allí.
       - BEEMETRY_OLLAMA_CHATBOT_NUM_CTX=${BEEMETRY_OLLAMA_CHATBOT_NUM_CTX:-8192}
-      - BEEMETRY_CARTOON_ONNX_MODEL=/opt/cartoon-models/anime-gan-v2.onnx
+      # Desactivado 2026-09-03: el peso real de AnimeGANv2 en
+      # /opt/cartoon-models/anime-gan-v2.onnx no tiene autorización
+      # comercial por escrito (ver ADR-141, sección de licencias -- "no
+      # debe poblarse con pesos reales de AnimeGAN sin la autorización
+      # comercial"). Alguien lo activó de todos modos antes de esta fecha;
+      # se encontró en vivo porque el nuevo control de calidad de
+      # eye_analyzer.py rechaza más avatares del sidecar Python, exponiendo
+      # este fallback del backend C++ con más frecuencia. No repoblar sin
+      # esa autorización explícita por escrito de los autores de AnimeGAN.
+      - BEEMETRY_CARTOON_ONNX_MODEL=${BEEMETRY_CARTOON_ONNX_MODEL:-}
       - BEEMETRY_OPENCV_HAAR_DIR=/usr/share/opencv4/haarcascades
       - BEEMETRY_AI_ENGINE_TIMEOUT_MS=3000
       - BEEMETRY_AI_ENGINE_CARTOON_TIMEOUT_MS=${BEEMETRY_AI_ENGINE_CARTOON_TIMEOUT_MS:-120000}
@@ -923,6 +980,46 @@ services:
       - INSIGHTFACE_ROOT=/app/.insightface
       # 100% precargado al arranque: face_embedding buffalo_l listo desde el primer request
       - WARMUP_FACE_EMBEDDING=1
+      # Avatar por difusión local (ADR-141): "classic" (default) = pipeline
+      # OpenCV existente, sin cambios. "diffusion" = intenta primero llamar
+      # al servicio aparte `avatar_engine` (SD1.5 img2img + ControlNet-Canny,
+      # avatar_diffusion.py acá es solo el cliente HTTP) y cae al clásico si
+      # falla (avatar_engine caído/no listo/ocupado/timeout...). Servicio
+      # separado a propósito: este proceso ya solo corre TensorFlow (DeepFace)
+      # -- Silent-Face-Anti-Spoofing (torch) se movió a silentface_engine,
+      # ver más abajo -- así que sumar diffusers acá reabriría exactamente el
+      # mismo tipo de conflicto de cuDNN que ya se resolvió sacando torch de
+      # este proceso -- ver la actualización 2026-09-03 del ADR-141. Ambas piezas del
+      # modelo (en avatar_engine) tienen licencia CreativeML OpenRAIL-M (uso
+      # comercial libre) -- ver ADR-141 para por qué se descartó AnimeGAN/
+      # White-box-Cartoonization/IP-Adapter-FaceID (todas no-comerciales).
+      # Default "diffusion" desde 2026-09-03 (CA-15(a) aprobado 12/12, ver
+      # ADR-141 v4/v5): avatar_engine ya no está gateado por perfil, arranca
+      # con `docker compose up` normal. "classic" sigue disponible como
+      # fallback automático si avatar_engine falla/no responde, y como
+      # override manual (AVATAR_STYLE_ENGINE=classic) para volver al pipeline
+      # OpenCV sin GPU.
+      - AVATAR_STYLE_ENGINE=${AVATAR_STYLE_ENGINE:-diffusion}
+      - AVATAR_ENGINE_URL=http://avatar_engine:5001
+      # Diagnóstico temporal 2026-09-04: vuelca cada candidato intermedio
+      # (work_wb, por-seed de difusión antes/después de componer, salida
+      # clásica, thumb final) a disco para poder ver EXACTAMENTE por qué
+      # una captura real falla los 3 niveles de fallback (bust/portrait/raw)
+      # sin adivinar a partir de logs de texto. No hace nada si se deja vacío.
+      - AVATAR_DEBUG_DIR=${AVATAR_DEBUG_DIR:-/app/avatar_debug}
+      # Control de calidad del avatar (ADR-141, corrección 2026-09-04). El
+      # umbral de la etapa "raw" es distinto al del compuesto final a
+      # propósito: se mide sobre el recorte de busto, donde el rostro ocupa
+      # por construcción 0.7-0.85 del alto. Con el valor del compuesto (0.55)
+      # se rechazaban salidas de difusión correctas y el usuario terminaba
+      # recibiendo su foto sin estilizar.
+      - AVATAR_QUALITY_MAX_FACE_FRACTION=${AVATAR_QUALITY_MAX_FACE_FRACTION:-0.55}
+      - AVATAR_QUALITY_MAX_FACE_FRACTION_RAW=${AVATAR_QUALITY_MAX_FACE_FRACTION_RAW:-0.88}
+      # Reencuadre (solo padding blanco, reversible) antes de mandar el
+      # recorte a SD1.5: le da a ControlNet la composición de retrato que su
+      # prompt describe en vez de un primer plano recortado.
+      - AVATAR_DIFFUSION_TARGET_FACE_FRACTION=${AVATAR_DIFFUSION_TARGET_FACE_FRACTION:-0.45}
+      - AVATAR_DIFFUSION_MAX_REFRAME_GROWTH=${AVATAR_DIFFUSION_MAX_REFRAME_GROWTH:-2.2}
       - SEETAFACE6_CLI_PATH=/opt/seetaface6/bin/seetaface6-face-cli
       - SEETAFACE6_MODEL_DIR=/opt/seetaface6/models
       - SEETAFACE6_TIMEOUT_SECONDS=${SEETAFACE6_TIMEOUT_SECONDS:-20}
@@ -941,16 +1038,13 @@ services:
       # con el punto de montaje real y con la ruta que documenta
       # DEEPFACE_SILENTFACE_LOCAL_DOCKER.md.
       - DEEPFACE_HOME=/app
-      - SILENTFACE_DETECTION_MODEL_DIR=/opt/deepface_silentface/models/detection
-      - SILENTFACE_ANTISPOOF_MODEL_DIR=/opt/deepface_silentface/models/anti_spoof
+      # Silent-Face-Anti-Spoofing (torch) ya no vive en este proceso -- ver
+      # servicio `silentface_engine` más abajo. SILENTFACE_LIVENESS_THRESHOLD
+      # se queda acá: la decisión de umbral la sigue tomando
+      # deepface_silentface_adapter.py (el cliente), no el servicio remoto.
       - SILENTFACE_LIVENESS_THRESHOLD=${BEEMETRY_SILENTFACE_LIVENESS_THRESHOLD:-0.60}
+      - SILENTFACE_ENGINE_URL=http://silentface_engine:5002
       - WARMUP_DEEPFACE=${WARMUP_DEEPFACE:-1}
-      # Sin GPU visible, torch.cuda.is_available() es false y corre en CPU
-      # (más lento, pero no falla) -- ver requirements.txt. Con GPU visible
-      # (host con NVIDIA + nvidia-container-toolkit, bloque `devices` de más
-      # abajo), torch SÍ usa CUDA -- confirmado en runtime con RTX 5060
-      # Laptop (sm_120/Blackwell).
-      - SILENTFACE_DEVICE_ID=${SILENTFACE_DEVICE_ID:-0}
       # cuDNN (TensorFlow/DeepFace) hace dlopen("libnvrtc.so") sin sufijo de
       # versión para compilar kernels PTX en GPUs más nuevas que los cubin
       # precompilados de TensorFlow -- sin este LD_LIBRARY_PATH, cuDNN no
@@ -965,9 +1059,14 @@ services:
       - insightface_models:/app/.insightface
       - ${SEETAFACE6_MODEL_HOST_DIR:-./biometric-models/seetaface6/sf3.0_models}:/opt/seetaface6/models:ro
       - ${DEEPFACE_WEIGHTS_HOST_DIR:-./biometric-models/deepface}:/app/.deepface:ro
-      - ${DEEPFACE_SILENTFACE_DETECTION_HOST_DIR:-./biometric-models/deepface_silentface/detection}:/opt/deepface_silentface/models/detection:ro
-      - ${DEEPFACE_SILENTFACE_ANTISPOOF_HOST_DIR:-./biometric-models/deepface_silentface/anti_spoof}:/opt/deepface_silentface/models/anti_spoof:ro
       - ./ai_engine_probe_logs:/app/logs
+      - ./ai_engine_probe_logs/avatar_debug:/app/avatar_debug
+      # Temporal (2026-09-07): monta el dataset crudo de descargas públicas
+      # con/sin lentes para poder correr la curación (InsightFace ya vive en
+      # este contenedor, evita instalar/descargar pesos de nuevo en el host)
+      # -- ver data/curate_glasses_dataset.py. Sin :ro porque el script
+      # escribe el reporte y la carpeta curada bajo data/.
+      - ./data:/data
     networks:
       - default
     expose:
@@ -981,11 +1080,22 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4'
+          # TEMPORAL (2026-09-07): 4/6144M -> 12/10240M mientras corre en
+          # background la curacion del dataset gafas/sin-gafas
+          # (data/curate_glasses_dataset.py, ~66k imagenes, InsightFace
+          # buffalo_l vía multiprocessing) -- con el límite original, 16-24
+          # workers competían por 4 CPUs (sin ganancia real) y superaban el
+          # cap de memoria, tumbando el contenedor real de producción
+          # (RestartCount confirmado). Revertir a cpus:'4'/memory:6144M
+          # cuando la curación termine.
+          cpus: '12'
           # TensorFlow + PyTorch cargados junto con MediaPipe/InsightFace/
           # SeetaFace6 en el mismo proceso elevan el pico de RAM frente al
           # límite anterior (3072M, pensado solo para el stack ONNX liviano).
-          memory: 6144M
+          # El pipeline SD1.5+ControlNet (ADR-141) vive en el servicio
+          # `avatar_engine` aparte, así que no suma RAM acá -- 6144M se
+          # mantiene sin cambio salvo por el temporal de arriba.
+          memory: 10240M
         reservations:
           cpus: '1'
           memory: 1536M
@@ -995,6 +1105,209 @@ services:
           # este bloque "devices" completo; torch/tensorflow caen a CPU solos
           # si no hay GPU expuesta, pero Docker rechaza el "up" si el bloque
           # pide una GPU que el host no puede reservar.
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Silent-Face-Anti-Spoofing (MiniFASNet, PyTorch) -- separado de ai_engine
+  # (TensorFlow/DeepFace) por el mismo conflicto real de cuDNN documentado
+  # en ADR-141 (actualización 2026-09-03, Opción C): torch exige cuDNN
+  # major 9, TensorFlow major 8, irreconciliable en el mismo proceso. A
+  # diferencia de avatar_engine, esto NO es opcional (chequeo de seguridad
+  # primario en cada verify-frame de login) y NO tiene perfil Compose --
+  # arranca siempre, como ai_engine. GPU opcional (no obligatoria, a
+  # diferencia de avatar_engine): igual que el código in-process original,
+  # cae a CPU si no hay GPU visible en vez de rechazar arrancar.
+  silentface_engine:
+    container_name: beemetry-silentface-engine
+    build:
+      context: ./silentface_engine
+      dockerfile: Dockerfile
+    image: informe-silentface-engine:latest
+    restart: unless-stopped
+    environment:
+      - SILENTFACE_DETECTION_MODEL_DIR=/opt/deepface_silentface/models/detection
+      - SILENTFACE_ANTISPOOF_MODEL_DIR=/opt/deepface_silentface/models/anti_spoof
+      - SILENTFACE_DEVICE_ID=${SILENTFACE_DEVICE_ID:-0}
+      - SILENTFACE_ENGINE_MAX_IMAGE_BYTES=${SILENTFACE_ENGINE_MAX_IMAGE_BYTES:-5000000}
+    volumes:
+      - ${DEEPFACE_SILENTFACE_DETECTION_HOST_DIR:-./biometric-models/deepface_silentface/detection}:/opt/deepface_silentface/models/detection:ro
+      - ${DEEPFACE_SILENTFACE_ANTISPOOF_HOST_DIR:-./biometric-models/deepface_silentface/anti_spoof}:/opt/deepface_silentface/models/anti_spoof:ro
+    networks:
+      - default
+    expose:
+      - "5002"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2048M
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+          # Opcional (no bloquea el arranque como avatar_engine): mismo
+          # patrón "cae a CPU si no hay GPU visible" que el código original.
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Avatar por difusión local (ADR-141): SD1.5 img2img + ControlNet-Canny.
+  # Servicio APARTE de ai_engine y de silentface_engine a propósito -- ver
+  # la actualización 2026-09-03 del ADR-141. GPU obligatoria por defecto
+  # (AVATAR_ENGINE_REQUIRE_GPU=1): el proceso no llega a levantar el puerto
+  # sin CUDA visible, el healthcheck falla desde el arranque.
+  #
+  # Activado por defecto desde 2026-09-03 (CA-15(a) aprobado 12/12 tras
+  # corregir el falso positivo de _is_oval_matte_black_background, ver
+  # ADR-141 v4/v5): ya NO está gateado por perfil Compose, arranca con
+  # `docker compose up` normal y reserva ~4.7GB de VRAM de forma permanente
+  # mientras el servicio esté arriba. Para volver al comportamiento anterior
+  # (sin GPU reservada) comentar/restaurar `profiles: ["avatar-diffusion"]`
+  # abajo y setear AVATAR_STYLE_ENGINE=classic en el servicio ai_engine.
+  avatar_engine:
+    container_name: beemetry-avatar-engine
+    build:
+      context: ./avatar_engine
+      dockerfile: Dockerfile
+    image: informe-avatar-engine:latest
+    restart: unless-stopped
+    environment:
+      - AVATAR_ENGINE_REQUIRE_GPU=${AVATAR_ENGINE_REQUIRE_GPU:-1}
+      - AVATAR_ENGINE_TIMEOUT_SECONDS=${AVATAR_ENGINE_TIMEOUT_SECONDS:-45}
+      - AVATAR_ENGINE_MAX_QUEUE=${AVATAR_ENGINE_MAX_QUEUE:-3}
+      - AVATAR_ENGINE_MAX_IMAGE_BYTES=${AVATAR_ENGINE_MAX_IMAGE_BYTES:-5000000}
+      # 32->40 (2026-09-04): más definición de detalle fino a ~1-2s extra,
+      # aceptable en el flujo asíncrono post-registro.
+      - AVATAR_DIFFUSION_STEPS=${AVATAR_DIFFUSION_STEPS:-40}
+      - AVATAR_DIFFUSION_STRENGTH=${AVATAR_DIFFUSION_STRENGTH:-0.55}
+      - AVATAR_DIFFUSION_GUIDANCE=${AVATAR_DIFFUSION_GUIDANCE:-6.5}
+      - AVATAR_DIFFUSION_CONTROL_SCALE=${AVATAR_DIFFUSION_CONTROL_SCALE:-0.85}
+      - AVATAR_DIFFUSION_SEED=${AVATAR_DIFFUSION_SEED:-7}
+      # 768->896 (2026-09-04): más resolución de trabajo antes de reducir al
+      # tamaño final -- gana detalle a costo de más VRAM/tiempo por intento.
+      - AVATAR_DIFFUSION_MAX_SIDE=${AVATAR_DIFFUSION_MAX_SIDE:-896}
+      # GFPGAN (Apache 2.0, ver requirements-gfpgan.txt): restauración facial
+      # como post-proceso sobre la salida de SD1.5. Apagable sin rebuild si
+      # produce artefactos indeseados en algún caso real.
+      - AVATAR_DIFFUSION_GFPGAN_ENABLED=${AVATAR_DIFFUSION_GFPGAN_ENABLED:-1}
+      - AVATAR_DIFFUSION_FACE_LIMITED_CONTROL=${AVATAR_DIFFUSION_FACE_LIMITED_CONTROL:-0}
+      - AVATAR_DIFFUSION_CONTROL_OUTSIDE_WEIGHT=${AVATAR_DIFFUSION_CONTROL_OUTSIDE_WEIGHT:-0.25}
+    volumes:
+      - diffusion_avatar_cache:/app/.hf_cache
+    networks:
+      - default
+    expose:
+      - "5001"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      # Alto a propósito: el primer arranque descarga ~5GB (SD1.5 fp16 +
+      # ControlNet-Canny fp16) antes de que /health responda 200 -- ver
+      # preload síncrono en server.py/avatar_diffusion.py.
+      start_period: 900s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 6144M
+        reservations:
+          cpus: '0.5'
+          memory: 1024M
+          # GPU requerida (no opcional como en ai_engine): AVATAR_ENGINE_REQUIRE_GPU=1
+          # por defecto rechaza arrancar sin CUDA visible. Quitar este bloque
+          # "devices" SOLO junto con AVATAR_ENGINE_REQUIRE_GPU=0 (pruebas
+          # locales sin GPU, nunca producción -- la difusión en CPU es
+          # impracticable para un flujo de registro interactivo).
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Avatar ANIMADO (reenactment/lip-sync, ADR-150) -- distinto del avatar
+  # ESTÁTICO de avatar_engine (ADR-141): recibe una foto + señal conductora
+  # (audio/video) y anima esa misma cara, en vez de reinterpretarla como
+  # ilustración. Backend por defecto SadTalker (único de los tres evaluados
+  # sin bloqueante de licencia -- ver ADR-150). GATEADO por perfil Compose a
+  # propósito: la GPU (RTX 5060 Laptop, 8151 MiB totales) ya reserva ~4.7GB
+  # con avatar_engine corriendo permanentemente desde 2026-09-03 -- este
+  # servicio NO cabe corriendo junto a avatar_engine de forma sostenida.
+  # Activar solo para evaluación puntual:
+  #   docker compose --profile avatar-animation up -d avatar_animation_engine
+  # y apagar avatar_engine mientras tanto (o viceversa) -- no hay mecanismo
+  # de exclusión mutua a nivel Docker, es disciplina operativa documentada.
+  avatar_animation_engine:
+    container_name: beemetry-avatar-animation-engine
+    profiles: ["avatar-animation"]
+    build:
+      context: ./avatar_animation_engine
+      dockerfile: Dockerfile
+    image: informe-avatar-animation-engine:latest
+    restart: unless-stopped
+    environment:
+      - AVATAR_ANIMATION_ENGINE=${AVATAR_ANIMATION_ENGINE:-sadtalker}
+      - AVATAR_ANIMATION_REQUIRE_GPU=${AVATAR_ANIMATION_REQUIRE_GPU:-1}
+      # 180->300 (2026-09-07): medido en corrida real con foto de usuario
+      # (no un thumbnail de Wikimedia) redimensionada a 1024px + ~8-10s de
+      # audio -> 232s con --size 512. 180s no alcanzaba ni con la foto ya
+      # redimensionada; con --size 512 (ver abajo) hay menos margen todavía.
+      - AVATAR_ANIMATION_TIMEOUT_SECONDS=${AVATAR_ANIMATION_TIMEOUT_SECONDS:-300}
+      - AVATAR_ANIMATION_MAX_QUEUE=${AVATAR_ANIMATION_MAX_QUEUE:-3}
+      - AVATAR_ANIMATION_MAX_IMAGE_BYTES=${AVATAR_ANIMATION_MAX_IMAGE_BYTES:-5000000}
+      - AVATAR_ANIMATION_MAX_AUDIO_BYTES=${AVATAR_ANIMATION_MAX_AUDIO_BYTES:-15000000}
+      # 256->512 (2026-09-04): SadTalker ya descarga AMBOS checkpoints
+      # (SadTalker_V0.0.2_256/512.safetensors, ver sadtalker_backend.py) --
+      # usar el de 512 no cuesta una descarga extra, solo más VRAM/tiempo
+      # de inferencia, y da un video con más resolución/detalle facial.
+      # Verificado real 2026-09-07 con avatar_engine APAGADO (236 MiB de
+      # 8151 libres antes de la corrida) -- no probado junto a avatar_engine
+      # activo, ver advertencia de VRAM en ADR-150.
+      - AVATAR_ANIMATION_SADTALKER_SIZE=${AVATAR_ANIMATION_SADTALKER_SIZE:-512}
+      - AVATAR_ANIMATION_SADTALKER_ENHANCER=${AVATAR_ANIMATION_SADTALKER_ENHANCER:-gfpgan}
+      - AVATAR_ANIMATION_SADTALKER_PREPROCESS=${AVATAR_ANIMATION_SADTALKER_PREPROCESS:-full}
+      # Hallazgo real 2026-09-07 (ADR-150): --preprocess full corre
+      # detección/landmarks sobre la imagen fuente COMPLETA antes de
+      # recortar; una foto de cámara/celular (2-4K) agotaba el timeout
+      # donde un retrato de Wikimedia (~960px) no lo hacía. Se redimensiona
+      # siempre antes de invocar inference.py (sadtalker_backend.py::_resize_max_side),
+      # sin depender de que el llamador ya la mande chica.
+      - AVATAR_ANIMATION_SADTALKER_MAX_SOURCE_SIDE=${AVATAR_ANIMATION_SADTALKER_MAX_SOURCE_SIDE:-1024}
+    volumes:
+      - avatar_animation_cache:/app/.hf_cache
+      - avatar_animation_model_cache:/app/.model_cache
+    networks:
+      - default
+    expose:
+      - "5003"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5003/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      # Alto a propósito: el primer arranque descarga checkpoints de
+      # SadTalker + BFM_Fitting + pesos GFPGAN/facexlib antes de que
+      # /health responda 200 -- ver preload síncrono en server.py.
+      start_period: 1200s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 6144M
+        reservations:
+          cpus: '0.5'
+          memory: 1024M
+          # GPU requerida (no opcional): AVATAR_ANIMATION_REQUIRE_GPU=1 por
+          # defecto rechaza arrancar sin CUDA visible (mismo criterio que
+          # avatar_engine, ADR-141 -- animación en CPU es impracticable).
           devices:
             - driver: nvidia
               count: all
@@ -1283,6 +1596,16 @@ volumes:
   formula_db_data: {}
   insightface_models: {}
   ollama_data: {}
+  # SD1.5 + ControlNet-Canny (avatar_engine/, ADR-141) -- se descargan una
+  # sola vez al arrancar el contenedor avatar_engine (preload síncrono antes
+  # del readiness), nunca se hornean en la imagen. Sin este volumen se
+  # re-descargarían (~5GB) en cada recreación del contenedor.
+  diffusion_avatar_cache: {}
+  # SadTalker (avatar_animation_engine/, ADR-150): checkpoints + BFM_Fitting +
+  # pesos GFPGAN/facexlib, mismo patrón que diffusion_avatar_cache -- no
+  # horneados en la imagen, se descargan una sola vez hacia estos volúmenes.
+  avatar_animation_cache: {}
+  avatar_animation_model_cache: {}
 
 networks:
   default:

@@ -128,9 +128,13 @@ function ImageInsertModal({
         targetDeviceId = videos[0]?.deviceId || '';
       }
       try {
+        // Sin ideal de resolución, el navegador elegía su default (a menudo
+        // 640x480) para una foto que termina insertada en el informe --
+        // pedimos la mayor calidad razonable (el navegador ajusta al máximo
+        // real de la cámara si no llega a este ideal).
         const constraints = targetDeviceId
-          ? { video: { deviceId: { exact: targetDeviceId } } }
-          : { video: true };
+          ? { video: { deviceId: { exact: targetDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } } }
+          : { video: { width: { ideal: 1920 }, height: { ideal: 1080 } } };
         const ms = await navigator.mediaDevices.getUserMedia(constraints);
         if (cancelled) { ms.getTracks().forEach((t) => t.stop()); return; }
         localStream = ms;
@@ -162,7 +166,9 @@ function ImageInsertModal({
     if (tab !== 'camera' || !newDeviceId) return;
     stopStream();
     try {
-      const ms = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: newDeviceId } } });
+      const ms = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: newDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      });
       streamRef.current = ms;
       setStream(ms);
       if (videoRef.current) videoRef.current.srcObject = ms;

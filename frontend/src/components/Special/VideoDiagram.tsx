@@ -136,7 +136,7 @@ const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: Video
     const startWebcam = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+                video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
                 audio: false,
             })
             streamRef.current = stream

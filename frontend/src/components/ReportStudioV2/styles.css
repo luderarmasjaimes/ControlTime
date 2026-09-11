@@ -1092,6 +1092,48 @@ button:active {
   font-weight: 600;
 }
 
+/* Barra de progreso de export DOCX/PPTX/PDF asíncrono (job de report_export_job) --
+   pegada debajo de .doc-header-meta porque esa franja es la única visible sin
+   importar qué pestaña del ribbon (Inicio/Insertar/Diseño/.../Exportar) esté
+   activa; un export grande tarda 20-40+ min y el usuario necesita ver que
+   sigue avanzando, no que el sistema se colgó. */
+.export-progress-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 24px;
+  background: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid var(--border);
+  z-index: 9;
+}
+
+.export-progress-bar__label {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.export-progress-bar__track {
+  flex: 1 1 auto;
+  height: 6px;
+  min-width: 80px;
+  max-width: 420px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.export-progress-bar__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
 /* New Multipage Scroll System — única zona de scroll vertical del documento */
 .page-scroll {
   flex: 1 1 0%;

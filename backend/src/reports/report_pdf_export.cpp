@@ -7,6 +7,10 @@
 #include <boost/beast.hpp>
 #include <boost/json.hpp>
 
+// SO_RCVTIMEO/SO_SNDTIMEO -- ver comentario junto a su uso en
+// `exportReportPdf` más abajo.
+#include <sys/socket.h>
+
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
@@ -107,6 +111,20 @@ PdfExportResult exportReportPdf(const std::string &reportId, const std::string &
   if (ec) {
     result.error = "pdf_export_connect_failed";
     return result;
+  }
+  // `stream.expires_after()` de arriba queda de defensa adicional, pero NO
+  // es garantía real para llamadas SÍNCRONAS -- mismo hallazgo (y misma
+  // corrección) que `postJsonToSidecar` en report_export_jobs.cpp: un job
+  // quedó esperando la respuesta del sidecar mucho después de que este ya
+  // había terminado. SO_RCVTIMEO/SO_SNDTIMEO acotan cada llamada bloqueante
+  // individual vía el sistema operativo, sin depender de ningún mecanismo
+  // interno de Beast/Asio.
+  {
+    struct timeval tv;
+    tv.tv_sec = cfg.gPdfExportTimeoutMs / 1000;
+    tv.tv_usec = (cfg.gPdfExportTimeoutMs % 1000) * 1000;
+    setsockopt(stream.socket().native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(stream.socket().native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
   }
 
   http::request<http::string_body> req{http::verb::post, endpoint.target, 11};

@@ -8,6 +8,18 @@
 #include <boost/beast.hpp>
 #include <boost/json.hpp>
 
+// SO_RCVTIMEO/SO_SNDTIMEO -- ver comentario detallado junto a su uso en
+// `postJsonToSidecar` más abajo: `beast::tcp_stream::expires_after()` NO
+// aplica de forma confiable a las llamadas SÍNCRONAS que usa esta función
+// (reproducido en vivo: un job DOCX de 2104 páginas quedó "running" en la
+// base de datos 39+ minutos después de que el sidecar ya había terminado y
+// escrito el .docx en disco -- el hilo del backend nunca se enteró). Estas
+// dos opciones de socket son la única garantía POSIX real de que una
+// llamada bloqueante (`::read`/`::write` por debajo de `http::read`/
+// `http::write`) va a retornar con un error tras el plazo configurado, sin
+// depender de ningún mecanismo interno de Beast/Asio.
+#include <sys/socket.h>
+
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
@@ -91,6 +103,22 @@ SidecarResult postJsonToSidecar(const std::string &baseUrl, const std::string &p
   if (ec) {
     result.error = "pptx_export_connect_failed";
     return result;
+  }
+  // `stream.expires_after()` de arriba queda como defensa adicional, pero NO
+  // es la garantía real -- ver comentario del include de <sys/socket.h> más
+  // arriba. `SO_RCVTIMEO`/`SO_SNDTIMEO` acotan cada llamada bloqueante
+  // individual (no una única cuenta regresiva acumulada desde el connect):
+  // exactamente lo que hace falta acá, porque el render del sidecar (varios
+  // minutos, todo ANTES de que empiece a escribir su respuesta) pasa
+  // enteramente DENTRO de la espera del `http::read()` de abajo -- un solo
+  // plazo acumulado desde el connect tendría que ser generoso para el peor
+  // caso igual, así que no hay downside real en medir por-llamada.
+  {
+    struct timeval tv;
+    tv.tv_sec = timeoutMs / 1000;
+    tv.tv_usec = (timeoutMs % 1000) * 1000;
+    setsockopt(stream.socket().native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(stream.socket().native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
   }
 
   http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
