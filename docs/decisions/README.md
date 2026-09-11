@@ -26,6 +26,22 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (tercera pasada, mismo día): infraestructura de
+> pilotos LATAM e investigación de SUNAT.** (1) Gerencia confirma que los
+> pilotos iniciales en LATAM fuera de Perú corren sobre la **misma VPS ya
+> instalada en Perú** (centralizado, sin edge/hub propio por país todavía)
+> — agregado a la actualización de ADR-035 de la pasada anterior, mismo
+> día. (2) A pedido explícito del developer, se investigó si existe algún
+> mecanismo de validación externa de SUNAT ya activo (distinto de lo
+> documentado en ADR-087) — **no existe**: `BEEMETRY_TAX_REGISTRY_ENABLED`
+> sigue en `false` por defecto, sin host ni token configurados (verificado
+> en `docker-compose.yml`/`app_config.cpp`). Se descarta una confusión real
+> con el lector de DNI por cámara (ADR-094): ese mecanismo está activo,
+> pero 7 archivos distintos del código documentan explícitamente que
+> "nunca consulta RENIEC/SUNAT" — solo decodifica lo impreso en el
+> documento físico, no valida contra un padrón externo. Sigue pendiente
+> elegir proveedor de SUNAT y conseguir su token para activar ADR-087.
+
 > **Actualización 2026-09-11 (pasada adicional): postura Enterprise LATAM y
 > validación SUNAT confirmadas por Gerencia.** Cierra la penúltima decisión
 > pendiente del corte gerencial del 2026-09-10. Se agregan bloques de

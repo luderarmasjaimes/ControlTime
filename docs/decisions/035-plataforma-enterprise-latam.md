@@ -10,7 +10,7 @@
 >
 > 1. **Requisito de producto, vigente desde hoy**: toda implementación de
 >    módulo nuevo debe considerar **soporte multi-país y multi-idioma** desde
->    el diseño, no como an añadido posterior. La parte de idioma ya está
+>    el diseño, no como un añadido posterior. La parte de idioma ya está
 >    resuelta (ADR-075: selector país→idioma, 4 locales ES/EN/FR/PT-BR,
 >    cubre Perú/Brasil/mercados francófonos ya operativo) — no requiere
 >    trabajo nuevo. La parte de validación fiscal/registro por país queda
@@ -26,6 +26,22 @@
 >    una decisión de arquitectura/inversión separada, del tamaño de un
 >    proyecto propio, que este mensaje no cubre. El estado de ejecución de
 >    F1-F4 sigue en 0%.
+>
+> **Actualización 2026-09-11 (segunda pasada, mismo día) — infraestructura
+> para pilotos fuera de Perú.** Gerencia confirma cómo se hospedan los
+> pilotos iniciales en el resto de LATAM mientras F1-F4 no se aprueban: se
+> usa la **misma infraestructura VPS ya instalada en Perú** — un despliegue
+> centralizado servido desde Perú, no un edge/hub separado por país. Esto
+> es consistente con el punto 2 de arriba (F0 sigue siendo el estado real,
+> F1-F4 sin aprobar): no se trata de una fase nueva de este ADR, sino de la
+> forma concreta en que un piloto de Brasil/Ecuador/Chile corre **hoy**,
+> sobre el mismo stack F0, sin infraestructura propia en esos países
+> todavía. Implica, y queda anotado para quien construya esos pilotos:
+> latencia mayor para usuarios fuera de Perú (sin edge local) y ningún
+> requisito de residencia de datos en el país del piloto (los datos viven
+> en la VPS de Perú) — aceptable explícitamente para una etapa de piloto,
+> no para operación productiva a escala, que es precisamente lo que F1-F4
+> resolvería si se aprueba en el futuro.
 
 **Status**: propuesto (2026-07-12) — revisado 2026-08-18: sigue en F0
 (un edge autónomo por unidad, estado actual del stack). Los documentos de
