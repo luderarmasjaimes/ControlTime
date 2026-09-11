@@ -1,6 +1,24 @@
 # ADR-168 — SPEC-025 (Soporte/WhatsApp) aprobado al alcance contractual; cuenta SMS comercial pendiente
 
-**Status**: accepted (decisión de alcance/producto); cuenta SMS comercial pendiente de contratar
+> **Actualización 2026-09-11 (segunda pasada, mismo día) — aclaración
+> explícita del developer sobre el alcance de la aprobación.** Aprobar
+> SPEC-025 al alcance contractual (punto 1 de la Decisión de abajo)
+> significa que el ámbito **es necesario para el proyecto**, no que ya esté
+> listo para operar con clientes reales. Queda **pendiente contratar el
+> servicio de Meta (WhatsApp Business Cloud API) en una cuenta de tipo
+> comercial** — sin eso, el bot de WhatsApp (ADR-112 a 118, 122, 129) sigue
+> exactamente en el estado que esos mismos ADR ya documentaban: "verificado
+> por build/tests, entrega real a un teléfono pendiente de credenciales de
+> producción de Meta". Mismo patrón que la cuenta Twilio comercial del
+> punto 2 original — decisión de compra/presupuesto de Gerencia, no de
+> código: `BEEMETRY_WHATSAPP_PHONE_NUMBER_ID`, `_ACCESS_TOKEN` y
+> `_BUSINESS_ACCOUNT_ID` (`.env.example`) ya están listos para recibir esas
+> credenciales sin cambios de C++. Se agrega como tercer pendiente
+> explícito, junto a la cuenta SMS comercial y la ejecución del pentest
+> externo (ADR-169), como parte de la misma tanda de decisiones del corte
+> gerencial del 2026-09-10.
+
+**Status**: accepted (decisión de alcance/producto); cuentas comerciales de Meta WhatsApp Business y de SMS pendientes de contratar
 
 **Fecha**: 2026-09-11
 

@@ -26,6 +26,19 @@ Memoria arquitectónica persistente de Beemetry 2.0. Una decisión arquitectóni
 
 ## Índice de ADRs
 
+> **Actualización 2026-09-11 (séptima pasada, mismo día): aclaración sobre
+> el alcance de la aprobación de SPEC-025.** El developer aclara
+> explícitamente que "aprobar SPEC-025 al alcance contractual" (ADR-168)
+> significa que el ámbito Soporte/WhatsApp **es necesario para el
+> proyecto**, no que ya esté operativo con clientes reales: sigue
+> **pendiente contratar el servicio de Meta (WhatsApp Business Cloud API)
+> en una cuenta comercial** — mismo patrón que la cuenta Twilio comercial
+> ya documentada para el canal `sms`. Se agrega como bloque de
+> actualización a ADR-168, sin editar su texto original. Con esto, el
+> ámbito `soporte` tiene dos requisitos de compra pendientes (Meta
+> WhatsApp + Twilio SMS), además del pentest externo (ADR-169) — ninguno
+> de los tres se resuelve con código.
+
 > **Actualización 2026-09-11 (sexta pasada, mismo día): pentest externo
 > formalizado con alcance completo — ADR-169.** El developer proveyó el
 > requisito detallado de negocio/seguridad (objetivo, alcance mínimo,
@@ -1379,7 +1392,7 @@ archivos completos sin sección propia en este índice — ver auditoría
 | 118 | `chatbot-aceleracion-gpu-ollama` | ✅ implemented (2026-08-19) | Aceleración GPU para Ollama, reduce la latencia del chatbot de soporte. |
 | 122 | `cv-postulantes-whatsapp-ia-local-scoring` | 🟡 implemented, pendiente E2E *(fila agregada 2026-08-21 — el ADR ya existía sin fila en esta tabla)* | Postulaciones de CV por WhatsApp: descarga de media, extracción de texto (`ai_engine::/extract_cv_text`, sin LLM), extracción de campos + score 0-100 vía Ollama (`qwen2.5:7b`) con guarda anti-alucinación (`looksPresentInSource`), correo con adjunto MIME multipart, panel admin RRHH. Retención: indefinida por decisión explícita del developer (2026-08-21, ver actualización en el ADR), sin purga automática. Pendiente: aplicar `db_scripts/69_*.sql` a la BD en ejecución y prueba E2E con WhatsApp Business real. |
 | 129 | `widget-chat-menu-whatsapp-adjuntos-cv-web` | 🟡 implemented, verificado por build/tests; E2E contra WhatsApp real pendiente de credenciales de producción de Meta (2026-08-21) | Menú real de WhatsApp en el widget de chat web, adjuntos (docx/pptx/pdf/jpg/png), CV desde la web y lectura QR/OCR de imágenes — mismo bloqueo de credenciales Meta que ya afectaba a ADR-112/113. Sin SPEC ni sprint asignado en el cronograma v36 (ver informe de estado). |
-| 168 | `spec025-soporte-whatsapp-aprobacion-contractual-sms-comercial` | ✅ accepted (decisión de alcance/producto, 2026-09-11) | Aprueba SPEC-025 (todo este ámbito) al alcance contractual del proyecto, formalizando los 9 ADR de arriba en `specs/REGISTRY.md`/`BACKLOG.md`. Confirma además, para el canal `sms` de ADR-137, que la cuenta Twilio configurada es la trial gratuita (solo números verificados, prefijo "Sent from your Twilio trial account"); se requiere cuenta comercial — decisión de compra/presupuesto de Gerencia, sin cambio de código pendiente. |
+| 168 | `spec025-soporte-whatsapp-aprobacion-contractual-sms-comercial` | ✅ accepted (decisión de alcance/producto, 2026-09-11); cuentas comerciales de Meta WhatsApp y Twilio SMS pendientes de contratar | Aprueba SPEC-025 (todo este ámbito) al alcance contractual del proyecto — es necesario para el proyecto, no que ya esté operativo con clientes reales — formalizando los 9 ADR de arriba en `specs/REGISTRY.md`/`BACKLOG.md`. Confirma dos requisitos de compra pendientes, ninguno resoluble con código: (1) para el canal `sms` de ADR-137, la cuenta Twilio configurada es la trial gratuita (solo números verificados, prefijo "Sent from your Twilio trial account"); (2) el propio bot de WhatsApp (ADR-112 a 118, 122, 129) sigue sin credenciales de producción de Meta (WhatsApp Business Cloud API) — sin eso, no hay entrega real a un teléfono, solo verificación por build/tests. |
 
 **Ámbito `soporte`: 8/9 implemented (3 pendientes de E2E), 1 partial, más ADR-168 (accepted). Aprobado al alcance contractual (2026-09-11, ADR-168) — ya no pendiente de Gerencia; sigue sin `tasks.md` formal en `specs/025-...`.**
 
