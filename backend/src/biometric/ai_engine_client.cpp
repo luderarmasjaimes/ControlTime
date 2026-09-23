@@ -440,124 +440,6 @@ analyzeFrameWithAiEngine(
   }
 }
 
-AiEngineEmbeddingResult
-fetchFaceEmbeddingFromAiEngine(const std::vector<unsigned char> &imageBytes) {
-  AiEngineEmbeddingResult out;
-  if (gAiEngineUrl.empty()) {
-    out.error = "ai_engine_disabled";
-    return out;
-  }
-  if (imageBytes.empty() || imageBytes.size() > gAiEngineMaxImageBytes) {
-    out.error = "ai_engine_skipped_size_limit";
-    return out;
-  }
-
-  ParsedHttpEndpoint endpoint;
-  if (!parseHttpEndpoint(gAiEngineUrl + "/face_embedding", endpoint)) {
-    out.error = "ai_engine_invalid_url";
-    return out;
-  }
-
-  std::string boundary = "----InformeBoundary" + makeId();
-  std::string body;
-  body.reserve(imageBytes.size() + 256);
-  body += "--" + boundary + "\r\n";
-  body +=
-      "Content-Disposition: form-data; name=\"image\"; filename=\"frame.jpg\"\r\n";
-  body += "Content-Type: image/jpeg\r\n\r\n";
-  body.append(reinterpret_cast<const char *>(imageBytes.data()),
-              static_cast<std::streamsize>(imageBytes.size()));
-  body += "\r\n--" + boundary + "--\r\n";
-
-  beast::error_code ec;
-  asio::io_context ioc;
-  asio::ip::tcp::resolver resolver{ioc};
-  beast::tcp_stream stream{ioc};
-  stream.expires_after(std::chrono::milliseconds(gAiEngineTimeoutMs));
-
-  auto const results = resolver.resolve(endpoint.host, endpoint.port, ec);
-  if (ec) {
-    out.error = "ai_engine_resolve_failed";
-    return out;
-  }
-
-  stream.connect(results, ec);
-  disableNagleForLowLatency(stream);
-  if (ec) {
-    out.error = "ai_engine_connect_failed";
-    return out;
-  }
-
-  http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
-  req.set(http::field::host, endpoint.host);
-  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
-  req.set(http::field::content_type,
-          "multipart/form-data; boundary=" + boundary);
-  req.body() = std::move(body);
-  req.prepare_payload();
-
-  http::write(stream, req, ec);
-  if (ec) {
-    out.error = "ai_engine_write_failed";
-    return out;
-  }
-
-  beast::flat_buffer buffer;
-  // El JSON incluye miniatura + maestro PNG 4K en base64. El límite por
-  // defecto de Beast puede ser insuficiente para retratos con mucho detalle.
-  http::response_parser<http::string_body> parser;
-  parser.body_limit(64U * 1024U * 1024U);
-  http::read(stream, buffer, parser, ec);
-  auto res = parser.release();
-  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-
-  if (ec) {
-    out.error = "ai_engine_read_failed";
-    return out;
-  }
-  if (res.result() != http::status::ok) {
-    out.error = "ai_engine_http_not_ok";
-    return out;
-  }
-
-  try {
-    auto payload = json::parse(res.body());
-    if (!payload.is_object()) {
-      out.error = "ai_engine_invalid_json";
-      return out;
-    }
-    const auto &obj = payload.as_object();
-    if (obj.if_contains("ok") && obj.at("ok").is_bool() && !obj.at("ok").as_bool()) {
-      if (obj.if_contains("error") && obj.at("error").is_string()) {
-        out.error = json::value_to<std::string>(obj.at("error"));
-      } else {
-        out.error = "face_embedding_failed";
-      }
-      return out;
-    }
-    if (!obj.if_contains("embedding") || !obj.at("embedding").is_array()) {
-      out.error = "ai_engine_no_embedding";
-      return out;
-    }
-    for (const auto &v : obj.at("embedding").as_array()) {
-      if (v.is_double()) {
-        out.embedding.push_back(v.as_double());
-      } else if (v.is_int64()) {
-        out.embedding.push_back(static_cast<double>(v.as_int64()));
-      }
-    }
-    if (out.embedding.size() != kFaceEmbeddingVectorDim) {
-      out.embedding.clear();
-      out.error = "embedding_dim_mismatch";
-      return out;
-    }
-    return out;
-  } catch (...) {
-    out.error = "ai_engine_parse_failed";
-    return out;
-  }
-}
-
 FaceAnalysis fetchSeetaFaceAnalysisFromAiEngine(
     const std::vector<unsigned char> &imageBytes, const std::string &mode) {
   FaceAnalysis out;
@@ -792,7 +674,8 @@ FaceAnalysis fetchDeepFaceSilentAnalysisFromAiEngine(
 
 AiEngineCartoonResult
 fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes,
-                               bool forceClassicStyle) {
+                               bool forceClassicStyle,
+                               const std::string &styleOverride) {
   AiEngineCartoonResult out;
   if (gAiEngineUrl.empty()) {
     out.error = "ai_engine_disabled";
@@ -825,7 +708,9 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes,
   // globalmente; "diffusion" preserva el comportamiento previo (decide el
   // flag global). Ver eye_analyzer.py::cartoon_avatar().
   body += "Content-Disposition: form-data; name=\"style\"\r\n\r\n";
-  body += (forceClassicStyle ? "classic" : "diffusion");
+  body += styleOverride.empty()
+              ? (forceClassicStyle ? "classic" : "diffusion")
+              : styleOverride;
   body += "\r\n--" + boundary + "--\r\n";
 
   // Mutex de GPU (ver storage/gpu_mutex.hpp): /cartoon_avatar en ai_engine
@@ -915,6 +800,16 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes,
       out.imageHdBase64 =
           json::value_to<std::string>(obj.at("image_hd_base64"));
     }
+    // Rediseño de avatar (2026-09-20, ADR-203): recorte de solo cabeza, para
+    // que "cambiar de vestimenta" recomponga rápido sin volver a llamar a la
+    // difusión. Vacío en respuestas de ai_engine sin este cambio desplegado
+    // todavía (rolling deploy) o si no se pudo aislar la cabeza -- ninguno de
+    // los dos casos es un error del request en sí.
+    if (obj.if_contains("head_cutout_base64") &&
+        obj.at("head_cutout_base64").is_string()) {
+      out.headCutoutBase64 =
+          json::value_to<std::string>(obj.at("head_cutout_base64"));
+    }
     return out;
   } catch (...) {
     out.error = "ai_engine_parse_failed";
@@ -924,11 +819,12 @@ fetchCartoonAvatarFromAiEngine(const std::vector<unsigned char> &imageBytes,
 
 AiEngineCartoonResult
 fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes,
-                             bool forceClassicStyle) {
+                             bool forceClassicStyle,
+                             const std::string &styleOverride) {
   // El sidecar local conserva la silueta con MediaPipe y entrega miniatura +
   // maestro 4K. Se prefiere para evitar ampliar un tensor AnimeGAN de 512 px.
   AiEngineCartoonResult sidecar =
-      fetchCartoonAvatarFromAiEngine(imageBytes, forceClassicStyle);
+      fetchCartoonAvatarFromAiEngine(imageBytes, forceClassicStyle, styleOverride);
   if (sidecar.ok()) {
     return sidecar;
   }
@@ -948,6 +844,183 @@ fetchCartoonAvatarBestEffort(const std::vector<unsigned char> &imageBytes,
   out.error = sidecar.error.empty() ? "all_local_avatar_generators_failed"
                                     : sidecar.error;
   return out;
+}
+
+std::vector<AvatarBodyTemplateInfo> listAvatarBodyTemplatesFromAiEngine() {
+  std::vector<AvatarBodyTemplateInfo> out;
+  if (gAiEngineUrl.empty()) {
+    return out;
+  }
+  ParsedHttpEndpoint endpoint;
+  if (!parseHttpEndpoint(gAiEngineUrl + "/avatar_body_templates", endpoint)) {
+    return out;
+  }
+
+  beast::error_code ec;
+  asio::io_context ioc;
+  asio::ip::tcp::resolver resolver{ioc};
+  beast::tcp_stream stream{ioc};
+  stream.expires_after(std::chrono::milliseconds(gAiEngineTimeoutMs));
+
+  auto const results = resolver.resolve(endpoint.host, endpoint.port, ec);
+  if (ec) return out;
+  stream.connect(results, ec);
+  disableNagleForLowLatency(stream);
+  if (ec) return out;
+
+  http::request<http::empty_body> req{http::verb::get, endpoint.target, 11};
+  req.set(http::field::host, endpoint.host);
+  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+  req.prepare_payload();
+  http::write(stream, req, ec);
+  if (ec) return out;
+
+  beast::flat_buffer buffer;
+  http::response<http::string_body> res;
+  http::read(stream, buffer, res, ec);
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+  if (ec || res.result() != http::status::ok) return out;
+
+  try {
+    auto payload = json::parse(res.body());
+    if (!payload.is_object()) return out;
+    const auto &obj = payload.as_object();
+    if (!obj.if_contains("templates") || !obj.at("templates").is_array()) {
+      return out;
+    }
+    for (const auto &item : obj.at("templates").as_array()) {
+      if (!item.is_object()) continue;
+      const auto &t = item.as_object();
+      AvatarBodyTemplateInfo info;
+      if (t.if_contains("slug") && t.at("slug").is_string()) {
+        info.slug = json::value_to<std::string>(t.at("slug"));
+      }
+      if (t.if_contains("display_name") && t.at("display_name").is_string()) {
+        info.displayName = json::value_to<std::string>(t.at("display_name"));
+      }
+      if (t.if_contains("thumbnail_base64") &&
+          t.at("thumbnail_base64").is_string()) {
+        info.thumbnailBase64 =
+            json::value_to<std::string>(t.at("thumbnail_base64"));
+      }
+      if (!info.slug.empty()) out.push_back(std::move(info));
+    }
+  } catch (...) {
+    out.clear();
+  }
+  return out;
+}
+
+AiEngineCartoonResult recomposeAvatarBodyTemplateOnAiEngine(
+    const std::vector<unsigned char> &headCutoutPngBytes,
+    const std::string &bodyTemplateSlug) {
+  AiEngineCartoonResult out;
+  if (gAiEngineUrl.empty()) {
+    out.error = "ai_engine_disabled";
+    return out;
+  }
+  if (headCutoutPngBytes.empty() ||
+      headCutoutPngBytes.size() > gAiEngineMaxImageBytes) {
+    out.error = "ai_engine_skipped_size_limit";
+    return out;
+  }
+
+  ParsedHttpEndpoint endpoint;
+  if (!parseHttpEndpoint(gAiEngineUrl + "/recompose_avatar_body", endpoint)) {
+    out.error = "ai_engine_invalid_url";
+    return out;
+  }
+
+  std::string boundary = "----InformeBoundary" + makeId();
+  std::string body;
+  body.reserve(headCutoutPngBytes.size() + 256);
+  body += "--" + boundary + "\r\n";
+  body += "Content-Disposition: form-data; name=\"head_cutout\"; "
+          "filename=\"head.png\"\r\n";
+  body += "Content-Type: image/png\r\n\r\n";
+  body.append(reinterpret_cast<const char *>(headCutoutPngBytes.data()),
+              static_cast<std::streamsize>(headCutoutPngBytes.size()));
+  body += "\r\n--" + boundary + "\r\n";
+  body += "Content-Disposition: form-data; name=\"body_template_slug\"\r\n\r\n";
+  body += bodyTemplateSlug;
+  body += "\r\n--" + boundary + "--\r\n";
+
+  // Recompositing puro (cv2/numpy, sin GPU ni difusión) -- no compite por el
+  // mutex de GPU de fetchCartoonAvatarFromAiEngine, a propósito: es
+  // justamente el punto de este camino rápido.
+  beast::error_code ec;
+  asio::io_context ioc;
+  asio::ip::tcp::resolver resolver{ioc};
+  beast::tcp_stream stream{ioc};
+  stream.expires_after(std::chrono::milliseconds(gAiEngineTimeoutMs));
+
+  auto const results = resolver.resolve(endpoint.host, endpoint.port, ec);
+  if (ec) {
+    out.error = "ai_engine_resolve_failed";
+    return out;
+  }
+  stream.connect(results, ec);
+  disableNagleForLowLatency(stream);
+  if (ec) {
+    out.error = "ai_engine_connect_failed";
+    return out;
+  }
+
+  http::request<http::string_body> req{http::verb::post, endpoint.target, 11};
+  req.set(http::field::host, endpoint.host);
+  req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+  req.set(http::field::content_type,
+          "multipart/form-data; boundary=" + boundary);
+  req.body() = std::move(body);
+  req.prepare_payload();
+
+  http::write(stream, req, ec);
+  if (ec) {
+    out.error = "ai_engine_write_failed";
+    return out;
+  }
+
+  beast::flat_buffer buffer;
+  http::response<http::string_body> res;
+  http::read(stream, buffer, res, ec);
+  stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+  if (ec) {
+    out.error = "ai_engine_read_failed";
+    return out;
+  }
+  if (res.result() != http::status::ok) {
+    out.error = "ai_engine_http_not_ok";
+    return out;
+  }
+
+  try {
+    auto payload = json::parse(res.body());
+    if (!payload.is_object()) {
+      out.error = "ai_engine_invalid_json";
+      return out;
+    }
+    const auto &obj = payload.as_object();
+    if (obj.if_contains("ok") && obj.at("ok").is_bool() && !obj.at("ok").as_bool()) {
+      out.error = (obj.if_contains("error") && obj.at("error").is_string())
+                      ? json::value_to<std::string>(obj.at("error"))
+                      : "recompose_avatar_body_failed";
+      return out;
+    }
+    if (!obj.if_contains("image_base64") || !obj.at("image_base64").is_string()) {
+      out.error = "ai_engine_no_image";
+      return out;
+    }
+    out.imageBase64 = json::value_to<std::string>(obj.at("image_base64"));
+    if (obj.if_contains("image_hd_base64") &&
+        obj.at("image_hd_base64").is_string()) {
+      out.imageHdBase64 =
+          json::value_to<std::string>(obj.at("image_hd_base64"));
+    }
+    return out;
+  } catch (...) {
+    out.error = "ai_engine_parse_failed";
+    return out;
+  }
 }
 
 AiEngineDniScanResult

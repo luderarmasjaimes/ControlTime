@@ -1,4 +1,13 @@
 services:
+  # Nota 2026-09-19 (ADR-200, auditoría de latencia tiempo real): este archivo
+  # es un OVERRIDE de docker-compose.yml (se invoca como
+  # `docker compose -f docker-compose.yml -f docker-compose.prod.yml ...`),
+  # no un stack standalone. El tuning de Postgres (shared_buffers/work_mem/
+  # max_connections/WAL/parallel workers), pgbouncer y los `command:` del
+  # servicio `db` del compose base SÍ aplican en producción — se heredan
+  # porque este archivo no los pisa. Confirmado para cerrar la duda que
+  # dejó abierta esa auditoría (no era un gap real de tuning, solo falta de
+  # esta nota).
   db:
     image: timescale/timescaledb:latest-pg15
     environment:
@@ -34,7 +43,6 @@ services:
       - AI_ENGINE_TIMEOUT_MS=3000
       - AI_ENGINE_CARTOON_TIMEOUT_MS=${AI_ENGINE_CARTOON_TIMEOUT_MS:-120000}
       - AI_ENGINE_MAX_IMAGE_BYTES=${AI_ENGINE_MAX_IMAGE_BYTES:-2500000}
-      - FACE_EMBEDDING_COSINE_THRESHOLD=0.40
       - FACE_LEGACY_COSINE_THRESHOLD=0.80
       - BIOMETRIC_IMAGE_OPTIMIZER_ENABLE=false
       - BIOMETRIC_MAX_PIXELS=921600
@@ -99,7 +107,6 @@ services:
 
 volumes:
   db_data: {}
-  insightface_models: {}
 
 networks:
   default:

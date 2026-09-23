@@ -779,226 +779,16 @@
       ::-webkit-scrollbar-thumb { background: #d0d0d0; border-radius: 3px; }
       ::-webkit-scrollbar-thumb:hover { background: #a0a0a0; }
 
-      /* ─── MODAL Búsqueda Historial ─────────────────────────────────── */
-      #buscarModalOverlay {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: rgba(14,30,55,.65);
-        z-index: 10000;
-        align-items: center;
-        justify-content: center;
-      }
-      #buscarModalOverlay.open { display: flex; }
-      #buscarModal {
-        background: #fff;
-        border-radius: 12px;
-        width: min(960px, 97vw);
-        max-height: 92vh;
-        display: flex;
-        flex-direction: column;
-        box-shadow: 0 12px 48px rgba(0,0,0,.32);
-        overflow: hidden;
-      }
-      #buscarModalHdr {
-        background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
-        color: #fff;
-        padding: 14px 20px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        flex-shrink: 0;
-      }
-      #buscarModalHdr h2 { margin:0; font-size:16px; font-weight:700; letter-spacing:.3px; }
-      #buscarModalHdr .close-btn {
-        background: rgba(255,255,255,.2);
-        border: 1px solid rgba(255,255,255,.35);
-        color: #fff;
-        width: 30px; height: 30px;
-        border-radius: 50%;
-        cursor: pointer;
-        font-size: 16px;
-        display: flex; align-items: center; justify-content: center;
-        padding: 0;
-        font-family: 'Poppins', sans-serif;
-      }
-      #buscarModalHdr .close-btn:hover { background: rgba(255,255,255,.38); }
-      #buscarModalBody {
-        padding: 18px 20px 10px;
-        flex-shrink: 0;
-        border-bottom: 1px solid #e0e6f0;
-        background: #f8f9fc;
-      }
-      #buscarParamsGrid {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-        gap: 10px 14px;
-        margin-bottom: 10px;
-      }
-      .bFld label {
-        display: block;
-        font-size: 11px;
-        font-weight: 700;
-        color: #3a3a6a;
-        text-transform: uppercase;
-        letter-spacing: .4px;
-        margin-bottom: 4px;
-      }
-      .bFld select, .bFld input[type="datetime-local"] {
-        width: 100%;
-        padding: 7px 9px;
-        border: 1px solid #c8d0e0;
-        border-radius: 5px;
-        font-family: 'Poppins', sans-serif;
-        font-size: 12px;
-        color: #2c3e50;
-        background: #fff;
-        box-sizing: border-box;
-      }
-      .bFld select:focus, .bFld input:focus {
-        outline: none;
-        border-color: #7c3aed;
-        box-shadow: 0 0 0 2px rgba(124,58,237,.15);
-      }
-      #buscarModalFooter {
-        padding: 10px 20px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-shrink: 0;
-        background: #f8f9fc;
-        border-bottom: 1px solid #e0e6f0;
-      }
-      #buscarBtn {
-        padding: 9px 22px;
-        background: #7c3aed;
-        color: #fff;
-        border: none;
-        border-radius: 6px;
-        cursor: pointer;
-        font-family: 'Poppins', sans-serif;
-        font-weight: 700;
-        font-size: 13px;
-        transition: filter .15s;
-      }
-      #buscarBtn:hover { filter: brightness(1.12); }
-      #buscarBtn:disabled { background: #b0b8c4; cursor: not-allowed; }
-      #buscarLimpiarBtn {
-        padding: 9px 16px;
-        background: #fff;
-        color: #7c3aed;
-        border: 2px solid #7c3aed;
-        border-radius: 6px;
-        cursor: pointer;
-        font-family: 'Poppins', sans-serif;
-        font-weight: 600;
-        font-size: 12px;
-      }
-      #buscarLimpiarBtn:hover { background: #f3f0ff; }
-      #buscarStatus {
-        font-size: 12px;
-        color: #7f8c8d;
-        margin-left: auto;
-      }
-      /* Results area */
-      #buscarResults {
-        flex: 1;
-        overflow-y: auto;
-        padding: 12px 20px 16px;
-        min-height: 0;
-      }
-      #buscarEmpty {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        height: 160px;
-        color: #aaa;
-        font-size: 13px;
-        border: 2px dashed #dde;
-        border-radius: 8px;
-        margin-top: 8px;
-      }
-      /* Table wrapper with horizontal scroll */
-      .bTableWrap {
-        overflow-x: auto;
-        overflow-y: auto;
-        border-radius: 8px;
-        border: 1px solid #e0e6f0;
-        max-height: 400px;
-        margin-top: 8px;
-      }
-      .bTable {
-        width: 100%;
-        min-width: 1100px;
-        border-collapse: collapse;
-        font-size: 12px;
-      }
-      .bTable th {
-        background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
-        color: #fff;
-        padding: 9px 10px;
-        text-align: left;
-        font-weight: 700;
-        font-size: 11px;
-        letter-spacing: .3px;
-        white-space: nowrap;
-        position: sticky;
-        top: 0;
-        z-index: 2;
-      }
-      .bTable td {
-        padding: 7px 10px;
-        border-bottom: 1px solid #eef0f5;
-        color: #2c3e50;
-        white-space: nowrap;
-        vertical-align: middle;
-      }
-      .bTable tr:nth-child(even) td { background: #f8f9fc; }
-      .bTable tr:hover td { background: #f0f0ff; }
-      .bTable tr.bRow { cursor: pointer; }
-      .bTable tr.bRow:hover td { background: #ede9fe; }
-      .bTable tr.bRow:active td { background: #ddd6fe; }
-      .bTable .chip-si  { background:#fdecea; color:#c0392b; padding:2px 7px; border-radius:9px; font-weight:700; font-size:11px; }
-      .bTable .chip-no  { background:#d1fae5; color:#065f46; padding:2px 7px; border-radius:9px; font-weight:700; font-size:11px; }
-      .bTable .chip-acc { background:#ede9fe; color:#5b21b6; padding:2px 7px; border-radius:9px; font-weight:600; font-size:11px; }
-      /* Pagination */
-      #buscarPagination {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        padding: 10px 0 0;
-        flex-wrap: wrap;
-      }
-      .pg-btn {
-        padding: 5px 11px;
-        border: 1px solid #c8d0e0;
-        border-radius: 4px;
-        background: #fff;
-        color: #3a3a6a;
-        cursor: pointer;
-        font-family: 'Poppins', sans-serif;
-        font-size: 12px;
-        font-weight: 600;
-        transition: background .15s;
-        min-width: 32px;
-        text-align: center;
-      }
-      .pg-btn:hover { background: #f3f0ff; border-color: #7c3aed; }
-      .pg-btn.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
-      .pg-btn:disabled { background: #f0f0f0; color: #ccc; cursor: not-allowed; border-color: #ddd; }
-      #buscarPgInfo { font-size: 12px; color: #7f8c8d; padding: 0 6px; }
     </style>
   </head>
   <body>
     <div id="toolbar">
       <button id="addBlock">Añadir bloque</button>
-      <button id="nuevoDiagrama" style="margin-left:6px; background:#7c3aed; color:#fff;" title="Borrar todo el lienzo y empezar desde cero">🗑 Nuevo Diagrama</button>
+      <button id="nuevoDiagrama" style="margin-left:6px; background:#7c3aed; color:#fff;" title="Reconstruye el diagrama desde la fórmula real (sensor_formula_def) -- se pierden ediciones manuales de layout">🔄 Regenerar diagrama</button>
       <button id="addDecision" style="margin-left:6px; background:#f4d03f; color:#333;">◇ Decisión</button>
       <button id="connectMode" style="margin-left:6px;">Modo conexión</button>
       <button id="deleteBlock">Eliminar bloque</button>
-      <a href="analisis.html" target="_blank" style="margin-left:6px; text-decoration:none"><button style="background:#16543a; color:#fff;">⚗ Análisis SP</button></a>
-      <button id="btnBuscarHistorial" style="background:#7c3aed; color:#fff;" title="Buscar historial de fórmulas guardadas">🔍 Buscar Historial</button>
+      <button id="btnGuardarFormula" style="margin-left:6px; background:#16543a; color:#fff;" title="Guarda la lógica de este diagrama como fórmula real del sensor (ADR-187) -- el evaluador de 10s empieza a calcularla de inmediato">💾 Guardar fórmula</button>
       <span id="wsStatus" style="display:none">desconocido</span>
       <button id="wsReconnect" style="display:none">Reconectar WS</button>
       <input id="authToken" style="display:none" />
@@ -1006,9 +796,9 @@
       <!-- Parámetros al extremo derecho de la barra -->
       <span id="ctxParamsBar" style="display:flex;align-items:center;gap:4px;margin-left:auto;flex-shrink:0;padding:0 8px;border-left:1px solid rgba(255,255,255,0.2);">
         <span style="font-size:9px;font-weight:700;color:#e8921e;text-transform:uppercase;letter-spacing:1px;white-space:nowrap;">⚙ Params</span>
-        <select id="ctxEmpresa" class="ctx-select" style="width:110px;font-size:11px;padding:4px 20px 4px 6px" title="Empresa Minera"><option value="">— empresa —</option></select>
-        <select id="ctxMina" class="ctx-select" style="width:100px;font-size:11px;padding:4px 20px 4px 6px" disabled title="Mina"><option value="">— mina —</option></select>
-        <select id="ctxSensor" class="ctx-select" style="width:110px;font-size:11px;padding:4px 20px 4px 6px" disabled title="Sensor"><option value="">— sensor —</option></select>
+        <select id="ctxTipoSensor" class="ctx-select" style="width:130px;font-size:11px;padding:4px 20px 4px 6px" title="Tipo de sensor"><option value="">— tipo de sensor —</option></select>
+        <select id="ctxSensor" class="ctx-select" style="width:170px;font-size:11px;padding:4px 20px 4px 6px" disabled title="Sensor (agrupado por zona)"><option value="">— seleccione tipo —</option></select>
+        <select id="ctxFormula" class="ctx-select" style="width:170px;font-size:11px;padding:4px 20px 4px 6px" disabled title="Fórmula (cada una tiene su propio diagrama, ADR-195)"><option value="">— fórmula —</option></select>
         <div id="ctxSensorInfo" style="margin-top:0;padding:4px 8px;"></div>
       </span>
     </div>
@@ -1189,68 +979,6 @@ ej: nivel_tanque >= umbral_minimo"></textarea>
     <script src="vendor/three-0.147.0.min.js"></script>
     <script src="vendor/OrbitControls-0.147.0.js"></script>
 
-    <!-- Modal Búsqueda Avanzada de Historial de Fórmulas -->
-    <div id="buscarModalOverlay">
-      <div id="buscarModal">
-        <div id="buscarModalHdr">
-          <h2>🔍 Búsqueda Avanzada de Historial de Fórmulas</h2>
-          <button class="close-btn" id="buscarModalClose" title="Cerrar">✕</button>
-        </div>
-        <div id="buscarModalBody">
-          <div id="buscarParamsGrid">
-            <!-- A) Empresa Minera -->
-            <div class="bFld">
-              <label>A) Empresa Minera (Tenant)</label>
-              <select id="bSelEmpresa">
-                <option value="">— Todas las empresas —</option>
-              </select>
-            </div>
-            <!-- B) Mina -->
-            <div class="bFld">
-              <label>B) Mina</label>
-              <select id="bSelMina">
-                <option value="">— Todas las minas —</option>
-              </select>
-            </div>
-            <!-- C) Variable -->
-            <div class="bFld">
-              <label>C) Variable (Medición)</label>
-              <select id="bSelVariable">
-                <option value="">— Todas las variables —</option>
-              </select>
-            </div>
-            <!-- D) Fecha/Hora Inicio -->
-            <div class="bFld">
-              <label>D) Fecha / Hora Inicio</label>
-              <input type="datetime-local" id="bFechaInicio" />
-            </div>
-            <!-- E) Fecha/Hora Fin -->
-            <div class="bFld">
-              <label>E) Fecha / Hora Fin</label>
-              <input type="datetime-local" id="bFechaFin" />
-            </div>
-            <!-- Límite -->
-            <div class="bFld">
-              <label>Registros por página</label>
-              <select id="bSelLimit">
-                <option value="10">10</option>
-                <option value="25" selected>25</option>
-                <option value="50">50</option>
-                <option value="100">100</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div id="buscarModalFooter">
-          <button id="buscarBtn">🔍 Buscar</button>
-          <button id="buscarLimpiarBtn">✕ Limpiar filtros</button>
-          <span id="buscarStatus"></span>
-        </div>
-        <div id="buscarResults">
-          <div id="buscarEmpty">Use los filtros y presione Buscar para ver el historial guardado.</div>
-        </div>
-      </div>
-    </div>
 
     <script src="formula-config.js"></script>
     <script src="app.js"></script>

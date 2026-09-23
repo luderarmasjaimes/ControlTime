@@ -1,6 +1,50 @@
 # ADR-075 — País e idioma determinan la interfaz de acceso
 
-**Status**: implemented, probado y desplegado localmente (2026-07-27)
+> **Actualización 2026-09-12**: una auditoría de conformidad (2026-09-11)
+> confirmó que la expansión de contenido de `I18nProvider.tsx` (crecimiento
+> de ~700 a ~2200 líneas, sumando secciones nuevas como el sitio público
+> `Home/` y `NavBar.tsx`) sigue dentro del alcance de idiomas que este ADR
+> ya prometía: los cuatro siguen siendo exactamente ES/EN/FR/PT-BR, sin
+> ningún idioma o país nuevo fuera del mecanismo país→idioma de la
+> Decisión 1. El portugués implementado es específicamente **brasileño**
+> (no genérico): `pt-BR` consistente en `platformPrefs.ts`,
+> `PlatformRegionBar.tsx` (`Intl.DisplayNames`), formato de fecha en
+> `ReportStudioV2/App.tsx`, `challengeVoiceGuide.ts`, y el propio test
+> `I18nProvider.test.tsx` que exige `document.documentElement.lang ===
+> 'pt-BR'`. **Esta parte: completa el ADR tal cual estaba escrito, no es
+> una decisión nueva.**
+>
+> Pero la misma auditoría encontró que la regla dura de la Decisión 9 y de
+> "Riesgos y controles" de más abajo — *"el tipo `Dictionary` obliga a
+> mantener la misma superficie en los cuatro idiomas"* — **ya no es cierta
+> en el código**, y no por una decisión consciente sino por un cambio de
+> tipos que nadie documentó: `TranslationKey` se define hoy como
+> `keyof typeof es | (string & {})` (línea 667), lo que convierte
+> `Dictionary = Record<TranslationKey, string>` en una firma de índice
+> abierta — TypeScript ya NO exige que `en`/`fr`/`pt` tengan las mismas
+> claves que `es`. Contando claves reales por diccionario: es=347, en=435,
+> fr=334, pt=281 — hasta **154 claves de diferencia** entre inglés y
+> portugués. En runtime, `translate()` cae en un fallback silencioso a
+> español (`dictionaries[language]?.[key] || es[key] || key`, comentario
+> propio del código: *"engañamos a TS... para que nos deje buscar sin
+> llorar"*) — un visitante que eligió portugués puede ver textos en
+> español sin ningún aviso ni test que lo detecte.
+>
+> **Esto sí es una regresión de una garantía ya documentada, no una
+> decisión nueva a tomar** — a diferencia de otros hallazgos de la misma
+> auditoría (ADR-051/127) esto no es una reversión intencional de una
+> regla de negocio, sino una laxitud de tipos introducida sin darse cuenta
+> del efecto sobre la regla dura de este ADR. **Pendiente de corrección**
+> (no resuelto por esta actualización): (1) hacer un pase de completitud
+> real que traduzca las 154 claves faltantes de portugués (y las
+> equivalentes de francés) respecto a inglés/español; (2) una vez completo,
+> restringir `TranslationKey` a `keyof typeof es` sin el escape `(string &
+> {})`, para que TypeScript vuelva a exigir la misma superficie en los
+> cuatro diccionarios como este ADR siempre dijo que hacía; (3) agregar un
+> test que falle si un idioma queda con menos claves que `es`, para que
+> esta brecha no pueda volver a abrirse en silencio.
+
+**Status**: implemented, probado y desplegado localmente (2026-07-27); alcance de idiomas confirmado 2026-09-12, brecha de cobertura de claves (no del alcance) pendiente de corrección — ver arriba
 **Fecha**: 2026-07-27
 **Autores**: EC
 **Ámbito**: plataforma

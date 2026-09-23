@@ -58,6 +58,10 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
   const [comboConfig, setComboConfig] = useState<ComboSeriesConfig>(props.comboConfig || {});
   const [from, setFrom] = useState<string>(props.from || '');
   const [to, setTo] = useState<string>(props.to || '');
+  // "Última hora": ventana móvil (el widget recalcula [ahora-60min, ahora] y
+  // se refresca solo). Cualquier otro rango -- botones de días o edición
+  // manual de las fechas -- vuelve a un rango fijo.
+  const [liveWindowMinutes, setLiveWindowMinutes] = useState<number | null>(props.liveWindowMinutes || null);
 
   const tenantId = useMemo(() => telemetryTenantIdFromSession(getSession()), []);
 
@@ -108,10 +112,18 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
   };
 
   const applyQuickRange = (hours: number) => {
+    setLiveWindowMinutes(null);
     const toDate = new Date();
     const fromDate = new Date(toDate.getTime() - hours * 60 * 60 * 1000);
     setFrom(fromDate.toISOString());
     setTo(toDate.toISOString());
+  };
+
+  const applyLiveWindow = (minutes: number) => {
+    const toDate = new Date();
+    setFrom(new Date(toDate.getTime() - minutes * 60 * 1000).toISOString());
+    setTo(toDate.toISOString());
+    setLiveWindowMinutes(minutes);
   };
 
   const unitSummary = useMemo(() => {
@@ -135,7 +147,7 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
     // sigan resolviendo un tipo por defecto sin cambios.
     const minHeight = sensorDashboardMinHeight({ chartTypes, chartType: chartTypes[0] }, element.width || 480);
     const patch: Partial<ReportElement> = {
-      props: { ...props, sensorType, selections, from, to, chartType: chartTypes[0], chartTypes, comboConfig },
+      props: { ...props, sensorType, selections, from, to, liveWindowMinutes, chartType: chartTypes[0], chartTypes, comboConfig },
       height: Math.max(element.height || 0, minHeight),
     };
     // Con varios tipos el bloque es un dashboard (grilla de mini-gráficos,
@@ -270,7 +282,7 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
               type="datetime-local"
               className="input-premium"
               value={isoToLocalInput(from)}
-              onChange={(e) => setFrom(localInputToIso(e.target.value))}
+              onChange={(e) => { setLiveWindowMinutes(null); setFrom(localInputToIso(e.target.value)); }}
             />
           </div>
           <div>
@@ -279,21 +291,39 @@ function SensorMultiChartInspector({ element, onUpdate }: SensorMultiChartInspec
               type="datetime-local"
               className="input-premium"
               value={isoToLocalInput(to)}
-              onChange={(e) => setTo(localInputToIso(e.target.value))}
+              onChange={(e) => { setLiveWindowMinutes(null); setTo(localInputToIso(e.target.value)); }}
             />
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button type="button" className="btn-premium-outline" style={{ flex: 1, fontSize: 11 }} onClick={() => applyQuickRange(24)}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+          <button
+            type="button"
+            className="btn-premium-outline"
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              ...(liveWindowMinutes === 60 ? { borderColor: '#10b981', background: '#d1fae5', color: '#065f46' } : {}),
+            }}
+            onClick={() => applyLiveWindow(60)}
+            title="Últimos 60 minutos con lecturas crudas (no promedio horario); el gráfico se actualiza solo cada 30 s"
+          >
+            ● Última hora (en vivo)
+          </button>
+          <button type="button" className="btn-premium-outline" style={{ fontSize: 11 }} onClick={() => applyQuickRange(24)}>
             Últimas 24h
           </button>
-          <button type="button" className="btn-premium-outline" style={{ flex: 1, fontSize: 11 }} onClick={() => applyQuickRange(24 * 7)}>
+          <button type="button" className="btn-premium-outline" style={{ fontSize: 11 }} onClick={() => applyQuickRange(24 * 7)}>
             Últimos 7 días
           </button>
-          <button type="button" className="btn-premium-outline" style={{ flex: 1, fontSize: 11 }} onClick={() => applyQuickRange(24 * 30)}>
+          <button type="button" className="btn-premium-outline" style={{ fontSize: 11 }} onClick={() => applyQuickRange(24 * 30)}>
             Últimos 30 días
           </button>
         </div>
+        {liveWindowMinutes && (
+          <p style={{ fontSize: 10, color: '#065f46', marginTop: 6 }}>
+            Ventana en vivo: el gráfico mostrará siempre los últimos {liveWindowMinutes} minutos y se actualizará solo.
+          </p>
+        )}
         {from && to && !validRange && (
           <p style={{ fontSize: 11, color: '#b91c1c', marginTop: 6 }}>La fecha "Desde" debe ser anterior a "Hasta".</p>
         )}

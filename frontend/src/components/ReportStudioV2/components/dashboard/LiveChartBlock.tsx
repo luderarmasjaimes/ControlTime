@@ -52,13 +52,6 @@ const NAVY = '#17365D';
 const GRID = '#eef2f7';
 
 export default function LiveChartBlock({ width, height, data }: LiveChartBlockProps) {
-  // Señal de "listo para capturar" (mismo contrato que
-  // `data-export-widget`/`data-export-ready` de SensorMultiChartWidget.tsx,
-  // ya leído genéricamente por `waitForReportRender` en el sidecar de export
-  // y reutilizado por la captura raster cliente del export DOCX) -- Plotly
-  // pinta de forma asíncrona; sin esto una captura tomada justo tras montar
-  // el componente puede salir en blanco.
-  const [ready, setReady] = React.useState(false);
   const p = data || {};
   const kind: string | undefined = p.chartKind;
   const isStatic = p.live === false && !!kind;
@@ -124,18 +117,16 @@ export default function LiveChartBlock({ width, height, data }: LiveChartBlockPr
     const x = Array.from({ length: 20 }, (_, i) => i);
     const y = x.map((index) => Math.sin(index / 3) * 10 + 50 + (Math.random() * 2 - 1));
     traces = [{ x, y, type: 'scatter', mode: 'lines', line: { color: BLUE } }];
-    layout.margin = { l: 20, r: 10, t: 10, b: 20 };
+    layout.margin = { l: 20, r: 10, t: 40, b: 20 };
   }
 
   return (
-    <div style={{ width, height }} data-export-widget="chart" data-export-ready={ready ? 'true' : 'false'}>
+    <div style={{ width, height }}>
       <Plot
         data={traces}
         layout={layout}
         config={{ displayModeBar: false, responsive: true, staticPlot: isStatic }}
         style={{ width: '100%', height: '100%' }}
-        onInitialized={() => setReady(true)}
-        onUpdate={() => setReady(true)}
       />
     </div>
   );

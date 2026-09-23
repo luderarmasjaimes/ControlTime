@@ -2,14 +2,17 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/connect.hpp>
 #include <boost/config.hpp>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <cstdlib>
+#include <cstring>
 #include <optional>
 
 #include <nlohmann/json.hpp>
@@ -85,50 +88,224 @@ void ensure_tables(pqxx::connection &c){
             payload JSONB,
             created_at TIMESTAMP DEFAULT now()
         );
-        CREATE TABLE IF NOT EXISTS formula_sessions (
-            id               BIGSERIAL PRIMARY KEY,
-            usuario_nombre   VARCHAR(200),
-            accion           VARCHAR(20) DEFAULT 'VISUALIZO',
-            empresa_id       INTEGER,
-            empresa_nombre   VARCHAR(200),
-            mina_id          INTEGER,
-            mina_nombre      VARCHAR(200),
-            variable_id      INTEGER,
-            variable_nombre  VARCHAR(200),
-            fecha_inicio     TIMESTAMPTZ,
-            fecha_fin        TIMESTAMPTZ,
-            formula_json     JSONB,
-            sp_sql_text      TEXT,
-            total_lecturas   INTEGER,
-            total_si         INTEGER,
-            total_no         INTEGER,
-            pct_alertas      DECIMAL(5,2),
-            gps_lat          DECIMAL(10,7),
-            gps_lon          DECIMAL(10,7),
-            gps_accuracy     DECIMAL(8,2),
-            gps_lugar        TEXT,
-            ip_cliente       VARCHAR(45),
-            user_agent       TEXT,
-            created_at       TIMESTAMPTZ DEFAULT NOW()
+        CREATE TABLE IF NOT EXISTS operators (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT,
+            icon_emoji TEXT,
+            description TEXT,
+            precedence INT DEFAULT 0,
+            meta JSONB,
+            created_at TIMESTAMP DEFAULT now()
         );
-        CREATE INDEX IF NOT EXISTS idx_fsess_empresa  ON formula_sessions(empresa_id);
-        CREATE INDEX IF NOT EXISTS idx_fsess_mina     ON formula_sessions(mina_id);
-        CREATE INDEX IF NOT EXISTS idx_fsess_usuario  ON formula_sessions(usuario_nombre);
-        CREATE INDEX IF NOT EXISTS idx_fsess_accion   ON formula_sessions(accion);
-        CREATE INDEX IF NOT EXISTS idx_fsess_created  ON formula_sessions(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_fsess_formula  ON formula_sessions USING GIN (formula_json);
     )");
-    // Multi-tenant isolation: scope every diagram to empresa+mina
+    // ADR-188: `blocks`/`connections` ya usaban un `diagram_id TEXT` genérico
+    // (antes 'empX_minaY' del catálogo fake) -- se mantiene la columna tal
+    // cual, solo cambia el VALOR que el frontend le pone (ahora el sensor_id
+    // real, ver getDiagramId() en app.js). No hace falta migración de esquema.
     w.exec("ALTER TABLE blocks      ADD COLUMN IF NOT EXISTS diagram_id TEXT NOT NULL DEFAULT ''");
     w.exec("ALTER TABLE connections ADD COLUMN IF NOT EXISTS diagram_id TEXT NOT NULL DEFAULT ''");
     w.exec("CREATE INDEX IF NOT EXISTS idx_blocks_diagram ON blocks(diagram_id)");
     w.exec("CREATE INDEX IF NOT EXISTS idx_connections_diagram ON connections(diagram_id)");
+    // Paleta de operadores (aritmética/comparación/lógicos/funciones) --
+    // agnóstica de tipo de sensor, sigue siendo real y reusable. INSERT
+    // idempotente (ON CONFLICT DO NOTHING sobre symbol UNIQUE) porque
+    // ensure_tables() corre en cada conexión aceptada, no solo al arrancar.
+    w.exec(R"(
+        INSERT INTO operators (symbol, name, category, icon_emoji, description, precedence) VALUES
+        ('+', 'Suma', 'arithmetic', '➕', 'Suma dos valores', 1),
+        ('-', 'Resta', 'arithmetic', '➖', 'Resta dos valores', 1),
+        ('*', 'Multiplicación', 'arithmetic', '✖️', 'Multiplica dos valores', 2),
+        ('/', 'División', 'arithmetic', '➗', 'Divide dos valores', 2),
+        ('%', 'Módulo', 'arithmetic', '🔲', 'Resto de la división', 2),
+        ('^', 'Potencia', 'arithmetic', '📌', 'Eleva a potencia', 3),
+        ('=', 'Igual', 'comparison', '🟰', 'Verifica igualdad', 0),
+        ('==', 'Estrictamente igual', 'comparison', '➡️', 'Comparación estricta', 0),
+        ('!=', 'No igual', 'comparison', '❌', 'Verifica desigualdad', 0),
+        ('>', 'Mayor que', 'comparison', '▶️', 'Mayor que', 0),
+        ('<', 'Menor que', 'comparison', '◀️', 'Menor que', 0),
+        ('>=', 'Mayor o igual', 'comparison', '▶️=', 'Mayor o igual que', 0),
+        ('<=', 'Menor o igual', 'comparison', '◀️=', 'Menor o igual que', 0),
+        ('AND', 'Y lógico', 'logical', '✔️', 'Operación lógica AND', 0),
+        ('&&', 'Y (C-style)', 'logical', '✔️✔️', 'Operación AND alternativa', 0),
+        ('OR', 'O lógico', 'logical', '❌', 'Operación lógica OR', 0),
+        ('||', 'O (C-style)', 'logical', '❌❌', 'Operación OR alternativa', 0),
+        ('NOT', 'No lógico', 'logical', '🚫', 'Operación lógica NOT', 3),
+        ('!', 'Negación', 'logical', '‼️', 'Negación de valor', 3),
+        ('sqrt', 'Raíz cuadrada', 'functions', '√', 'Calcula raíz cuadrada', 4),
+        ('abs', 'Valor absoluto', 'functions', '📊', 'Valor absoluto', 4),
+        ('round', 'Redondeo', 'functions', '🔄', 'Redondea al entero más cercano', 4),
+        ('floor', 'Piso', 'functions', '🔻', 'Redondea hacia abajo', 4),
+        ('ceil', 'Techo', 'functions', '🔺', 'Redondea hacia arriba', 4),
+        ('pow', 'Potencia (func)', 'functions', '📈', 'Calcula a^b', 4),
+        ('log', 'Logaritmo', 'functions', '📉', 'Logaritmo natural', 4),
+        ('exp', 'Exponencial', 'functions', 'ⓔ', 'Calcula e^x', 4),
+        ('sin', 'Seno', 'functions', '〰️', 'Función trigonométrica sin', 4),
+        ('cos', 'Coseno', 'functions', '〰️', 'Función trigonométrica cos', 4),
+        ('tan', 'Tangente', 'functions', '↗️', 'Función trigonométrica tan', 4),
+        ('max', 'Máximo', 'functions', '📈', 'Valor máximo entre dos números', 4),
+        ('min', 'Mínimo', 'functions', '📉', 'Valor mínimo entre dos números', 4),
+        ('avg', 'Promedio', 'functions', '📊', 'Calcula el promedio', 4),
+        ('?', 'Operador ternar', 'conditional', '❓', 'Condición ? valor_si : valor_no', 0),
+        (':', 'Separador ternar', 'conditional', ':', 'Separador en operador ternario', 0)
+        ON CONFLICT (symbol) DO NOTHING;
+    )");
     w.commit();
 }
 
 // helper: read request body string
 std::string req_body(const http::request<http::string_body>& req){
     return req.body();
+}
+
+// --------------------------------------------------------------------------
+// ADR-188 (segunda pasada): autorización real por tenant sobre las rutas de
+// lienzo (blocks/connections/rules), que hasta ahora no validaban que el
+// `diagram_id`/`sensor_id` de la request perteneciera al tenant de quien
+// llama -- mismo nivel de exposición que ya existía con 'empX_minaY' (un
+// UUID de otro tenant es adivinable en teoría, aunque la UI nunca lo
+// expone). Reusa GET /api/internal/resolve-session (backend principal) en
+// vez de reimplementar el parseo/verificación de JWT acá.
+// --------------------------------------------------------------------------
+
+// ADR-195: el diagrama ahora es por FÓRMULA ('formula_<formula_id>'), no por
+// sensor -- un sensor puede tener varias fórmulas (ALT/MCA/MPA de un mismo
+// piezómetro, por ejemplo) y el esquema viejo ('sensor_<uuid>') era ambiguo
+// entre ellas. Se resuelve el sensor_id real con una consulta a
+// sensor_formula_def (misma BD, sensors_db) en vez de parsear un substring.
+// Se conserva la rama 'sensor_<uuid>' vieja tal cual -- ADR-188 seguía
+// "pendiente de verificación E2E en vivo" al momento de este cambio, así que
+// no se espera diagram_id real bajo ese esquema, pero no cuesta nada dejarlo
+// funcionando por compatibilidad.
+std::string sensorIdFromDiagramId(pqxx::connection& db, const std::string& diagramId){
+    static const std::string formulaPrefix = "formula_";
+    if(diagramId.rfind(formulaPrefix, 0) == 0){
+        const std::string formulaId = diagramId.substr(formulaPrefix.size());
+        if(formulaId.empty()) return "";
+        try{
+            pqxx::work w(db);
+            pqxx::result r = w.exec_params(
+                "SELECT sensor_id::text FROM sensor_formula_def WHERE formula_id = $1::bigint", formulaId);
+            if(r.empty() || r[0][0].is_null()) return "";
+            return r[0][0].c_str();
+        }catch(...){ return ""; }
+    }
+    static const std::string prefix = "sensor_";
+    if(diagramId.rfind(prefix, 0) != 0) return "";
+    const std::string rest = diagramId.substr(prefix.size());
+    if(rest.size() < 36) return "";
+    return rest.substr(0, 36);
+}
+
+// Llama a GET /api/internal/resolve-session en el backend principal
+// (alcanzable como `web:8081` dentro de la red Docker por defecto de
+// compose, sin pasar por nginx), reenviando el header Cookie de la request
+// original tal cual -- esa cookie de sesión SÍ le llega intacta al sidecar
+// (nginx solo pisa Authorization en /formula-api/, ver ADR-188). El segundo
+// factor server-to-server (X-Internal-Token) reusa el mismo secreto
+// compartido que ya usa este proceso para su propia auth de WebSocket
+// (env AUTH_TOKEN == BEEMETRY_FORMULA_AUTH_TOKEN). Timeout corto (3s): si el
+// backend principal no responde, se falla cerrado (unauthorized), nunca se
+// asume autorizado por defecto.
+std::string resolveSessionTenantId(const http::request<http::string_body>& req){
+    try{
+        std::string cookie;
+        auto cit = req.find(http::field::cookie);
+        if(cit != req.end()) cookie = std::string(cit->value());
+        if(cookie.empty()) return "";
+
+        const char* internalToken = std::getenv("AUTH_TOKEN");
+        if(!internalToken || std::strlen(internalToken) == 0) return "";
+
+        net::io_context ioc;
+        tcp::resolver resolver(ioc);
+        beast::tcp_stream stream(ioc);
+        stream.expires_after(std::chrono::seconds(3));
+        auto const results = resolver.resolve("web", "8081");
+        stream.connect(results);
+
+        http::request<http::empty_body> creq{http::verb::get, "/api/internal/resolve-session", 11};
+        creq.set(http::field::host, "web");
+        creq.set(http::field::user_agent, "formula-engine-internal/1.0");
+        creq.set("X-Internal-Token", internalToken);
+        creq.set(http::field::cookie, cookie);
+        http::write(stream, creq);
+
+        beast::flat_buffer buffer;
+        http::response<http::string_body> cres;
+        http::read(stream, buffer, cres);
+
+        beast::error_code ec;
+        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+
+        if(cres.result() != http::status::ok) return "";
+        json j = json::parse(cres.body());
+        if(j.contains("tenant_id") && j["tenant_id"].is_string()){
+            return j["tenant_id"].get<std::string>();
+        }
+        return "";
+    }catch(...){
+        return "";
+    }
+}
+
+bool sensorBelongsToTenantId(pqxx::connection& db, const std::string& sensorId, const std::string& tenantId){
+    if(sensorId.empty() || tenantId.empty()) return false;
+    try{
+        pqxx::work w(db);
+        pqxx::result r = w.exec_params(
+            "SELECT 1 FROM sensors WHERE sensor_id = $1::uuid AND tenant_id = $2::uuid", sensorId, tenantId);
+        return !r.empty();
+    }catch(...){ return false; }
+}
+
+// Autorización completa para una operación sobre un diagram_id dado: resuelve
+// el tenant real de la sesión (cookie reenviada) y confirma que el sensor_id
+// codificado en el diagram_id pertenece a ese tenant. Fail-closed en TODOS
+// los casos ambiguos (diagram_id con formato viejo/vacío, sesión no
+// resoluble, backend principal inalcanzable) -- nunca se asume autorizado.
+// Al fallar, deja el código/cuerpo de error listo en `res` y devuelve false;
+// el caller solo necesita `if(!authorizeDiagram(...)) { ...write res...; }`.
+bool authorizeDiagram(const http::request<http::string_body>& req, pqxx::connection& db,
+                      const std::string& diagramId, http::response<http::string_body>& res){
+    const std::string sensorId = sensorIdFromDiagramId(db, diagramId);
+    if(sensorId.empty()){
+        res.result(http::status::bad_request);
+        res.body() = R"({"error":"invalid_diagram_id"})";
+        return false;
+    }
+    const std::string tenantId = resolveSessionTenantId(req);
+    if(tenantId.empty()){
+        res.result(http::status::unauthorized);
+        res.body() = R"({"error":"unauthorized"})";
+        return false;
+    }
+    if(!sensorBelongsToTenantId(db, sensorId, tenantId)){
+        res.result(http::status::forbidden);
+        res.body() = R"({"error":"sensor_not_in_tenant"})";
+        return false;
+    }
+    return true;
+}
+
+// Variante para operaciones identificadas por un id de fila (block/connection/
+// rule) que no traen diagram_id directamente en la request -- lo resuelve
+// primero con la query dada (debe devolver una sola columna: diagram_id) y
+// delega en authorizeDiagram. `diagramId` sin filas (id inexistente) fallará
+// cerrado con 'invalid_diagram_id', consistente con "no autorizado" en vez
+// de filtrar si el id existe o no.
+template <typename... Args>
+bool authorizeByLookup(const http::request<http::string_body>& req, pqxx::connection& db,
+                       http::response<http::string_body>& res,
+                       const std::string& lookupSql, Args&&... args){
+    std::string diagramId;
+    try{
+        pqxx::work w(db);
+        pqxx::result r = w.exec_params(lookupSql, std::forward<Args>(args)...);
+        if(!r.empty() && !r[0][0].is_null()) diagramId = r[0][0].c_str();
+    }catch(...){}
+    return authorizeDiagram(req, db, diagramId, res);
 }
 
 // handle a single connection (simple blocking model)
@@ -254,6 +431,9 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                             size_t e = target.find('&', s);
                             diagram_id = target.substr(s, e == std::string::npos ? std::string::npos : e - s);
                         }
+                    }
+                    if(!authorizeDiagram(req, db, diagram_id, res)){
+                        res.prepare_payload(); http::write(socket, res); break;
                     }
                     // query blocks and connections scoped to diagram
                     pqxx::work w(db);
@@ -498,6 +678,23 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                         std::string color = p.value("color", "#99ccff");
                         std::string diagram_id = p.value("diagram_id", "");
                         json meta = read_meta_object(p);
+                        // Si el bloque ya existe, autorizar contra SU diagram_id
+                        // guardado -- no el del payload -- porque el UPDATE de
+                        // abajo nunca toca esa columna (un id ya existente no
+                        // puede "moverse" de diagrama). Sin esto, alguien podría
+                        // pasar un diagram_id propio (autoriza) para reusar un
+                        // `id` de bloque adivinado de OTRO tenant y mover/
+                        // renombrar su bloque sin cambiar su diagram_id real.
+                        std::string existingDiagramId;
+                        {
+                            pqxx::work wl(db);
+                            pqxx::result rl = wl.exec_params("SELECT diagram_id FROM blocks WHERE id=$1", id);
+                            if(!rl.empty() && !rl[0][0].is_null()) existingDiagramId = rl[0][0].c_str();
+                        }
+                        const std::string authDiagramId = existingDiagramId.empty() ? diagram_id : existingDiagramId;
+                        if(!authorizeDiagram(req, db, authDiagramId, res)){
+                            res.prepare_payload(); http::write(socket, res); break;
+                        }
                         pqxx::work t(db);
                         t.exec_params(
                             "INSERT INTO blocks (id,x,y,w,h,label,color,meta,diagram_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO UPDATE SET x=EXCLUDED.x, y=EXCLUDED.y, w=EXCLUDED.w, h=EXCLUDED.h, label=EXCLUDED.label, color=EXCLUDED.color, meta=EXCLUDED.meta",
@@ -525,6 +722,9 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                     if(id.empty()){
                         res.result(http::status::bad_request);
                         res.body() = R"({"error":"id required"})";
+                    } else if(!authorizeByLookup(req, db, res,
+                            "SELECT diagram_id FROM blocks WHERE id=$1", id)){
+                        res.prepare_payload(); http::write(socket, res); break;
                     } else {
                         pqxx::work t(db);
                         t.exec_params("DELETE FROM blocks WHERE id = $1", id);
@@ -548,6 +748,8 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                     if(from.empty() || to.empty()){
                         res.result(http::status::bad_request);
                         res.body() = R"({"error":"from and to required"})";
+                    } else if(!authorizeDiagram(req, db, p.value("diagram_id", ""), res)){
+                        res.prepare_payload(); http::write(socket, res); break;
                     } else {
                         json meta = read_meta_object(p);
                         std::string diagram_id = p.value("diagram_id", "");
@@ -572,6 +774,9 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                     if(cid <= 0){
                         res.result(http::status::bad_request);
                         res.body() = R"({"error":"id required"})";
+                    } else if(!authorizeByLookup(req, db, res,
+                            "SELECT diagram_id FROM connections WHERE id=$1", cid)){
+                        res.prepare_payload(); http::write(socket, res); break;
                     } else {
                         json meta = read_meta_object(p);
                         pqxx::work t(db);
@@ -597,6 +802,9 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                     if(cid <= 0){
                         res.result(http::status::bad_request);
                         res.body() = R"({"error":"id required"})";
+                    } else if(!authorizeByLookup(req, db, res,
+                            "SELECT diagram_id FROM connections WHERE id=$1", cid)){
+                        res.prepare_payload(); http::write(socket, res); break;
                     } else {
                         pqxx::work t(db);
                         t.exec_params("DELETE FROM connections WHERE id = $1", cid);
@@ -623,11 +831,44 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                         size_t end = target.find('&', start);
                         block_id = target.substr(start, end == std::string::npos ? std::string::npos : end - start);
                     }
-                    pqxx::work w(db);
                     pqxx::result rr;
                     if(block_id.empty()){
-                        rr = w.exec("SELECT id, block_id, expr FROM rules ORDER BY id");
+                        // Sin block_id: listaría TODAS las reglas de TODOS los
+                        // tenants (comportamiento previo). Ahora se resuelve
+                        // el tenant real y se filtra por él (join a través de
+                        // blocks.diagram_id -> sensor_id -> sensors.tenant_id)
+                        // en vez de listar todo sin distinción.
+                        const std::string tenantId = resolveSessionTenantId(req);
+                        if(tenantId.empty()){
+                            res.result(http::status::unauthorized);
+                            res.body() = R"({"error":"unauthorized"})";
+                            res.prepare_payload(); http::write(socket, res); break;
+                        }
+                        pqxx::work w(db);
+                        // ADR-195: b.diagram_id puede venir en dos esquemas --
+                        // 'formula_<formula_id>' (nuevo, resuelto vía
+                        // sensor_formula_def) o 'sensor_<uuid>' (viejo, el
+                        // sensor_id son los 36 chars tras el prefijo).
+                        rr = w.exec_params(
+                            "SELECT r.id, r.block_id, r.expr FROM rules r "
+                            "JOIN blocks b ON b.id = r.block_id "
+                            "JOIN sensors s ON s.sensor_id::text = ( "
+                            "  CASE "
+                            "    WHEN b.diagram_id LIKE 'formula\\_%' ESCAPE '\\' THEN ( "
+                            "      SELECT f.sensor_id::text FROM sensor_formula_def f "
+                            "      WHERE f.formula_id::text = substring(b.diagram_id from 9) "
+                            "    ) "
+                            "    WHEN b.diagram_id LIKE 'sensor\\_%' ESCAPE '\\' THEN substring(b.diagram_id from 8 for 36) "
+                            "    ELSE NULL "
+                            "  END "
+                            ") "
+                            "WHERE s.tenant_id = $1::uuid ORDER BY r.id", tenantId);
                     } else {
+                        if(!authorizeByLookup(req, db, res,
+                                "SELECT diagram_id FROM blocks WHERE id=$1", block_id)){
+                            res.prepare_payload(); http::write(socket, res); break;
+                        }
+                        pqxx::work w(db);
                         rr = w.exec_params("SELECT id, block_id, expr FROM rules WHERE block_id = $1 ORDER BY id", block_id);
                     }
                     json j = json::array();
@@ -645,14 +886,31 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                     json p = json::parse(body);
                     std::string block_id = p.value("block_id", "");
                     std::string expr = p.value("expr", "");
+                    const bool isUpdate = p.contains("id") && !p["id"].is_null() && p["id"].is_number();
                     if(block_id.empty() || expr.empty()){
                         res.result(http::status::bad_request);
                         res.body() = R"({"error":"block_id and expr required"})";
+                    } else if(!authorizeByLookup(req, db, res,
+                            "SELECT diagram_id FROM blocks WHERE id=$1", block_id)){
+                        // Autoriza el block_id NUEVO/destino (payload) -- cubre
+                        // el caso de creación y de reasignar una regla a un
+                        // bloque propio.
+                        res.prepare_payload(); http::write(socket, res); break;
+                    } else if(isUpdate && !authorizeByLookup(req, db, res,
+                            "SELECT b.diagram_id FROM rules r JOIN blocks b ON b.id = r.block_id WHERE r.id=$1",
+                            p.value("id", 0))){
+                        // En UPDATE, autoriza TAMBIÉN el bloque ORIGINAL de la
+                        // regla que se está por sobreescribir -- sin esto, un
+                        // `id` de regla ajeno adivinado + un block_id propio
+                        // en el payload hubiera permitido secuestrar/reasignar
+                        // la fila de otro tenant (la autorización de arriba
+                        // sola solo mira el destino, no el dueño actual).
+                        res.prepare_payload(); http::write(socket, res); break;
                     } else {
                         json meta = read_meta_object(p);
                         pqxx::work t(db);
                         int rule_id = 0;
-                        if(p.contains("id") && !p["id"].is_null() && p["id"].is_number()){
+                        if(isUpdate){
                             rule_id = p.value("id", 0);
                             t.exec_params("UPDATE rules SET block_id=$1, expr=$2, meta=$3::jsonb WHERE id=$4",
                                 block_id, expr, meta.dump(), rule_id);
@@ -673,499 +931,15 @@ void do_session(tcp::socket socket, const std::string& conn_str)
                     if(rid <= 0){
                         res.result(http::status::bad_request);
                         res.body() = R"({"error":"id required"})";
+                    } else if(!authorizeByLookup(req, db, res,
+                            "SELECT b.diagram_id FROM rules r JOIN blocks b ON b.id = r.block_id WHERE r.id=$1", rid)){
+                        res.prepare_payload(); http::write(socket, res); break;
                     } else {
                         pqxx::work t(db);
                         t.exec_params("DELETE FROM rules WHERE id = $1", rid);
                         t.commit();
                         res.body() = R"({"ok":true})";
                     }
-                }
-                // ── GET /api/catalogos — empresas y minas (selector global) ────────
-                else if(req.method() == http::verb::get && target == "/api/catalogos"){
-                    pqxx::work w(db);
-                    // empresas
-                    pqxx::result re = w.exec(
-                        "SELECT id, codigo, nombre FROM mineria_empresas WHERE activo=TRUE ORDER BY nombre");
-                    json emp = json::array();
-                    for(auto row : re){
-                        json r;
-                        r["id"]     = row["id"].as<int>();
-                        r["codigo"] = row["codigo"].c_str();
-                        r["nombre"] = row["nombre"].c_str();
-                        emp.push_back(r);
-                    }
-                    // minas
-                    pqxx::result rm = w.exec(
-                        "SELECT id, empresa_id, codigo, nombre, zona_tipo, altitud_msnm, umbral_temp_alerta "
-                        "FROM mineria_minas WHERE activo=TRUE ORDER BY nombre");
-                    json minas = json::array();
-                    for(auto row : rm){
-                        json r;
-                        r["id"]                 = row["id"].as<int>();
-                        r["empresa_id"]          = row["empresa_id"].as<int>();
-                        r["codigo"]              = row["codigo"].c_str();
-                        r["nombre"]              = row["nombre"].c_str();
-                        r["zona_tipo"]           = row["zona_tipo"].c_str();
-                        r["altitud_msnm"]        = row["altitud_msnm"].as<int>();
-                        r["umbral_temp_alerta"]  = row["umbral_temp_alerta"].as<double>();
-                        minas.push_back(r);
-                    }
-                    json j; j["empresas"] = emp; j["minas"] = minas;
-                    res.body() = j.dump();
-                }
-                // ── GET /api/sensores?mina_id=X — sensores de una mina ─────────
-                else if(req.method() == http::verb::get && target.rfind("/api/sensores", 0) == 0){
-                    int mina_id = 0;
-                    auto qpos = target.find("mina_id=");
-                    if(qpos != std::string::npos){
-                        size_t start = qpos + 8;
-                        size_t end = target.find('&', start);
-                        try{ mina_id = std::stoi(target.substr(start, end == std::string::npos ? std::string::npos : end - start)); }catch(...){}
-                    }
-                    pqxx::work w(db);
-                    pqxx::result rs;
-                    if(mina_id > 0){
-                        rs = w.exec_params(
-                            "SELECT s.id, s.codigo, s.nombre, s.modelo, s.fabricante, "
-                            "       s.ubicacion, s.profundidad_m, "
-                            "       v.id AS variable_id, v.nombre AS variable_nombre, "
-                            "       v.unidad, v.tipo AS variable_tipo "
-                            "FROM mineria_sensores s "
-                            "JOIN mineria_variables v ON v.id = s.variable_id "
-                            "WHERE s.mina_id = $1 AND s.activo = TRUE "
-                            "ORDER BY s.codigo", mina_id);
-                    } else {
-                        rs = w.exec(
-                            "SELECT s.id, s.codigo, s.nombre, s.modelo, s.fabricante, "
-                            "       s.ubicacion, s.profundidad_m, "
-                            "       v.id AS variable_id, v.nombre AS variable_nombre, "
-                            "       v.unidad, v.tipo AS variable_tipo "
-                            "FROM mineria_sensores s "
-                            "JOIN mineria_variables v ON v.id = s.variable_id "
-                            "WHERE s.activo = TRUE ORDER BY s.codigo");
-                    }
-                    json j = json::array();
-                    for(auto row : rs){
-                        json r;
-                        r["id"]               = row["id"].as<int>();
-                        r["codigo"]           = row["codigo"].c_str();
-                        r["nombre"]           = row["nombre"].c_str();
-                        r["modelo"]           = row["modelo"].is_null()      ? json(nullptr) : json(row["modelo"].c_str());
-                        r["fabricante"]       = row["fabricante"].is_null()  ? json(nullptr) : json(row["fabricante"].c_str());
-                        r["ubicacion"]        = row["ubicacion"].is_null()   ? json(nullptr) : json(row["ubicacion"].c_str());
-                        r["profundidad_m"]    = row["profundidad_m"].is_null() ? json(nullptr) : json(row["profundidad_m"].as<double>());
-                        r["variable_id"]      = row["variable_id"].as<int>();
-                        r["variable_nombre"]  = row["variable_nombre"].c_str();
-                        r["unidad"]           = row["unidad"].is_null()      ? json(nullptr) : json(row["unidad"].c_str());
-                        r["variable_tipo"]    = row["variable_tipo"].is_null() ? json(nullptr) : json(row["variable_tipo"].c_str());
-                        j.push_back(r);
-                    }
-                    res.body() = j.dump();
-                }
-                // ── GET /api/analysis/catalogos ─────────────────────────────────
-                else if(req.method() == http::verb::get && target == "/api/analysis/catalogos"){
-                    pqxx::work w(db);
-                    pqxx::result rc = w.exec(
-                        "SELECT empresa_id, empresa_codigo, empresa_nombre, "
-                        "       mina_id, mina_codigo, mina_nombre, zona_tipo, "
-                        "       altitud_msnm, umbral_temp_alerta, "
-                        "       variable_id, variable_codigo, variable_nombre, unidad "
-                        "FROM v_mineria_catalogos");
-                    json j = json::array();
-                    for(auto row : rc){
-                        json r;
-                        r["empresa_id"]          = row["empresa_id"].as<int>();
-                        r["empresa_codigo"]       = row["empresa_codigo"].c_str();
-                        r["empresa_nombre"]       = row["empresa_nombre"].c_str();
-                        r["mina_id"]             = row["mina_id"].as<int>();
-                        r["mina_codigo"]          = row["mina_codigo"].c_str();
-                        r["mina_nombre"]          = row["mina_nombre"].c_str();
-                        r["zona_tipo"]            = row["zona_tipo"].c_str();
-                        r["altitud_msnm"]         = row["altitud_msnm"].as<int>();
-                        r["umbral_temp_alerta"]   = row["umbral_temp_alerta"].as<double>();
-                        r["variable_id"]          = row["variable_id"].as<int>();
-                        r["variable_codigo"]      = row["variable_codigo"].c_str();
-                        r["variable_nombre"]      = row["variable_nombre"].c_str();
-                        r["unidad"]               = row["unidad"].c_str();
-                        j.push_back(r);
-                    }
-                    res.body() = j.dump();
-                }
-                // ── POST /api/analysis/temperaturas ─────────────────────────────
-                // Body: { empresa_id, mina_id, variable_id, fecha_inicio, fecha_fin }
-                // Returns: array of SP results (max 2000 rows for chart performance)
-                else if(req.method() == http::verb::post && target == "/api/analysis/temperaturas"){
-                    auto body = req_body(req);
-                    json p = json::parse(body);
-                    int empresa_id  = p.value("empresa_id",  0);
-                    int mina_id     = p.value("mina_id",     0);
-                    int variable_id = p.value("variable_id", 0);
-                    std::string fecha_ini = p.value("fecha_inicio", "");
-                    std::string fecha_fin = p.value("fecha_fin",    "");
-                    if(empresa_id <= 0 || mina_id <= 0 || variable_id <= 0 ||
-                       fecha_ini.empty() || fecha_fin.empty()){
-                        res.result(http::status::bad_request);
-                        res.body() = R"({"error":"Requeridos: empresa_id, mina_id, variable_id, fecha_inicio, fecha_fin"})";
-                    } else {
-                        pqxx::work w(db);
-                        // Call the stored procedure; limit to 2000 rows for chart readability
-                        pqxx::result rc = w.exec_params(
-                            "SELECT timestamp_lectura, valor_original, calidad, "
-                            "       umbral_alerta, condicion_resultado, "
-                            "       valor_procesado, descripcion "
-                            "FROM sp_proceso_temperatura($1,$2,$3,$4::timestamptz,$5::timestamptz) "
-                            "LIMIT 2000",
-                            empresa_id, mina_id, variable_id, fecha_ini, fecha_fin);
-                        json rows = json::array();
-                        for(auto row : rc){
-                            json r;
-                            r["ts"]          = row["timestamp_lectura"].c_str();
-                            r["original"]    = row["valor_original"].is_null()     ? json(nullptr) : json(row["valor_original"].as<double>());
-                            r["calidad"]     = row["calidad"].as<int>();
-                            r["umbral"]      = row["umbral_alerta"].as<double>();
-                            r["condicion"]   = row["condicion_resultado"].c_str();
-                            r["procesado"]   = row["valor_procesado"].is_null()    ? json(nullptr) : json(row["valor_procesado"].as<double>());
-                            r["descripcion"] = row["descripcion"].c_str();
-                            rows.push_back(r);
-                        }
-                        json out;
-                        out["count"] = (int)rows.size();
-                        out["rows"]  = rows;
-                        res.body() = out.dump();
-                    }
-                }
-                // ── POST /api/analysis/guardar ───────────────────────────────
-                // Saves a complete formula session snapshot to formula_sessions table
-                else if(req.method() == http::verb::post && target == "/api/analysis/guardar"){
-                    auto body = req_body(req);
-                    json p = json::parse(body);
-
-                    // Extract GPS optional values (null if not provided)
-                    std::optional<double> gps_lat_v, gps_lon_v, gps_acc_v;
-                    std::optional<std::string> gps_lugar_v;
-                    if(p.contains("gps_lat") && !p["gps_lat"].is_null()){
-                        gps_lat_v = p["gps_lat"].get<double>();
-                        gps_lon_v = p.contains("gps_lon") && !p["gps_lon"].is_null()
-                                    ? std::optional<double>(p["gps_lon"].get<double>()) : std::nullopt;
-                        gps_acc_v = p.contains("gps_accuracy") && !p["gps_accuracy"].is_null()
-                                    ? std::optional<double>(p["gps_accuracy"].get<double>()) : std::nullopt;
-                    }
-                    if(p.contains("gps_lugar") && !p["gps_lugar"].is_null()){
-                        std::string g = p["gps_lugar"].get<std::string>();
-                        if(!g.empty()) gps_lugar_v = g;
-                    }
-                    std::string formula_json_str = p.contains("formula_json")
-                        ? p["formula_json"].dump() : "null";
-                    std::string sp_sql = p.value("sp_sql_text","");
-                    std::string user_agent_hdr = std::string(req[http::field::user_agent]);
-
-                    pqxx::work w(db);
-                    pqxx::result rc = w.exec_params(
-                        "INSERT INTO formula_sessions "
-                        "(usuario_nombre,accion,empresa_id,empresa_nombre,mina_id,mina_nombre,"
-                        " variable_id,variable_nombre,fecha_inicio,fecha_fin,"
-                        " formula_json,sp_sql_text,"
-                        " total_lecturas,total_si,total_no,pct_alertas,"
-                        " gps_lat,gps_lon,gps_accuracy,gps_lugar,"
-                        " ip_cliente,user_agent) "
-                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,"
-                        " $9::timestamptz,$10::timestamptz,"
-                        " $11::jsonb,$12,"
-                        " $13,$14,$15,$16,"
-                        " $17,$18,$19,$20,"
-                        " $21,$22) "
-                        "RETURNING id, to_char(created_at,'YYYY-MM-DD HH24:MI:SS TZ') AS created_at",
-                        p.value("usuario_nombre","Anónimo"),
-                        p.value("accion","VISUALIZO"),
-                        p.value("empresa_id",0),
-                        p.value("empresa_nombre",""),
-                        p.value("mina_id",0),
-                        p.value("mina_nombre",""),
-                        p.value("variable_id",0),
-                        p.value("variable_nombre",""),
-                        p.value("fecha_inicio",""),
-                        p.value("fecha_fin",""),
-                        formula_json_str,
-                        sp_sql,
-                        p.value("total_lecturas",0),
-                        p.value("total_si",0),
-                        p.value("total_no",0),
-                        p.value("pct_alertas",0.0),
-                        gps_lat_v,
-                        gps_lon_v,
-                        gps_acc_v,
-                        gps_lugar_v,
-                        p.value("ip_cliente",""),
-                        user_agent_hdr
-                    );
-                    w.commit();
-                    json out;
-                    out["ok"] = true;
-                    out["id"] = rc[0]["id"].as<long long>();
-                    out["created_at"] = rc[0]["created_at"].c_str();
-                    res.body() = out.dump();
-                }
-                // ── GET /api/analysis/sesiones ───────────────────────────────
-                // Returns saved formula sessions; supports ?empresa_id=&mina_id=&usuario=&accion=&limit=
-                else if(req.method() == http::verb::get && target.rfind("/api/analysis/sesiones",0) == 0 &&
-                        (target.size() == std::string("/api/analysis/sesiones").size() ||
-                         target[std::string("/api/analysis/sesiones").size()] == '?')){
-                    // Parse query string
-                    std::string empresa_filter, mina_filter, usuario_filter, accion_filter;
-                    std::string variable_filter, fecha_ini_filter, fecha_fin_filter;
-                    int limit_v = 100;
-                    int page_v  = 1;
-                    auto qpos = target.find('?');
-                    if(qpos != std::string::npos){
-                        std::string qs = target.substr(qpos+1);
-                        auto parse_qs = [&](const std::string& key) -> std::string {
-                            auto p2 = qs.find(key + "=");
-                            if(p2 == std::string::npos) return "";
-                            size_t s = p2 + key.size() + 1;
-                            size_t e = qs.find('&', s);
-                            return qs.substr(s, e == std::string::npos ? std::string::npos : e - s);
-                        };
-                        empresa_filter     = parse_qs("empresa_id");
-                        mina_filter        = parse_qs("mina_id");
-                        variable_filter    = parse_qs("variable_id");
-                        usuario_filter     = parse_qs("usuario");
-                        accion_filter      = parse_qs("accion");
-                        fecha_ini_filter   = parse_qs("fecha_inicio");
-                        fecha_fin_filter   = parse_qs("fecha_fin");
-                        std::string lim    = parse_qs("limit");
-                        std::string pg     = parse_qs("page");
-                        if(!lim.empty()) try{ limit_v = std::stoi(lim); }catch(...){}
-                        if(!pg.empty())  try{ page_v  = std::max(1, std::stoi(pg)); }catch(...){}
-                    }
-                    pqxx::work w(db);
-                    // Count query for pagination
-                    std::string where_clause = " WHERE 1=1 ";
-                    if(!empresa_filter.empty())   where_clause += " AND empresa_id = " + w.quote(empresa_filter);
-                    if(!mina_filter.empty())       where_clause += " AND mina_id = " + w.quote(mina_filter);
-                    if(!variable_filter.empty())   where_clause += " AND variable_id = " + w.quote(variable_filter);
-                    if(!usuario_filter.empty())    where_clause += " AND lower(usuario_nombre) LIKE lower('%" + w.esc(usuario_filter) + "%')";
-                    if(!accion_filter.empty())     where_clause += " AND accion = " + w.quote(accion_filter);
-                    if(!fecha_ini_filter.empty())  where_clause += " AND fecha_inicio >= " + w.quote(fecha_ini_filter) + "::timestamptz";
-                    if(!fecha_fin_filter.empty())  where_clause += " AND fecha_fin <= " + w.quote(fecha_fin_filter) + "::timestamptz";
-
-                    // Total count
-                    pqxx::result cnt = w.exec("SELECT COUNT(*) FROM formula_sessions" + where_clause);
-                    long long total_count = cnt[0][0].as<long long>();
-                    int total_pages = (int)std::ceil((double)total_count / (double)limit_v);
-                    if(total_pages < 1) total_pages = 1;
-                    int offset_v = (page_v - 1) * limit_v;
-
-                    std::string sql =
-                        "SELECT id, usuario_nombre, accion, empresa_id, empresa_nombre, "
-                        "       mina_id, mina_nombre, variable_id, variable_nombre, "
-                        "       to_char(fecha_inicio,'YYYY-MM-DD HH24:MI') AS fecha_inicio, "
-                        "       to_char(fecha_fin,'YYYY-MM-DD HH24:MI') AS fecha_fin, "
-                        "       total_lecturas, total_si, total_no, pct_alertas, "
-                        "       gps_lat, gps_lon, gps_accuracy, gps_lugar, "
-                        "       to_char(created_at,'YYYY-MM-DD HH24:MI:SS TZ') AS created_at "
-                        "FROM formula_sessions" + where_clause +
-                        " ORDER BY created_at DESC LIMIT " + std::to_string(limit_v) +
-                        " OFFSET " + std::to_string(offset_v);
-
-                    pqxx::result rc = w.exec(sql);
-                    json rows = json::array();
-                    for(auto row : rc){
-                        json r;
-                        r["id"]             = row["id"].as<long long>();
-                        r["usuario_nombre"] = row["usuario_nombre"].is_null() ? "" : row["usuario_nombre"].c_str();
-                        r["accion"]         = row["accion"].is_null() ? "" : row["accion"].c_str();
-                        r["empresa_id"]     = row["empresa_id"].is_null() ? 0 : row["empresa_id"].as<int>();
-                        r["empresa_nombre"] = row["empresa_nombre"].is_null() ? "" : row["empresa_nombre"].c_str();
-                        r["mina_id"]        = row["mina_id"].is_null() ? 0 : row["mina_id"].as<int>();
-                        r["mina_nombre"]    = row["mina_nombre"].is_null() ? "" : row["mina_nombre"].c_str();
-                        r["variable_id"]    = row["variable_id"].is_null() ? 0 : row["variable_id"].as<int>();
-                        r["variable_nombre"]= row["variable_nombre"].is_null() ? "" : row["variable_nombre"].c_str();
-                        r["fecha_inicio"]   = row["fecha_inicio"].is_null() ? "" : row["fecha_inicio"].c_str();
-                        r["fecha_fin"]      = row["fecha_fin"].is_null() ? "" : row["fecha_fin"].c_str();
-                        r["total_lecturas"] = row["total_lecturas"].is_null() ? 0 : row["total_lecturas"].as<int>();
-                        r["total_si"]       = row["total_si"].is_null() ? 0 : row["total_si"].as<int>();
-                        r["total_no"]       = row["total_no"].is_null() ? 0 : row["total_no"].as<int>();
-                        r["pct_alertas"]    = row["pct_alertas"].is_null() ? 0.0 : row["pct_alertas"].as<double>();
-                        if(!row["gps_lat"].is_null()) r["gps_lat"] = row["gps_lat"].as<double>();
-                        if(!row["gps_lon"].is_null()) r["gps_lon"] = row["gps_lon"].as<double>();
-                        if(!row["gps_accuracy"].is_null()) r["gps_accuracy"] = row["gps_accuracy"].as<double>();
-                        r["gps_lugar"]      = row["gps_lugar"].is_null() ? "" : row["gps_lugar"].c_str();
-                        r["created_at"]     = row["created_at"].is_null() ? "" : row["created_at"].c_str();
-                        rows.push_back(r);
-                    }
-                    json out;
-                    out["total"]       = total_count;
-                    out["page"]        = page_v;
-                    out["per_page"]    = limit_v;
-                    out["total_pages"] = total_pages;
-                    out["count"]       = (int)rows.size();
-                    out["sesiones"]    = rows;
-                    res.body() = out.dump();
-                }
-                // ── GET /api/analysis/sesiones/:id ───────────────────────────
-                // Returns a single session including full formula_json
-                else if(req.method() == http::verb::get &&
-                        target.rfind("/api/analysis/sesiones/",0) == 0 &&
-                        target.find("/restaurar") == std::string::npos){
-                    std::string id_str = target.substr(std::string("/api/analysis/sesiones/").size());
-                    auto qp = id_str.find('?'); if(qp != std::string::npos) id_str = id_str.substr(0,qp);
-                    long long sess_id = 0;
-                    try{ sess_id = std::stoll(id_str); }catch(...){
-                        res.result(http::status::bad_request);
-                        res.body() = R"({"error":"invalid id"})";
-                        res.prepare_payload(); http::write(socket, res); break;
-                    }
-                    pqxx::work w(db);
-                    pqxx::result rc = w.exec_params(
-                        "SELECT id, usuario_nombre, accion, empresa_id, empresa_nombre, "
-                        "       mina_id, mina_nombre, variable_id, variable_nombre, "
-                        "       to_char(fecha_inicio,'YYYY-MM-DD HH24:MI') AS fecha_inicio, "
-                        "       to_char(fecha_fin,'YYYY-MM-DD HH24:MI') AS fecha_fin, "
-                        "       formula_json::text AS formula_json, "
-                        "       total_lecturas, total_si, total_no, pct_alertas, "
-                        "       gps_lat, gps_lon, gps_accuracy, gps_lugar, "
-                        "       to_char(created_at,'YYYY-MM-DD HH24:MI:SS TZ') AS created_at "
-                        "FROM formula_sessions WHERE id = $1", sess_id);
-                    if(rc.empty()){
-                        res.result(http::status::not_found);
-                        res.body() = R"({"error":"session not found"})";
-                        res.prepare_payload(); http::write(socket, res); break;
-                    }
-                    auto row = rc[0];
-                    json r;
-                    r["id"]             = row["id"].as<long long>();
-                    r["usuario_nombre"] = row["usuario_nombre"].is_null() ? "" : row["usuario_nombre"].c_str();
-                    r["accion"]         = row["accion"].is_null() ? "" : row["accion"].c_str();
-                    r["empresa_id"]     = row["empresa_id"].is_null() ? 0 : row["empresa_id"].as<int>();
-                    r["empresa_nombre"] = row["empresa_nombre"].is_null() ? "" : row["empresa_nombre"].c_str();
-                    r["mina_id"]        = row["mina_id"].is_null() ? 0 : row["mina_id"].as<int>();
-                    r["mina_nombre"]    = row["mina_nombre"].is_null() ? "" : row["mina_nombre"].c_str();
-                    r["variable_id"]    = row["variable_id"].is_null() ? 0 : row["variable_id"].as<int>();
-                    r["variable_nombre"]= row["variable_nombre"].is_null() ? "" : row["variable_nombre"].c_str();
-                    r["fecha_inicio"]   = row["fecha_inicio"].is_null() ? "" : row["fecha_inicio"].c_str();
-                    r["fecha_fin"]      = row["fecha_fin"].is_null() ? "" : row["fecha_fin"].c_str();
-                    r["total_lecturas"] = row["total_lecturas"].is_null() ? 0 : row["total_lecturas"].as<int>();
-                    r["total_si"]       = row["total_si"].is_null() ? 0 : row["total_si"].as<int>();
-                    r["total_no"]       = row["total_no"].is_null() ? 0 : row["total_no"].as<int>();
-                    r["pct_alertas"]    = row["pct_alertas"].is_null() ? 0.0 : row["pct_alertas"].as<double>();
-                    if(!row["gps_lat"].is_null()) r["gps_lat"] = row["gps_lat"].as<double>();
-                    if(!row["gps_lon"].is_null()) r["gps_lon"] = row["gps_lon"].as<double>();
-                    if(!row["gps_accuracy"].is_null()) r["gps_accuracy"] = row["gps_accuracy"].as<double>();
-                    r["gps_lugar"]      = row["gps_lugar"].is_null() ? "" : row["gps_lugar"].c_str();
-                    r["created_at"]     = row["created_at"].is_null() ? "" : row["created_at"].c_str();
-                    // Parse formula_json from text
-                    if(!row["formula_json"].is_null()){
-                        try{ r["formula_json"] = json::parse(row["formula_json"].c_str()); }
-                        catch(...){ r["formula_json"] = nullptr; }
-                    } else {
-                        r["formula_json"] = nullptr;
-                    }
-                    res.body() = r.dump();
-                }
-                // ── POST /api/analysis/sesiones/:id/restaurar ───────────────
-                // Replaces current blocks/connections with the snapshot stored in formula_json
-                else if(req.method() == http::verb::post &&
-                        target.rfind("/api/analysis/sesiones/",0) == 0 &&
-                        target.find("/restaurar") != std::string::npos){
-                    std::string id_str = target.substr(std::string("/api/analysis/sesiones/").size());
-                    auto slash = id_str.find('/'); if(slash != std::string::npos) id_str = id_str.substr(0,slash);
-                    long long sess_id = 0;
-                    try{ sess_id = std::stoll(id_str); }catch(...){
-                        res.result(http::status::bad_request);
-                        res.body() = R"({"error":"invalid id"})";
-                        res.prepare_payload(); http::write(socket, res); break;
-                    }
-                    pqxx::work w(db);
-                    // Fetch formula_json and tenant keys (diagram scope MUST match empresa+mina)
-                    pqxx::result frc = w.exec_params(
-                        "SELECT formula_json::text, empresa_id, mina_id FROM formula_sessions WHERE id = $1", sess_id);
-                    if(frc.empty() || frc[0][0].is_null()){
-                        res.result(http::status::not_found);
-                        res.body() = R"({"error":"session not found or has no formula_json"})";
-                        res.prepare_payload(); http::write(socket, res); break;
-                    }
-                    int sess_empresa = frc[0][1].is_null() ? 0 : frc[0][1].as<int>();
-                    int sess_mina    = frc[0][2].is_null() ? 0 : frc[0][2].as<int>();
-                    if(sess_empresa <= 0 || sess_mina <= 0){
-                        res.result(http::status::unprocessable_entity);
-                        res.body() = "{\"error\":\"La sesion no tiene empresa_id/mina_id validos para restaurar el diagrama\"}";
-                        res.prepare_payload(); http::write(socket, res); break;
-                    }
-                    // Canonical tenant diagram id (same as FORMULA editor getDiagramId base: emp{e}_mina{m})
-                    std::string target_diagram_id = std::string("emp") + std::to_string(sess_empresa)
-                        + "_mina" + std::to_string(sess_mina);
-                    json fj;
-                    try{ fj = json::parse(frc[0][0].c_str()); }
-                    catch(...){
-                        res.result(http::status::bad_request);
-                        res.body() = R"({"error":"could not parse formula_json"})";
-                        res.prepare_payload(); http::write(socket, res); break;
-                    }
-                    // Guard: formula_json must be a non-null object with a non-empty blocks array
-                    if(fj.is_null() || !fj.is_object() ||
-                       !fj.contains("blocks") || !fj["blocks"].is_array()){
-                        res.result(http::status::unprocessable_entity);
-                        res.body() = "{\"error\":\"Esta sesion no contiene un diagrama guardado (formula_json vacio)\"}";
-                        res.prepare_payload(); http::write(socket, res); break;
-                    }
-                    if(fj["blocks"].empty()){
-                        res.result(http::status::unprocessable_entity);
-                        res.body() = "{\"error\":\"Esta sesion tiene formula_json sin bloques (snapshot vacío). Use Guardar Fórmula desde analisis con empresa/mina seleccionados, o re-exporte el diagrama.\"}";
-                        res.prepare_payload(); http::write(socket, res); break;
-                    }
-                    // Replace ONLY this diagram_id (never delete all rows — empty diagram_id broke multi-tenant)
-                    w.exec_params("DELETE FROM connections WHERE diagram_id=$1", target_diagram_id);
-                    w.exec_params("DELETE FROM rules WHERE block_id IN (SELECT id FROM blocks WHERE diagram_id=$1)", target_diagram_id);
-                    w.exec_params("DELETE FROM blocks WHERE diagram_id=$1", target_diagram_id);
-                    // Re-insert blocks
-                    if(fj.contains("blocks") && fj["blocks"].is_array()){
-                        for(auto& b : fj["blocks"]){
-                            std::string bid = b.value("id","");
-                            if(bid.empty()) continue;
-                            double bx = b.value("x",0.0), by = b.value("y",0.0);
-                            double bw = b.value("w",120.0), bh = b.value("h",60.0);
-                            std::string blabel = b.value("label","");
-                            std::string bcolor = b.value("color","#4f8ef7");
-                            // Normalize: CONDICION tipo must always carry blockType=decision
-                            json bmeta_obj = b.contains("meta") && b["meta"].is_object() ? b["meta"] : json::object();
-                            if(bmeta_obj.value("tipo","") == "CONDICION"){
-                                bmeta_obj["blockType"] = "decision";
-                            }
-                            std::string bmeta = bmeta_obj.dump();
-                            w.exec_params(
-                                "INSERT INTO blocks(id,x,y,w,h,label,color,meta,diagram_id) "
-                                "VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9) "
-                                "ON CONFLICT(id) DO UPDATE SET x=EXCLUDED.x,y=EXCLUDED.y,w=EXCLUDED.w,h=EXCLUDED.h,"
-                                "label=EXCLUDED.label,color=EXCLUDED.color,meta=EXCLUDED.meta,diagram_id=EXCLUDED.diagram_id",
-                                bid, bx, by, bw, bh, blabel, bcolor, bmeta, target_diagram_id);
-                        }
-                    }
-                    // Re-insert connections (from_id / to_id are TEXT, new sequential IDs fine)
-                    if(fj.contains("connections") && fj["connections"].is_array()){
-                        for(auto& c : fj["connections"]){
-                            std::string cfrom = c.value("from_id","");
-                            // connections can have "from" or "from_id"
-                            if(cfrom.empty()) cfrom = c.value("from","");
-                            std::string cto   = c.value("to_id","");
-                            if(cto.empty()) cto = c.value("to","");
-                            if(cfrom.empty() || cto.empty()) continue;
-                            std::string cmeta = c.contains("meta") ? c["meta"].dump() : "{}";
-                            w.exec_params(
-                                "INSERT INTO connections(from_id,to_id,meta,diagram_id) VALUES($1,$2,$3::jsonb,$4)",
-                                cfrom, cto, cmeta, target_diagram_id);
-                        }
-                    }
-                    w.commit();
-                    // Broadcast state change via WebSocket event
-                    json evt; evt["type"] = "session_restored"; evt["session_id"] = sess_id;
-                    json ins; ins["type"] = "state_changed"; ins["payload"] = evt;
-                    try{
-                        pqxx::work we(db);
-                        we.exec_params("INSERT INTO events(channel,payload) VALUES('state',$1::jsonb)", ins.dump());
-                        we.commit();
-                    }catch(...){}
-                    json out; out["ok"] = true; out["session_id"] = sess_id;
-                    res.body() = out.dump();
                 }
                 else {
                     res.result(http::status::not_found);

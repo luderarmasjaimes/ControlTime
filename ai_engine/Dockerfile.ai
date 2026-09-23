@@ -68,6 +68,11 @@ RUN --mount=type=cache,target=/root/.cache/pip pip install --find-links=/tmp/ven
 # pero se deja el paso separado igual -- ya funciona, tocarlo sin necesidad
 # real no vale el riesgo.
 RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps "python-pptx>=1.0,<2" lxml Pillow XlsxWriter
+# Tipografía del fotocheck (fotocheck_render.py): Inter/Inter Display (OFL).
+# Capa aparte y DESPUÉS de los pip install para no invalidar su caché; sin
+# este paquete el render cae a DejaVu Sans (ya presente en la imagen base).
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-inter \
+    && rm -rf /var/lib/apt/lists/*
 # Silent-Face-Anti-Spoofing (PyTorch) se movió a un servicio propio,
 # silentface_engine/ (Opción C, ADR-141 actualización 2026-09-03): torch
 # exigía nvidia-cudnn-cu12==9.19.0.56 (major 9) y tensorflow[and-cuda]
@@ -107,12 +112,9 @@ RUN if [ "$VERIFY_GLASSES_ONNX" = "1" ]; then \
     fi
 
 ENV GLASSES_ONNX_PATH=/app/models/glasses_classifier.onnx
-# Modelos InsightFace (buffalo_l, etc.); en runtime suele montarse un volumen aquí.
-ENV INSIGHTFACE_ROOT=/app/.insightface
 ENV SEETAFACE6_CLI_PATH=/opt/seetaface6/bin/seetaface6-face-cli
 ENV SEETAFACE6_MODEL_DIR=/opt/seetaface6/models
 ENV SEETAFACE6_TIMEOUT_SECONDS=20
-RUN mkdir -p /app/.insightface
 
 # Proveedor biométrico primario (deepface_silentface_adapter.py). Pesos de
 # Facenet512/YuNet (DeepFace) se montan read-only en runtime -- nunca se

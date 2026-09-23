@@ -63,8 +63,8 @@ FaceAnalysis analyzeFaceImageDermalogCli(const std::string &base64Image, const s
 bool verifyFaceDermalogCli(const std::vector<unsigned char> &probeImageBytes,
                            const std::vector<double> &storedTemplateBytes,
                            double &outScore, std::string &outError);
-// computeEmbedding=false salta la llamada a InsightFace (/face_embedding,
-// ~0.5-0.7s de red+ONNX) y va directo al fallback legacy (Haar local,
+// computeEmbedding=false salta el pipeline de proveedor completo (SeetaFace6/
+// DeepFace, red+inferencia) y va directo al fallback legacy (Haar local,
 // milisegundos) -- para llamadas donde no se usa face.faceTemplate (ver
 // runBiometricVerifyForImageBase64), solo se necesita un chequeo de
 // deteccion/calidad como red de seguridad si el motor de IA (MediaPipe) no
@@ -82,7 +82,7 @@ bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
                          const std::vector<double> &storedTemplate,
                          std::vector<double> &outProbe, std::string &outProvider,
                          double &outThreshold, double legacyThreshold,
-                         double embeddingThreshold, std::string &error);
+                         std::string &error);
 BiometricVerifyEval runBiometricVerifyForImageBase64(
     const std::string &base64,
     const std::optional<std::string> &glassesEmaKey = std::nullopt,

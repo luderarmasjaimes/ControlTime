@@ -42,6 +42,14 @@ bool updateUserAvatarCartoonFile(const std::string &dataRoot,
                                  const std::string &userId,
                                  const std::string &avatarBase64);
 
+/** Persiste el slug de plantilla de cuerpo/vestimenta elegido + la miniatura
+ * ya recompuesta (rediseño de avatar 2026-09-20). Equivalente en modo File de
+ * updateUserAvatarBodyTemplatePg. */
+bool updateUserAvatarBodyTemplateFile(const std::string &dataRoot,
+                                      const std::string &userId,
+                                      const std::string &slug,
+                                      const std::string &avatarBase64);
+
 std::vector<LegacyFacialUserRecord>
 loadLegacyFacialUsers(const std::string &dataRoot);
 void saveLegacyFacialUsers(const std::string &dataRoot,

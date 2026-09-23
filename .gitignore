@@ -7,6 +7,9 @@ backups/
 stack_export/
 ai_engine/models/*.onnx
 ai_engine/models/*_meta.json
+# Rediseño de avatar (ADR-203): plantillas de cuerpo/vestimenta dibujadas por
+# código y cacheadas en disco -- se regeneran solas (<50ms), no son fuente.
+ai_engine/.avatar_body_templates/
 data/glasses_dataset/**/*.jpg
 data/glasses_dataset/**/*.jpeg
 data/glasses_dataset/**/*.png
@@ -123,3 +126,6 @@ docs_/
 # Script puntual de mantenimiento con un ID de usuario hardcodeado en el
 # nombre -- operativo, no una decisión de arquitectura reutilizable.
 scripts/delete_user_*.ps1
+
+# Local Docker image export; too large for GitHub
+backend_image.tar

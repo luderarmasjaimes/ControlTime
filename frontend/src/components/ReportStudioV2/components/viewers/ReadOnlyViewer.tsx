@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useState } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { X, Download, Eye, Printer, ShieldCheck, Link2 } from 'lucide-react';
 import { usePdfExport } from '../../lib/usePdfExport';
@@ -9,18 +9,23 @@ import { resolveReportImageSrc } from '../../lib/reportImageSrc';
 import { getSession } from '../../../../auth/authStorage';
 import { getTenantLogoDataUrl } from '../../lib/tenantLogo';
 import { resolveMiningUnitName } from '../../lib/sessionChrome';
+import { LIST_INDENT_TAB_SIZE } from '../../lib/listFormatting';
 import { tocSliceForElementId, resolvePagePaperSetup } from '../../store/useEditorStore';
 import { getReportLayoutMetrics } from '../../lib/reportLayoutMetrics';
 import type { TocItem } from '../document/TableOfContents';
 import { resolveHeadingRefLabel } from '../document/TableOfContents';
-import { buildStyledSegments, sanitizeSpans, styleToCss, type BaseTextStyle } from '../../lib/textSpans';
-import { isPptxOverlayEligible, type PptxOverlayMeta } from '../../lib/pptxOverlayMapping';
+import { resolveAnnexRefLabel } from '../document/AnnexList';
+import { buildStyledSegments, buildParagraphGroups, sanitizeSpans, styleToCss, type BaseTextStyle } from '../../lib/textSpans';
 import { semanticStatusStyle } from '../../lib/semanticStatus';
 import { sanitizeRichHtml } from '../../lib/sanitizeHtml';
 import { toTrustedHtml } from '../../../../lib/trustedHtml';
+import { computeTableFormulas, getEffectiveCellValues, parseCellNumber, stripCellHtml } from '../../lib/tableFormulas';
+import { formatNumberForDisplay } from '../../lib/tableNumberFormat';
+import { computeConditionalStyles } from '../../lib/tableConditionalFormat';
+import { findCoverTemplate } from '../../lib/coverTemplates';
 import LiveChartBlock from '../dashboard/LiveChartBlock';
-import SeismicReportWidget from '../document/SeismicReportWidget';
-import SensorMultiChartWidget from '../document/SensorMultiChartWidget';
+import SeismicReportWidget from '../document/InsertBlocks/SeismicReportWidget';
+import SensorMultiChartWidget from '../document/InsertBlocks/SensorMultiChartWidget';
 import { fixRecordedVideoElement } from '../../lib/videoDurationFix';
 import { sensorDashboardMinHeight } from '../../lib/sensorMultiChartLayout';
 
@@ -74,6 +79,26 @@ const EXPORT_VIRTUALIZATION_PAGE_THRESHOLD = 25;
 // margen de sobra para este cambio.
 const EXPORT_VIRTUALIZATION_WINDOW = 6;
 
+/**
+ * Virtualización para el VISOR INTERACTIVO (no export): reportado en vivo un
+ * lag serio abriendo un informe de 144 páginas con varios sensores/mapas —
+ * a diferencia del export, aquí `shouldVirtualize` de arriba nunca se activa
+ * (solo mira `isPrint`), así que `.ro-pages` monta TODOS los widgets
+ * (ECharts/Leaflet) de las 144 páginas de una sola vez sin importar el
+ * scroll, aunque solo un puñado esté a la vista.
+ *
+ * Mismo mecanismo de placeholder que el export de arriba (la caja
+ * `.ro-page-wrapper`/`.ro-page-canvas` con el tamaño real se mantiene, solo
+ * se omiten los elementos), pero en vez de seguir una "página activa" que
+ * empuja Puppeteer, sigue el scroll real vía IntersectionObserver sobre
+ * `.ro-content` (el contenedor con `overflow: auto`).
+ */
+const INTERACTIVE_VIRTUALIZATION_PAGE_THRESHOLD = 20;
+// Margen de precarga arriba/abajo del viewport visible: páginas vecinas se
+// mantienen montadas aunque no se vean todavía, para que el scroll continuo
+// no muestre un "flash" de placeholder vacío antes de que llegue su turno.
+const INTERACTIVE_VIRTUALIZATION_ROOT_MARGIN = '1200px 0px 1200px 0px';
+
 /** Suscriptores del componente(s) `ReadOnlyViewer` montado(s) a cambios de
  * página activa -- normalmente hay uno solo (print-report.html), pero un
  * registro en vez de una única variable de callback evita pisar nada si
@@ -114,15 +139,16 @@ function ReadOnlyHeaderLogo({ tenantId }: { tenantId?: string }) {
 interface ReadOnlyViewerProps {
   report: any;
   onClose?: (() => void) | null;
-  /** Solo la usa el sidecar de export PPTX (print-report.html?pptxOverlay=1):
-   * los bloques `isPptxOverlayEligible` (hoy solo `text`) se capturan con la
-   * tinta invisible (mismo layout/line-wrap, sin texto visible) y se marcan
-   * con `data-pptx-overlay`/`data-pptx-meta` — el sidecar lee esos atributos
-   * para superponer un cuadro de texto NATIVO editable de PowerPoint en la
-   * misma posición, en vez de dejar el texto horneado en la imagen de fondo. */
-  hideOverlayText?: boolean;
   /** Modo de impresión/export PDF aislado server-side: omite la barra de herramientas y etiquetas de página */
   isPrint?: boolean;
+  /** Visualizador de PPT en pantalla completa (botón "Presentar", solo
+   * disponible con layoutMode 'presentation'): una diapositiva a la vez,
+   * navegación con flechas/espacio/clic y la transición de cada página
+   * (page.transition) animada de verdad -- a diferencia de isPrint, esto SÍ
+   * necesita el lienzo real interactivo (no hay nada que capturar), solo
+   * oculta la barra de herramientas de solo-lectura y cambia cómo se
+   * recorren las páginas ya renderizadas por este mismo componente. */
+  presenterMode?: boolean;
 }
 
 /**
@@ -130,7 +156,7 @@ interface ReadOnlyViewerProps {
  * Renderiza las páginas usando el mismo HTML que MultipageView pero deshabilitando
  * toda interacción (pointer-events: none en el contenido).
  */
-function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: ReadOnlyViewerProps) {
+function ReadOnlyViewer({ report, onClose, isPrint = false, presenterMode = false }: ReadOnlyViewerProps) {
   // `doc` se calcula ACÁ (antes del `if (!report) return null` de abajo) a
   // propósito -- el hook de virtualización que sigue necesita conocer
   // `doc.pages.length` desde el primer render, y los hooks no pueden
@@ -164,6 +190,137 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: R
     };
   }, [shouldVirtualize]);
 
+  // Virtualización interactiva (ver comentario de
+  // INTERACTIVE_VIRTUALIZATION_PAGE_THRESHOLD arriba). Arranca con solo la
+  // página 1 visible -- igual que el export -- así el primer render nunca
+  // monta de golpe las páginas restantes antes de que el observer conecte.
+  const shouldVirtualizeInteractive = !isPrint && (doc?.pages?.length || 0) > INTERACTIVE_VIRTUALIZATION_PAGE_THRESHOLD;
+  const [visiblePages, setVisiblePages] = useState<Set<number>>(() => new Set([1]));
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const pagesRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!shouldVirtualizeInteractive) return undefined;
+    const root = contentRef.current;
+    const pagesEl = pagesRef.current;
+    if (!root || !pagesEl) return undefined;
+    const wrappers = pagesEl.querySelectorAll<HTMLElement>('[data-page-number]');
+    const observer = new IntersectionObserver((entries) => {
+      setVisiblePages((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        entries.forEach((entry) => {
+          const pageNumber = Number(entry.target.getAttribute('data-page-number'));
+          if (!pageNumber) return;
+          if (entry.isIntersecting && !next.has(pageNumber)) {
+            next.add(pageNumber);
+            changed = true;
+          } else if (!entry.isIntersecting && next.has(pageNumber)) {
+            next.delete(pageNumber);
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }, { root, rootMargin: INTERACTIVE_VIRTUALIZATION_ROOT_MARGIN, threshold: 0 });
+    wrappers.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+    // `report?.id` (no `doc`, que es un objeto nuevo en cada render) -- el
+    // observer solo debe reconstruirse cuando cambia el informe abierto.
+  }, [shouldVirtualizeInteractive, report?.id]);
+
+  // ── Modo Presentación (botón "Presentar", solo layoutMode 'presentation') ──
+  const totalPresenterPages = doc?.pages?.length || 0;
+  const [presenterPage, setPresenterPage] = useState(1);
+  const [presenterScale, setPresenterScale] = useState(1);
+  const [presenterAnim, setPresenterAnim] = useState<{ page: number; type: string } | null>(null);
+  const presenterRootRef = useRef<HTMLDivElement | null>(null);
+
+  // Escala el lienzo de 1280×720 (tamaño real de una diapositiva, ver
+  // reportLayoutMetrics.ts) para que quepa completo en cualquier resolución
+  // de pantalla, tipo "letterbox" -- se recalcula si la ventana cambia de
+  // tamaño (incluye entrar/salir de pantalla completa).
+  useEffect(() => {
+    if (!presenterMode) return undefined;
+    const recompute = () => {
+      setPresenterScale(Math.max(0.1, Math.min(window.innerWidth / 1280, window.innerHeight / 720)));
+    };
+    recompute();
+    window.addEventListener('resize', recompute);
+    return () => window.removeEventListener('resize', recompute);
+  }, [presenterMode]);
+
+  // Pantalla completa real vía Fullscreen API -- si el navegador la deniega
+  // (iframe sin `allow="fullscreen"`, política restrictiva), `.ro-overlay`
+  // ya cubre toda la ventana igual (position:fixed; inset:0), así que la
+  // experiencia se degrada a "pantalla completa dentro del navegador" en vez
+  // de romperse.
+  useEffect(() => {
+    if (!presenterMode) return undefined;
+    presenterRootRef.current?.requestFullscreen?.().catch(() => {});
+    return () => {
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    };
+  }, [presenterMode]);
+
+  // El navegador sale de pantalla completa DE FORMA NATIVA al presionar Esc
+  // -- antes de que la propia página se entere -- y en algunos casos esa
+  // salida nativa "se come" el keydown antes de que llegue al handler de
+  // abajo (`onKeyDown`). Sin este listener, el resultado observado era: la
+  // ventana vuelve a su tamaño normal pero `.ro-overlay` (presenterMode)
+  // se queda montado igual -- ya sin pantalla completa real, así que el
+  // scroll-snap deja de sentirse "atrapado" y se puede desplazar libremente
+  // viendo todas las diapositivas en vez de volver al editor. Escuchar
+  // `fullscreenchange` (el evento real del navegador, no un atajo de
+  // teclado propio) es la señal confiable de que se salió, sin importar
+  // el motivo (Esc, F11, un diálogo del sistema).
+  useEffect(() => {
+    if (!presenterMode) return undefined;
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement) onClose?.();
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, [presenterMode, onClose]);
+
+  const goToPresenterPage = (target: number) => {
+    if (!totalPresenterPages) return;
+    const clamped = Math.max(1, Math.min(totalPresenterPages, target));
+    if (clamped === presenterPage) return;
+    // La transición es la de la diapositiva DE DESTINO (misma semántica que
+    // PowerPoint: "esta es la animación con la que ENTRA esta diapositiva").
+    const transitionType = doc?.pages?.[clamped - 1]?.transition || 'none';
+    setPresenterPage(clamped);
+    if (transitionType !== 'none') {
+      setPresenterAnim({ page: clamped, type: transitionType });
+      // Debe ser un poco MAYOR que la duración de la animación CSS
+      // (.ro-page-anim-*, 0.9s -- ver styles.css) -- si se saca la clase
+      // ANTES de que termine, la transición se corta en seco a mitad de
+      // camino en vez de completarse fluida.
+      window.setTimeout(() => setPresenterAnim(null), 950);
+    }
+    pagesRef.current
+      ?.querySelector<HTMLElement>(`[data-page-number="${clamped}"]`)
+      ?.scrollIntoView({ behavior: transitionType === 'none' ? 'auto' : 'smooth', block: 'start' });
+  };
+
+  useEffect(() => {
+    if (!presenterMode) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ' || e.key === 'PageDown') {
+        e.preventDefault();
+        goToPresenterPage(presenterPage + 1);
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') {
+        e.preventDefault();
+        goToPresenterPage(presenterPage - 1);
+      } else if (e.key === 'Escape') {
+        onClose?.();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presenterMode, presenterPage, totalPresenterPages]);
+
   if (!report) return null;
 
   // "Imprimir" es impresión nativa del navegador, inmediata y sin protección
@@ -194,9 +351,26 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: R
   // la lista completa repetida en cada página.
 
   return (
-    <div className="ro-overlay" style={isPrint ? { position: 'relative', background: '#ffffff', width: '100%', margin: 0, padding: 0 } : undefined}>
-      {/* ── Barra superior readonly (oculta en modo impresión) ── */}
-      {!isPrint && (
+    <div
+      ref={presenterMode ? presenterRootRef : undefined}
+      className={`ro-overlay${presenterMode ? ' ro-overlay--presenter' : ''}`}
+      style={isPrint ? { position: 'relative', background: '#ffffff', width: '100%', margin: 0, padding: 0 } : undefined}
+      onClick={presenterMode ? () => goToPresenterPage(presenterPage + 1) : undefined}
+    >
+      {/* ── HUD mínimo del modo presentación (contador + salir) ── */}
+      {presenterMode && (
+        <div className="ro-presenter-hud" onClick={(e) => e.stopPropagation()}>
+          <span className="ro-presenter-counter">{presenterPage} / {totalPresenterPages}</span>
+          {onClose && (
+            <button className="ro-presenter-close" onClick={onClose} title="Salir de la presentación (Esc)">
+              <X size={16} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Barra superior readonly (oculta en modo impresión/presentación) ── */}
+      {!isPrint && !presenterMode && (
         <div className="ro-toolbar">
           <div className="ro-toolbar-left">
             <Eye size={16} style={{ color: '#a5b4fc' }} />
@@ -239,18 +413,26 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: R
       )}
 
       {/* ── Contenido del informe ── */}
-      <div className="ro-content" style={isPrint ? { padding: 0, margin: 0, overflow: 'visible' } : undefined}>
+      <div
+        className={`ro-content${presenterMode ? ' ro-content--presenter' : ''}`}
+        ref={contentRef}
+        style={isPrint ? { padding: 0, margin: 0, overflow: 'visible' } : undefined}
+      >
         {!doc ? (
           <div className="ro-no-content">
             <Eye size={40} style={{ opacity: 0.2 }} />
             <p>Este informe no tiene contenido visual disponible.</p>
           </div>
         ) : (
-          <div className="ro-pages" style={{ pointerEvents: 'none', userSelect: 'none', ...(isPrint ? { gap: 0, padding: 0, margin: 0 } : {}) }}>
+          <div
+            className={`ro-pages${presenterMode ? ' ro-pages--presenter' : ''}`}
+            ref={pagesRef}
+            style={{ pointerEvents: 'none', userSelect: 'none', ...(isPrint ? { gap: 0, padding: 0, margin: 0 } : {}) }}
+          >
             {doc.pages && doc.pages.map((page: any) => {
               // Mismo cálculo que PageCanvas.tsx/MultipageView.tsx (editor):
               // sin esto, `.ro-page-canvas` quedaba fijo en A4-portrait vía
-              // CSS y un informe en layoutMode 'presentation' (lienzo 960×540)
+              // CSS y un informe en layoutMode 'presentation' (lienzo 1280×720)
               // renderizaba sus elementos —posicionados en esas coordenadas—
               // dentro de una caja con otra forma/tamaño, mal ubicados.
               const layoutMode = doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
@@ -268,15 +450,49 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: R
               const withinExportWindow = !shouldVirtualize
                 || exportActivePage === null
                 || Math.abs(page.page_number - exportActivePage) <= EXPORT_VIRTUALIZATION_WINDOW;
+              // Independiente de `withinExportWindow` -- `shouldVirtualize` (export)
+              // y `shouldVirtualizeInteractive` nunca están activos a la vez, ya que
+              // el segundo exige `!isPrint`. Cuando no aplica ninguna virtualización
+              // interactiva (la inmensa mayoría de informes), esto es siempre `true`.
+              const withinViewport = !shouldVirtualizeInteractive || visiblePages.has(page.page_number);
+              const presenterAnimClass = presenterMode && presenterAnim && presenterAnim.page === page.page_number
+                ? ` ro-page-anim-${presenterAnim.type}`
+                : '';
               return (
-              <div key={page.page_number} className="ro-page-wrapper" data-page-number={page.page_number} style={isPrint ? { margin: 0, padding: 0, gap: 0 } : undefined}>
-                {!isPrint && <div className="ro-page-label">Página {page.page_number} de {doc.pages.length}</div>}
-                <div className="ro-page-canvas" style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT, ...(isPrint ? { boxShadow: 'none', borderRadius: 0 } : {}) }}>
+              <div
+                key={page.page_number}
+                className={`ro-page-wrapper${presenterMode ? ' ro-page-wrapper--presenter' : ''}${presenterAnimClass}`}
+                data-page-number={page.page_number}
+                data-pptx-transition={page.transition || 'none'}
+                style={isPrint ? { margin: 0, padding: 0, gap: 0 } : undefined}
+              >
+                {!isPrint && !presenterMode && <div className="ro-page-label">Página {page.page_number} de {doc.pages.length}</div>}
+                <div
+                  className="ro-page-canvas"
+                  style={{
+                    width: PAGE_WIDTH,
+                    height: PAGE_HEIGHT,
+                    ...(isPrint ? { boxShadow: 'none', borderRadius: 0 } : {}),
+                    ...(presenterMode ? { boxShadow: 'none', borderRadius: 0, transform: `scale(${presenterScale})` } : {}),
+                  }}
+                >
                   {/* Renderizar cada elemento como lectura estática */}
-                  {withinExportWindow && page.elements && page.elements.map((el: any) => {
+                  {withinExportWindow && withinViewport && page.elements && page.elements.map((el: any) => {
+                    // Pedido explícito 2026-09-04: el pie de foto ("Fig. 1 —
+                    // ...") no salía en el visor de solo lectura ni en el
+                    // PDF/DOCX exportados (que reusan este mismo componente
+                    // para fidelidad visual con el editor) porque el div
+                    // envoltorio de cada elemento (más abajo) recorta con
+                    // `overflow:hidden` a la altura EXACTA de `el.height` —
+                    // el mismo criterio que sensor_multi_chart ya usa arriba
+                    // para su alto mínimo: reservar el espacio extra ANTES
+                    // de recortar, no después.
+                    const hasImageCaption = el.type === 'image' && String(el.props?.caption || '').trim().length > 0;
                     const renderedHeight = el.type === 'sensor_multi_chart'
                       ? Math.max(Number(el.height) || 0, sensorDashboardMinHeight(el.props || {}, Number(el.width) || 0))
-                      : el.height;
+                      : hasImageCaption
+                        ? (Number(el.height) || 0) + 30
+                        : el.height;
                     return (
                     <div
                       key={el.id}
@@ -289,7 +505,10 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: R
                         width: el.width,
                         height: renderedHeight,
                         zIndex: el.zIndex || 1,
-                        overflow: 'hidden',
+                        // Texto de réplica de PDF (ADR-209): con interlineado
+                        // apretado el glifo puede pasar un poco la caja de
+                        // línea -- recortarlo cortaría acentos y descendentes.
+                        overflow: el.type === 'text' && el.props?.exactLayout ? 'visible' : 'hidden',
                       }}
                     >
                       <ReadOnlyElement
@@ -297,8 +516,7 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: R
                         pageNumber={page.page_number}
                         totalPages={doc.pages.length}
                         tenantId={report.tenant_id || report.tenantId}
-                        hideOverlayText={hideOverlayText}
-                        resolveRef={(targetId) => resolveHeadingRefLabel(doc, targetId)}
+                        resolveRef={(targetId) => resolveHeadingRefLabel(doc, targetId) ?? resolveAnnexRefLabel(doc, targetId)}
                         isPrint={isPrint}
                       />
                     </div>
@@ -329,7 +547,7 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: R
           )}
         </div>
       </div>
-      {password && <PdfPasswordModal password={password} onClose={clearPassword} />}
+      {password && <PdfPasswordModal password={password} reportId={report.id} onClose={clearPassword} />}
       {shareLink && (
         <ShareLinkModal url={shareLink.url} expiresInHours={shareLink.expiresInHours} onClose={clearLink} />
       )}
@@ -337,9 +555,120 @@ function ReadOnlyViewer({ report, onClose, hideOverlayText, isPrint = false }: R
   );
 }
 
-/** Renderiza un solo elemento de página en modo lectura estática */
-function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverlayText, resolveRef, isPrint }: { element: any; pageNumber?: number; totalPages?: number; tenantId?: string; hideOverlayText?: boolean; resolveRef?: (targetId: string) => string | undefined; isPrint?: boolean }) {
+function ReadOnlyShape({ element }: { element: any }) {
   const props = element.props || {};
+  const shapeType = props.shapeType || 'rectangle';
+  const fill = props.fill || '#dbeafe';
+  const stroke = props.stroke || '#2563eb';
+  const strokeWidth = Number(props.strokeWidth ?? 2);
+  const width = Math.max(1, Number(element.width) || 1);
+  const height = Math.max(1, Number(element.height) || 1);
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radius = Math.min(width, height) / 2;
+
+  let shape: React.ReactNode;
+  if (shapeType === 'circle' || shapeType === 'ellipse') {
+    shape = (
+      <ellipse
+        cx={centerX}
+        cy={centerY}
+        rx={shapeType === 'circle' ? radius : width / 2}
+        ry={shapeType === 'circle' ? radius : height / 2}
+      />
+    );
+  } else if (shapeType === 'diamond') {
+    shape = <polygon points={`${centerX},0 ${width},${centerY} ${centerX},${height} 0,${centerY}`} />;
+  } else if (shapeType === 'triangle') {
+    shape = <polygon points={`${centerX},0 ${width},${height} 0,${height}`} />;
+  } else if (shapeType === 'star') {
+    const points = Array.from({ length: 10 }, (_, index) => {
+      const pointRadius = index % 2 === 0 ? radius : radius / 2;
+      const angle = -Math.PI / 2 + index * Math.PI / 5;
+      return `${centerX + Math.cos(angle) * pointRadius},${centerY + Math.sin(angle) * pointRadius}`;
+    }).join(' ');
+    shape = <polygon points={points} />;
+  } else if (shapeType === 'line') {
+    shape = <line x1="0" y1={centerY} x2={width} y2={centerY} />;
+  } else {
+    shape = <rect x="0" y="0" width={width} height={height} />;
+  }
+
+  return (
+    <svg
+      aria-hidden="true"
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      style={{ width: '100%', height: '100%', display: 'block', overflow: 'visible' }}
+    >
+      {React.cloneElement(shape as React.ReactElement, {
+        fill: shapeType === 'line' ? 'none' : fill,
+        stroke,
+        strokeWidth,
+        opacity: Number(props.opacity ?? 1),
+        vectorEffect: 'non-scaling-stroke',
+      })}
+    </svg>
+  );
+}
+
+/** Texto decorativo tipo "WordArt" (`type === 'wordart'`) -- relleno sólido o
+ * degradado (`background-clip:text`), contorno (`-webkit-text-stroke`) y
+ * sombra opcionales. A diferencia del lienzo (`WordArtBlock.tsx`, Konva
+ * nativo), acá el contenedor es HTML real, así que se simula con CSS en vez
+ * de las props nativas de Konva -- mismo criterio de "dos implementaciones
+ * separadas" que ya usa `ReadOnlyShape` vs. `ShapeVisual`. */
+function ReadOnlyWordArt({ element }: { element: any }) {
+  const props = element.props || {};
+  const hasGradient = !!props.gradientFrom && !!props.gradientTo;
+  const strokeWidth = Number(props.strokeWidth) || 0;
+  return (
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: props.textAlign === 'left' ? 'flex-start' : props.textAlign === 'right' ? 'flex-end' : 'center',
+        overflow: 'hidden',
+      }}
+    >
+      <span
+        style={{
+          fontFamily: props.fontFamily || 'Arial',
+          fontSize: Number(props.fontSize) || 48,
+          fontWeight: 800,
+          textAlign: props.textAlign || 'center',
+          lineHeight: 1.1,
+          WebkitTextStroke: strokeWidth > 0 ? `${strokeWidth}px ${props.strokeColor || '#0f172a'}` : undefined,
+          textShadow: props.shadow ? '3px 3px 6px rgba(0,0,0,0.45)' : undefined,
+          background: hasGradient ? `linear-gradient(135deg, ${props.gradientFrom}, ${props.gradientTo})` : undefined,
+          WebkitBackgroundClip: hasGradient ? 'text' : undefined,
+          backgroundClip: hasGradient ? 'text' : undefined,
+          WebkitTextFillColor: hasGradient ? 'transparent' : undefined,
+          color: hasGradient ? undefined : (props.fillColor || '#1d4ed8'),
+        }}
+      >
+        {String(props.text || '')}
+      </span>
+    </div>
+  );
+}
+
+/** Renderiza un solo elemento de página en modo lectura estática */
+function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, resolveRef, isPrint }: { element: any; pageNumber?: number; totalPages?: number; tenantId?: string; resolveRef?: (targetId: string) => string | undefined; isPrint?: boolean }) {
+  const props = element.props || {};
+
+  // Acepta documentos antiguos que hayan serializado el tipo con otra
+  // capitalización; sin esto el exportador caía en el placeholder [SHAPE].
+  if (String(element.type || '').toLowerCase() === 'shape') {
+    return <ReadOnlyShape element={element} />;
+  }
+
+  if (String(element.type || '').toLowerCase() === 'wordart') {
+    return <ReadOnlyWordArt element={element} />;
+  }
 
   if (element.type === 'header') {
     // ADR-046 (revisado): mismo cálculo en vivo que PageCanvas.tsx — empresa,
@@ -403,72 +732,94 @@ function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverla
       bold: !!props.bold,
       italic: !!props.italic,
       underline: !!props.underline,
+      // Sin toggle de BLOQUE para tachado -- ver el mismo criterio explicado
+      // en PageCanvas.tsx::pasteTextBaseStyle. Siempre llega como span
+      // (texto importado de Word), nunca como estilo base del bloque.
+      strikethrough: false,
       color: props.fontColor || '#0f172a',
       fontSize: props.fontSize || 14,
       fontFamily: props.fontFamily || 'Arial',
       highlightColor: props.highlightColor || 'transparent',
       headingStyle: props.headingStyle,
+      textAlign: props.textAlign || 'left',
     };
     const _spans = sanitizeSpans(props.spans, _textContent.length);
     // Visor/export SIEMPRE resuelve referencias cruzadas (ADR-019) al número
     // vigente -- a diferencia del overlay de edición activa de PageCanvas.tsx,
     // aquí no hay cursor/selección viva cuyo offset pueda desalinearse.
     const _segments = buildStyledSegments(_textContent, _spans, _base, resolveRef);
+    // Un grupo por PÁRRAFO (mismo criterio que TextBlock.tsx) para que cada
+    // uno pinte con SU PROPIA alineación -- si no, exportar/imprimir se
+    // vería distinto de lo que el editor ya muestra (bug real reportado
+    // 2026-09-11: los botones de alineación de la selección solo servían
+    // en el lienzo, la exportación seguía usando una sola alineación para
+    // todo el bloque).
+    const _paragraphGroups = buildParagraphGroups(_textContent, _spans, _base, resolveRef);
+    // Réplica de PDF (ADR-209): la caja ES la del texto original -- sin
+    // relleno interno ni recorte, igual que el lienzo del editor.
+    const _exact = !!props.exactLayout;
     const _border = element.border;
     const _borderCss =
       _border && _border.enabled ? `${_border.width}px ${_border.style} ${_border.color}` : undefined;
-    // Overlay PPTX (ver lib/pptxOverlayMapping.ts): con hideOverlayText, este
-    // bloque conserva EXACTAMENTE el mismo layout (mismo padding/salto de
-    // línea) pero con la tinta invisible — el sidecar mide este mismo div
-    // (data-pptx-overlay) para superponer un cuadro de texto nativo editable
-    // en la posición exacta, en vez de dejar el texto horneado en la imagen.
-    const _overlayActive = hideOverlayText && isPptxOverlayEligible('text') && _segments.length > 0;
-    const _overlayMeta: PptxOverlayMeta | null = _overlayActive
-      ? {
-          align: (props.textAlign || 'left') as PptxOverlayMeta['align'],
-          runs: _segments.map((seg) => ({
-            text: seg.text,
-            bold: !!seg.style.bold,
-            italic: !!seg.style.italic,
-            underline: !!seg.style.underline,
-            color: seg.style.color,
-            fontSize: seg.style.fontSize,
-            fontFamily: seg.style.fontFamily,
-            highlightColor:
-              seg.style.highlightColor && seg.style.highlightColor !== 'transparent'
-                ? seg.style.highlightColor
-                : undefined,
-          })),
-        }
-      : null;
     return (
       <div
-        data-pptx-overlay={_overlayMeta ? '1' : undefined}
-        data-pptx-meta={_overlayMeta ? JSON.stringify(_overlayMeta) : undefined}
         style={{
         width: '100%', height: '100%',
         fontFamily: props.fontFamily || 'Arial',
         fontSize: (props.fontSize || 14) + 'px',
         color: props.fontColor || '#0f172a',
-        backgroundColor: props.backgroundColor || 'transparent',
-        textAlign: props.textAlign || 'left',
-        lineHeight: props.lineHeight || 1.35,
+        // Versiones anteriores guardaban #ffffff como valor por defecto,
+        // aunque el editor lo trataba visualmente como transparente. Al
+        // exportar aparecían cajas blancas detrás de títulos y textos.
+        backgroundColor: props.backgroundColor === '#ffffff' && !_border?.enabled
+          ? 'transparent'
+          : (props.backgroundColor || 'transparent'),
+        lineHeight: _exact ? `${(props.lineHeight || 1.35) * (props.fontSize || 14)}px` : (props.lineHeight || 1.35),
         fontWeight: props.bold ? 700 : 400,
         fontStyle: props.italic ? 'italic' : 'normal',
-        padding: 6,
-        overflow: 'hidden',
-        whiteSpace: 'pre-wrap',
+        padding: _exact ? 0 : 6,
+        overflow: _exact ? 'visible' : 'hidden',
+        // Mismo ancho de sangría por TAB que el textarea de edición
+        // (PageCanvas.tsx) -- ver LIST_INDENT_TAB_SIZE en listFormatting.ts.
+        tabSize: LIST_INDENT_TAB_SIZE,
         wordBreak: 'break-word',
         border: _borderCss,
         borderRadius: _borderCss ? 4 : undefined,
         boxSizing: 'border-box',
+        // Columnas tipo periódico (props.columnCount, 1 = sin columnas) --
+        // CSS real acá (pantalla/PDF); en DOCX/PPTX se aproxima partiendo el
+        // texto en N cuadros lado a lado (buildReportDocx.ts/
+        // reportDocxBuilder.js/reportPptxBuilder.js), porque ninguna de las
+        // dos librerías expone columnas reales a nivel de un solo párrafo.
+        columnCount: Number(props.columnCount) > 1 ? Number(props.columnCount) : undefined,
+        columnGap: Number(props.columnCount) > 1 ? 24 : undefined,
       }}>
-        {_segments.length === 0 ? <span>&nbsp;</span> : _segments.map((seg, i) => {
-          const segCss = styleToCss(seg.style) as React.CSSProperties;
-          return (
-            <span key={i} style={_overlayActive ? { ...segCss, color: 'transparent' } : segCss}>{seg.text}</span>
-          );
-        })}
+        {_segments.length === 0 ? <span>&nbsp;</span> : _paragraphGroups.map((group, groupIndex) => (
+          <div key={groupIndex} style={{
+            textAlign: group.align as any,
+            ...(_exact && group.align === 'justify' ? { textAlignLast: 'justify' as const } : {}),
+            whiteSpace: 'pre-wrap',
+          }}>
+            {group.segments.length === 0 ? <br /> : group.segments.map((seg, i) => {
+              // Réplica de PDF: heredar el interlineado real del párrafo -- la
+              // hoja global de la app fija `span { line-height: 1.35 }`.
+              const segCss = { ...(styleToCss(seg.style) as React.CSSProperties), ...(_exact ? { lineHeight: 'inherit' } : {}) };
+              // Hipervínculo real -- Chromium (sidecar de export PDF/PPTX,
+              // ADR-016/083) incrusta un `<a href>` real como anotación de
+              // enlace CLICABLE de verdad al imprimir a PDF, no solo texto
+              // azul subrayado. Mismo whitelist de esquema que ya valida el
+              // import (lib/richPaste.ts::SAFE_LINK_SCHEME) -- revalidado
+              // acá por defensa en profundidad antes de emitir un `href`
+              // real en un documento que puede llegar a abrirse fuera de
+              // esta app.
+              return seg.href && /^(https?:|mailto:)/i.test(seg.href) ? (
+                <a key={i} href={seg.href} style={segCss} target="_blank" rel="noopener noreferrer">{seg.text}</a>
+              ) : (
+                <span key={i} style={segCss}>{seg.text}</span>
+              );
+            })}
+          </div>
+        ))}
       </div>
     );
   }
@@ -547,6 +898,7 @@ function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverla
         comboConfig={props.comboConfig}
         from={props.from}
         to={props.to}
+        liveWindowMinutes={props.liveWindowMinutes}
         tenantId={tenantId}
         width={element.width}
         height="100%"
@@ -584,31 +936,113 @@ function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverla
     const colWidths: number[] | undefined = Array.isArray(props.colWidths) && props.colWidths.length === colCount
       ? props.colWidths
       : undefined;
+    // TableBlock.tsx reescala colWidths proporcionalmente para que la tabla
+    // SIEMPRE llene el ancho real del bloque (`effectiveWidths = raw *
+    // containerWidth / totalRaw`) — acá no hay una medición de contenedor
+    // disponible (render estático), así que se logra lo mismo con columnas
+    // en % en vez de usar la suma literal de colWidths como ancho fijo de
+    // la tabla: si esa suma no coincidía con el ancho real del bloque, la
+    // tabla quedaba más angosta que en el editor, sin llenar el bloque.
+    const colWidthsTotal = colWidths ? colWidths.reduce((a, b) => a + b, 0) : 0;
+    const mergedCells = Array.isArray(props.mergedCells) ? props.mergedCells : [];
+    const mergeKey = (row: number, column: number) => `${row}-${column}`;
+    const mergeAnchors = new Map(mergedCells.map((merge: any) => [mergeKey(merge.row, merge.column), merge]));
+    const coveredCells = new Set<string>();
+    mergedCells.forEach((merge: any) => {
+      for (let row = merge.row; row < merge.row + merge.rowSpan; row += 1) {
+        for (let column = merge.column; column < merge.column + merge.colSpan; column += 1) {
+          if (row !== merge.row || column !== merge.column) coveredCells.add(mergeKey(row, column));
+        }
+      }
+    });
+    // Mismos valores por defecto que TableBlock.tsx (editor) — antes esta
+    // vista no leía headerTextColor/textColor/bandedRows/cellBackgrounds en
+    // absoluto, así que una celda sin color semántico heredaba el `color`
+    // del body (#f8fafc, pensado para el chrome oscuro de la app) y el
+    // texto quedaba casi invisible sobre el papel blanco del PDF/impresión.
+    const textColor = props.textColor || '#334155';
+    const headerTextColor = props.headerTextColor || '#1e293b';
+    const headerBg = props.headerBg || '#f8fafc';
+    const bandedRows = !!props.bandedRows;
+    const bandColor = props.bandColor || '#f1f5f9';
+    const cellBackgrounds: string[][] | undefined = Array.isArray(props.cellBackgrounds) ? props.cellBackgrounds : undefined;
+    const rowBackgrounds: string[] | undefined = Array.isArray(props.rowBackgrounds) ? props.rowBackgrounds : undefined;
+    const columnBackgrounds: string[] | undefined = Array.isArray(props.columnBackgrounds) ? props.columnBackgrounds : undefined;
+    // Acá nunca hay edición en curso (solo lectura/PDF) -- una celda con
+    // fórmula SIEMPRE muestra el resultado calculado, nunca el "=SUMA(...)"
+    // crudo (a diferencia del editor, que lo revela mientras la celda está
+    // activa vía el overlay de TableBlock.tsx).
+    const formulaResults = computeTableFormulas(rows);
+    const cellNumberFormats: (string | null)[][] | undefined = Array.isArray(props.cellNumberFormats) ? props.cellNumberFormats : undefined;
+    const conditionalStyles = computeConditionalStyles(
+      getEffectiveCellValues(rows, formulaResults),
+      props.conditionalFormats,
+      !!props.hasHeader,
+      props.colorScales,
+    );
     return (
       <div style={{ width: '100%', height: '100%', overflow: 'visible' }}>
-        <table style={{ width: colWidths ? colWidths.reduce((a: number, b: number) => a + b, 0) : '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: (props.fontSize || 13) + 'px' }}>
-          {colWidths && (
+        <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: (props.fontSize || 13) + 'px' }}>
+          {colWidths && colWidthsTotal > 0 && (
             <colgroup>
-              {colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}
+              {colWidths.map((w, i) => <col key={i} style={{ width: `${(w / colWidthsTotal) * 100}%` }} />)}
             </colgroup>
           )}
           <tbody>
             {rows.map((row, ri) => {
               const isHeader = ri === 0 && props.hasHeader;
+              // Misma paridad que TableBlock.tsx para las filas intercaladas.
+              const isBanded = !isHeader && bandedRows && (props.hasHeader ? ri % 2 === 0 : ri % 2 === 1);
               return (
-              <tr key={ri} style={{ background: isHeader ? (props.headerBg || '#f8fafc') : 'white' }}>
+              <tr key={ri}>
                 {row.map((cell, ci) => {
+                  const key = mergeKey(ri, ci);
+                  if (coveredCells.has(key)) return null;
+                  const merge = mergeAnchors.get(key) as { rowSpan?: number; colSpan?: number } | undefined;
                   // Mismo coloreado semántico (semáforo) que el editor, para
                   // que las tablas de estado se exporten con sus tintes.
                   const sem = semanticStatusStyle(String(cell ?? ''), isHeader);
-                  return (
-                  <td key={ci} style={{
+                  const formulaResult = formulaResults[ri]?.[ci] ?? null;
+                  const numberFormat = cellNumberFormats?.[ri]?.[ci] ?? null;
+                  // Misma lógica que TableBlock.tsx: una fórmula siempre se
+                  // muestra calculada (y formateada si hay % / decimales);
+                  // una celda numérica normal SIN fórmula también se
+                  // formatea si tiene un formato de número puesto encima.
+                  let displayOverride: string | null = null;
+                  let displayIsError = false;
+                  if (formulaResult) {
+                    displayOverride = formulaResult.isError
+                      ? formulaResult.display
+                      : formatNumberForDisplay(formulaResult.numericValue as number, numberFormat);
+                    displayIsError = formulaResult.isError;
+                  } else if (numberFormat) {
+                    const plainNumber = parseCellNumber(stripCellHtml(String(cell ?? '')));
+                    if (plainNumber !== null) displayOverride = formatNumberForDisplay(plainNumber, numberFormat);
+                  }
+                  const conditionalStyle = conditionalStyles[ri]?.[ci] ?? null;
+                  const cellStyle: React.CSSProperties = {
                     border: `1px solid ${props.borderColor || '#e2e8f0'}`,
                     padding: (props.cellPadding || 8) + 'px',
                     fontWeight: isHeader ? 700 : sem ? 700 : 400,
-                    backgroundColor: sem ? sem.bg : undefined,
-                    color: sem ? sem.color : undefined,
-                  }}
+                    backgroundColor: conditionalStyle?.backgroundColor || cellBackgrounds?.[ri]?.[ci] || rowBackgrounds?.[ri] || columnBackgrounds?.[ci] || (isHeader ? headerBg : sem ? sem.bg : isBanded ? bandColor : undefined),
+                    color: displayIsError ? '#dc2626' : (conditionalStyle?.textColor || (isHeader ? headerTextColor : sem ? sem.color : textColor)),
+                    verticalAlign: (props.cellVAlign as React.CSSProperties['verticalAlign']) || 'top',
+                    // Sin esto el texto largo (p.ej. "CUMPLE PARCIALMENTE") no
+                    // rompía línea dentro del ancho fijo de columna (la
+                    // <table> ya usa tableLayout:'fixed' + colgroup con los
+                    // mismos anchos que el editor) y se desbordaba visualmente
+                    // sobre la celda vecina en el PDF/impresión -- reportado
+                    // en vivo 2026-09-11. Mismo wordBreak que ya usa el <td>
+                    // real del lienzo (TableBlock.tsx), que nunca tuvo este
+                    // problema porque sí lo aplicaba.
+                    wordBreak: 'break-word',
+                    overflowWrap: 'break-word',
+                  };
+                  if (displayOverride !== null) {
+                    return <td key={ci} rowSpan={merge?.rowSpan} colSpan={merge?.colSpan} style={cellStyle}>{displayOverride}</td>;
+                  }
+                  return (
+                  <td key={ci} rowSpan={merge?.rowSpan} colSpan={merge?.colSpan} style={cellStyle}
                     // La celda es HTML enriquecido (negrita/cursiva por
                     // celda vía contentEditable, ver TableBlock.tsx), no
                     // texto plano — renderizarla como children de React
@@ -629,14 +1063,54 @@ function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverla
 
   if (element.type === 'image') {
     const src = resolveReportImageSrc(element);
+    const caption = String(props.caption ?? '').trim();
     return (
-      <div style={{
-        width: '100%', height: '100%',
-        background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        color: '#94a3b8', fontSize: 12,
-      }}>
-        <img src={src} alt={props.alt || ''} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: element.objectFit || 'contain' }} />
+      // Pedido explícito 2026-09-04: "las imágenes no están saliendo con el
+      // tamaño que tienen en el lienzo sino su tamaño original o cuadrado".
+      // El div envolvente ANTES centraba una <img> con maxWidth/maxHeight
+      // (el tamaño "usado" de un <img> con solo max-*, sin width/height
+      // propios, es su tamaño INTRÍNSECO recortado a ese máximo -- así que
+      // una imagen más chica que el bloque quedaba a su tamaño original,
+      // flotando en el centro con espacio vacío alrededor, en vez de llenar
+      // el recuadro) y usaba `objectFit: 'contain'` por defecto en vez de
+      // 'cover' -- ninguno de los dos coincidía con PageCanvas.tsx (el
+      // lienzo real), que fuerza width/height:100% + object-fit:cover. Se
+      // replica exactamente esa estructura acá (imagen a el.height fijo +
+      // pie de foto debajo, ver `renderedHeight` en el llamador) para que
+      // el visor de solo lectura y el PDF/DOCX exportados —que reusan este
+      // mismo componente— se vean IGUAL que el editor.
+      <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div style={{
+          width: '100%',
+          height: element.height,
+          overflow: 'hidden',
+          borderRadius: 6,
+          background: '#f1f5f9',
+        }}>
+          <img
+            src={src}
+            alt={props.alt || ''}
+            style={{ width: '100%', height: '100%', objectFit: (element.objectFit as any) || 'cover', display: 'block' }}
+          />
+        </div>
+        {caption && (
+          <div
+            className="report-media-caption"
+            style={{
+              width: '100%',
+              marginTop: 6,
+              textAlign: 'center',
+              fontFamily: 'Arial, sans-serif',
+              fontSize: 12,
+              lineHeight: 1.25,
+              fontStyle: 'italic',
+              color: '#4F81BD',
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {caption}
+          </div>
+        )}
       </div>
     );
   }
@@ -671,15 +1145,17 @@ function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverla
     const chromeCompany = session?.company;
     const chromeUnit = resolveMiningUnitName(session);
     const chromeAuthor = session?.fullName || session?.username;
+    const template = findCoverTemplate(props.coverTemplate);
     return (
       <div style={{
         width: '100%', height: '100%', overflow: 'hidden', position: 'relative',
         display: 'flex', flexDirection: 'column', boxSizing: 'border-box',
-        color: props.textColor || '#ffffff',
-        background: props.bgColor || 'linear-gradient(160deg, #0f172a 0%, #1e293b 55%, #334155 100%)',
+        color: props.textColor || template.textColor,
+        background: props.bgColor || template.background,
+        fontFamily: template.bodyFontFamily || 'inherit',
       }}>
-        <div style={{ background: 'rgba(15,23,42,0.9)', color: '#fbbf24', fontSize: 12, fontWeight: 800, letterSpacing: 2, textAlign: 'center', padding: '10px 0', textTransform: 'uppercase' }}>
-          {props.classification || 'CONFIDENCIAL'}
+        <div style={{ background: template.classificationBg, color: template.classificationColor, fontSize: 12, fontWeight: 800, letterSpacing: 2, textAlign: 'center', padding: '10px 0', textTransform: 'uppercase' }}>
+          {props.classification || template.classificationLabel}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '20px 40px 0' }}>
           <div style={{ background: '#ffffff', borderRadius: 8, padding: '8px 14px', display: 'flex', alignItems: 'center', minHeight: 40 }}>
@@ -687,8 +1163,8 @@ function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverla
           </div>
         </div>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', padding: '24px 56px', textAlign: 'center' }}>
-          <h1 style={{ fontSize: 44, fontWeight: 900, margin: '0 0 16px', lineHeight: 1.15, textShadow: '0 2px 16px rgba(0,0,0,0.45)' }}>
-            {props.title || 'Informe Técnico'}
+          <h1 style={{ fontFamily: template.titleFontFamily, fontSize: 44, fontWeight: 900, margin: '0 0 16px', lineHeight: 1.15, textShadow: '0 2px 16px rgba(0,0,0,0.45)' }}>
+            {props.title || template.titleFallback}
           </h1>
           {chromeCompany && <div style={{ fontSize: 22, fontWeight: 700, textShadow: '0 1px 8px rgba(0,0,0,0.4)' }}>{chromeCompany}</div>}
           {chromeUnit && <div style={{ fontSize: 16, opacity: 0.9, marginTop: 4 }}>{chromeUnit}</div>}
@@ -696,7 +1172,7 @@ function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverla
         <div style={{
           borderTop: '1px solid rgba(255,255,255,0.25)', padding: '18px 40px',
           display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', justifyContent: 'space-between',
-          background: 'rgba(15,23,42,0.35)',
+          background: template.footerBg,
         }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, fontSize: 12 }}>
             {props.docCode && <span><b>Código:</b> {props.docCode}</span>}
@@ -740,10 +1216,18 @@ function ReadOnlyElement({ element, pageNumber, totalPages, tenantId, hideOverla
             {entries.map((item, i) => {
               const st = levelStyle[item.level] || levelStyle[6];
               return (
-                <li key={`${item.id}-${i}`} style={{
-                  display: 'flex', alignItems: 'baseline', gap: 6,
-                  padding: '3px 0', paddingLeft: (item.level - 1) * 16,
-                }}>
+                <li
+                  key={`${item.id}-${i}`}
+                  // Leído por pdf-export-service/server.js (Puppeteer) SOLO
+                  // durante el export a PDF -- convierte el rectángulo de
+                  // esta fila en un enlace real (clic salta a la página del
+                  // documento), no afecta el editor ni el visor interactivo.
+                  data-toc-link-target-page={item.pageNumber}
+                  style={{
+                    display: 'flex', alignItems: 'baseline', gap: 6,
+                    padding: '3px 0', paddingLeft: (item.level - 1) * 16,
+                  }}
+                >
                   <span style={{ fontWeight: 700, color: '#0f172a', fontSize: 12 }}>{item.number}</span>
                   <span style={{ fontSize: st.fontSize, fontWeight: st.fontWeight, color: st.color, fontStyle: st.fontStyle }}>{item.text}</span>
                   <span style={{ flex: 1, borderBottom: '1px dotted #cbd5e1', margin: '0 2px', transform: 'translateY(-3px)' }} />

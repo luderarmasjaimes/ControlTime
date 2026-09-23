@@ -111,22 +111,40 @@ handleMapMarkers(const http::request<http::string_body> &req,
             // omitirlos del arreglo `params` (ver bug encontrado en pruebas:
             // "bind message supplies 6 parameters, but prepared statement
             // requires 2").
+            //
+            // status compuesto (rama sensor): si hay una alarma activa
+            // (platform_alarms.resolved_at IS NULL) para el sensor, prevalece
+            // su severidad sobre connection_status -- un sensor "online" con
+            // una alarma crítica abierta debe verse rojo en el mapa, no verde.
+            // Sin alarma activa, cae a connection_status (online/offline/
+            // unknown) como antes. sensor_type se expone para que el frontend
+            // pueda elegir el ícono por tipo de instrumento (ver MapViewer.tsx).
             std::string sql =
                 "SELECT * FROM ("
                 "  SELECT id::text AS id, type, lat, lng, name, status, "
-                "         updated_at::text AS updated_at "
+                "         updated_at::text AS updated_at, NULL::text AS sensor_type "
                 "  FROM map_markers WHERE tenant_id = $1::uuid "
                 "    AND lat BETWEEN $3::float8 AND $4::float8 "
                 "    AND lng BETWEEN $5::float8 AND $6::float8 "
                 "  UNION ALL "
-                "  SELECT sensor_id::text AS id, 'sensor' AS type, lat, lng, "
-                "         sensor_name AS name, connection_status AS status, "
-                "         last_seen_at::text AS updated_at "
-                "  FROM sensors "
-                "  WHERE tenant_id = $1::uuid AND is_active = true "
-                "    AND lat IS NOT NULL AND lng IS NOT NULL "
-                "    AND lat BETWEEN $3::float8 AND $4::float8 "
-                "    AND lng BETWEEN $5::float8 AND $6::float8 "
+                "  SELECT s.sensor_id::text AS id, 'sensor' AS type, s.lat, s.lng, "
+                "         s.sensor_name AS name, "
+                "         COALESCE(alarm.severity, s.connection_status) AS status, "
+                "         s.last_seen_at::text AS updated_at, "
+                "         s.sensor_type AS sensor_type "
+                "  FROM sensors s "
+                "  LEFT JOIN LATERAL ("
+                "    SELECT pa.severity FROM platform_alarms pa "
+                "    JOIN platform_alarm_rules par ON par.id = pa.rule_id "
+                "    WHERE par.sensor_id = s.sensor_id AND pa.resolved_at IS NULL "
+                "    ORDER BY CASE pa.severity WHEN 'critical' THEN 3 "
+                "                              WHEN 'warning' THEN 2 ELSE 1 END DESC "
+                "    LIMIT 1"
+                "  ) alarm ON true "
+                "  WHERE s.tenant_id = $1::uuid AND s.is_active = true "
+                "    AND s.lat IS NOT NULL AND s.lng IS NOT NULL "
+                "    AND s.lat BETWEEN $3::float8 AND $4::float8 "
+                "    AND s.lng BETWEEN $5::float8 AND $6::float8 "
                 ") u LIMIT $2::int";
 
             const char *params[6] = {tenantId.c_str(), limitS.c_str(),
@@ -149,8 +167,8 @@ handleMapMarkers(const http::request<http::string_body> &req,
             const bool wantCompact = compactIt != query.end() &&
                                      (compactIt->second == "1" || compactIt->second == "true");
 
-            static const char *kFields[7] = {"id", "type",   "lat",        "lng",
-                                             "name", "status", "updated_at"};
+            static const char *kFields[8] = {"id",   "type",   "lat",        "lng",
+                                             "name", "status", "updated_at", "sensor_type"};
             json::array compactRows;
 
             {
@@ -162,12 +180,15 @@ handleMapMarkers(const http::request<http::string_body> &req,
                     const double lat = std::stod(PQgetvalue(res.get(), i, 2));
                     const double lng = std::stod(PQgetvalue(res.get(), i, 3));
                     const bool hasUpdatedAt = nfields >= 7 && !PQgetisnull(res.get(), i, 6);
+                    const bool hasSensorType = nfields >= 8 && !PQgetisnull(res.get(), i, 7);
                     if (wantCompact) {
                         json::array row{PQgetvalue(res.get(), i, 0), PQgetvalue(res.get(), i, 1),
                                         lat,                          lng,
                                         PQgetvalue(res.get(), i, 4), PQgetvalue(res.get(), i, 5)};
                         row.push_back(hasUpdatedAt ? json::value(PQgetvalue(res.get(), i, 6))
                                                    : json::value(nullptr));
+                        row.push_back(hasSensorType ? json::value(PQgetvalue(res.get(), i, 7))
+                                                    : json::value(nullptr));
                         compactRows.push_back(std::move(row));
                         continue;
                     }
@@ -178,6 +199,7 @@ handleMapMarkers(const http::request<http::string_body> &req,
                                     {"name", PQgetvalue(res.get(), i, 4)},
                                     {"status", PQgetvalue(res.get(), i, 5)}};
                     if (hasUpdatedAt) mo["updated_at"] = PQgetvalue(res.get(), i, 6);
+                    if (hasSensorType) mo["sensor_type"] = PQgetvalue(res.get(), i, 7);
                     markers.push_back(std::move(mo));
                 }
             }

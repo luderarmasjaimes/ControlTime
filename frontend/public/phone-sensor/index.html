@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Beemetry — Sensor Smartphone</title>
+<!--
+  Página de prueba independiente (2026-09-18, pedido explícito del usuario):
+  usa el acelerómetro y el GPS del teléfono como sensor real de la
+  plataforma, para probar recalibración remota y geocercas sin depender de
+  un dispositivo MQTT/Modbus/OPC-UA físico. Es HTML/CSS/JS plano, servido
+  como archivo estático (frontend/public/phone-sensor/) -- SIN build de
+  Vite, sin sesión de usuario: la única credencial es la device_api_key que
+  ya emite SensorManagementView al registrar el sensor.
+
+  Requisito real del navegador: DeviceMotionEvent y geolocation.watchPosition
+  solo funcionan en un "contexto seguro" (HTTPS, o localhost). Abrir esto
+  desde el teléfono por IP plana (http://192.168.x.x:5180) NO va a pedir
+  permiso de movimiento -- Chrome/Safari lo bloquean en silencio. Hace falta
+  HTTPS real -- verificado 2026-09-18, las dos opciones que este comentario
+  sugería originalmente NO sirven:
+    - El túnel Cloudflare que ya corre en este stack (beemetry-webhook-tunnel,
+      `docker run cloudflare/cloudflared tunnel --url http://backend:8081`,
+      fuera de docker-compose) apunta solo al backend, para el webhook de
+      WhatsApp (ADR-112) -- no expone el frontend (esta misma página vive ahí).
+    - El puerto 8443 de beemetry-api es el gateway TLS crudo de sensores
+      MQTT/Modbus/OPC-UA (mining::MiningServer, backend/src/main.cpp), no un
+      servidor HTTP -- no puede servir esta página ni aceptar fetch().
+  Hace falta un túnel HTTPS dedicado al servicio "frontend" (nginx, puerto
+  5173 en el host), p.ej.:
+    docker run --rm --network informecliente_default cloudflare/cloudflared:latest \
+      tunnel --no-autoupdate --url http://frontend:80
+  Con esa URL, dejar "URL de la API" vacía abajo (mismo origen -- nginx ya
+  proxifica /api/ al backend).
+
+  Flujo de uso:
+    1. En SensorManagementView, registrar un sensor tipo "accelerograph"
+       (ej. "SMARTPHONE-01"), copiar el device_api_key mostrado UNA vez.
+    2. Aplicar la plantilla "triaxial_pga" a ese sensor (declara los canales
+       accel_x/accel_y/accel_z + la fórmula PGA).
+    3. Declarar además los canales gps_lat/gps_lng en ese mismo sensor
+       (POST /api/mining/devices/{id}/channels, body {"channels":
+       ["gps_lat","gps_lng"]}) -- no hay UI todavía para esto, se hace una
+       vez por curl/Postman con sesión de admin.
+    4. Pegar el device_api_key acá, tocar "Iniciar".
+
+  Prueba integral server-side ya ejecutada y verificada 2026-09-18 (ver
+  memoria de sesión / ADR-194): sensor SMARTPHONE-01 registrado en el tenant
+  interno "Beemetry" (72f2c66f-6b63-4cb3-9a2e-c3ec723caacc), plantilla
+  triaxial_pga aplicada, canales gps_lat/gps_lng declarados, telemetría
+  sintética enviada vía POST /api/mining/telemetry/multi real (202, 5
+  canales), PGA calculado automáticamente por el evaluador de fórmulas
+  (~10s) y ciclo de comando recalibrate (POST admin -> GET commands -> POST
+  ack) verificado extremo a extremo. Lo único pendiente es la pata física:
+  abrir esta página desde un teléfono real por el túnel HTTPS del frontend.
+-->
+<style>
+  :root {
+    --bg: #0a0f1c; --panel: #101a2e; --panel-2: #0d1526; --border: #22304a;
+    --text: #e7ecf5; --text-dim: #8fa0bd; --text-faint: #5b6c8a;
+    --accent: #38bdf8; --ok: #22c55e; --warn: #f59e0b; --crit: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  body { padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    padding-top: calc(16px + env(safe-area-inset-top, 0px)); }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .sub { color: var(--text-dim); font-size: 12.5px; margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px; margin-bottom: 12px; }
+  label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); font-size: 14px; font-family: monospace;
+  }
+  .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  button {
+    flex: 1; min-width: 120px; padding: 12px 14px; border-radius: 10px; border: none;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: #04141f; }
+  button.stop { background: var(--crit); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .status-off { background: var(--text-faint); }
+  .status-ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
+  .status-err { background: var(--crit); }
+  .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .readout .tile { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+  .readout .k { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; }
+  .readout .v { font-family: monospace; font-size: 15px; margin-top: 3px; }
+  .log { max-height: 160px; overflow-y: auto; font-family: monospace; font-size: 11px; color: var(--text-dim); }
+  .log div { padding: 3px 0; border-bottom: 1px solid var(--border); }
+  .log div.err { color: var(--crit); }
+  .log div.cmd { color: var(--accent); }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); margin: 0 0 8px; }
+</style>
+</head>
+<body>
+  <h1>📡 Beemetry — Sensor Smartphone</h1>
+  <div class="sub">Acelerómetro + GPS de este teléfono como sensor real de la plataforma. Datos de ejemplo/prueba, no telemetría de producción real hasta que lo confirmes.</div>
+
+  <div class="card">
+    <label for="apiKey">Device API Key</label>
+    <input type="password" id="apiKey" placeholder="dev_..." autocomplete="off" autocapitalize="off" spellcheck="false">
+    <label for="apiBase" style="margin-top:10px">URL de la API (si no es este mismo origen)</label>
+    <input type="text" id="apiBase" placeholder="https://tu-dominio (dejar vacío = este mismo origen)" autocomplete="off">
+    <div class="row">
+      <button class="primary" id="btnStart">Iniciar</button>
+      <button class="stop" id="btnStop" disabled>Detener</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Estado</h2>
+    <div><span class="status-dot status-off" id="dotMotion"></span>Movimiento (acelerómetro)</div>
+    <div style="margin-top:4px"><span class="status-dot status-off" id="dotGeo"></span>GPS</div>
+    <div style="margin-top:4px"><span class="status-dot status-off" id="dotNet"></span>Envío a la plataforma</div>
+    <div class="readout">
+      <div class="tile"><div class="k">Accel X/Y/Z (g)</div><div class="v" id="vAccel">—</div></div>
+      <div class="tile"><div class="k">PGA aprox.</div><div class="v" id="vPga">—</div></div>
+      <div class="tile"><div class="k">GPS</div><div class="v" id="vGeo">—</div></div>
+      <div class="tile"><div class="k">Último envío</div><div class="v" id="vLastSend">—</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Actividad</h2>
+    <div class="log" id="log"><div>Esperando…</div></div>
+  </div>
+
+<!--
+  JS externalizado a app.js (2026-09-18): la CSP global del servidor
+  (`script-src 'self' ...`, sin 'unsafe-inline' ni nonce) bloquea CUALQUIER
+  <script> inline -- confirmado en producción: violación real registrada en
+  el backend (`[CSP_VIOLATION] ... violated-directive=script-src-elem
+  blocked-uri=inline`), la página cargaba pero el botón "Iniciar" no hacía
+  NADA porque el bloque de JS entero nunca llegaba a ejecutarse. Un
+  <script src="..."> del mismo origen sí cumple 'self', por eso el archivo
+  se movió a phone-sensor/app.js en vez de tocar la política CSP global.
+-->
+<script src="app.js"></script>
+</body>
+</html>

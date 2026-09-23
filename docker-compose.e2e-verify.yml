@@ -31,7 +31,8 @@ services:
       BEEMETRY_DATABASE_URL: "host=db_test port=5432 dbname=sensors_db user=sensors password=sensors_pass"
       BEEMETRY_MAPAS_PORT: "8081"
       BEEMETRY_MAPAS_DATA_ROOT: "/tmp"
-      BEEMETRY_AUTH_ADMIN_USERS: "admin"
+      # BEEMETRY_AUTH_ADMIN_USERS retirada (ADR-177): heurístico de admin por
+      # username eliminado del código.
       # Sin ingesta Kafka (no hay redpanda en este stack de prueba).
       BEEMETRY_TELEMETRY_INGEST_ENABLE: "false"
       BEEMETRY_TELEMETRY_INGEST_MODE: "direct"

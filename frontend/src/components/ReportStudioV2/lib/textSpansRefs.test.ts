@@ -12,8 +12,8 @@ import { generateTocData, resolveHeadingRefLabel } from '../components/document/
  */
 
 const BASE: BaseTextStyle = {
-  bold: false, italic: false, underline: false, color: '#000', fontSize: 14,
-  fontFamily: 'Arial', highlightColor: 'transparent', headingStyle: '',
+  bold: false, italic: false, underline: false, strikethrough: false, color: '#000', fontSize: 14,
+  fontFamily: 'Arial', highlightColor: 'transparent', headingStyle: '', textAlign: 'left',
 }
 
 function headingElement(id: string, text: string, level: 'h1' | 'h2') {

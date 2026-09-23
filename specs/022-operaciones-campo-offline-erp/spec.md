@@ -1,13 +1,21 @@
 # SPEC-022 — Automatización de operaciones de campo offline e integración ERP
 
+> **Fuera de alcance de este proyecto (2026-09-12, ver
+> [ADR-178](../../docs/decisions/178-operaciones-campo-fuera-de-alcance-implementacion-futura-independiente.md)).**
+> Esta carpeta se conserva íntegra como referencia técnica para una futura
+> iniciativa independiente, pero ya no forma parte del seguimiento, las
+> métricas ni los reportes gerenciales de la plataforma minera Beemetry/
+> AURIXA (v36.1, R1-R6) — excluida explícitamente de
+> `scripts/project-status-metrics.ps1`.
+
 | Campo | Valor |
 |---|---|
-| **Estado** | **Aprobado como proyecto derivado (2026-09-11)**, separado del alcance/presupuesto de la plataforma minera; 0% implementación de producto |
-| **ADR** | ADR-110 (proposed; rebaseline aprobado, ver actualización 2026-09-11), ADR-103 |
-| **Sprint / release** | Fuera del cronograma v36.1 (S1-S13/R1-R6) — construcción prevista para etapas posteriores de la plataforma minera, sin fecha de inicio |
-| **Product owner / presupuesto** | Propios del proyecto derivado, pendientes de asignar |
+| **Estado** | **Fuera de alcance de este proyecto (ADR-178, 2026-09-12)** — antes "aprobado como proyecto derivado" (2026-09-11); 0% implementación de producto |
+| **ADR** | ADR-178 (fuera de alcance, vigente), ADR-110 (proposed; arquitectura de referencia), ADR-103 |
+| **Sprint / release** | Sin cronograma — no es parte de v36.1 (S1-S13/R1-R6) ni de ningún proyecto activo; implementación futura independiente, sin fecha |
+| **Product owner / presupuesto** | Ninguno asignado por este proyecto — corresponde a una iniciativa propia si se decide retomar |
 | **Dirección de arquitectura** | Reutilizar el backend de Beemetry como componentes de servicios web (API), no una plataforma paralela — ver ADR-110 punto 1 y actualización 2026-09-11 |
-| **Última revisión** | 2026-09-11 |
+| **Última revisión** | 2026-09-12 |
 
 ## ADRs globales aplicables
 

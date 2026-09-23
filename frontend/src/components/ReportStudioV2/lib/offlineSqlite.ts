@@ -298,6 +298,82 @@ export async function recordCameOnline(reportId: string, atIso: string): Promise
   await persistCurrentDb(db);
 }
 
+/** Prefijo con el que `useEditorStore.createNewDocument()` genera
+ * `document_id` para un informe nuevo (`rep_<timestamp>`) — nunca coincide
+ * con un id real del servidor (UUID). Sirve para reconocer, al arrancar la
+ * app, un snapshot offline "huérfano": un informe editado y nunca guardado
+ * en el servidor (ver `findOrphanedLocalDrafts`). */
+const LOCAL_DRAFT_ID_PREFIX = 'rep_';
+
+export function isLocalDraftId(id: string | null | undefined): boolean {
+  return typeof id === 'string' && id.startsWith(LOCAL_DRAFT_ID_PREFIX);
+}
+
+/**
+ * Busca snapshots offline de informes NUNCA guardados en el servidor (su
+ * `report_id` es un `document_id` local, no un UUID real) que quedaron con
+ * cambios sin sincronizar (`dirty=1`) de una sesión anterior — por ejemplo
+ * porque se cerró la pestaña o se cortó la luz antes del primer "Guardar"
+ * manual. Un informe así no aparece en "Mis informes" (nunca tuvo fila en el
+ * servidor), así que sin este chequeo se perdería en silencio en cuanto se
+ * creara el próximo documento nuevo (mismo hueco que ADR-022 cierra para
+ * informes YA guardados vía `loadOfflineSnapshot` en `handleOpenEdit`).
+ *
+ * Se usa una vez por arranque de la app (ver App.tsx) para ofrecer
+ * recuperarlos. Devuelve todos los huérfanos encontrados, más reciente
+ * primero — la UI actual solo ofrece restaurar el primero; si hubiera más de
+ * uno (caso raro: varios documentos nuevos editados sin guardar entre
+ * sesiones) ninguno se borra, solo queda pendiente ofrecer los demás en una
+ * iteración futura.
+ */
+export async function findOrphanedLocalDrafts(): Promise<OfflineSnapshot[]> {
+  const db = await getOfflineDb();
+  const res = db.exec(
+    `SELECT report_id, title, document_json, updated_at, dirty, base_version_number
+     FROM offline_reports
+     WHERE dirty = 1 AND report_id LIKE ?
+     ORDER BY updated_at DESC`,
+    [`${LOCAL_DRAFT_ID_PREFIX}%`],
+  );
+  const rows = res[0]?.values || [];
+  const out: OfflineSnapshot[] = [];
+  for (const row of rows) {
+    const [id, title, documentJson, updatedAt, dirty, baseVersionNumber] = row;
+    try {
+      out.push({
+        reportId: String(id),
+        title: String(title ?? ''),
+        documentJson: JSON.parse(String(documentJson)),
+        updatedAt: String(updatedAt),
+        dirty: Number(dirty) === 1,
+        baseVersionNumber: baseVersionNumber === null || baseVersionNumber === undefined
+          ? null
+          : Number(baseVersionNumber),
+      });
+    } catch {
+      // Fila corrupta — se ignora, no debe bloquear la revisión del resto.
+    }
+  }
+  return out;
+}
+
+/** Borra DEFINITIVAMENTE (sin posibilidad de recuperación) el snapshot local
+ * de un informe -- pedido explícito 2026-09-10: un botón junto a "Restaurar"
+ * en la sección "Documentos sin conexión" de ReportsAdminModal.tsx para que
+ * el usuario pueda limpiar borradores que ya no quiere conservar, con un
+ * diálogo de advertencia/confirmación antes (ver ese componente). A
+ * diferencia de `markOfflineSnapshotSynced` (que preserva la fila para poder
+ * comparar tras un conflicto), aquí no hay nada que preservar: es la fila
+ * COMPLETA la que el usuario pidió eliminar. También limpia los eventos de
+ * conectividad asociados (`offline_connectivity_events`) para no dejar
+ * huérfanos referenciando un `report_id` que ya no existe. */
+export async function deleteOfflineSnapshot(reportId: string): Promise<void> {
+  const db = await getOfflineDb();
+  db.run('DELETE FROM offline_reports WHERE report_id = ?', [reportId]);
+  db.run('DELETE FROM offline_connectivity_events WHERE report_id = ?', [reportId]);
+  await persistCurrentDb(db);
+}
+
 /**
  * Llamar al hacer logout explícito (ver `App.tsx`, `onLogout`) — mismo
  * patrón que `invalidatePermissionsCache()` (`usePermissions.ts`): sin

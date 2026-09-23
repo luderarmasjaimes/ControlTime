@@ -1,0 +1,31 @@
+/// Diccionario parcial (portugués) — fallback a [esDictionary] para el resto.
+const Map<String, String> ptDictionary = {
+  'common.loading': 'Carregando…',
+  'common.retry': 'Tentar novamente',
+  'common.cancel': 'Cancelar',
+  'common.save': 'Salvar',
+  'common.close': 'Fechar',
+  'common.confirm': 'Confirmar',
+  'common.search': 'Buscar',
+  'common.noData': 'Nenhum dado disponível',
+  'common.refresh': 'Atualizar',
+  'common.offline': 'Sem conexão',
+
+  'auth.login': 'Entrar',
+  'auth.logout': 'Sair',
+  'auth.company': 'Empresa',
+  'auth.identity': 'Usuário / ID',
+  'auth.password': 'Senha',
+  'auth.loginWithPassword': 'Entrar com senha',
+  'auth.loginWithFace': 'Entrar com rosto',
+  'auth.restoringSession': 'Restaurando sessão…',
+
+  'nav.control': 'Controle',
+  'nav.ground': 'Terreno',
+  'nav.maps': 'Mapas',
+  'nav.reports': 'Relatórios',
+  'nav.manage': 'Gestão',
+  'nav.access': 'Acesso',
+  'nav.dashboard': 'Painel',
+  'nav.alarms': 'Alarmes',
+};

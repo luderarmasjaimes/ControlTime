@@ -1,5 +1,7 @@
 # ADR-150 — Avatar animado por reenactment/lip-sync (evaluación), servicio `avatar_animation_engine`
 
+> **Actualización 2026-09-23 (ADR-210) — estado dividido.** **Fase A (SadTalker): `implemented`**, verificada E2E (2026-09-04/07) y en servicio (`beemetry-avatar-animation-engine` sano). **Fases B (LivePortrait) y C (LatentSync): `deferred`** — documentadas, nunca construidas, sin pedido vigente; se retoman solo con decisión nueva. El estado "en evaluación" deja de aplicar.
+
 **Status**: en evaluación — Fase A (SadTalker) implementada y **verificada end-to-end
 contra el pipeline real**, incluida una foto real de un usuario (2026-09-04 y
 2026-09-07, ver Verificación); Fases B/C (LivePortrait, LatentSync)

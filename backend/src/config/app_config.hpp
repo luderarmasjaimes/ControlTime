@@ -133,6 +133,19 @@ struct AppConfig {
     bool gDermalogRequired = false;
     bool gSeetaFace6Required = true;
     int gSeetaFace6TimeoutMs = 20000;
+    // Hallazgo real 2026-09-16 (pedido explícito del usuario): SeetaFace6
+    // como motor PRIMARIO con DeepFace/Silent-Face como SECUNDARIO -- a
+    // diferencia de gDeepFaceSilentDermalogFallback (que exige bajar
+    // gDeepFaceSilentRequired a false, abriendo también la cascada a legacy
+    // ante un rechazo de SEGURIDAD), esta cascada NO depende de
+    // gSeetaFace6Required: un rechazo de seguridad de SeetaFace6 (spoof/
+    // no-match/calidad) sigue siendo fail-closed SIEMPRE, sin importar este
+    // flag. Solo se activa ante un fallo de INFRAESTRUCTURA (ai_engine
+    // caído/timeout/JSON inválido, ver kSeetaInfraErrorTags en
+    // face_analysis.cpp) -- resiliencia operativa, nunca degradación de
+    // seguridad. Fail-closed por defecto (false) hasta que se confirme el
+    // motor secundario operativo.
+    bool gSeetaFace6DeepfaceFallback = false;
     // DeepFace (Facenet512) + Silent-Face-Anti-Spoofing (MiniFASNet) --
     // proveedor local por defecto. Fail-closed por defecto (mismo principio
     // que SeetaFace6/ADR-104): indisponibilidad rechaza, no degrada.
@@ -189,6 +202,17 @@ struct AppConfig {
     // Export DOCX (modo documento, mismo sidecar/EXPORT_DATA_ROOT que
     // PPTX/MP4 arriba) -- ver runDocxExportJob (report_export_jobs.cpp).
     int gDocxExportTimeoutMs = 60000;
+    // Export XLSX (solo tablas del informe, sin fase de captura raster --
+    // ver runXlsxExportJob) -- techo bajo por defecto a propósito, este
+    // export nunca espera gráficos/imágenes como docx/pptx.
+    int gXlsxExportTimeoutMs = 30000;
+    // ADR-204: tamaño máximo (MB) del PDF exportado que se adjunta al correo
+    // automático de export (al usuario que exportó + lista de destinatarios
+    // configurada). Por encima de este límite se manda el correo igual pero
+    // SIN adjunto (con una nota en el cuerpo) -- evita que un informe de
+    // cientos de páginas rebote en el relay SMTP por exceder su propio techo
+    // de tamaño de mensaje.
+    int gPdfEmailMaxAttachmentMb = 20;
     // IGP/CENSIS (Instituto Geofisico del Peru) -- fuente oficial de
     // sismicidad, API HTTPS publica sin autenticacion (ver igp_seismic_client.hpp).
     std::string gIgpApiBaseUrl = "https://ultimosismo.igp.gob.pe";
@@ -274,6 +298,14 @@ struct AppConfig {
     // segundos, así que necesita su propio timeout generoso, no el de
     // gAiEngineTimeoutMs (pensado para frames de cámara en vivo).
     int gAiEngineCvExtractTimeoutMs = 30000;
+    // ADR-199: importación de PDF con OCR avanzado (/ocr_pdf, proxy hacia el
+    // sidecar ocr_engine -- PaddleOCR PP-StructureV2, CPU). Mucho más lento
+    // que la extracción de texto de CV: cada página escaneada corre layout +
+    // reconocimiento de tabla + OCR real en CPU, no una lectura de texto
+    // embebido. OCR_ENGINE_MAX_OCR_PAGES en el sidecar acota el caso
+    // patológico, pero igual necesita su propio timeout generoso, muy por
+    // encima de gAiEngineCvExtractTimeoutMs.
+    int gAiEnginePdfOcrTimeoutMs = 600000;
     // Tope de tamaño del CV descargado de WhatsApp (ver whatsapp_media_client.cpp
     // y whatsapp_bot_engine.cpp) -- aplicado en tres capas: antes de
     // descargar (file_size reportado por la Graph API), sobre los bytes ya
@@ -299,7 +331,6 @@ struct AppConfig {
     bool isAvatarDiffusionQaUser(const std::string &username) const;
     std::string gCartoonOnnxModelPath;
     static constexpr std::size_t kFaceEmbeddingVectorDim = 512;
-    double gFaceEmbeddingCosineThreshold = 0.45;
     // SeetaFace6 general ResNet-50 entrega 1024 componentes. El umbral es
     // operativo y debe calibrarse con la población/cámara del despliegue.
     double gFaceSeetaCosineThreshold = 0.80;

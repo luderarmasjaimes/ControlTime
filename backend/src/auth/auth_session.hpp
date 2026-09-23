@@ -61,8 +61,8 @@ void resetGlassesEmaState(GlassesEmaState &s);
 bool applyIcaoGlassesEma(GlassesEmaState &s, double rawLikelihood,
                          bool faceDetected, double &outEma);
 
-/** @brief Resuelve el rol RBAC asociado a un username (reglas hardcodeadas de bootstrap, p.ej. administradores conocidos). @return El rol resuelto, o el rol por defecto si no hay regla especial. */
-std::string resolveRoleForUsername(const std::string &username);
+/** @brief Rol asignado por defecto a toda cuenta autoregistrada públicamente (ADR-177: reemplaza a resolveRoleForUsername(), retirada -- ya no existe ningún heurístico de username ni de payload que produzca un rol elevado en el autoregistro). @return Siempre "operator" (rol operativo normal, nunca "admin" ni ningún otro rol elevado). */
+std::string defaultSelfRegisteredRole();
 
 /** @brief Genera un token opaco aleatorio criptográficamente no predecible (uso: refresh token crudo). */
 std::string makeSessionToken();

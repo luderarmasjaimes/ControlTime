@@ -42,8 +42,28 @@ async function parseJsonResponse(response: Response): Promise<any> {
         // ráfaga de nginx en /api/auth/login/). 429 es el límite de intentos
         // (esperado en uso normal si se reintenta muy seguido); 502/503/504
         // es el backend realmente no disponible.
-        if (response.status === 429) {
+        let rateLimited = false
+        if (response.status === 429 && !payload.error) {
+            // Hallazgo real 2026-09-15: nginx (zone=api_login, ver
+            // frontend/nginx.conf) también devuelve 429, pero SIN cuerpo JSON
+            // -- de ahí `!payload.error` para distinguirlo del 429
+            // ESTRUCTURADO que devuelve el backend cuando la CUENTA queda
+            // bloqueada 5 minutos (loginRateCheck en main.cpp,
+            // error="too_many_failed_attempts"). Al inicio se trataban los
+            // dos casos igual: la pantalla reintentaba cada 4s el bloqueo de
+            // CUENTA (que dura 5 MINUTOS, no segundos) mostrando siempre
+            // "Demasiados intentos en poco tiempo" -- tapando el motivo real
+            // y reintentando contra una pared durante minutos sin nunca
+            // avanzar (reproducido en vivo: +30 peticiones seguidas, todas
+            // rechazadas al instante, sin llegar siquiera al análisis
+            // facial). Solo el 429 de nginx (sin cuerpo, de verdad temporal
+            // en segundos) es reintentable acá.
             message = 'Demasiados intentos en poco tiempo. Espere unos segundos y vuelva a intentar.'
+            rateLimited = true
+        } else if (response.status === 429 && payload.error === 'too_many_failed_attempts') {
+            // Bloqueo de CUENTA real (5 min) -- NO reintentar automáticamente,
+            // mostrar el motivo real en vez del genérico de nginx.
+            message = payload.detail || 'Cuenta bloqueada temporalmente por demasiados intentos fallidos. Intente de nuevo en unos minutos.'
         } else if (
             !payload.error &&
             (response.status === 502 || response.status === 503 || response.status === 504)
@@ -72,7 +92,9 @@ async function parseJsonResponse(response: Response): Promise<any> {
             const translatedIssues = payload.issues.map((issue: string) => translations[issue] || issue);
             message = `Validación Biométrica Fallida: ${translatedIssues.join(' | ')}`
         }
-        throw new Error(message)
+        const err = new Error(message) as Error & { rateLimited?: boolean }
+        if (rateLimited) err.rateLimited = true
+        throw err
     }
 
     return payload
@@ -381,6 +403,63 @@ export async function fetchAvatarAnimationVideo(jobId: string): Promise<Blob> {
     return blob
 }
 
+// ── Cuerpo/vestimenta del avatar (rediseño 2026-09-20, ADR-203) ────────────
+// El avatar recorta solo la cabeza; el resto viene de un catálogo fijo de
+// plantillas pre-hechas (ai_engine/avatar_body_templates.py) en vez de los
+// hombros/torso fotografiados -- "cambiar de vestimenta" es un recompose
+// rápido en el backend (sin GPU/difusión), no una regeneración completa.
+
+export interface AvatarBodyTemplate {
+    slug: string
+    display_name: string
+    thumbnail_base64: string
+    current: boolean
+    avatar_head_available?: boolean
+}
+
+export async function listAvatarBodyTemplates(): Promise<AvatarBodyTemplate[]> {
+    const response = await authFetch('/api/avatar/body-templates', { cache: 'no-store' })
+    const payload = await parseJsonResponse(response)
+    const headAvailable = payload?.avatar_head_available === true
+    return Array.isArray(payload?.templates)
+        ? payload.templates.map((tpl: AvatarBodyTemplate) => ({ ...tpl, avatar_head_available: headAvailable }))
+        : []
+}
+
+/** 409 (avatar_head_not_available) si la cuenta todavía no tiene un recorte
+ * de cabeza persistido -- avatares generados antes de este cambio, o los 3
+ * niveles de fallback de registro cayeron al lienzo blanco clásico. El
+ * llamador debe mostrar que hace falta regenerar el avatar (reenrolarse),
+ * no reintentar automáticamente. */
+export async function updateAvatarBodyTemplate(
+    slug: string
+): Promise<{ status: string; avatar_body_template_slug: string; avatar_cartoon_base64: string }> {
+    return postJson('/api/auth/avatar/body-template', { slug })
+}
+
+/** "Actualizar mi foto de avatar" (pedido real 2026-09-20): las cuentas
+ * creadas antes del rediseño de avatar (ADR-203) nunca tuvieron un recorte de
+ * cabeza persistido -- este endpoint vuelve a correr /cartoon_avatar con una
+ * foto nueva sobre la cuenta YA logueada, sin repetir el registro completo,
+ * para habilitar el selector de vestimenta. Cosmético, sin reto de
+ * vivacidad -- no reemplaza la identidad biométrica de la cuenta. */
+export async function reEnrollAvatarPhoto(
+    imageBase64: string
+): Promise<{ status: string; avatar_cartoon_base64: string }> {
+    // 120s, no el default de postJson (30s): fetchCartoonAvatarBestEffort en
+    // el backend puede correr 3 niveles de fallback + reintentos de difusión
+    // (15-40s medidos en registro real, ver AUTH_REGISTER_CARTOON_BG) y el
+    // propio backend espera hasta cartoon_timeout_ms=120000 a ai_engine. Con
+    // el default de 30s el cliente abortaba y mostraba "tiempo de espera
+    // agotado" mientras el backend seguía generando igual (trabajo huérfano,
+    // nunca se veía el resultado aunque terminara bien).
+    return postJson(
+        '/api/auth/avatar/re-enroll',
+        { image_base64: imageBase64 },
+        { timeoutMs: 120000 }
+    )
+}
+
 export async function fetchCompanies(): Promise<any[]> {
     const response = await fetch(`${backendBaseUrl()}/api/auth/companies`)
     const payload = await parseJsonResponse(response)
@@ -527,6 +606,11 @@ export interface CompanyLocation {
     latitude?: number;
     longitude?: number;
     zoom?: number;
+    // Alias esperado por GeocatminWorkbench.tsx -- el backend de ADR-121
+    // solo confirma `zoom`/`has_location`; estos quedan opcionales hasta que
+    // ese endpoint los sirva realmente.
+    location_zoom?: number;
+    company_name?: string;
 }
 
 /** ADR-121: coordenadas de la mina del tenant de la sesión actual — usado por
@@ -1309,10 +1393,19 @@ export async function sendContactOtp(
     contact: string,
 ): Promise<ContactOtpSendResult> {
     try {
+        // credentials:'omit' -- este endpoint no requiere sesión (se usa
+        // durante el registro, antes de que exista una cuenta), pero con el
+        // default 'same-origin' el navegador igual adjunta cualquier cookie
+        // beemetry_access_token que haya quedado de un login/registro
+        // ANTERIOR en este mismo origen. El router (router.cpp) exige CSRF
+        // double-submit para toda petición mutante autenticada por cookie, y
+        // esta llamada nunca manda ese header -- resultado real: 403
+        // csrf_token_mismatch en un flujo que ni siquiera necesita cookie.
         const response = await fetch(`${backendBaseUrl()}/api/auth/contact-otp/send`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ channel, contact }),
+            credentials: 'omit',
         })
         const payload = await response.json().catch(() => ({}))
         if (!response.ok) {
@@ -1342,10 +1435,12 @@ export async function verifyContactOtp(
     code: string,
 ): Promise<ContactOtpVerifyResult> {
     try {
+        // credentials:'omit' -- mismo motivo que sendContactOtp arriba.
         const response = await fetch(`${backendBaseUrl()}/api/auth/contact-otp/verify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ channel, contact, code }),
+            credentials: 'omit',
         })
         const payload = await response.json().catch(() => ({}))
         if (!response.ok) {

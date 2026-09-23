@@ -1,0 +1,292 @@
+3dLine|timeseries
+3d_line_acu|timeseries
+Acumulado Eje A|timeseries
+Acumulado Eje B|timeseries
+Alarmas Serie|alarm
+Alarmas Time|alarm
+Alarms table|alarm
+Anexos 2|timeseries
+Annexes Demo .|latest
+Annexes Editable Form|latest
+Annexes Editable Form DZ|latest
+Asset admin table|latest
+Attributes card|latest
+Balance Total|timeseries
+Balance Total V1|timeseries
+Bar TimeSeries Pluviometros|timeseries
+Bars|latest
+Basic GPIO Control|rpc
+Basic GPIO Panel|latest
+Beemetry INC  Andy|timeseries
+COntador excedencias1|timeseries
+Cards|latest
+Change Dashboard State|static
+Chart 2|timeseries
+Colores|timeseries
+Compass|latest
+Contado2|latest
+Contador|alarm
+Contador Bar|latest
+Contador Excedencias2|timeseries
+Contador Excedencias4|timeseries
+Control Personalizado|rpc
+Control-Switch IOT|latest
+Controles Input|static
+Controles Nexa Input|static
+Controles/EditarEsteNorte|latest
+Corte DP1 02  Puntos Desarrollo...|latest
+Corte con Lineas...|latest
+Corte con Puntos|latest
+Dashboard state widget|static
+DataTable prueba|timeseries
+Datatables con Jquery|timeseries
+Datatables con Jquery V2|timeseries
+Date-range-navigator|static
+Desarrollo Multiple Axis Hr|timeseries
+Desarrollo- Multiple Axis|timeseries
+Desarrollo-Multiple Axis Caudal-Precipitacion|timeseries
+Desplzamiento|timeseries
+Detalle de sismos|timeseries
+Device admin table|latest
+Device claiming widget|static
+Digital horizontal bar|latest
+Digital speedometer|latest
+Digital thermometer|latest
+Digital vertical bar|latest
+Displacement|timeseries
+Double Slider|rpc
+Doughnut|latest
+Download  Guralp X|latest
+Download Kinemetrics|latest
+EJE0|timeseries
+EJE1|timeseries
+EJE2|timeseries
+Edge Quick Overview|latest
+Elimina Registros|timeseries
+Entities hierarchy|latest
+Entities table|latest
+Excedencias1|timeseries
+Excedencias2|timeseries
+Excedencias3|timeseries
+Excedencias4|timeseries
+Excel_sismografo|static
+Files|static
+Formula SOIL|latest
+Formulas SOIL CARD|latest
+Frecuencias|timeseries
+Gateway Configuration|static
+Gateway configuration (Single device)|latest
+Gateway events|latest
+Gauge|latest
+Gauge 4|latest
+Google Maps|latest
+Graficas por Tramos|timeseries
+HERE Map|latest
+HTML Card|static
+HTML Value Card|latest
+Higchart Demo|timeseries
+Horizontal bar|latest
+Image Map|latest
+InPlaceA|timeseries
+InPlaceAccu3DAT|timeseries
+InPlaceAcu3D|timeseries
+InPlaceB|timeseries
+InPlaceInc3D|timeseries
+InPlaceInc3DAT|timeseries
+Inclinometro Acumulado|timeseries
+Inclinometro Incremental|timeseries
+Inclinometro Prueba|timeseries
+Incremental x Eje|timeseries
+Incremental y Eje|timeseries
+InvertirGrafica|timeseries
+Knob Control|rpc
+LCD bar gauge|latest
+LCD gauge|latest
+Label widget|latest
+Led indicator|rpc
+Legenda 2|static
+Leyenda rosa_small|static
+Library|latest
+Line Alarma|alarm
+Long|timeseries
+MAPA|latest
+MAX_MIN|timeseries
+MAX_MIN2|timeseries
+MAX_MIN3|timeseries
+MEDIOAMBIENTE ANUAL CMC|timeseries
+MEDIOAMBIENTE- Mensual CMC|timeseries
+MEDIOAMBIENTE-SOILVUE|timeseries
+Mapbox Demo|latest
+Maps|latest
+MapsconLeyendas|latest
+Markdown/HTML Card|latest
+Markers Placement - Google Maps|latest
+Markers Placement - Image Map|latest
+Markers Placement - OpenStreetMap|latest
+Measurand Correccion|timeseries
+MeasurandX|timeseries
+MeasurandY|timeseries
+Medio Ambiente Multiple Axis Caudal Precipitacion Hr|timeseries
+Medio-Ambiente-Pozo|latest
+MedioAmbiente-MultipleAxisSumaVWC|timeseries
+Mini gauge|latest
+Modal-Agregar-Datos|timeseries
+Multi Slider|rpc
+Multiple Axis [Diary]|timeseries
+Multiple Axis [Hourly]|timeseries
+Navigation card|static
+Navigation cards|static
+Neon gauge|latest
+OpenStreetMap|latest
+PR_SM|static
+Persistent RPC table|rpc
+Photo camera input|latest
+Pie - Chart.js|latest
+Pie - Flot|latest
+Polar Area|latest
+Pozo Inclinado|latest
+Pozo v2|latest
+Prismas  Incremental Eje|timeseries
+Prismas Acumulado|timeseries
+Prismas Incremental|timeseries
+Prismas Incremental 24h|timeseries
+Prismas Map|latest
+Prueba01|timeseries
+QR Code|latest
+RPC Button|rpc
+RPC debug terminal|rpc
+RPC remote shell|rpc
+Radar|latest
+Radial gauge|latest
+Raspberry Pi GPIO Control|rpc
+Raspberry Pi GPIO Panel|latest
+Reporte CSV Dinamico General|timeseries
+Reporte CSV Dinamico General|timeseries
+Reporte CSV Dinamico General|timeseries
+Reporte Diario|timeseries
+Reporte Diario|timeseries
+Reporte Mensual|timeseries
+Reporte Mensual General v2|timeseries
+Reporte Mensual General v2|timeseries
+Reports|static
+Reports schedule|static
+Rosa Plotly|latest
+Rosa de Viento|latest
+Round Slider 1|rpc
+Round switch|rpc
+Route Map|timeseries
+Route Map - OpenStreetMap|timeseries
+Route Map - Tencent Maps|timeseries
+SOILVUESOOLOTUERCA|latest
+Scheduler events|static
+Seismic|latest
+SeismicACC|latest
+SeismicACC_LOCAL|latest
+SeismicDIS|latest
+SeismicVEL|latest
+Seismic_FRM1|latest
+Seismic_FRM2|latest
+Seismic_FRM3|latest
+Seismic_FRM4|latest
+Seismic_v2|latest
+SendCSV|rpc
+Series 2.2|timeseries
+Series 2.2|timeseries
+Series Analysis|timeseries
+Series ELIMINAR|timeseries
+Series ELIMINAR|timeseries
+Series Graficas 2|timeseries
+Simple card|latest
+Simple gauge|latest
+Simple neon gauge|latest
+Sismografo_timeseries_1|timeseries
+Sismos Detalle|timeseries
+Slide Toggle Control|rpc
+Slider|rpc
+SoilconImagen|latest
+Speed gauge|latest
+Speed gauge|latest
+State Chart|timeseries
+StevenPrueba_sismografo|timeseries
+Switch 1|rpc
+Switch 2|rpc
+Switch Control|rpc
+TS  Kinemetrics CH0|timeseries
+TS Guralp CH0|latest
+TS Guralp CH1 |latest
+TS Guralp CH2|latest
+TS Kinemetrics CH1|latest
+TS Kinemetrics CH2..|timeseries
+TS Kinemetrics CHO Series|timeseries
+Tabla Titulo Personalizado|timeseries
+Tablas|timeseries
+Temperature radial gauge|latest
+Tencent Maps|latest
+Test|timeseries
+Test|timeseries
+Thermometer scale|latest
+Thermostat 1|rpc
+Thermostat 2|rpc
+Tiltmeter Date Acumulado|timeseries
+Tiltmeter Date Incremental|timeseries
+Tiltmeter Table Acumulado|timeseries
+Tiltmeter Table Incremental|timeseries
+Tiltmeters 2D Graph ...|timeseries
+Tiltmeters 2D Graph svc|timeseries
+Tiltmeters 3D Graph (in testing)|timeseries
+Timeserie_tooltip_descarga|timeseries
+Timeseries Bar Chart|timeseries
+Timeseries Bar Precipitacion Diario|timeseries
+Timeseries Bar Precipitacion Horario|timeseries
+Timeseries Custom Thresholds|timeseries
+Timeseries Custom Thresholds V2...|timeseries
+Timeseries Line Chart|timeseries
+Timeseries table|timeseries
+Timeseries table Clon - Toquepala IDFW|timeseries
+Timeseries validation table|timeseries
+Timseries Bar Precipitacion Horario invalid|timeseries
+Toggle Button 1|rpc
+Totalizador|alarm
+Tran|timeseries
+Trip Animation|timeseries
+Ultima fecha|latest
+Ultimo valor|latest
+Ultimos valores sismografo|latest
+Update JSON attribute|latest
+Update Multiple Attributes|latest
+Update boolean timeseries|latest
+Update device attribute|rpc
+Update double timeseries|latest
+Update integer timeseries|latest
+Update location timeseries|latest
+Update server boolean attribute|latest
+Update server date attribute|latest
+Update server double attribute|latest
+Update server image attribute|latest
+Update server integer attribute|latest
+Update server location attribute|latest
+Update server string attribute|latest
+Update shared boolean attribute|latest
+Update shared date attribute|latest
+Update shared double attribute|latest
+Update shared image attribute|latest
+Update shared integer attribute|latest
+Update shared location attribute|latest
+Update shared string attribute|latest
+Update string timeseries|latest
+Vert|timeseries
+Vertical bar|latest
+XY|timeseries
+comentario_widget|timeseries
+fluid level 1|latest
+fluid level 2|latest
+google map|latest
+link Datatables|timeseries
+map|static
+medioambiente analisis macro|timeseries
+olo|latest
+pruebas|timeseries
+switch3|rpc
+switch6|rpc
+tabla desarrollo|timeseries
+timeseries_ace|timeseries

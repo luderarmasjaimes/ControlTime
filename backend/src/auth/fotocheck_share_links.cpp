@@ -79,5 +79,25 @@ std::optional<std::string> resolveFotocheckShareLinkPg(const std::string &databa
 #endif
 }
 
+std::string resolveTenantNamePg(const std::string &databaseUrl, const std::string &tenantId) {
+#if HAS_LIBPQ
+  if (tenantId.empty()) return "";
+  auto lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) return "";
+
+  const char *params[1] = {tenantId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn, "SELECT tenant_name FROM tenants WHERE tenant_id::text = $1", 1, nullptr,
+      params, nullptr, nullptr, 0)};
+  if (!res.okTuples() || PQntuples(res.get()) < 1) return "";
+  return PQgetvalue(res.get(), 0, 0);
+#else
+  (void)databaseUrl;
+  (void)tenantId;
+  return "";
+#endif
+}
+
 }  // namespace fotocheck
 }  // namespace auth

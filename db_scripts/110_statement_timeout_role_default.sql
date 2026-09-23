@@ -1,0 +1,70 @@
+-- ============================================================================
+-- 110_statement_timeout_role_default.sql
+-- ADR-186 (bug real: chunk scan sin cota de tiempo) acotó 3 WHERE clauses
+-- puntuales -- no agregó ninguna red de seguridad a nivel servidor/rol. Una
+-- consulta futura sin cota de tiempo contra telemetry_fact/telemetry_raw/
+-- telemetry_fact_calc/telemetry_multivariate (mismo patrón que ADR-186 ya
+-- encontró 3 veces) todavía puede colgar un hilo del backend
+-- indefinidamente -- defensa en profundidad, no un reemplazo del fix de
+-- ADR-186.
+--
+-- Rol confirmado por lectura directa de docker-compose.yml (no asumido):
+-- POSTGRES_USER=sensors (servicio db), DB_USER=sensors (servicio pgbouncer),
+-- PGUSER=sensors (health checks) -- "sensors" es el rol real con el que se
+-- autentican tanto las conexiones vía pgbouncer (BEEMETRY_DATABASE_URL,
+-- BEEMETRY_TELEMETRY_DATABASE_URL) como la conexión directa del
+-- GpuInferenceMutex. Fuera de alcance: "dashboard_ro" (rol de solo lectura
+-- de la réplica, 40_dashboard_ro_role.sql) y "formula" (rol de la base
+-- separada `formula_db`, otro contenedor Postgres) no comparten conexión
+-- con telemetry_fact/telemetry_raw y no se tocan acá.
+--
+-- NO afecta la conexión de ingesta: telemetry_ingest.cpp
+-- (TelemetryIngestor::ensureConn, líneas ~325-332) ejecuta explícitamente
+-- "SET statement_timeout = 0" apenas abre cada conexión, a propósito, para
+-- que un COPY largo bajo contención no pierda el lote. Un SET de sesión
+-- explícito siempre tiene precedencia sobre el default de rol para ESA
+-- sesión -- el default de rol solo aplica quedan conexiones que NO fijan su
+-- propio statement_timeout. Este script no modifica ni compromete ese
+-- comportamiento.
+--
+-- Por qué ALTER ROLE ... SET y no un SET de sesión desde la app: pgbouncer
+-- corre en POOL_MODE=transaction (docker-compose.yml, servicio pgbouncer) --
+-- bajo pooling por transacción, un `SET statement_timeout = ...` emitido por
+-- el cliente sobre una conexión pooleada NO es confiable: puede quedar
+-- "pegado" a la conexión física de Postgres y filtrarse a la transacción de
+-- OTRO cliente que reutilice esa misma conexión después, o perderse sin más
+-- si la siguiente transacción del mismo cliente lógico cae en una conexión
+-- física distinta del pool. `ALTER ROLE ... SET` es distinto: queda
+-- guardado en el catálogo del rol (pg_db_role_setting) y Postgres lo aplica
+-- él mismo al iniciar cada proceso backend nuevo (nueva conexión física),
+-- sin depender de que el cliente emita nada -- es el mecanismo estándar
+-- recomendado para fijar defaults confiables detrás de un pooler en modo
+-- transacción (documentado en la práctica común de pgbouncer/Postgres, no
+-- específico de este proyecto). Como pgbouncer se autentica contra Postgres
+-- como rol "sensors" (DB_USER=sensors) y recicla sus conexiones físicas
+-- según SERVER_LIFETIME=3600 (docker-compose.yml), cada conexión física
+-- nueva que abra debería recoger este default automáticamente al conectar.
+--
+-- HONESTIDAD SOBRE LO NO VERIFICADO: lo anterior es el comportamiento
+-- estándar documentado de Postgres/pgbouncer, pero esta tarea NO permite
+-- correr la migración contra la base real ni inspeccionar en vivo
+-- pg_db_role_setting / el comportamiento efectivo de las conexiones que
+-- pgbouncer abre -- no se verificó en vivo contra el stack de este
+-- proyecto. Tampoco se encontró en el repo un pgbouncer.ini explícito ni
+-- una variable `server_reset_query` configurada (la imagen edoburu/pgbouncer
+-- se configura acá solo por variables de entorno en docker-compose.yml) que
+-- confirme que no hay nada atípico interfiriendo. Se recomienda verificar
+-- en vivo tras aplicar (p.ej. `SHOW statement_timeout` en una sesión nueva
+-- a través de pgbouncer) antes de asumir que esta red de seguridad está
+-- activa en producción.
+--
+-- 15s: valor pedido explícitamente para este fix. Solo aplica a sesiones
+-- NUEVAS abiertas después de ejecutar este script -- conexiones físicas ya
+-- abiertas mantienen el timeout con el que arrancaron hasta que se reciclen
+-- o reconecten.
+--
+-- Idempotente: ALTER ROLE ... SET es repetible (sobreescribe el valor
+-- anterior sin error).
+-- ============================================================================
+
+ALTER ROLE sensors SET statement_timeout = '15s';

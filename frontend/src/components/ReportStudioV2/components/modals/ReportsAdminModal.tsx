@@ -1,14 +1,17 @@
 import React, { memo, useState, useEffect, useCallback } from 'react';
 import {
-  FolderOpen, X, Search, RotateCcw, Eye, Pencil, Send, Trash2,
+  FolderOpen, X, Search, RotateCcw, Eye, Pencil, Send, Trash2, Copy,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, FileText, Loader2, Users,
-  Presentation,
+  Presentation, CloudOff, HardDriveDownload,
 } from 'lucide-react';
 import { getSession, authHeaders as sharedAuthHeaders } from '../../../../auth/authStorage';
 import { usePermissions } from '../../../../auth/usePermissions';
 import { getReportFilterUsers, listReportsAsync } from '../../lib/reportsStorage';
 import { ensureCompanyUsers } from '../../lib/userBootstrap';
+import { findOrphanedLocalDrafts, deleteOfflineSnapshot, type OfflineSnapshot } from '../../lib/offlineSqlite';
+import { useEditorStore } from '../../store/useEditorStore';
 import UserMaintenanceModal from './UserMaintenanceModal';
+import { requestConfirmation } from '../../../UI/ConfirmActionDialog';
 
 import { log } from '../../../../lib/logger';
 
@@ -85,12 +88,34 @@ interface ReportsAdminModalProps {
   onClose: () => void;
   onOpenRead: (report: any) => void;
   onOpenEdit: (report: any) => void;
+  /** Crea una copia independiente del informe seleccionado (nuevo id de
+   * servidor, mismo contenido) -- pedido explícito 2026-09-09: reusar un
+   * informe ya armado como punto de partida para uno similar con otra data,
+   * ya que el lienzo no soporta seleccionar/copiar TODO el documento a la
+   * vez (ver PageCanvas.tsx, copyElement/pasteElement solo manejan un
+   * elemento). Opcional por el mismo motivo que onGenerateDemo: los modales
+   * de solo lectura que reusan esta tabla no la pasan. */
+  onDuplicate?: (report: any) => void;
   /** Genera (dentro del editor real) y guarda un informe de referencia que
    * recorre el 100% de tipos de sensor del tenant × el 100% de tipos de
    * gráfico, en A4/A3 -- herramienta de QA para validar el motor de
    * márgenes/anti-colisión. Opcional: modales de solo lectura (compartidos
    * fuera de esta vista) no la pasan. */
   onGenerateDemo?: () => void;
+  /** Incrementado por el caller tras guardar/crear un informe (ver
+   * ReportStudioV2/App.tsx) para forzar un refetch de esta lista sin cerrar
+   * el modal -- de lo contrario un informe recién guardado no aparecía
+   * hasta reabrir la ventana. */
+  refreshToken?: number;
+  /** Id del informe abierto AHORA en el editor (useEditorStore.currentReportId)
+   * -- pedido explícito 2026-09-04: resaltar esa fila con un borde naranja
+   * para ubicarla de un vistazo entre todos los demás informes de la tabla. */
+  currentReportId?: string | null;
+  /** Restaura un borrador local sin sincronizar elegido en la sección
+   * "Documentos sin conexión" (pedido explícito 2026-09-08 -- ver
+   * App.tsx::handleRestoreOfflineDraft). Ausente = esa sección no ofrece
+   * el botón "Restaurar" (defensivo; App.tsx siempre lo pasa hoy). */
+  onRestoreOfflineDraft?: (draft: OfflineSnapshot) => void;
 }
 
 interface TenantOption { tenant_id: string; tenant_name: string; role: string; active: boolean }
@@ -102,10 +127,14 @@ function authHeadersRA(): Record<string, string> {
   return sharedAuthHeaders();
 }
 
-function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: ReportsAdminModalProps) {
+function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo, onDuplicate, refreshToken = 0, currentReportId, onRestoreOfflineDraft }: ReportsAdminModalProps) {
   const session = getSession();
   const company = session?.company || '';
   const tenantId = session?.tenantId || '';
+  // Mismo criterio que App.tsx::loggedAuthor (doc.meta.author se guarda con
+  // este mismo valor al crear un documento) -- se usa para filtrar la
+  // sección "Documentos sin conexión" a solo los del usuario actual.
+  const currentUserName = session?.fullName || session?.username || 'Usuario';
   // ADR-079: mismo permiso que exige el backend en report_service.cpp —
   // reemplaza el hardcode `session.role === 'admin'` que antes decidía esto
   // solo en el cliente, sin reflejar realmente lo que el servidor acepta.
@@ -129,6 +158,68 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: 
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<any>(null);
   const [showUserMaintenance, setShowUserMaintenance] = useState(false);
+  // Sección "Documentos sin conexión" (pedido explícito 2026-09-08) --
+  // reemplaza la ventana emergente que antes se disparaba sola al arrancar
+  // la app, una detrás de otra por cada borrador huérfano (ver App.tsx,
+  // efecto comentado junto a handleRestoreOfflineDraft). Se carga siempre
+  // al abrir el wizard (no solo al entrar a la pestaña) para poder mostrar
+  // la cuenta en el botón de la pestaña sin que el usuario tenga que
+  // adivinar si hay algo pendiente.
+  const [view, setView] = useState<'reports' | 'offline'>('reports');
+  const [offlineDrafts, setOfflineDrafts] = useState<OfflineSnapshot[]>([]);
+  const [loadingOffline, setLoadingOffline] = useState(false);
+  // Id del borrador que se está borrando definitivamente ahora mismo (pedido
+  // explícito 2026-09-10) -- deshabilita su botón mientras dura la operación
+  // para evitar un doble click que dispare dos DELETE concurrentes.
+  const [deletingOfflineId, setDeletingOfflineId] = useState<string | null>(null);
+  // El documento que el editor tiene abierto AHORA MISMO (si es un
+  // borrador local sin id de servidor) no debe ofrecerse como "recuperable"
+  // -- ya está siendo editado, mismo criterio que tenía el efecto de
+  // arranque ahora desactivado (`if (orphan.reportId === doc.document_id)
+  // continue`, ver App.tsx).
+  const openLocalDocumentId = useEditorStore((s) => s.doc.document_id);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingOffline(true);
+    findOrphanedLocalDrafts()
+      .then((all) => {
+        if (cancelled) return;
+        // Solo los del usuario actual -- la base SQLite local es por
+        // NAVEGADOR, no por usuario (se descarga una sola vez por
+        // navegador), así que sin este filtro un segundo usuario en el
+        // mismo equipo vería los borradores sin guardar del primero.
+        setOfflineDrafts(all.filter((d) => (
+          (d.documentJson?.meta as any)?.author === currentUserName &&
+          d.reportId !== openLocalDocumentId
+        )));
+      })
+      .catch((err) => log.warn('ReportsAdminModal: no se pudieron revisar los documentos sin conexión', err))
+      .finally(() => { if (!cancelled) setLoadingOffline(false); });
+    return () => { cancelled = true; };
+  }, [currentUserName, openLocalDocumentId]);
+
+  /** Borra definitivamente un borrador de la sección "Documentos sin
+   * conexión" -- pedido explícito 2026-09-10: un botón junto a "Restaurar"
+   * que limpie la caché SQLite local del navegador, con un diálogo de
+   * advertencia (irreversible) y confirmar/cancelar antes de ejecutar el
+   * DELETE (ver ConfirmActionDialog.tsx, mismo mecanismo que ya usa el resto
+   * de la app para confirmaciones destructivas/sensibles). */
+  const handleDeleteOfflineDraft = useCallback(async (draft: OfflineSnapshot) => {
+    const confirmed = await requestConfirmation(
+      `¿Eliminar definitivamente "${draft.title || 'Sin título'}"? Este documento sin conexión se borrará de este equipo y no se podrá volver a recuperar.`,
+    );
+    if (!confirmed) return;
+    setDeletingOfflineId(draft.reportId);
+    try {
+      await deleteOfflineSnapshot(draft.reportId);
+      setOfflineDrafts((prev) => prev.filter((d) => d.reportId !== draft.reportId));
+    } catch (err) {
+      log.error('ReportsAdminModal: no se pudo eliminar el documento sin conexión', err);
+    } finally {
+      setDeletingOfflineId(null);
+    }
+  }, []);
 
   useEffect(() => {
     fetch('/api/auth/tenants', { headers: authHeadersRA() })
@@ -148,7 +239,7 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: 
     } finally {
       setLoading(false);
     }
-  }, [applied, company, page, sortBy, sortDir]);
+  }, [applied, company, page, refreshToken, sortBy, sortDir]);
 
   // Bootstrap users on modal open
   useEffect(() => {
@@ -233,6 +324,79 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: 
           </div>
         </div>
 
+        {/* ── Pestañas: informes guardados vs. documentos sin conexión ── */}
+        <div className="ra-tabs">
+          <button
+            type="button"
+            className={`ra-tab${view === 'reports' ? ' ra-tab-active' : ''}`}
+            onClick={() => setView('reports')}
+          >
+            <FolderOpen size={14} /> Informes guardados
+          </button>
+          <button
+            type="button"
+            className={`ra-tab${view === 'offline' ? ' ra-tab-active' : ''}`}
+            onClick={() => setView('offline')}
+            title="Documentos editados sin conexión que nunca llegaron a guardarse en el servidor"
+          >
+            <CloudOff size={14} /> Documentos sin conexión
+            {offlineDrafts.length > 0 && <span className="ra-tab-badge">{offlineDrafts.length}</span>}
+          </button>
+        </div>
+
+        {view === 'offline' ? (
+          <div className="ra-offline-section">
+            {loadingOffline ? (
+              <div className="ra-loading">
+                <Loader2 size={28} className="ra-spin" />
+                <span>Revisando documentos sin conexión…</span>
+              </div>
+            ) : offlineDrafts.length === 0 ? (
+              <div className="ra-empty">
+                <CloudOff size={40} style={{ opacity: 0.25 }} />
+                <p>No hay documentos sin conexión pendientes de recuperar.</p>
+                <span>Acá aparecerán los informes que edites mientras el equipo esté sin conexión con el servidor y todavía no se hayan guardado.</span>
+              </div>
+            ) : (
+              <div className="ra-offline-list">
+                <p className="ra-offline-hint">
+                  Estos documentos se editaron sin conexión y nunca se guardaron en el servidor -- solo vos los ves,
+                  quedan en este equipo hasta que los restaures y presiones "Guardar".
+                </p>
+                {offlineDrafts.map((draft) => (
+                  <div key={draft.reportId} className="ra-offline-row">
+                    <FileText size={18} className="ra-offline-row-icon" />
+                    <div className="ra-offline-row-info">
+                      <strong>{draft.title || 'Sin título'}</strong>
+                      <span>{formatReportTimestamp(draft.updatedAt)}</span>
+                    </div>
+                    <div className="ra-offline-row-actions">
+                      <button
+                        type="button"
+                        className="ra-action-btn ra-edit"
+                        onClick={() => onRestoreOfflineDraft?.(draft)}
+                        disabled={!onRestoreOfflineDraft}
+                        title="Abrir este documento en el editor para continuar y guardarlo"
+                      >
+                        <HardDriveDownload size={15} /> Restaurar
+                      </button>
+                      <button
+                        type="button"
+                        className="ra-action-btn ra-delete"
+                        onClick={() => handleDeleteOfflineDraft(draft)}
+                        disabled={deletingOfflineId === draft.reportId}
+                        title="Eliminar definitivamente este documento de este equipo -- no se podrá recuperar"
+                      >
+                        <Trash2 size={15} /> {deletingOfflineId === draft.reportId ? 'Eliminando…' : 'Eliminar'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
         {/* ── Panel de filtros ── */}
         <div className="ra-filters">
           <div className="ra-filters-grid">
@@ -356,10 +520,16 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: 
                 </tr>
               </thead>
               <tbody>
-                {reports.map((r) => (
+                {reports.map((r) => {
+                  const isCurrentlyEditing = Boolean(currentReportId) && r.id === currentReportId;
+                  return (
                   <tr
                     key={r.id}
-                    className={selected?.id === r.id ? 'ra-row-selected' : ''}
+                    className={[
+                      selected?.id === r.id ? 'ra-row-selected' : '',
+                      isCurrentlyEditing ? 'ra-row-current' : '',
+                    ].filter(Boolean).join(' ')}
+                    title={isCurrentlyEditing ? 'Estás editando este informe ahora mismo' : undefined}
                     onClick={() => setSelected(r)}
                   >
                     <td>
@@ -382,7 +552,8 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: 
                       v{r.versionNumber || 1}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -436,6 +607,14 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: 
                   <Send size={15} /> Enviar
                 </button>
                 <button
+                  className="ra-action-btn ra-duplicate"
+                  onClick={() => onDuplicate?.(selected)}
+                  disabled={!onDuplicate}
+                  title="Crear una copia independiente de este informe para reutilizarlo como base de otro"
+                >
+                  <Copy size={15} /> Duplicar
+                </button>
+                <button
                   className="ra-action-btn ra-delete"
                   onClick={() => onOpenRead({ ...selected, _action: 'delete' })}
                   disabled={!canDelete(selected)}
@@ -451,6 +630,8 @@ function ReportsAdminModal({ onClose, onOpenRead, onOpenEdit, onGenerateDemo }: 
             </span>
           )}
         </div>
+          </>
+        )}
 
       </div>
 

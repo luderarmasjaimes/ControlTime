@@ -168,7 +168,7 @@ function VersionComparator({ snapshots = [], currentDoc, onClose }: VersionCompa
   }, [leftDoc, rightDoc, maxPages]);
 
   return (
-    <div className="vc-panel">
+    <div className="vc-panel" style={{}}>
       <div className="vc-header">
         <Diff size={16} />
         <span className="vc-header-title">Comparador de Versiones</span>

@@ -1,19 +1,18 @@
 /**
  * navClickGuard.ts — diagnóstico SIEMPRE activo (no gateado por VITE_DEBUG,
- * a diferencia de logger.ts) para el reporte de usuario 2026-09-10: "el
- * avatar generando no me deja entrar a Informes/Reportes".
+ * a diferencia de logger.ts), portado desde el avance de Luder (2026-09-11)
+ * para el reporte de usuario 2026-09-10: "el avatar generando no me deja
+ * entrar a Informes/Reportes".
  *
- * La causa raíz encontrada esa sesión fue AvatarWidget.tsx (position: fixed,
- * zIndex 9998) pudiendo posicionarse sobre el header/nav (.mining-nav-rail,
- * sin z-index propio) y tapando físicamente el click del botón de menú por
- * debajo -- ya corregido ahí (TOP_SAFE_ZONE) y en index.css (z-index en
- * .mining-nav-rail). Este módulo queda instalado en PRODUCCIÓN como red de
- * seguridad: si el mismo síntoma ("no puedo entrar a tal menú") vuelve a
- * reportarse -- por este widget, por cualquier otro overlay futuro (un
- * modal que no se cerró bien, un toast, etc.) -- este guard lo deja escrito
- * en la consola del navegador en el momento exacto en que ocurre, en vez de
- * depender de reproducirlo en vivo para diagnosticarlo (justo lo que faltó
- * la primera vez: sin esto, la única pista fue la descripción del usuario).
+ * La causa raíz encontrada esa sesión fue un widget flotante (position:
+ * fixed, z-index alto) pudiendo posicionarse sobre el header/nav
+ * (.mining-nav-rail, sin z-index propio) y tapando físicamente el click del
+ * botón de menú por debajo. Este módulo queda instalado en PRODUCCIÓN como
+ * red de seguridad: si el mismo síntoma ("no puedo entrar a tal menú")
+ * vuelve a reportarse -- por cualquier overlay futuro (un modal que no se
+ * cerró bien, un toast, etc.) -- este guard lo deja escrito en la consola
+ * del navegador en el momento exacto en que ocurre, en vez de depender de
+ * reproducirlo en vivo para diagnosticarlo.
  *
  * Mecanismo: en cada pointerdown, compara qué elemento va a recibir
  * realmente el evento (document.elementsFromPoint, en orden de z-index) con
@@ -85,8 +84,7 @@ export function installNavClickGuard(): () => void {
     if (installedCleanup) return installedCleanup
     // eslint-disable-next-line no-console
     console.info(
-        '[NAV_CLICK_GUARD] activo -- detecta clicks al menú bloqueados por otro elemento por encima ' +
-            '(hallazgo real 2026-09-10, ver AvatarWidget.tsx TOP_SAFE_ZONE).',
+        '[NAV_CLICK_GUARD] activo -- detecta clicks al menú bloqueados por otro elemento por encima.',
     )
     window.addEventListener('pointerdown', onPointerDown, true)
     installedCleanup = () => {

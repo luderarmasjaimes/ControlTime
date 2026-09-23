@@ -49,13 +49,12 @@ struct LivenessChallengeState {
    * absoluto no serviría igual para todos; el umbral es siempre relativo a
    * esta referencia de la propia sesión. */
   double baselineInterEyePx = 0.0;
-  /** Centro X (píxeles) del óvalo facial (AiEngineFrameResult::faceOvalEllipse
-   * vía BiometricCaptureRuntimeState::faceOvalCx) capturado junto con
+  /** Centro Y (píxeles) del óvalo facial (AiEngineFrameResult::faceOvalEllipse
+   * vía BiometricCaptureRuntimeState::faceOvalCy) capturado junto con
    * baselineInterEyePx -- referencia de "posición neutral" contra la que se
-   * mide el desplazamiento lateral que exigen shift_left/shift_right (pedido
-   * explícito del usuario 2026-09-07, distinto de turn_left/turn_right: ahí
-   * la cabeza GIRA sobre su eje, acá se DESPLAZA de lado sin girar). */
-  double baselineFaceCenterX = 0.0;
+   * mide la inclinación vertical que exigen look_down/look_up (reemplaza a
+   * shift_left/shift_right, ver kLivenessHeadPitchRatio). */
+  double baselineFaceCenterY = 0.0;
 };
 
 /** Cuántos desafíos hay que cumplir por sesión (ADR-146: bajado de 2 a 1 a
@@ -101,26 +100,35 @@ static constexpr double kLivenessMoveCloserRatio = 1.25;
 static constexpr double kLivenessMoveAwayRatio = 0.80;
 
 /**
- * Umbral de shift_left/shift_right (pedido explícito del usuario
- * 2026-09-07), como proporción del desplazamiento lateral del centro del
- * óvalo facial (`faceOvalCx`) respecto a `baselineFaceCenterX`, normalizado
- * por `baselineInterEyePx` (misma técnica que move_closer/move_away: un
- * umbral absoluto en píxeles no serviría igual para todas las cámaras/
- * distancias). A diferencia de turn_left/turn_right (headYawRatio, giro
- * sobre el propio eje -- nariz se mueve respecto al eje interocular DE LA
- * MISMA cara), esto mide un desplazamiento de TODA la cabeza sin girar --
- * nose y ojos se mueven juntos, headYawRatio se mantiene ~constante. 0.35 es
- * un punto de partida deliberadamente similar en orden de magnitud a
- * kLivenessHeadYawTurnThreshold; PENDIENTE DE VALIDAR con datos reales de
- * producción, igual que los demás umbrales de liveness activa (ver
- * ADR-125/126).
+ * Umbral de look_down/look_up, como proporción del desplazamiento VERTICAL
+ * del centro del óvalo facial (`faceOvalCy`) respecto a `baselineFaceCenterY`,
+ * normalizado por `baselineInterEyePx` (misma técnica que move_closer/
+ * move_away: un umbral absoluto en píxeles no serviría igual para todas las
+ * cámaras/distancias).
+ *
+ * Hallazgo real 2026-09-16 (263 fotos + prueba de esfuerzo de 8 min sobre
+ * shift_left/shift_right, el par que este reemplaza): ese par pedía
+ * "desplazar la cabeza de lado SIN girarla" -- un gesto que resultó nada
+ * intuitivo (81.7% de los frames medidos iban en la dirección CONTRARIA a la
+ * pedida) y que además el propio umbral no aislaba bien: revisando las
+ * imágenes reales guardadas, la mayoría de los "éxitos" correspondían a la
+ * persona mirando hacia ABAJO (barbilla al pecho), no a un desplazamiento
+ * lateral -- el óvalo de MediaPipe corre su centro X como efecto colateral
+ * del escorzo al inclinar la cabeza verticalmente. En vez de seguir peleando
+ * contra ese efecto colateral, se pide directamente el gesto que la gente ya
+ * hacía por instinto: inclinar la cabeza hacia abajo/arriba. Sin la ambigüedad
+ * izquierda/derecha (que además depende de cómo la persona interprete "su
+ * derecha" mirando su propia imagen) -- arriba/abajo no tiene ese problema de
+ * orientación. 0.35 se mantiene como punto de partida (mismo orden de
+ * magnitud que los demás umbrales) -- PENDIENTE DE VALIDAR con la prueba de
+ * esfuerzo de 5 min sobre look_down, igual que los demás (ver ADR-125/126).
  */
-static constexpr double kLivenessHeadShiftRatio = 0.35;
+static constexpr double kLivenessHeadPitchRatio = 0.35;
 
 /** Los 6 tipos de desafío posibles, fuente única para sorteo y para indexar
  * las métricas de abajo (evita mantener dos listas iguales). */
 constexpr std::array<const char *, 6> kLivenessChallengeTypes = {
-    "turn_left", "turn_right", "shift_left", "shift_right", "move_closer", "move_away"};
+    "turn_left", "turn_right", "look_down", "look_up", "move_closer", "move_away"};
 
 /** Índice de `type` en kLivenessChallengeTypes, o -1 si no coincide con
  * ninguno (defensivo -- no debería pasar salvo bug). */
@@ -159,13 +167,13 @@ std::string pickReplacementChallenge(const std::vector<std::string> &exclude);
 
 /**
  * Evalúa/avanza la máquina de estados de `st` con headYawRatio/interEyePx/
- * faceOvalCx YA calculados por MediaPipe en este frame. No hace nada si
+ * faceOvalCy YA calculados por MediaPipe en este frame. No hace nada si
  * st.complete ya es true. Si st.queue está vacía, sortea la cola Y captura
- * interEyePx/faceOvalCx como `st.baselineInterEyePx`/`st.baselineFaceCenterX`
+ * interEyePx/faceOvalCy como `st.baselineInterEyePx`/`st.baselineFaceCenterY`
  * (primera llamada tras cruzar el gate de calidad + parpadeo natural).
  */
 void evaluateLivenessChallenge(LivenessChallengeState &st, double headYawRatio,
-                                double interEyePx, double faceOvalCx,
+                                double interEyePx, double faceOvalCy,
                                 std::chrono::steady_clock::time_point now);
 
 /**

@@ -110,7 +110,7 @@ const LeftLibrary = React.memo(function LeftLibrary({
       <div className="panel-title-row">
         <h3 className="panel-title panel-title--library" title="Biblioteca de contenidos: inserte bloques en la página activa">
           <Blocks size={18} color="var(--accent)" aria-hidden />
-          {isExpanded && <span>Contenidos</span>}
+          {isExpanded && <span style={{color:'white'}}>Contenidos</span>}
         </h3>
         {isExpanded && (
           <button
@@ -120,7 +120,7 @@ const LeftLibrary = React.memo(function LeftLibrary({
             title={isPinned ? 'Soltar la barra (vuelve a contraerse al salir)' : 'Fijar la barra expandida (útil en tablet)'}
             aria-pressed={isPinned}
           >
-            {isPinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}
+            {isPinned ? <PinOff color="#F07E41" size={14} aria-hidden /> : <Pin color="#F07E41" size={14} aria-hidden />}
           </button>
         )}
       </div>
@@ -132,23 +132,23 @@ const LeftLibrary = React.memo(function LeftLibrary({
       )}
 
       <div className="panel-library-scroll">
-        <button
-          type="button"
-          className="lib-item lib-item--map"
-          title="Insertar un mapa detallado de alta resolución en la página"
-          onClick={() => onAdd('map')}
-        >
-          <div className="lib-item-icon lib-item-icon--map">
-            <MapIcon size={18} />
-          </div>
-          {isExpanded && (
-            <div className="lib-item-copy">
-              <span className="lib-item-text">Mapa</span>
-              <span className="lib-item-sub lib-item-sub--map">Alta definición</span>
-            </div>
-          )}
-        </button>
         <div className="library-grid">
+          <button
+            type="button"
+            className="lib-item"
+            title="Insertar un mapa detallado de alta resolución en la página"
+            onClick={() => onAdd('map')}
+          >
+            <div className="lib-item-icon lib-item-icon--map">
+              <MapIcon size={18} />
+            </div>
+            {isExpanded && (
+              <div className="lib-item-copy">
+                <span className="lib-item-text">Mapa</span>
+                <span className="lib-item-sub lib-item-sub--map">Alta definición</span>
+              </div>
+            )}
+          </button>
           {items.filter((item) => item.type !== 'map').map((item) => (
             <button
               key={item.type}

@@ -9,8 +9,8 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "adm-zip": "^0.6.0",
     "docx": "^9.7.1",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "pdf-lib": "^1.17.1",
     "pptxgenjs": "^3.12.0",

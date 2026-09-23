@@ -1,13 +1,25 @@
 import React, { memo, useState, useEffect, useMemo } from 'react';
 import {
   Activity, Zap, Database,
-  BarChart3, Layers, Radio,
+  BarChart3, Layers, Radio, FlaskConical,
 } from 'lucide-react';
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   REAL-TIME TELEMETRY DASHBOARD — Dual-stream monitoring
-   I12-I15: Kinesis hot-path + Kafka cold-path + QuestDB + TimescaleDB
-   FX09: Dashboard Kafka telemetría tiempo real avanzado
+   TELEMETRY DASHBOARD (demo) — panel de ejemplo, NO conectado a datos reales.
+   No existe hoy ningún endpoint que exponga throughput/latencia de ingesta
+   (ver specs/002-dashboards-tiempo-real/spec.md § "Contratos (endpoints
+   reales)": /api/dashboard/metrics, /api/mining/kpis, /api/mining/kpis/points,
+   /api/sensors/data — ninguno da tasa de mensajes/latencia de ingesta ni
+   estado de bróker). El backend real usa TimescaleDB (hypertables + agregado
+   continuo `telemetry_kpi_1m`, ADR-006) y, para ingesta durable, Redpanda
+   (compatible Kafka, ver BEEMETRY_TELEMETRY_INGEST_MODE en docker-compose.yml
+   / telemetry_ingest.cpp) — no existe "Kinesis" ni "QuestDB" en esta
+   plataforma; esos nombres se removieron de la copia. Todos los valores de
+   este panel (throughput, latencia, distribución por zona, eventos) siguen
+   siendo generados con Math.random() a propósito, como placeholder visual
+   hasta que exista un endpoint real de salud de ingesta — ver Fix 1 del
+   pase de auditoría 2026-08-21 (TelemetryDashboard.tsx). NO enrutar tráfico
+   real de negocio sobre las cifras que muestra este componente.
    ───────────────────────────────────────────────────────────────────────── */
 
 interface TelemetryEvent {
@@ -176,16 +188,37 @@ function TelemetryDashboard({ telemetryTenantId }: TelemetryDashboardProps) {
 
   return (
     <div className="td-panel">
+      {/* Banner de honestidad: este panel es 100% simulado (Math.random()),
+          no hay endpoint real de throughput/latencia de ingesta que
+          reemplazarlo hoy (ver comentario de cabecera). Estilos inline a
+          propósito: las clases td-* viven en ribbon.css, que este fix no
+          toca (pertenece a otro dueño de archivo). */}
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '8px 16px', margin: '0 16px 4px', marginTop: 10,
+          background: 'rgba(245,158,11,.1)', border: '1px solid rgba(245,158,11,.35)',
+          borderRadius: 6, color: '#fbbf24', fontSize: 10, fontWeight: 700,
+        }}
+      >
+        <FlaskConical size={13} style={{ flexShrink: 0 }} />
+        <span>
+          Datos simulados — no conectado a telemetría real. Panel de ejemplo
+          (placeholder visual); no existe todavía un endpoint de throughput/
+          latencia de ingesta para reemplazarlo.
+        </span>
+      </div>
+
       <div className="td-header">
         <Radio size={16} className="td-pulse" />
-        <span className="td-title">Telemetría en Vivo</span>
+        <span className="td-title">Telemetría (demo)</span>
         <span className="td-tenant">Tenant: {telemetryTenantId || 'default'}</span>
-        <span className="td-total">{totalEvents.toLocaleString()} eventos</span>
+        <span className="td-total">{totalEvents.toLocaleString()} eventos simulados</span>
       </div>
 
       <div className="td-streams-row">
         <StreamStatus
-          label="Kinesis Hot-Path"
+          label="Ingesta directa (demo)"
           icon={Zap}
           color="#f59e0b"
           msgPerSec={kinesisRate}
@@ -193,7 +226,7 @@ function TelemetryDashboard({ telemetryTenantId }: TelemetryDashboardProps) {
           status={kinesisLatency < 100 ? 'connected' : 'degraded'}
         />
         <StreamStatus
-          label="Kafka Cold-Path"
+          label="Redpanda · Kafka (demo)"
           icon={Layers}
           color="#6366f1"
           msgPerSec={kafkaRate}
@@ -204,7 +237,7 @@ function TelemetryDashboard({ telemetryTenantId }: TelemetryDashboardProps) {
 
       <div className="td-dbs-row">
         <DatabaseStatus
-          label="QuestDB (RT 72h)"
+          label="TimescaleDB · agregado 1m (demo)"
           icon={Database}
           color="#22d3ee"
           queryMs={Math.floor(Math.random() * 8 + 2)}
@@ -213,7 +246,7 @@ function TelemetryDashboard({ telemetryTenantId }: TelemetryDashboardProps) {
           status="healthy"
         />
         <DatabaseStatus
-          label="TimescaleDB (Hist)"
+          label="TimescaleDB · histórico (demo)"
           icon={Database}
           color="#10b981"
           queryMs={Math.floor(Math.random() * 50 + 20)}

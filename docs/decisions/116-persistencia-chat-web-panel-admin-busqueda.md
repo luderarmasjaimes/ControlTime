@@ -1,5 +1,7 @@
 # ADR-116 — Persistencia del chat web (`support_chat_message`) y panel admin de búsqueda
 
+> **Actualización 2026-09-23 (ADR-210) — estado cerrado: `implemented`.** La actualización del 2026-08-20 de este ADR ya declaraba implementadas y verificadas por lectura de código la persistencia real y los endpoints de búsqueda; la línea de estado quedó mixta. Estado vigente: **implemented**.
+
 > **Actualización 2026-08-20 (auditoría de trazabilidad ADR-103/106/112-120,
 > ver `README.md`)**: el "Estado de implementación" de abajo quedó
 > desactualizado — verificado por grep directo sobre el árbol de trabajo

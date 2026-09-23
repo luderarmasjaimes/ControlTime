@@ -20,8 +20,8 @@ struct AvatarAnimationResult {
 /** @brief POST multipart a avatar_animation_engine:/animate (imagen fuente +
  * guion de texto) -> video generado. El backend C++ no tiene proveedor TTS
  * propio (ver report_export_jobs.hpp) -- se manda "text" y
- * avatar_animation_engine sintetiza el audio localmente (espeak-ng, ver
- * sadtalker_backend.py::_synthesize_tts_wav), en vez de duplicar esa lógica
+ * avatar_animation_engine sintetiza el audio localmente (Piper TTS neuronal,
+ * ADR-202, ver sadtalker_backend.py::_synthesize_tts_wav), en vez de duplicar esa lógica
  * acá. `transparentBg=true` pide el post-proceso de fondo transparente
  * (matting.py) -- el resultado viene en WebM en vez de MP4, ver
  * `AvatarAnimationResult::contentType`. Bloqueante (puede tardar 200-300s

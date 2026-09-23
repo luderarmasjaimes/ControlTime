@@ -53,10 +53,18 @@ const DetailedMap = ({
             zoomControl: true
         }).setView([initialCenter.lat, initialCenter.lng], initialZoom);
 
-        // Google Satellite Base Layer
-        L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+        // Google Hybrid Base Layer (satelital + calles/nombres de lugares) --
+        // mismo tileset que usa SensorGeoMapPanel.tsx (mapa del bloque
+        // "Gráfico de sensores"): `lyrs=y` (Hybrid) en vez del `lyrs=s`
+        // (satelital puro, sin ninguna etiqueta) que traía esto antes, y
+        // round-robin real de subdominios (mt0-mt3 vía `subdomains`, no solo
+        // mt1) para que los tiles carguen en paralelo -- con un solo
+        // subdominio el mapa se veía tardío/incompleto mientras cargaba.
+        // Pedido explícito: iguala la calidad visual al mapa de sensores.
+        L.tileLayer('https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+            subdomains: '0123',
             maxZoom: 22,
-            attribution: '© Google Satellite'
+            attribution: '© Google Hybrid'
         }).addTo(map.current);
 
         map.current.on('moveend', () => {

@@ -94,6 +94,12 @@ namespace {
 //     durante la prueba offline antes de este fix. No habilita eval() de
 //     JS arbitrario: 'wasm-unsafe-eval' solo cubre WebAssembly, es un token
 //     separado de 'unsafe-eval'.
+//     Se agregó static.cloudflareinsights.com (2026-09-19, túnel Cloudflare
+//     permanente para automatizacionindustrial.homes): es el script de
+//     analítica que Cloudflare auto-inyecta en todo el tráfico proxificado
+//     por su red -- sin este token el navegador lo bloqueaba en consola real
+//     ("violates ... script-src"). Es el propio Cloudflare, no un tercero
+//     arbitrario, y solo corre en páginas servidas detrás de su proxy.
 //   - style-src: necesita 'unsafe-inline' — Tailwind Play CDN inyecta su CSS
 //     generado en runtime sin soporte de nonce/hash, y hay un <style> propio
 //     inline en index.html. Mismo trade-off ya aceptado por usar Tailwind
@@ -111,7 +117,11 @@ namespace {
 //     VideoInsertModal.tsx inserta como data URL base64. Ver la misma nota,
 //     más detallada, en frontend/nginx.conf (el CSP que realmente aplica el
 //     navegador sobre el HTML servido).
-//   - connect-src: SOLO 'self' (sin comentar-lo-de-más: 'self' YA cubre el
+//   - connect-src: 'self' + cloudflareinsights.com (2026-09-19, mismo motivo
+//     que el token de script-src de arriba: el beacon de Cloudflare hace su
+//     POST de métricas ahí -- sin listarlo, el navegador lo bloqueaba igual
+//     aunque el script ya cargara). El resto es SOLO 'self' (sin comentar-lo-
+//     de-más: 'self' YA cubre el
 //     equivalente ws/wss del propio origen -- un WebSocket a
 //     wss://mismo-host coincide con 'self' igual que un fetch a
 //     https://mismo-host, no hace falta listar ws:/wss: aparte). El WS de la
@@ -144,12 +154,12 @@ namespace {
 //     agrega soporte, o se aísla el chart en un iframe/Shadow DOM propio).
 static const char *kCspValue =
     "default-src 'self'; "
-    "script-src 'self' 'wasm-unsafe-eval' https://cdn.tailwindcss.com; "
+    "script-src 'self' 'wasm-unsafe-eval' https://cdn.tailwindcss.com https://static.cloudflareinsights.com; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: blob: https:; "
     "media-src 'self' data: blob:; "
-    "connect-src 'self'; "
+    "connect-src 'self' https://cloudflareinsights.com; "
     "object-src 'none'; "
     "base-uri 'self'; "
     "frame-ancestors 'self'; "

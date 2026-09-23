@@ -5,7 +5,7 @@
 | **Plan** | `specs/013-videovigilancia-cctv/plan.md` |
 | **Sprint·Release** | Etapa 2 (S9-S10) |
 | **Responsables** | BE1 (routes/C++), SYS (cámaras/red), FE1 (muro frontend), QA |
-| **Última revisión** | 2026-06-24 v2 (T6+T7+T17 implementados — CRUD cámaras completo) |
+| **Última revisión** | 2026-09-13 (T9-T10: auto-refresh configurable + indicador de cámara offline con timestamp implementados en `VideoDiagram.tsx`; anterior: 2026-06-24 v2, T6+T7+T17 — CRUD cámaras completo) |
 
 ---
 
@@ -22,8 +22,8 @@
 | **T7** | `PUT /api/surveillance/cameras/{id}` — actualizar URL/estado | CA-1 | BE1 | Haiku | ✅ | `handleUpdateCamera`: SET dinámico, scope por tenant_id (ownership) |
 | **T17** | `DELETE /api/surveillance/cameras/{id}` — eliminar cámara | CA-1 | BE1 | Haiku | ✅ | `handleDeleteCamera`: verifica tenant, 404 si no encontrada |
 | **T8** | Seed de cámaras de prueba en `db_init/` | dev/test | BE3 | Haiku | ✅ | Seed existe para datos de demo |
-| **T9** | Frontend: grid CCTV (16 cámaras, refresh configurable) | CA-5 | FE1 | Sonnet/ChatGPT | ☐ | Pendiente |
-| **T10** | Frontend: indicador de cámara offline (placeholder + timestamp) | CA-4 | FE1 | Sonnet | ☐ | Pendiente |
+| **T9** | Frontend: grid CCTV (16 cámaras, refresh configurable) | CA-5 | FE1 | Sonnet/ChatGPT | ✅ | 2026-09-13: auto-refresh configurable (Manual/15/30/60s) agregado a `VideoDiagram.tsx`, persistido en `localStorage` |
+| **T10** | Frontend: indicador de cámara offline (placeholder + timestamp) | CA-4 | FE1 | Sonnet | ✅ | 2026-09-13: placeholder dedicado de "sin señal" + timestamp del último poll (`lastFetchedAt`) |
 | **T11** | **Test CA-1**: `GET /cameras` → lista con estado/lat/lng | CA-1 | QA | — | ✅ | Validado |
 | **T12** | **Test CA-2**: `GET /camera-snapshot` → JPEG > 64 bytes | CA-2 | QA | — | ✅ | Validado con URL HTTP de prueba |
 | **T13** | **Test CA-3**: empresa A no ve cámaras de empresa B | CA-3 | QA | — | ✅ | Validado |
@@ -68,7 +68,7 @@ T15 (EPP, Etapa 2)
 - [x] CA-4 parcial: rtmp:// rechazado; falta placeholder para error general.
 - [x] T5 — placeholder JPEG: JFIF 1×1 gris embebido como fallback + `SURVEILLANCE_OFFLINE_PLACEHOLDER` para imagen personalizable (implementado 2026-06-24).
 - [x] T6-T7-T17 — CRUD de cámaras (POST/PUT/DELETE) — implementado 2026-06-24.
-- [ ] T9-T10 — frontend grid (grid/offline existen en `VideoDiagram.tsx` con datos reales, pero sin auto-refresh configurable ni timestamp explícito por cámara — no se marca por no cumplir la redacción literal de la tarea, ver auditoría 2026-08-30).
+- [x] T9-T10 — implementado 2026-09-13: `VideoDiagram.tsx` ya tenía el grid con datos reales y el estado online/offline por cámara, pero le faltaba lo literal de la redacción (auditoría 2026-08-30) — agregado: (T9) auto-actualización configurable (Manual/15s/30s/60s, `REFRESH_INTERVAL_OPTIONS`, persistida en `localStorage`) además del botón manual ya existente; (T10) placeholder dedicado para cámara sin señal (antes compartía el mismo placeholder genérico que "sin URL reproducible") con el timestamp real del último poll exitoso (`lastFetchedAt`, mostrado también junto al grid). Verificado: `npx tsc --noEmit` sin errores, suite completa 444/444 sin regresión.
 - [x] T16 — timeout Python: contradicción interna del propio archivo corregida — la tabla de arriba y la nota "T5/T16 implementados 2026-06-24 v3" ya lo daban por hecho (`SURVEILLANCE_SNAPSHOT_TIMEOUT_S`, `timeout N python3 script.py`); solo este checklist quedó desactualizado.
 - [ ] T15 — integración EPP (Etapa 2).
 

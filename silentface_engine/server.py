@@ -120,9 +120,34 @@ def _check_liveness(predictor, img_bgr: np.ndarray) -> Tuple[bool, float, str]:
     piel viva real."""
     from silentface.generate_patches import CropImage
 
+    # Hallazgo real 2026-09-15: CropImage._get_new_box (generate_patches.py,
+    # vendorizado sin modificar) clampea el scale pedido (2.7 / 4.0 según el
+    # .pth) a min((src_h-1)/box_h, (src_w-1)/box_w, scale) para no salirse del
+    # cuadro. Con el frame de login a 960x720 (subido el 2026-08-19 para
+    # densidad de píxeles de EAR/MediaPipe, ver facialIcaoConfig.ts) el óvalo
+    # guía deja el rostro ocupando ~40-45% del alto del cuadro -- reproducido
+    # en vivo con bbox=[375,389,315,319] sobre 960x720: (720-1)/319=2.25, muy
+    # por debajo de 2.7 y de 4.0. Los DOS modelos del ensamble terminan
+    # recibiendo el MISMO recorte de facto (~2.25x), en vez del contexto
+    # amplio con el que MiniFASNetV1SE (4.0x) fue entrenado -- confirmado
+    # como causa real del falso positivo "spoof_or_screen_detected" (label=2,
+    # confidence=0.9538 sobre un rostro real bajo buena luz). No es un
+    # límite de la cámara: es el frame de 960x720 + encuadre del óvalo
+    # dejando muy poco margen para el crop que estos pesos esperan.
+    # Se amplía el lienzo ANTES de detectar el bbox (espejo, no borde negro
+    # sólido, para no introducir un canto artificial duro) de forma que
+    # CropImage tenga margen real para aplicar el scale completo en vez de
+    # clampearlo. +50% por lado cubre el caso reproducido (( 720*2 -1)/319 =
+    # 4.51, (960*2-1)/315 = 6.09, ambos por encima de 4.0) con margen para
+    # rostros algo más grandes en cuadro.
+    pad_h, pad_w = img_bgr.shape[0] // 2, img_bgr.shape[1] // 2
+    img_bgr = cv2.copyMakeBorder(
+        img_bgr, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_REFLECT_101
+    )
+
     image_bbox = predictor.get_bbox(img_bgr)
     h_img, w_img = img_bgr.shape[:2]
-    log.info("img=%dx%d bbox=%s", w_img, h_img, image_bbox)
+    log.info("img=%dx%d(padded) bbox=%s", w_img, h_img, image_bbox)
     if image_bbox == [0, 0, 0, 0]:
         return False, 0.0, "no_face_detected"
 

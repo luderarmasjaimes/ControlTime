@@ -1,6 +1,30 @@
 # ADR-080 — Vista previa de impresión, marca de agua y PDF cifrado con contraseña
 
-**Status**: accepted (implementado 2026-08-02)
+> **Actualización 2026-09-12**: `usePdfExport.ts` agregó un pipeline
+> **asíncrono** (`createPdfExportJob` + `pollExportJob`) por delante del
+> flujo síncrono que este ADR ya describía, con fallback automático al
+> camino síncrono si el backend responde 404 en `/export/pdf` como job —
+> mismo patrón que [ADR-083](083-exportacion-pptx-modo-presentacion-sidecar-hibrido.md)/[084](084-conversion-pptx-video-narracion-diapositiva.md)
+> ya establecieron para PPTX/video. **Extiende esta decisión sin
+> contradecirla**: el cifrado (`qpdf`, AES-256) y la marca de agua siguen
+> resolviéndose exactamente donde este ADR los ubicó (`pdf-export-service/
+> server.js`, justo después de `page.pdf()`), sin cambios; el password
+> sigue viajando solo por el header `X-Pdf-Password`, sin persistirse, en
+> ambos caminos (síncrono y asíncrono).
+>
+> Dos hallazgos de la misma auditoría, pendientes de corrección (no
+> resueltos por esta actualización): (1) el timeout del polling (5 min,
+> 150×2s) queda muy por debajo de exports reales grandes ya documentados
+> en [ADR-170](170-evaluacion-vps-gpu-pendiente-exportacion-documentos-extensos.md)
+> (~145 min proyectados para un informe de 2104 páginas) — un export
+> legítimo puede reportarse como fallido a mitad de camino; (2)
+> `exportEngine.ts::exportPDF()` es una función separada, sin ningún
+> caller en el repo, que de llegar a reconectarse reportaría éxito aunque
+> la exportación fallara por completo (su `catch` devuelve
+> `{success:true, method:'print-fallback'}` sin condición) — se recomienda
+> eliminarla o corregirla antes de que alguien la reconecte sin saber esto.
+
+**Status**: accepted (implementado 2026-08-02); pipeline asíncrono agregado 2026-09-12, ver arriba
 **Fecha**: 2026-08-02
 **Autores**: EC
 **Ámbito**: reports

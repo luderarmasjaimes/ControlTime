@@ -1,0 +1,1089 @@
+rule_chain,node_name,node_type,category,proposed_rules,reason,original_code
+AccelerographRC,Solo Goldfields,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.umbral_alerta=0.04
+
+if(metadata.deviceName=='GF.Station AC-03 LVU AGUILAS, SN: 362' || metadata.deviceName=='GF.Station AC-02 BARREL FARM, SN: 100441' || metadata.deviceName=='GF.STATION AC-01'){
+    
+    if(msg.umbral_alerta<parseFloat(msg.maxPGA) ){
+    
+        return true 
+    }
+    else{
+        return false
+    }
+    
+}
+else{
+    
+    return false
+}"
+AccelerographRC,Verifica escala,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var escala = msg.escala;
+if (typeof escala !== 'undefined') {
+    return true;
+} else {
+    return false;
+}"
+AlarmasBoroAcelerografo,Envia solo la hora actual,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+if(horas<1){ return true
+}
+else{ return false }"
+AlarmasBrocal,Condicion Alertas Acelerografos,TbJsSwitchNode,compound_multi_field,,"la condición combina 2 campos distintos (distancia_epicentro, mag_evento) con && / || -- platform_alarm_rules es 1 campo/1 umbral por fila; requiere antes una fórmula sensor_formula_def con la extensión iif() de tinyexpr (ADR-198) que calcule un canal compuesto, y LUEGO una regla de umbral sobre ese canal vía formula_output_channel_code. Patrón detectado (aprox.): mag_eventogt7 && distancia_epicentrolte100 && mag_eventogt6 && distancia_epicentrolte200","var magEvento = parseFloat(msg.mag_evento);
+var distanciaEpicentro = parseFloat(msg.distancia_epicentro);
+
+if (isNaN(magEvento) || !isFinite(magEvento) || 
+    isNaN(distanciaEpicentro) || !isFinite(distanciaEpicentro)) {
+    return [""Sin Valor""];
+}
+if (msg.mag_evento > 7 && msg.distancia_epicentro <= 100) {
+    return [""Peligro""];
+} else if (msg.mag_evento > 6 && msg.distancia_epicentro <= 200) {
+    return [""Alerta""] ;
+} else  {
+    return[""Normal""];
+}"
+AlarmasBrocal,Condicion Alertas Piezometro,TbJsSwitchNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.ALT==""Seco""){
+    return ['normal'];
+}
+else{
+    
+    var alt = !isNaN(parseFloat(msg.ALT)) ? parseFloat(msg.ALT) : 'none';
+    var nivel_alerta=metadata.shared_nivel_alerta
+    var nivel_peligro=metadata.shared_nivel_peligro
+
+    if(alt < nivel_alerta) {
+        return ['normal'];
+    }
+    if(alt >= nivel_alerta && alt <= nivel_peligro) {
+        return ['alerta'];
+    }
+    if(alt > nivel_peligro) {
+        return ['peligro'];
+    }
+
+
+    
+}"
+AlarmasBrocal,Envia solo la hora actual,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+if(horas<1){ return true
+}
+else{ return false }"
+AlarmasBrocal,Envia solo la hora actual,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+if(horas<1){ return true
+}
+else{ return false }"
+AlarmasBrocal,Tipo de dispositivo,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var tipo=metadata.deviceType
+
+if(tipo==""piezometer_equation""){
+    return ['piezometro'];
+}
+if(tipo==""piezometer""){
+    return ['piezometro'];
+}
+
+if(tipo==""accelerograph"") {
+    return ['accelerograph'];
+}"
+AlarmasCeldasBrocal,Condicion Alertas Celdas,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var Vel=msg.Velocidad_diaria;
+
+var nivel_alerta=metadata.shared_nivel_alerta;
+var nivel_peligro=metadata.shared_nivel_peligro;
+
+    if(Vel < nivel_alerta) {
+        return ['normal'];
+    }
+    if(Vel >= nivel_alerta && Vel <= nivel_peligro) {
+        return ['alerta'];
+    }
+    if(Vel > nivel_peligro) {
+        return ['peligro'];
+    }"
+AlarmasCeldasBrocal,Envia solo la hora actual,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+if(horas<1){ return true
+}
+else{ return false }"
+Anexos,Data exists?,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (Object.keys(msg).length !== 0) {
+    return ['DataFound'];
+}
+return ['DataNotFound'];"
+Anexos,Is Settlement Cell?,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","function nextRelation(metadata, msg) {
+    return ['one','nine'];
+}
+if(msgType === 'POST_TELEMETRY_REQUEST') {
+    return ['two'];
+}
+return nextRelation(metadata, msg);"
+Anexos,What company is?,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var device = metadata.deviceName;
+if (device.startsWith('ST')) {
+    return ['ST'];
+} else if (device.startsWith('AT')) {
+    return ['AT'];
+} else if (device.startsWith('CJ')) {
+    return ['CJ'];
+}"
+Asentamiento Acumulado,Device Type,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(metadata.ss_type==='settlement-cell' || metadata.ss_type==='settlement-cell-dp'){
+    return true;
+} else {
+    return false;
+}"
+Asentamiento Acumulado,Filter Device,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","return metadata.deviceName==""MC.VB-1"" || metadata.deviceName==""MC.VB-2"" || metadata.deviceName==""MC.VB-3"" || metadata.deviceName==""MC.VB-4"" || metadata.deviceName==""MC.VB-5"" || metadata.deviceName==""MC.VB-1'"" || metadata.deviceName==""MC.VB-2'"" || metadata.deviceName==""MC.VB-3'"" || metadata.deviceName==""MC.VB-4'"" || metadata.deviceName==""MC.VB-5'"" || metadata.deviceName==""MC.SA-1"" || metadata.deviceName==""MC.SA-2"" || metadata.deviceName==""MC.SA-3"" || metadata.deviceName==""MC.SA-5"" || metadata.deviceName==""MC.SA-6"" || metadata.deviceName==""MC.SA-7"" || metadata.deviceName==""MC.VB2-1A"" || metadata.deviceName==""MC.VB2-1B"" || metadata.deviceName==""MC.VB2-2A"" || metadata.deviceName==""MC.VB2-2B"" || metadata.deviceName==""MC.VB2-3A"" || metadata.deviceName==""MC.VB2-3B"" || metadata.deviceName==""MC.VB2-4A"" || metadata.deviceName==""MC.VB2-4B"" || metadata.deviceName==""MC.VB2-5A"" || metadata.deviceName==""MC.VB2-5B"" || metadata.deviceName==""MC.SA2-1""  || metadata.deviceName==""MC.SA2-2"" || metadata.deviceName==""MC.SA2-3"" || metadata.deviceName==""MC.SA2-4"" || metadata.deviceName==""MC.SA2-5"";"
+Asentamiento Acumulado,date,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+
+
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+
+if(horas<2){
+    
+    return true
+}
+else{
+    
+    return false
+}"
+Asentamiento Acumulado,date,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+
+
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+
+if(horas<2){
+    
+    return true
+}
+else{
+    
+    return false
+}"
+BuoyRC,Condicion,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.Altitud==""NAN""){
+    return false
+}
+else{
+    return true
+}"
+CE Tantahuay Alarmas,Filtro,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var umbral_max_ce=parseFloat(metadata.shared_max_ce)
+
+
+if(parseFloat(msg.Conductividad)>umbral_max_ce){
+    return true
+}
+else{
+    return false
+}"
+CE Tantahuay Alarmas,date,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+
+
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+
+if(horas<2){
+    
+    return true
+}
+else{
+    
+    return false
+}"
+CasagrandeRC,Validacion de tipo de dispositivo,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (
+(typeof metadata.deviceType !== 'undefined') && 
+((metadata.deviceType == 'piez_level' || metadata.deviceType == 'casagrande')
+))
+{
+return true;
+} else {
+return false;
+}"
+Celdas_Cuajone,Valida,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.Freq == 'NaN' || msg.oriFreq== ""NaN"" || msg.Temp== ""NaN"" || msg.oriTemp== ""NaN"" || msg.Temp== ""NAN"") {
+    return false;
+} else {
+    return true;
+}"
+Centinela Camposol Alarmas,Device,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe",return metadata.deviceName == 'CS.CELDA_7CR2_VW' || metadata.deviceName == 'CS.Celda_SA-01' ;
+Centinela Camposol Alarmas,Umbral Texto,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(metadata.texto=='Vacio' ){
+        return false
+    }
+    else{
+        return true
+    }"
+Centinela Camposol Alarmas,Umbral Texto,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(metadata.texto=='Vacio' ){
+        return false
+    }
+    else{
+        return true
+    }"
+Centinela Camposol Alarmas,date,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+
+
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+
+if(horas<1){
+    
+    return true
+}
+else{
+    
+    return false
+}"
+Empresa Alarmas,Buenaventura,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='BR'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Camposol,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='CS'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,El Toro,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='ET'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,G.P Coricancha,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='GP'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,GoldFields,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='GF'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Huaron,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='HU'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Kolpa,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='KO'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Metro_lima,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='ML'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Minsur,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='MS'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Pucamarca,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='PU'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Quebrada Honda,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='ST'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Raura,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='RA'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Tajo Mina,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='SJ'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Tambomayo,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='TB'){
+    return true
+}
+else{
+    return false
+}"
+Empresa Alarmas,Volcan,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='AL'){
+    return true
+}
+else{
+    return false
+}"
+ExtensometerOld,Filtra,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(msg.tipo=='reproceso'){
+    return true   
+}
+else{
+    return false 
+}"
+ExtensometerOld,Verifica cambio,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(msg.cambio){
+  return true;  
+}
+else{
+    return false
+}"
+ExtensometerRC,Is criteria valid?,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.tipo == 'editando' || msg.origen == 'app') {
+    return true;
+} else {
+    return false;
+}"
+ExtensometerRC,Is periodical to lineabase?,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","/*
+// Verificamos que el metadata.ts sea igual tiempo que la lineabase (con diferente día).
+function nextRelation(metadata) {
+    var lineabase = metadata.shared_lineabase; // Ej: ""2025-06-17 18:00:00"".
+    // Extraer hora y fecha de lineabase:
+    var lbTime = lineabase.split(' ')[1]; // ""18:00:00"".
+    var lbDate = lineabase.split(' ')[0]; // ""2025-06-17"".
+    // Extraer hora y fecha por partes de ts:
+    var tsMillis = parseInt(metadata.ts); // Ej: 3600000 milisegundos.
+    var datetime = new Date(tsMillis - (5 * 3600000)); // UTC-5 local time.
+    var year = datetime.getFullYear();
+    var month = datetime.getMonth() + 1;
+    var day = datetime.getDate();
+    var hours = datetime.getHours();
+    var minutes = datetime.getMinutes();
+    var seconds = datetime.getSeconds();
+    if (month < 10) { month = '0' + month.toString(); }
+    else { month = month.toString(); }
+    if (day < 10) { day = '0' + day.toString(); }
+    else { day = day.toString(); }
+    if (hours < 10) { hours = '0' + hours.toString(); }
+    else { hours = hours.toString(); }
+    if (minutes < 10) { minutes = '0' + minutes.toString(); }
+    else { minutes = minutes.toString(); }
+    if (seconds < 10) { seconds = '0' + seconds.toString(); }
+    else { seconds = seconds.toString(); }
+    var tsDate = year + '-' + month + '-' + day; // Para comparar con lbDate.
+    var tsTime = hours + ':' + minutes + ':' + seconds;
+    // Comparación principal:
+    if (tsTime == lbTime && tsDate != lbDate) {
+        // Corroborar con test function string param: 'ACTUAL: ' + tsDate + ' ' + tsTime + ' | LINEABASE: ' + lbDate + ' ' + lbTime + ' PASS ' + String(tsTime == lbTime) + ' ' + String(tsDate != lbDate
+        return ['Yes'];
+    } else {
+        return ['No'];
+    }
+}
+
+return nextRelation(metadata);
+*/
+
+return ['Yes']"
+ExtensometerRC,What type of extensometer?,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","function nextRelation(metadata, msg) {
+    var relation = ['none'];
+    if (msg.hasOwnProperty('amperage')) {
+        relation = ['Encoder'];
+    } else if (msg.hasOwnProperty('laserDistance')) {
+        relation = ['Laser'];
+    }
+    return relation;
+}
+return nextRelation(metadata, msg);"
+Filtro Frecuencias,Switch type,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var frecuencia = msg.Freq;
+if (frecuencia <= 12250 && frecuencia >= 2250) {
+    var tipo = 'normal';
+}
+if (frecuencia > 12250) {
+    var tipo = 'alta';
+}
+if (frecuencia < 2250) {
+    var tipo = 'baja';
+}
+switch (tipo) {
+    case 'normal':
+        return ['normal'];
+    case 'alta':
+        return ['alta'];
+    case 'baja':
+        return ['baja'];
+    default:
+        return ['otro'];
+}
+/*
+var frecuencia = msg.Freq;
+if (frecuencia <= 3500 && frecuencia >= 1500) {
+    var tipo = 'normal';
+}
+if (frecuencia > 3500) {
+    var tipo = 'alta';
+}
+if (frecuencia < 1500) {
+    var tipo = 'baja';
+}
+switch (tipo) {
+    case 'normal':
+        return ['normal'];
+    case 'alta':
+        return ['alta'];
+    case 'baja':
+        return ['baja'];
+    default:
+        return ['otro'];
+}
+*/"
+Filtro NAN,Parameters Validation,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","/**
+ * Validación del parámetro ""Freq"" proveniente del servidor de datos.
+ */
+if (msg.Freq === """" || msg.Freq === ""undefined"" || msg.Freq === ""NaN"" || msg.Freq === ""NAN"") {
+    return ['Freq NaN'];
+}
+if (msg.Temp === """" || msg.Temp === ""undefined"" || msg.Temp === ""NaN"" || msg.Temp === ""NAN"") {
+    return ['Temp NaN'];
+}
+return 'OK'"
+Filtro Temperatura,Switch type,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var temp = msg.Temp;
+if (temp <= 25 && temp >= 0) {
+    var tipo = 'normal';
+}
+if (temp > 25) {
+    var tipo = 'alta';
+}
+if (temp < 0) {
+    var tipo = 'baja';
+}
+switch (tipo) {
+    case 'normal':
+        return ['normal'];
+    case 'alta':
+        return ['alta'];
+    case 'baja':
+        return ['baja'];
+    default:
+        return ['otro'];
+}
+/*
+var frecuencia = msg.Freq;
+if (frecuencia <= 3500 && frecuencia >= 1500) {
+    var tipo = 'normal';
+}
+if (frecuencia > 3500) {
+    var tipo = 'alta';
+}
+if (frecuencia < 1500) {
+    var tipo = 'baja';
+}
+switch (tipo) {
+    case 'normal':
+        return ['normal'];
+    case 'alta':
+        return ['alta'];
+    case 'baja':
+        return ['baja'];
+    default:
+        return ['otro'];
+}
+*/"
+Generate Report,If send email,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe",return msg.sendEmail === true;
+Generate Report,If send email,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe",return msg.sendEmail === true;
+GoldFields Alarmas,Script,TbJsFilterNode,simple_threshold,temperature gt 20 -> severity_sugerida=? (etiqueta legado: ?),,return msg.temperature > 20;
+GoldFields Alarmas,Script,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.empresa=='GF'){
+    return true
+}
+else{
+    return false
+}"
+HydrometricRC,CMC Tantahuay,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (metadata.deviceName == ""Estacion E-1B"" || metadata.deviceName == ""Estacion E-2"" || metadata.deviceName == ""Estacion E-4"" || metadata.deviceName == ""Estacion E-5"" || metadata.deviceName == ""EstacionE1-B"") {
+    return true;
+} else {
+    return false;
+}"
+HydrometricRC,Estacion E1,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (metadata.deviceName == ""TAMBO.Estación E-1"") {
+    return true;
+} else {
+    return false;
+}"
+Inactividad,Inactividad,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.active == false) {
+   return false;
+} else {
+    return true;
+}"
+InclinacionRC,Script,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var data = metadata.deviceName;
+data = String(data);
+if (data.slice(0, 6) == ""RA.TR0"") {
+    return true;
+} else {
+    return false;
+}"
+LevelRC,filtro,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()); comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(msg.texto!=""Vacio""){
+    var lastTs = metadata.ss_last_alarm_ts ? parseFloat(metadata.ss_last_alarm_ts) : 0;
+    var ahora  = new Date().getTime();
+    return (ahora - lastTs) >= 86400000; // 24h en ms
+}
+else{
+    return false
+}"
+Marcobre Alarmas Acelerografos,Revisión,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (metadata.umbral_texto != 'Sin alarma') {
+    return true;
+} else {
+    return false;
+}"
+Marcobre Alarmas Acelerografos,date,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","// Fundamental para evitar bombardeo de correos (pruebas alternas a RC):
+var fecha = new Date().getTime();
+var horas = (fecha - parseFloat(metadata.ts)) / 3600000;
+if (horas > 0 && horas < 2) {
+    return true;
+} else {
+    return false;
+}"
+Marcobre Alarmas Inclinometros InPlace,Revisión,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var criteria = metadata.ss_nivel_critico;
+var alerta = criteria < msg.maxValue ? 'Alto' : 'Sin alarma';
+if (alerta !== 'Sin alarma' && alerta != metadata.umbral_texto) {
+    return true;
+} else {
+    return false;
+}"
+Marcobre Alarmas Inclinometros InPlace,date,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","// Fundamental para evitar bombardeo de correos (pruebas alternas a RC):
+var fecha = new Date().getTime();
+var horas = (fecha - parseFloat(metadata.ts)) / 3600000;
+if (horas > 0 && horas < 1) {
+    return true;
+} else {
+    return false;
+}"
+NaN,NAN,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(msg.Freq==="""" || msg.Freq===""undefined"" || msg.Freq===""NaN"" || msg.Freq===""NAN""){
+    return true
+}
+else{
+    return false
+}"
+PH,BR.Estacion_Hydrometrica_Metales_3,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(metadata.deviceName==""BR.Estacion_Hydrometrica_Metales_3""){
+        return true
+    }
+    else{
+        return false
+    }"
+PH,Script,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var max=metadata.ss_max;
+var min=metadata.ss_min;
+
+if(msg.wx_Ph> max){
+
+    
+    return true
+    
+}
+if(msg.wx_Ph< min){
+    
+    
+    
+    return true
+    
+    
+}
+
+return false"
+PH,date,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+
+
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+
+if(horas<1){
+    
+    return true
+}
+else{
+    
+    return false
+}"
+PH Tantahuay Alarmas,Filtro,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var umbral_max_ph=parseFloat(metadata.shared_max_ph)
+var umbral_min_ph=parseFloat(metadata.shared_min_ph)
+
+if(parseFloat(msg.pH)>umbral_max_ph || parseFloat(msg.pH)<umbral_min_ph){
+    return true
+}
+else{
+    return false
+}"
+PH Tantahuay Alarmas,date,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+
+
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+
+if(horas<1){
+    
+    return true
+}
+else{
+    
+    return false
+}"
+PiezometerRC-V1,Is Freq NaN?,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.Freq === """" || msg.Freq === ""undefined"" || msg.Freq === ""NaN"" || msg.Freq === ""NAN"" || msg.Freq === null) {
+    return true;
+} else {
+    return false;
+}"
+PiezometerRC-V1,Is Freq NaN?,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.Freq === """" || msg.Freq === ""undefined"" || msg.Freq === ""NaN"" || msg.Freq === ""NAN"" || msg.Freq === null) {
+    return true;
+} else {
+    return false;
+}"
+PiezometerRC-V1,Is estado in message?,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe",return msg.hasOwnProperty('estado') && msg.estado === 'borrado';
+PiezometerRC-V1,Only Piezo y Celda,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if ((typeof metadata.deviceType !== 'undefined') && ((metadata.deviceType == 'piezometer') || (metadata.deviceType == 'settlement-cell'))) {
+    return true;
+} else {
+    return false;
+}"
+PiezometerRC-V1,Temp Validation,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.oriTemp == 'NaN') {
+    return false;
+} else {
+    return true;
+}"
+PiezometerRC-V1,Tipo de dispositivo,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var tipo=metadata.deviceType
+
+if(tipo==""piezometer_equation""){
+    return ['piezometro'];
+}
+if(tipo==""piezometer""){
+    return ['piezometro'];
+}"
+PiezometerRC-V2,Battery Validation,TbJsFilterNode,simple_threshold,BattNode gt 0 -> severity_sugerida=? (etiqueta legado: true),,"if (typeof msg.BattNode !== 'undefined') {
+    return msg.BattNode > 0;
+} else {
+    return true;
+}"
+PiezometerRC-V2,Filter Equation,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msgType === 'POST_TELEMETRY_REQUEST') {
+    if (metadata.shared_equation == 'linear') {
+        return ['linear'];
+    }else if (metadata.shared_equation == 'linear_GF') {
+        return ['linear_GF'];
+    }else if (metadata.shared_equation == 'linear_a') {
+        return ['linear_a'];
+    } else if (metadata.shared_equation == 'linear_b') {
+        return ['linear_b'];
+    } else if (metadata.shared_equation == 'linear_c') {
+        return ['linear_c'];
+    } else if (metadata.shared_equation == 'linear_c1') {
+        return ['linear_c1'];
+    } else if (metadata.shared_equation == 'linear_d') {
+        return ['linear_d'];
+    } else if (metadata.shared_equation == 'linear_e') {
+        return ['linear_e'];
+    } else if (metadata.shared_equation == 'linearGeokon') {
+        return ['linearGeokon'];
+    } else if (metadata.shared_equation == 'linearSoilInstruments') {
+        return ['linearSoilInstruments'];
+    } else if (metadata.shared_equation == 'linearRSTPsi') {
+        return ['linearRSTPsi'];
+    } else if (metadata.shared_equation == 'linearGeokonPsi') {
+        return ['linearGeokonPsi'];
+    } else if (metadata.shared_equation == 'polinomial_a' || metadata.shared_equation == 'polynomial_a') {
+        return ['polinomial_a'];
+    } else if (metadata.shared_equation == 'polinomial_a1') {
+        return ['polinomial_a1'];
+    } else if (metadata.shared_equation == 'polinomial_a2') {
+        return ['polinomial_a2'];
+    } else if (metadata.shared_equation == 'polinomial_comp') {
+        return ['polinomial_comp'];
+    } else if (metadata.shared_equation == 'polinomial_casagrande') {
+        return ['polinomial_casagrande'];
+    } else if (metadata.shared_equation == 'polinomial_casagrande_rst') {
+        return ['polinomial_casagrande_rst'];
+    } else if (metadata.shared_equation == 'polynomialB') {
+        return ['polynomialB'];
+    } else if (metadata.shared_equation == 'polynomialGeokon') {
+        return ['polynomialGeokon'];
+    } else if (metadata.shared_equation == 'polynomialRST') {
+        return ['polynomialRST'];
+    } else if (metadata.shared_equation == 'polynomialSlope') {
+        return ['polynomialSlope'];
+    } else if (metadata.shared_equation == 'linear_psi_geokon') {
+        return ['linear_psi_geokon'];
+    } else {
+        return ['default'];
+    }
+}"
+PiezometerRC-V2,Freq and Temp Validation,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.Freq == 'NaN' || msg.oriFreq== ""NaN"" || msg.Temp== ""NaN"" || msg.oriTemp== ""NaN"") {
+    return false;
+} else {
+    return true;
+}"
+PiezometerRC-V2,Is estado in message?,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe",return msg.hasOwnProperty('estado') && msg.estado === 'borrado';
+PrismB3,Script,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe",return true;
+PrismB3,Valida email existe,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if ((typeof metadata.ss_alert_email == 'undefined') || (typeof metadata.ss_alert_phone == 'undefined')){
+    
+    return false
+}
+else{
+    
+     if(msg.tipo_alerta_actual==msg.tipo_alerta_anterior){
+        
+        return false
+    }
+    else{
+        
+        return true
+    }
+}"
+PrismRC,Script,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe",return true;
+PrismRC,Valida email existe,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if ((typeof metadata.ss_alert_email == 'undefined') || (typeof metadata.ss_alert_phone == 'undefined')){
+    
+    return false
+}
+else{
+    
+     if(msg.tipo_alerta_actual==msg.tipo_alerta_anterior){
+        
+        return false
+    }
+    else{
+        
+        return true
+    }
+}"
+Prismas,Validator,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msgType === 'POST_TELEMETRY_REQUEST') {
+    if (msg.hasOwnProperty('este_anterior') || msg.hasOwnProperty('norte_anterior') || msg.hasOwnProperty('elevacion_anterior')) {
+        return ['automatizado'];
+    } else {
+        return['manual'];
+    }
+}"
+Prueba,Filtro Rango Freq,TbJsFilterNode,multi_threshold_chain,Freq lt 20000 -> severity_sugerida=? (etiqueta legado: false) | Freq gt 100 -> severity_sugerida=? (etiqueta legado: true),,"//msg.empresa=metadata.deviceName.substr(0,2);
+
+if(msg.Freq<20000 && msg.Freq>100){
+    return false
+}
+else{
+    return true
+}"
+Prueba,Tipo de Ecuacion,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","function nextRelation(metadata, msg) {
+    return ['one','nine'];
+}
+if(msgType === 'POST_TELEMETRY_REQUEST') {
+    
+    if(metadata.shared_equation==""linear_a""){
+        return ['linear_a'];
+    }
+    if(metadata.shared_equation==""linear_b""){
+        return ['linear_b'];
+    }
+    if(metadata.shared_equation==""polinomial_a""){
+        return ['polinomial_a'];
+    }
+    if(metadata.shared_equation==""polinomial_a1""){
+        return ['polinomial_a1'];
+    }
+    if(metadata.shared_equation==""polinomial_a2""){
+        return ['polinomial_a2'];
+    }
+    if(metadata.shared_equation==""polinomial_comp""){
+        return ['polinomial_comp'];
+    }
+    
+}
+return nextRelation(metadata, msg);"
+Root Migration,Switch device type,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","function nextRelation(metadata, msg) {
+    if (msgType === 'POST_TELEMETRY_REQUEST') {
+        var relation = ['other'];
+        switch (metadata.deviceType) {
+            case 'piezometer':
+            case 'settlement-cell':
+            case 'big_house':
+                relation = ['piezometer_and_settlement_cell_v1'];
+                break;
+            case 'piezometer_equation':
+                relation = ['piezometer_and_settlement_cell_v2'];
+                break;
+            case 'casagrande':
+            case 'piez_level':
+                relation = ['casagrande'];
+                break;
+            case 'SettlementCellDP':
+                relation = ['settlement_cell_only'];
+                break;
+            case 'accelerograph':
+                relation = ['accelerograph'];
+                break;
+            case 'weatherstation':
+            case 'pluviometer':
+                relation = ['weatherstation_and_pluviometer'];
+                break;
+            case 'hydrometric':
+                relation = ['hydrometric'];
+                break;
+            case 'extensometer':
+                relation = ['extensometer'];
+                break;
+            case 'tiltmeter':
+                relation = ['tiltmeter'];
+                break;
+            case 'inplace':
+                relation = ['tiltmeter_inplace'];
+                break;
+            case 'inclinacion':
+                relation = ['inclinacion'];
+                break;
+            case 'prisma':
+                relation = ['prism_v2'];
+                break;
+            case 'tilmiter_boro':
+                relation = ['tilmiter_boro'];
+                break;
+            case 'prism':
+                relation = ['prism_v1'];
+                if (msg.dispositivo === 'B3') {
+                    relation = ['prism_v1_b3'];
+                }
+                break;
+            case 'boya':
+                relation = ['boya'];
+                break;
+            case 'level':
+                relation = ['level'];
+                break;
+            case 'ph':
+                relation = ['ph'];
+                break;
+            case 'ManualLogger':
+                relation = ['manual_logger'];
+                break;
+            case 'asentamiento':
+                relation = ['asentamiento'];
+                break;
+            case 'test':
+                relation = ['test'];
+                break;
+            case 'celdas_cuajone':
+                relation = ['celdas_cuajone'];
+                break;
+            default:
+                break;
+        }
+        return relation;
+    }
+}
+return nextRelation(metadata, msg);"
+SettlementCellRC,Battery Validation,TbJsFilterNode,simple_threshold,BattNode gt 0 -> severity_sugerida=? (etiqueta legado: true),,"if (typeof msg.BattNode !== 'undefined') {
+    return msg.BattNode > 0;
+} else {
+    return true;
+}"
+SettlementCellRC,Filter Equation,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msgType === 'POST_TELEMETRY_REQUEST') {
+    if (metadata.shared_equation == 'linear') {
+        return ['linear'];
+    } else if (metadata.shared_equation == 'linear_a') {
+        return ['linear_a'];
+    } else if (metadata.shared_equation == 'linear_b') {
+        return ['linear_b'];
+    } else if (metadata.shared_equation == 'linear_c') {
+        return ['linear_c'];
+    } else if (metadata.shared_equation == 'linear_c1') {
+        return ['linear_c1'];
+    } else if (metadata.shared_equation == 'linear_d') {
+        return ['linear_d'];
+    } else if (metadata.shared_equation == 'linear_e') {
+        return ['linear_e'];
+    } else if (metadata.shared_equation == 'linearRST') {
+        return ['linearRST'];
+    } else if (metadata.shared_equation == 'linearRSTCJ') {
+        return ['linearRSTCJ'];
+    } else if (metadata.shared_equation == 'linearSoilInstruments') {
+        return ['linearSoilInstruments'];
+    } else if (metadata.shared_equation == 'polinomial_a') {
+        return ['polinomial_a'];
+    } else if (metadata.shared_equation == 'polinomial_a1') {
+        return ['polinomial_a1'];
+    } else if (metadata.shared_equation == 'polinomial_a2') {
+        return ['polinomial_a2'];
+    } else if (metadata.shared_equation == 'polynomial_a3') {
+        return ['polynomial_a3'];
+    } else if (metadata.shared_equation == 'polynomial_a4') {
+        return ['polynomial_a4'];
+    } else if (metadata.shared_equation == 'polynomial_a5') {
+        return ['polynomial_a5'];
+    } else if (metadata.shared_equation == 'polinomial_comp') {
+        return ['polinomial_comp'];
+    } 
+      else if (metadata.shared_equation == 'linear_a_prueba') {
+        return ['linear_a_prueba'];
+    }
+    else {
+        return ['default'];
+    }
+}"
+SettlementCellRC,Freq Validation,TbJsFilterNode,not_alarm_shaped,,"comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (msg.Freq == 'NaN' || msg.oriFreq== ""NaN"") {
+    return false;
+} else {
+    return true;
+}"
+SettlementCellRC,Is AsentamientoPromDiario in message?,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe",return msg.hasOwnProperty('AsentamientoPromDiario');
+TiltmeterInPlaceRC,Verificar temperatura,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var temp = parseFloat(msg.Temp);
+if (temp >= 200) {
+    return false;
+} else {
+    return true;
+}"
+Velocidad Inversa Celdas,Eq,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(metadata.shared_equation == ""linear_a""){
+    return true
+}
+else{
+    return false
+}"
+WeatherstationRC,Filtrar menor a 1 hora,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha = new Date().getTime();
+var horas = (fecha - parseFloat(metadata.ts)) / 3600000;
+var criteria = 1;
+if (horas < criteria) {
+    return true;
+} else {
+    return false;
+}"
+WeatherstationRC,Filtro de nombre,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (metadata.deviceName == 'BR.Estación Meteorológica Huachuacaja') {
+    return ['BR.WEATHERSTATION_HUACHUACAJA'];
+} 
+return 'other'"
+WeatherstationRC,Filtro de nombre,TbJsSwitchNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (metadata.deviceName == 'GF.WEATHERSTATION UT-30') {
+    return ['UT-30'];
+} else if (metadata.deviceName == 'GF.Nivel_Bomba') {
+    return ['bomba'];
+}
+return 'other'"
+WeatherstationRC,Umbral Texto,TbJsFilterNode,not_alarm_shaped,,"no se encontró ninguna comparación numérica msg.<campo> <op> <literal> -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (metadata.texto == null || metadata.texto == ""Vacio"") {
+    return false;
+} else {
+    return true;
+}"
+WeatherstationRC,Validar credenciales,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if (typeof metadata.ss_alert_email == 'undefined' || typeof metadata.ss_alert_phone == 'undefined') {
+    return false;
+} else {
+    return true;
+}"
+[CJ] Accelerograph Alarms,Criterion,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","// Fundamental para evitar bombardeo de correos (pruebas alternas a RC):
+var maxch0 = parseFloat(msg.maxch0G);
+var maxch1 = parseFloat(msg.maxch1G);
+var maxch2 = parseFloat(msg.maxch2G);
+var acc = Math.max(maxch0, maxch1, maxch2);
+if (!isNaN(acc)) {
+    var fecha = new Date().getTime();
+    var diff = (fecha - parseFloat(metadata.ts)) / 3600000;
+    if (diff > 0 && diff <= 1/12) {
+        var alertTitle = (acc > 0.3) ? 'Alto' : (acc >= 0.15) ? 'Medio': 'none';
+        if (alertTitle !== 'none') {
+            return true;
+        }
+    }
+}
+return false;"
+[CJ] Extensometer Alarms,Criterion,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof); chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","// Fundamental para evitar bombardeo de correos (pruebas alternas a RC):
+var fecha = new Date().getTime();
+var diff = (fecha - parseFloat(metadata.ts)) / 3600000;
+if (diff > 0 && diff <= 1/12) {
+    var location = typeof metadata.shared_location !== 'undefined' ? metadata.shared_location.toLowerCase() : 'none';
+    var velocityPerDay = parseFloat(msg.velocityPerDay);
+    velocityPerDay = !isNaN(velocityPerDay) ? velocityPerDay : 'none';
+    if (velocityPerDay !== 'none') {
+        var high = ['dd1-3', 'dd4&5'].indexOf(location) !== -1 ? 7 : (['cuña e-2'].indexOf(location) !== -1 ? 8 : (['d-52'].indexOf(location) !== -1 ? 50 : 'none'));
+        var medium = ['dd1-3', 'dd4&5'].indexOf(location) !== -1 ? 4 : (['cuña e-2'].indexOf(location) !== -1 ? 6 : (['d-52'].indexOf(location) !== -1 ? 25 : 'none'));
+        var alertTitle = (velocityPerDay > high) ? 'Alto' : (velocityPerDay >= medium) ? 'Medio': 'none';
+        if (high !== 'none' && medium !== 'none' && alertTitle !== 'none') {
+            return true;
+        }
+    }
+}
+return false;"
+[CJ] Piezometer Alarms,Criterion,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof); chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","// Fundamental para evitar bombardeo de correos (pruebas alternas a RC):
+var location = typeof metadata.shared_location !== 'undefined' ? metadata.shared_location : '';
+var ttop = location.toLowerCase() === 'presa torata' ? 3435 : location.toLowerCase() === 'chancador torata' ? 3180 : 'none';
+var mmedium = location.toLowerCase() === 'presa torata' ? 3431 : location.toLowerCase() === 'chancador torata' ? 3170 : 'none';
+var alt = !isNaN(parseFloat(msg.ALT)) ? parseFloat(msg.ALT) : 'none';
+if (ttop !== 'none' && mmedium !== 'none' && alt !== 'none' && alt >= mmedium) {
+    var fecha = new Date().getTime();
+    var diff = (fecha - parseFloat(metadata.ts)) / 3600000;
+    if (diff > 0 && diff <= 6) {
+        var alertTitle = (alt > ttop) ? 'Alto' : (alt >= mmedium) ? 'Medio': 'none';
+        if (alertTitle !== 'none') {
+            return true;
+        }
+    }
+}
+return false;"
+[CJ] Settlement Cell Alarms,Criterion,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","// Fundamental para evitar bombardeo de correos (pruebas alternas a RC):
+var mca = parseFloat(msg.z);
+mca = !isNaN(mca) ? mca * 100 : 'none'; // De metros a centímetros.
+if (mca !== 'none' && mca >= 2) { // Aplica la revisión de umbrales en centímetros.
+    var fecha = new Date().getTime();
+    var diff = (fecha - parseFloat(metadata.ts)) / 3600000;
+    if (diff > 0 && diff < 1) {
+        metadata.alertTitle = (mca > 5) ? 'Alto' : (mca >= 2) ? 'Medio' : 'Sin Alerta';
+        return true;
+    } else {
+        return false;
+    }
+} else {
+    return false;
+}"
+[CJ] Settlement Cell Alarms,Envia solo la hora actual,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","var fecha=new Date().getTime()
+var horas=(fecha-parseFloat(metadata.ts))/3600000
+
+if(horas<1){ return true
+}
+else{ return false }"
+[HU] Piezometer Alarms,Criterion,TbJsFilterNode,not_alarm_shaped,,"chequeo de existencia (typeof); chequeo de frescura del mensaje (new Date()) -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","// Fundamental para evitar bombardeo de correos (pruebas alternas a RC):
+var anexos = typeof metadata.shared_anexosV2 === 'string' ? JSON.parse(metadata.shared_anexosV2) : typeof metadata.shared_anexosV2 === 'object' ? metadata.shared_anexosV2 : { '1': '' };
+var alt = parseFloat(msg.ALT);
+var nac = parseFloat(anexos.anexo5.value);
+var nam = parseFloat(anexos.anexo4.value);
+alt = !isNaN(alt) ? alt : 'none';
+nac = !isNaN(nac) && nac !== 0 ? nac : 'none';
+nam = !isNaN(nam) && nam !== 0 ? nam : 'none';
+if (alt !== 'none' && nam !== 'none' && nac !== 'none' && alt >= nam) { // Aplica la revisión de umbrales.
+    var fecha = new Date().getTime();
+    var diff = (fecha - parseFloat(metadata.ts)) / 3600000;
+    if (diff > 0 && diff <= 1) {
+        metadata.alertTitle = (alt > nac) ? 'Crítico' : (alt >= nam) ? 'Moderado' : '';
+        return true;
+    } else {
+        return false;
+    }
+} else {
+    return false;
+}"
+[HU] Piezometer Alarms,filtro,TbJsFilterNode,not_alarm_shaped,,"chequeo de frescura del mensaje (new Date()); comparación contra literal de texto, no numérica -- no es un umbral numérico de alarma, fuera de alcance de platform_alarm_rules tal cual existe","if(msg.texto!=""Vacio""){
+    var lastTs = metadata.ss_last_alarm_ts ? parseFloat(metadata.ss_last_alarm_ts) : 0;
+    var ahora  = new Date().getTime();
+    return (ahora - lastTs) >= 86400000; // 24h en ms
+}
+else{
+    return false
+}"

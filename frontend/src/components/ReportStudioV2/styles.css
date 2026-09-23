@@ -53,6 +53,11 @@ body {
   color: var(--text-main);
   overflow: hidden;
 }
+@media print {
+  .ocultar-al-imprimir {
+    display: none !important;
+  }
+}
 
 h1, h2, h3, h4, .font-display {
   font-family: 'Barlow Semi Condensed', 'Outfit', sans-serif;
@@ -549,11 +554,7 @@ button:active {
 .panel {
   background: var(--bg-panel);
   border-right: 1px solid var(--border-light);
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
   overflow-y: auto;
-  scrollbar-width: thin;
   transition: var(--transition);
   color: #1e293b;
 }
@@ -575,8 +576,7 @@ button:active {
   gap: 0;
   min-height: 0;
   overflow: hidden;
-  align-self: stretch;
-  padding: 8px 5px !important;
+  padding: 10px 10px !important;
   font-family: var(--font-decideperu-sans);
   font-feature-settings: 'kern' 1;
   -webkit-font-smoothing: antialiased;
@@ -591,12 +591,11 @@ button:active {
 
 .panel--library {
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
-  width: 52px;
+  width: 82px;
   opacity: 0.8;
   position: relative;
   z-index: 50;
   height: 100%;
-  padding: 12px 0;
   align-items: center;
   overflow-x: hidden;
 }
@@ -604,9 +603,134 @@ button:active {
 .panel--library-expanded {
   width: 180px;
   opacity: 1;
-  padding: 20px;
   align-items: stretch;
 }
+
+/* Panel de miniaturas de diapositivas (pedido explícito 2026-09-08,
+   SlideThumbnailRail.tsx) — mismo criterio de columna que .panel--library
+   (alto 100%, solo la LISTA hace scroll), posición y ancho fijos mientras
+   la biblioteca de contenidos está contraída. Vive entre la biblioteca y
+   el lienzo, solo en modo presentación (el propio componente devuelve
+   null en modo documento). */
+.panel--slides {
+  width: 240px;
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 10px 10px 0;
+  z-index: 40;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, padding 0.3s ease;
+}
+.panel--slides .panel-title-row {
+  margin-bottom: 8px;
+}
+/* Pedido explícito 2026-09-08: cuando el usuario expande la biblioteca de
+   contenidos (hover, .panel--library-expanded) para insertar un bloque,
+   esta columna se contrae a 0 en vez de quedarse fija empujando el lienzo
+   -- selector de hermano adyacente puro CSS (SlideThumbnailRail.tsx se
+   renderiza siempre como el hermano SIGUIENTE de <LeftLibrary> en
+   App.tsx), sin acoplar los dos componentes con estado compartido. */
+.panel--library-expanded + .panel--slides,
+/* Mismo achicamiento, ahora para cuando el panel DERECHO de Propiedades
+   está desplegado -- ese no es hermano adyacente en el DOM (queda <main>
+   en medio), así que no hay selector CSS puro posible; App.tsx levanta
+   el estado y lo pasa como prop `collapsed` (ver SlideThumbnailRail.tsx). */
+.panel--slides-collapsed {
+  width: 0;
+  opacity: 0;
+  padding-left: 0;
+  padding-right: 0;
+  pointer-events: none;
+}
+.slide-thumb-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 12px;
+}
+.slide-thumb-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.slide-thumb-frame {
+  position: relative;
+  width: 160px;
+  height: 90px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+  border: 2px solid #cbd5e1;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+}
+.slide-thumb-card:hover .slide-thumb-frame {
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+}
+.slide-thumb-card--active .slide-thumb-frame {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35), 0 2px 6px rgba(15, 23, 42, 0.25);
+}
+.slide-thumb-card--dragover .slide-thumb-frame {
+  border-color: #22c55e;
+  border-style: dashed;
+}
+.slide-thumb-number {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #94a3b8;
+}
+.slide-thumb-card--active .slide-thumb-number {
+  color: #2563eb;
+}
+
+.slide-thumb-sketch {
+  position: absolute;
+  inset: 0;
+}
+.slide-thumb-block {
+  position: absolute;
+  border-radius: 1px;
+}
+.slide-thumb-block--shape { background: #94a3b8; }
+.slide-thumb-block--cover { background: #1e293b; }
+.slide-thumb-block--image {
+  background: #cbd5e1;
+  background-image: linear-gradient(135deg, transparent 45%, rgba(100, 116, 139, 0.5) 45%, rgba(100, 116, 139, 0.5) 55%, transparent 55%);
+}
+.slide-thumb-block--video {
+  background: #1e293b;
+}
+.slide-thumb-block--table {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  background-image:
+    repeating-linear-gradient(to bottom, #e2e8f0 0, #e2e8f0 1px, transparent 1px, transparent 25%),
+    repeating-linear-gradient(to right, #e2e8f0 0, #e2e8f0 1px, transparent 1px, transparent 33%);
+}
+.slide-thumb-block--chart,
+.slide-thumb-block--kpi {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+}
+.slide-thumb-block--text {
+  background-image: repeating-linear-gradient(to bottom, rgba(100, 116, 139, 0.65) 0, rgba(100, 116, 139, 0.65) 8%, transparent 8%, transparent 28%);
+  background-repeat: repeat-y;
+}
+.slide-thumb-block--generic { background: #e2e8f0; }
 
 .panel--right {
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
@@ -615,7 +739,6 @@ button:active {
   position: relative;
   z-index: 50;
   height: 100%;
-  padding: 12px 0;
   align-items: center;
   overflow-x: hidden;
 }
@@ -623,7 +746,6 @@ button:active {
 .panel--right-expanded {
   width: 340px;
   opacity: 1;
-  padding: 20px;
   align-items: stretch;
 }
 
@@ -693,10 +815,6 @@ button:active {
 .floating-contextual-toolbar {
   display: flex;
   align-items: center;
-  /* Fondo SÓLIDO oscuro (no glass translúcido): la barra flota sobre la hoja
-     BLANCA del informe, y el glass translúcido se mezclaba con el blanco
-     dejando botones/íconos casi invisibles (falta de contraste reportada).
-     Ahora es una superficie opaca con íconos claros de alto contraste. */
   background: #0f1e38;
   border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: var(--radius-lg);
@@ -706,6 +824,12 @@ button:active {
   pointer-events: auto;
   user-select: none;
   animation: floatingToolbarFadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* --- AJUSTES DE POSICIONAMIENTO DINÁMICO --- */
+  position: relative;      /* Evita conflictos con posicionamiento del wrapper */
+  white-space: nowrap;     /* Impide que los botones se bajen a una 2da fila si se comprime */
+  margin: 0;               /* Garantiza que no haya offsets extra al calcular X / Y */
+  transform: none;         /* Asegura que no haya translates CSS interfiriendo con el <Html> */
 }
 
 @keyframes floatingToolbarFadeIn {
@@ -765,6 +889,10 @@ button:active {
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
+  position: absolute;
+  margin-top: 43px;
+  margin-left: 10px;
+  width: 400px;
   gap: 20px;
 }
 
@@ -894,12 +1022,12 @@ button:active {
 .library-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 10px;
+  padding: 5px;
 }
 
 .studio-layout aside.panel.panel--library .library-grid {
   grid-template-columns: 1fr;
-  gap: 8px;
+  
 }
 
 .lib-item {
@@ -1065,10 +1193,12 @@ button:active {
 }
 
 .multipage-engine {
-  flex: 1 1 0%;
+  width: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  justify-content: center;
+  align-items: center;
   overflow: hidden;
 }
 
@@ -1092,11 +1222,11 @@ button:active {
   font-weight: 600;
 }
 
-/* Barra de progreso de export DOCX/PPTX/PDF asíncrono (job de report_export_job) --
-   pegada debajo de .doc-header-meta porque esa franja es la única visible sin
-   importar qué pestaña del ribbon (Inicio/Insertar/Diseño/.../Exportar) esté
-   activa; un export grande tarda 20-40+ min y el usuario necesita ver que
-   sigue avanzando, no que el sistema se colgó. */
+/* Barra de progreso de export DOCX/PPTX/PDF asíncrono -- portado del avance
+   de Luder (2026-09-11). Pegada debajo de .doc-header-meta porque esa franja
+   es la única visible sin importar qué pestaña del ribbon esté activa; un
+   export grande tarda 20-40+ min y el usuario necesita ver que sigue
+   avanzando, no que el sistema se colgó. */
 .export-progress-bar {
   flex-shrink: 0;
   display: flex;
@@ -1169,6 +1299,13 @@ button:active {
 
 .multipage-engine--presentation .page-scroll {
   align-items: center;
+  /* Espacio extra a los costados (además del padding base de .page-scroll)
+     para que el botón de transición (.page-transition-control, pegado al
+     borde derecho de cada diapositiva vía right:-42px) tenga dónde pintarse
+     sin quedar cortado por el borde del lienzo -- ver PageCanvas.tsx. Ambos
+     lados iguales para que la diapositiva se siga viendo centrada. */
+  padding-left: 90px;
+  padding-right: 90px;
 }
 
 .studio-main::-webkit-scrollbar,
@@ -1210,6 +1347,104 @@ button:active {
 
 .multipage-page-shell {
   position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  width: max-content;
+  min-width: 100%;
+}
+.multipage-page-canvas-column {
+  position: relative;
+  flex: none;
+}
+.report-comments-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 300px;
+  min-width: 300px;
+  margin-top: 28px;
+  padding: 0 8px 18px 0;
+}
+.report-comment-card {
+  padding: 10px 12px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #1e293b;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+.report-comment-card__head { display: flex; align-items: center; gap: 7px; min-width: 0; margin-bottom: 8px; }
+.report-comment-card__head strong { overflow: hidden; color: #1e293b; font-size: 12px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.report-comment-avatar { display: inline-grid; flex: 0 0 auto; width: 23px; height: 23px; place-items: center; border-radius: 50%; background: #0f766e; color: #fff; font-size: 8px; font-weight: 800; }
+.report-comment-anchor { margin-left: auto; color: #64748b; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.report-comment-delete { flex: 0 0 auto; display: inline-grid; place-items: center; width: 18px; height: 18px; padding: 0; border: none; border-radius: 50%; background: transparent; color: #94a3b8; font-size: 15px; line-height: 1; cursor: pointer; }
+.report-comment-delete:hover { background: #fee2e2; color: #dc2626; }
+.report-comment-card textarea { display: block; width: 100%; min-height: 52px; resize: vertical; padding: 7px 8px; border: 1px solid #94a3b8; border-radius: 3px; outline: none; color: #334155; background: #fff; font: 12px/1.35 var(--font-decideperu-sans, Arial, sans-serif); }
+.report-comment-card textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14); }
+.report-comment-card__footer { margin-top: 6px; color: #64748b; font-size: 9px; }
+
+.margin-ruler-frame {
+  position: relative;
+  height: 22px;
+  flex-shrink: 0;
+  z-index: 60;
+}
+
+.margin-ruler {
+  position: absolute;
+  inset: 4px 0 0;
+  height: 14px;
+  background: #eef2f5;
+  border: 1px solid #aab4bf;
+  border-bottom-color: #7d8792;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.margin-ruler::after {
+  content: '';
+  position: absolute;
+  inset: 5px 0 auto;
+  border-top: 1px solid #b8c0c8;
+}
+
+.margin-ruler-tick {
+  position: absolute;
+  top: 2px;
+  height: 7px;
+  border-left: 1px solid #87919b;
+}
+
+.margin-ruler-tick--start { left: 0; }
+.margin-ruler-tick--middle { left: 50%; }
+.margin-ruler-tick--end { right: 0; }
+
+.margin-handle {
+  position: absolute;
+  top: -1px;
+  width: 10px;
+  height: 15px;
+  padding: 0;
+  transform: translateX(-50%);
+  border: 0;
+  border-radius: 50%;
+  background: #52606d;
+  box-shadow: 0 0 0 2px #eef2f5;
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.margin-handle:hover,
+.margin-handle:focus-visible { background: #2563eb; outline: 2px solid #93c5fd; }
+
+.margin-guide-line {
+  position: absolute;
+  top: 22px;
+  border-left: 1px dashed #7b8794;
+  pointer-events: none;
+  z-index: 60;
 }
 
 .multipage-page-shell + .multipage-page-shell {
@@ -1225,8 +1460,8 @@ button:active {
   top: 6px;
   right: 6px;
   z-index: 50;
-  opacity: 0;
-  transition: opacity 0.15s;
+  
+  
 }
 .multipage-page-shell:hover .page-setup-control,
 .page-setup-control:focus-within {
@@ -1315,6 +1550,85 @@ button:active {
 .page-setup-apply:hover {
   background: #1d4ed8;
 }
+/* Toggle "Convertir esta página a texto plano" (pedido explícito
+   2026-09-08, solo modo documento) — ver MultipageView.tsx::PagePaperSetupControl. */
+.page-setup-plaintext {
+  border-top: 1px solid #eef2f7;
+  padding-top: 6px;
+  font-size: 10px;
+  color: #475569;
+}
+.page-setup-plaintext label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.page-setup-addpage {
+  border-top: 1px solid #eef2f7;
+  padding-top: 8px;
+}
+.page-setup-add {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #15803d;
+  background: #fff;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.page-setup-add:hover {
+  color: #fff;
+  background: #16a34a;
+  border-color: #16a34a;
+}
+.page-setup-addpage-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.page-setup-addpage-buttons {
+  display: flex;
+  gap: 6px;
+}
+.page-setup-addpage-buttons .page-setup-add {
+  flex: 1;
+}
+.page-setup-addpage-cancel {
+  padding: 4px 8px;
+  font-size: 10px;
+  color: #64748b;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: center;
+}
+.page-setup-addpage-cancel:hover {
+  color: #0f172a;
+  text-decoration: underline;
+}
+.page-setup-delete {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #b91c1c;
+  background: #fff;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.page-setup-delete:hover:not(:disabled) {
+  color: #fff;
+  background: #dc2626;
+  border-color: #dc2626;
+}
+.page-setup-delete:disabled {
+  color: #94a3b8;
+  border-color: #e2e8f0;
+  cursor: not-allowed;
+}
 
 .page-break-separator {
   display: none;
@@ -1379,7 +1693,7 @@ button:active {
 
 .review-kpi b {
   font-size: 1.12rem;
-  color: var(--text-main);
+  color: black;
 }
 
 .review-kpi span {
@@ -1390,7 +1704,7 @@ button:active {
 .review-summary {
   margin: 14px 0 10px;
   font-size: 0.9rem;
-  color: var(--text-main);
+  color: black;
 }
 
 .review-issues {
@@ -1612,6 +1926,235 @@ button:active {
   pointer-events: none;
 }
 
+/* Transición POR DIAPOSITIVA (SCRUM-36) -- botón al costado de cada hoja
+   en vez de un selector único en el ribbon (que solo afectaba a "la
+   diapositiva seleccionada" sin dejar claro que cada una puede tener la
+   suya): un botón por diapositiva dentro de PageCanvas.tsx hace evidente,
+   sin necesidad de explicación, que la transición es propia de esa hoja. */
+.page-transition-control {
+  position: absolute;
+  top: 8px;
+  right: -42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  color: #64748b;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.14);
+  cursor: pointer;
+  padding: 0;
+}
+.page-transition-control:hover { border-color: #6366f1; color: #6366f1; }
+.page-transition-control--active {
+  background: #eef2ff;
+  border-color: #6366f1;
+  color: #4f46e5;
+}
+
+/* Galería de transiciones (SCRUM-36, rediseño 2026-09-08) — reemplaza el
+   <select> nativo invisible superpuesto al botón por un popover real con
+   una miniatura ANIMADA por opción (reproduce el efecto al pasar el mouse,
+   ver PageCanvas.tsx::TransitionPreview) en vez de una lista de texto
+   plano sin ninguna pista visual de qué hace cada transición. */
+.transition-gallery-dropdown {
+  width: 200px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.transition-gallery-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.transition-gallery-hint {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+.transition-gallery-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.transition-option-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+.transition-option-card:hover {
+  border-color: #6366f1;
+  background: #eef2ff;
+  transform: translateY(-1px);
+}
+.transition-option-card--active {
+  border-color: #4f46e5;
+  background: #eef2ff;
+  box-shadow: inset 0 0 0 1px #4f46e5;
+}
+.transition-option-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #1e293b;
+}
+.transition-option-desc {
+  font-size: 0.68rem;
+  color: #64748b;
+  line-height: 1.3;
+}
+
+.transition-option-preview {
+  position: relative;
+  width: 100%;
+  height: 52px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0f172a;
+}
+.transition-option-preview .tp-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+}
+.transition-option-preview .tp-layer-a {
+  background: linear-gradient(135deg, #94a3b8, #64748b);
+}
+.transition-option-preview .tp-layer-b {
+  background: linear-gradient(135deg, #818cf8, #4f46e5);
+}
+
+/* Contenido genérico de relleno (barra de título + líneas de texto, y un
+ * cuadrado tipo imagen/gráfico solo en la diapositiva "B") -- pedido
+ * explícito 2026-09-11: antes cada capa era un color sólido sin nada
+ * adentro, así que la transición no se leía como "una diapositiva con
+ * contenido reemplaza a otra". */
+.tp-mock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+.tp-mock-bar {
+  width: 55%;
+  height: 6px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.85);
+}
+.tp-mock-line {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.45);
+}
+.tp-mock-line--1 { width: 80%; }
+.tp-mock-line--2 { width: 60%; }
+.tp-mock-square {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+}
+
+/* Miniaturas animadas EN BUCLE, sin depender de :hover -- pedido explícito
+ * 2026-09-11 ("que sean mas limpias que a veces se traban y se
+ * teletransportan"): la versión anterior era un `transition:` de una sola
+ * pasada gatillado por :hover, así que quedaba congelada en el estado
+ * final hasta un nuevo hover (se sentía "trabada") y, si el cursor
+ * cruzaba varias tarjetas rápido mientras se desplazaba la lista, la
+ * transición se reiniciaba a mitad de camino (se sentía "teletransportada").
+ * Con @keyframes + infinite cada miniatura se reproduce sola de punta a
+ * punta, siempre completa: 0-12% reposo en A, 12-45% transición hacia B,
+ * 45-75% reposo en B, 75-95% vuelve hacia A, 95-100% reposo en A antes de
+ * repetir -- misma duración (3.2s) para las 7, así conviven prolijas si el
+ * usuario ve varias tarjetas a la vez. */
+@keyframes tpNone {
+  0%, 44.99% { opacity: 0; }
+  45%, 74.99% { opacity: 1; }
+  75%, 100% { opacity: 0; }
+}
+.transition-option-preview--none .tp-layer-b { animation: tpNone 3.2s linear infinite; }
+
+@keyframes tpFade {
+  0%, 12% { opacity: 0; }
+  45%, 75% { opacity: 1; }
+  95%, 100% { opacity: 0; }
+}
+.transition-option-preview--fade .tp-layer-b { animation: tpFade 3.2s ease-in-out infinite; }
+
+@keyframes tpPushA {
+  0%, 12% { transform: translateX(0); }
+  45%, 75% { transform: translateX(-100%); }
+  95%, 100% { transform: translateX(0); }
+}
+@keyframes tpPushB {
+  0%, 12% { transform: translateX(100%); }
+  45%, 75% { transform: translateX(0); }
+  95%, 100% { transform: translateX(100%); }
+}
+.transition-option-preview--push .tp-layer-a { animation: tpPushA 3.2s ease-in-out infinite; }
+.transition-option-preview--push .tp-layer-b { animation: tpPushB 3.2s ease-in-out infinite; }
+
+@keyframes tpWipe {
+  0%, 12% { clip-path: inset(0 100% 0 0); }
+  45%, 75% { clip-path: inset(0 0 0 0); }
+  95%, 100% { clip-path: inset(0 100% 0 0); }
+}
+.transition-option-preview--wipe .tp-layer-b { animation: tpWipe 3.2s ease-in-out infinite; }
+
+/* Cubrir — igual forma que "empujar" pero SOLO se mueve B; A se queda fija
+   debajo (esa es la diferencia real con "empujar" en PowerPoint). */
+@keyframes tpCover {
+  0%, 12% { transform: translateX(100%); }
+  45%, 75% { transform: translateX(0); }
+  95%, 100% { transform: translateX(100%); }
+}
+.transition-option-preview--cover .tp-layer-b { animation: tpCover 3.2s ease-in-out infinite; }
+
+/* Descubrir — al revés de las demás: la que se ANIMA es A (se retira),
+   dejando ver a B, que se queda fija y estática debajo -- por eso A pasa a
+   pintarse ENCIMA (z-index) solo para esta variante. */
+.transition-option-preview--uncover .tp-layer-a { z-index: 2; }
+.transition-option-preview--uncover .tp-layer-b { z-index: 1; }
+@keyframes tpUncoverA {
+  0%, 12% { transform: translateX(0); }
+  45%, 75% { transform: translateX(-100%); }
+  95%, 100% { transform: translateX(0); }
+}
+.transition-option-preview--uncover .tp-layer-a { animation: tpUncoverA 3.2s ease-in-out infinite; }
+
+@keyframes tpCircle {
+  0%, 12% { clip-path: circle(0% at 50% 50%); }
+  45%, 75% { clip-path: circle(75% at 50% 50%); }
+  95%, 100% { clip-path: circle(0% at 50% 50%); }
+}
+.transition-option-preview--circle .tp-layer-b { animation: tpCircle 3.2s ease-in-out infinite; }
+
 /* Inspector Forms */
 .inspector-form {
   display: flex;
@@ -1623,7 +2166,7 @@ button:active {
 
 .inspector-section-label {
   font-size: 0.75rem;
-  color: #475569;
+  color: #9caabd;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1700,22 +2243,136 @@ button:active {
   box-shadow: 0 0 0 1px #2563eb inset;
 }
 .line-spacing-custom {
-  width: 56px !important;
+  width: 90px !important;
   flex-shrink: 0;
 }
 
+/* Controles globales de párrafo / márgenes del ribbon. Mantienen la cinta
+   compacta pero exponen los valores más usados sin abrir el modal. */
+.ribbon-paragraph-global-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(82px, 1fr));
+  gap: 3px 5px;
+  align-items: end;
+}
+.ribbon-paragraph-global-row label {
+  display: grid;
+  grid-template-columns: auto 42px auto;
+  align-items: center;
+  gap: 3px;
+  color: #475569;
+  font-size: 9px;
+  font-weight: 700;
+}
+.ribbon-paragraph-global-row input {
+  width: 42px;
+  min-width: 0;
+  height: 22px;
+  padding: 1px 3px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  color: #0f172a;
+  background: #fff;
+  font-size: 10px;
+}
+.ribbon-paragraph-global-row small { color: #64748b; font-size: 8px; }
+.ribbon-paragraph-global-row .ribbon-btn { justify-self: end; grid-column: 2; }
+.ribbon-margin-control { position: relative; }
+.ribbon-margin-summary { display: grid; gap: 2px; margin-top: 3px; color: #475569; font-size: 9px; line-height: 1.1; }
+.ribbon-margin-summary button { justify-self: start; padding: 0 4px; color: #2563eb; background: transparent; font-size: 14px; line-height: 1; }
+.ribbon-margins-dropdown { min-width: 270px; }
+.ribbon-margins-dropdown__custom { border-top: 1px solid #e2e8f0; }
+
+/* Modal equivalente a Configurar página / Párrafo de Word. */
+.document-layout-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(3px);
+}
+.document-layout-modal {
+  width: min(680px, 100%);
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 26px 70px rgba(15, 23, 42, 0.38);
+}
+.document-layout-modal__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 14px; border-bottom: 1px solid #e2e8f0; }
+.document-layout-modal__header h2 { margin: 0; color: #0f172a; font: 700 18px/1.2 var(--font-decideperu-sans, sans-serif); letter-spacing: 0; text-transform: none; }
+.document-layout-modal__header p { margin: 5px 0 0; color: #64748b; font-size: 12px; }
+.document-layout-close { width: 30px; height: 30px; border-radius: 6px; background: transparent; color: #475569; font-size: 23px; line-height: 1; }
+.document-layout-close:hover { background: #f1f5f9; color: #0f172a; }
+.document-layout-grid { display: grid; grid-template-columns: 0.85fr 1.15fr; gap: 18px; padding: 18px 20px; }
+.document-layout-section { min-width: 0; margin: 0; padding: 14px; border: 1px solid #dbe3ee; border-radius: 8px; }
+.document-layout-section legend { padding: 0 6px; color: #1e293b; font-size: 12px; font-weight: 800; }
+.document-layout-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.document-layout-field-grid label { display: grid; gap: 5px; color: #475569; font-size: 11px; font-weight: 700; }
+.document-layout-field-grid input, .document-layout-field-grid select { width: 100%; height: 32px; padding: 5px 7px; border: 1px solid #cbd5e1; border-radius: 5px; color: #0f172a; background: #fff; font: inherit; }
+.document-layout-number { display: flex; align-items: center; gap: 5px; }
+.document-layout-number small { color: #64748b; font-size: 10px; }
+.document-layout-modal__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 11px; }
+.document-layout-modal__footer > div { display: flex; gap: 8px; flex-shrink: 0; }
+.document-layout-button { min-height: 33px; padding: 0 13px; border-radius: 6px; font-size: 12px; font-weight: 700; }
+.document-layout-button--secondary { border: 1px solid #cbd5e1; background: #fff; color: #334155; }
+.document-layout-button--primary { background: #2563eb; color: #fff; }
+.document-layout-button--primary:hover { background: #1d4ed8; }
+@media (max-width: 720px) {
+  .document-layout-grid { grid-template-columns: 1fr; }
+  .document-layout-modal__footer { align-items: flex-start; flex-direction: column; }
+}
+
+/* Tarjetas de tipo de gráfico -- modal "Crear gráfico desde esta tabla"
+   (CreateChartFromTableModal.tsx), mismo catálogo de 3 tipos que Insertar >
+   Gráficos con datos. */
+.chart-from-table-type-options { display: grid; gap: 8px; }
+.chart-from-table-type-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 7px;
+  background: #fff;
+  color: #334155;
+  text-align: left;
+  cursor: pointer;
+}
+.chart-from-table-type-option:hover { border-color: #93c5fd; background: #f8fafc; }
+.chart-from-table-type-option.is-active { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; }
+.chart-from-table-type-option svg { grid-row: 1 / span 2; }
+.chart-from-table-type-option__label { font-size: 12px; font-weight: 700; }
+.chart-from-table-type-option__desc { font-size: 11px; color: #64748b; grid-column: 2; }
+.chart-from-table-type-option.is-active .chart-from-table-type-option__desc { color: #3b82f6; }
+
 /* Galería de estilos rápidos de tabla — miniatura de 3 barras (cabecera +
-   2 filas) que previsualiza el tema de color antes de aplicarlo. */
+   2 filas) que previsualiza el tema de color antes de aplicarlo. Con más de
+   20 temas, un grid que solo envuelve hacia abajo alargaba demasiado el
+   panel lateral -- ahora es una franja de 2 filas que crece hacia la
+   DERECHA (grid-auto-flow: column) con scroll horizontal, para poder seguir
+   agregando temas sin que el inspector crezca sin límite verticalmente. */
 .table-style-gallery {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-auto-flow: column;
+  grid-template-rows: repeat(2, 1fr);
+  grid-auto-columns: 66px;
   gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 6px;
 }
 .table-style-swatch {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 4px;
+  width: 66px;
+  flex: 0 0 auto;
   background: var(--panel-bg-alt, #f8fafc);
   border: 1px solid var(--border, #e2e8f0);
   border-radius: 6px;
@@ -1735,21 +2392,239 @@ button:active {
   border-radius: 2px;
   border: 1px solid;
 }
+.table-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.table-checkbox-row input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: #F07E41;
+}
+.table-band-color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 11.5px;
+  color: #ffffff;
+}
 
-/* Force high contrast in right inspector fields/buttons
-   (selector era ".panel.right", una clase que no existe -- el contenedor
-   real usa "panel panel--right" -- por eso este bloque nunca se aplicaba y
-   el <select> de "Tipo de sensor" quedaba con texto claro sobre fondo claro,
-   heredando --text-main pensado para el panel oscuro). */
-.panel.panel--right .input-group label {
+.conditional-format-scope { margin-top: 6px; }
+.conditional-format-scope-label {
+  display: block;
+  font-size: 10.5px;
+  color: #94a3b8;
+  margin-bottom: 5px;
+}
+.conditional-format-scope-options { display: flex; flex-wrap: wrap; gap: 6px; color: white; }
+.conditional-format-scope-btn {
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e2e8f0;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.conditional-format-scope-btn:hover { border-color: rgba(255, 255, 255, 0.35); }
+.conditional-format-scope-btn.is-active {
+  border-color: #F07E41;
+  background: rgba(240, 126, 65, 0.18);
+  color: #ffffff;
+}
+
+.conditional-format-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.conditional-format-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.conditional-format-row:hover { background: rgba(255, 255, 255, 0.1); }
+.conditional-format-row--active {
+  border-color: #F07E41;
+  background: rgba(240, 126, 65, 0.14);
+}
+.conditional-format-swatch {
+  flex: none;
+  width: 26px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.conditional-format-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conditional-format-delete {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #fca5a5;
+  cursor: pointer;
+}
+.conditional-format-delete:hover { background: rgba(239, 68, 68, 0.18); }
+
+.conditional-format-templates {
+  margin-top: 8px;
+}
+.conditional-format-templates-label {
+  display: block;
+  font-size: 10.5px;
+  color: #94a3b8;
+  margin-bottom: 5px;
+}
+.conditional-format-templates-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.conditional-format-template-swatch {
+  display: flex;
+  height: 22px;
+  border-radius: 5px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  padding: 0;
+}
+.conditional-format-template-swatch span { flex: 1; display: block; }
+.conditional-format-template-swatch:hover { border-color: rgba(255, 255, 255, 0.4); }
+.conditional-format-template-swatch.is-active { border-color: #F07E41; box-shadow: 0 0 0 1px #F07E41; }
+
+.conditional-format-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+.conditional-format-values { display: flex; gap: 6px; }
+.conditional-format-colors {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #e2e8f0;
+}
+.conditional-format-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.conditional-format-swatch--gradient { width: 32px; }
+
+.conditional-format-scales { margin-top: 8px; }
+
+.conditional-format-scale-count {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.conditional-format-scale-count-btn {
+  flex: 1;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e2e8f0;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.conditional-format-scale-count-btn:hover { border-color: rgba(255, 255, 255, 0.35); }
+.conditional-format-scale-count-btn.is-active {
+  border-color: #F07E41;
+  background: rgba(240, 126, 65, 0.18);
+  color: #ffffff;
+}
+
+.conditional-format-scale-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.conditional-format-scale-stop {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.conditional-format-scale-stop-label {
+  flex: none;
+  width: 44px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.conditional-format-scale-stop .input-premium { flex: 1; min-width: 0; }
+.conditional-format-scale-stop .color-palette-trigger {
+  /* Compacto -- dos pickers (fondo + texto) por fila en un panel angosto,
+     sin el padding/gap pensados para un trigger con label de texto largo. */
+  padding: 0;
+  width: 35px;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.conditional-format-scale-text-trigger {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.conditional-format-scale-preview {
+  height: 10px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+/* Force high contrast in right inspector fields/buttons */
+.panel.right .input-group label {
   color: #334155;
   font-weight: 700;
 }
 
-.panel.panel--right .input-premium,
-.panel.panel--right select.input-premium,
-.panel.panel--right input[type='number'],
-.panel.panel--right input.input-premium {
+.panel.right .input-premium,
+.panel.right input[type='number'],
+.panel.right input.input-premium {
   background: #ffffff !important;
   color: #0f172a !important;
   border: 1.5px solid #cbd5e1 !important;
@@ -1757,21 +2632,16 @@ button:active {
   appearance: textfield;
 }
 
-.panel.panel--right select.input-premium option {
-  color: #0f172a;
-  background: #ffffff;
-}
-
-.panel.panel--right .input-premium:focus,
-.panel.panel--right input[type='number']:focus,
-.panel.panel--right input.input-premium:focus {
+.panel.right .input-premium:focus,
+.panel.right input[type='number']:focus,
+.panel.right input.input-premium:focus {
   background: #ffffff !important;
   color: #0f172a !important;
   border-color: #6366f1 !important;
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14) !important;
 }
 
-.panel.panel--right .btn-premium-outline {
+.panel.right .btn-premium-outline {
   background: #f8fafc;
   color: #1e293b;
   border-color: #cbd5e1;
@@ -1818,6 +2688,7 @@ button:active {
   outline: none;
   border-color: var(--accent);
   background: white;
+  color: black;
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
@@ -2011,10 +2882,7 @@ button:active {
 }
 
 .text-editor-area-seamless {
-  background: transparent !important;
-  border: 1px solid rgba(37, 99, 235, 0.2) !important;
   outline: none !important;
-  box-shadow: none !important;
   transition: border-color 0.2s;
   padding: 0 !important;
   margin: 0 !important;
@@ -2088,6 +2956,14 @@ button:active {
 .text-editor-format-row.text-editor-format-row button:hover {
   background: #eff6ff;
   color: var(--accent);
+}
+
+/* Estado activo del formato de escritura: igual que los botones del ribbon,
+   pero visible también cuando todavía no existe texto seleccionado. */
+.text-editor-format-row.text-editor-format-row button.is-active {
+  background: #dbeafe;
+  color: #1d4ed8;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.32);
 }
 
 .text-editor-format-color {
@@ -2216,6 +3092,25 @@ button:active {
   text-align: left;
 }
 .color-palette-clear:hover { border-color: var(--accent, #F07E41); }
+.color-palette-recent {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eef2f7;
+}
+.color-palette-recent-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+.color-palette-recent-row {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+}
 .color-palette-popover {
   position: absolute;
   top: calc(100% + 4px);
@@ -2227,6 +3122,12 @@ button:active {
   padding: 10px;
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.24);
   width: max-content;
+  /* Red de seguridad: si el disparador está tan abajo (p.ej. la barra de
+     una celda de tabla, que ya de por sí vive debajo de la tabla) que ni
+     "abajo" ni "arriba" alcanzan a mostrar el popover entero, que se vuelva
+     desplazable en vez de quedar cortado sin forma de llegar al resto. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 .color-palette-grid {
   display: grid;
@@ -2277,8 +3178,15 @@ button:active {
 }
 
 /* ── Barra flotante de formato en celdas de tabla (TableBlock.tsx) ──────── */
+/* Mismo lugar que `.table-toolbar-strip` (arriba de la tabla) -- nunca se
+   muestran juntas: esta reemplaza a esa mientras se edita el TEXTO dentro
+   de una celda (antes vivía flotando debajo de la tabla, donde se salía de
+   la pantalla si el disparador de color quedaba cerca del borde inferior). */
 .table-cell-format-toolbar {
-  z-index: 60;
+  position: absolute;
+  top: -34px;
+  left: 0;
+  z-index: 999;
   display: flex;
   align-items: center;
   gap: 3px;
@@ -2288,6 +3196,14 @@ button:active {
   padding: 3px;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.2);
   pointer-events: auto;
+  /* Ancho FIJO por su propio contenido, nunca por el de la tabla: al ser
+     position:absolute sin ancho propio, el cálculo de "encoger para
+     ajustar" quedaba acotado por el contenedor de la tabla (mismo ancho
+     que la tabla) -- en una tabla angosta eso angostaba/envolvía la barra
+     y tapaba las primeras celdas. `max-content` la fuerza a su ancho
+     natural en una sola fila, se salga o no del borde de la tabla. */
+  width: max-content;
+  white-space: nowrap;
 }
 .table-cell-format-toolbar > button {
   width: 24px;
@@ -2296,7 +3212,6 @@ button:active {
   align-items: center;
   justify-content: center;
   border: none;
-  background: transparent;
   border-radius: 4px;
   cursor: pointer;
   color: #334155;
@@ -2304,7 +3219,129 @@ button:active {
   font-weight: 700;
 }
 .table-cell-format-toolbar > button:hover { background: #fff1e9; color: #CC5312; }
-.table-cell-color-wrap { position: relative; }
+.table-cell-format-toolbar > button.is-active {
+  background: #ffe4d1;
+  color: #CC5312;
+}
+.table-cell-fontfamily-select {
+  height: 24px;
+  max-width: 108px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #334155;
+  background: #ffffff;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.table-cell-fontfamily-select:focus { outline: none; border-color: #F07E41; }
+.table-cell-fontsize-input {
+  width: 46px;
+  height: 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  text-align: center;
+  font-size: 11px;
+  color: #334155;
+  padding: 0 2px;
+}
+.table-cell-fontsize-input:focus { outline: none; border-color: #F07E41; }
+.table-cell-highlight-icon {
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+/* Menú contextual de selección múltiple de celdas. Solo TableBlock lo monta
+   cuando el rango es fusionable (una fila o columna continua). */
+.table-cell-context-menu {
+  min-width: 148px;
+  padding: 4px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.2);
+}
+.table-cell-context-menu button {
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  padding: 7px 9px;
+  background: transparent;
+  color: #1e293b;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.table-cell-context-menu button:hover { background: #eff6ff; color: #1d4ed8; }
+.table-cell-context-menu-divider { border: 0; border-top: 1px solid #e2e8f0; margin: 4px 2px; }
+
+.table-cell-split-menu-title {
+  padding: 4px 6px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  white-space: nowrap;
+}
+.table-cell-split-menu-options {
+  display: flex;
+  gap: 4px;
+}
+.table-cell-split-menu-options button {
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  text-align: center;
+  font-weight: 600;
+  border: 1px solid #e2e8f0;
+}
+.table-cell-split-menu-options button:hover { border-color: #93c5fd; }
+.table-cell-split-menu-options--axis button {
+  width: auto;
+  min-width: 84px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.ribbon-shape-dropdown {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(118px, 1fr));
+  gap: 4px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.2);
+  z-index: 99999;
+}
+.ribbon-shape-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #334155;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.ribbon-shape-option:hover { background: #fff1e9; color: #c2410c; }
+.ribbon-shape-preview {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border: 2px solid #2563eb;
+  background: #dbeafe;
+}
+.ribbon-shape-preview--square { width: 20px; height: 20px; }
+.ribbon-shape-preview--circle { border-radius: 50%; }
+.ribbon-shape-preview--ellipse { border-radius: 50%; transform: scaleX(1.25); }
+.ribbon-shape-preview--diamond { transform: rotate(45deg) scale(.7); }
+.ribbon-shape-preview--triangle { clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.ribbon-shape-preview--star { clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 95%, 50% 72%, 21% 95%, 32% 57%, 2% 35%, 39% 35%); }
+.ribbon-shape-preview--line { height: 0; border-width: 2px 0 0; transform: rotate(-25deg); }
 .table-cell-color-btn {
   width: 24px;
   height: 24px;
@@ -2316,37 +3353,15 @@ button:active {
   background: transparent;
   border-radius: 4px;
   cursor: pointer;
-  color: #334155;
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
 }
 .table-cell-color-btn:hover { background: #eff6ff; }
+/* La "A" en su propio span con color explícito -- reportado como invisible
+   (blanco sobre blanco) cuando el color dependía de heredar/cascada. */
+.table-cell-color-letter { color: #0f172a; }
 .table-cell-color-bar { width: 14px; height: 3px; border-radius: 2px; margin-top: 1px; }
-.table-cell-color-pop {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 70;
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 3px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 6px;
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.22);
-  width: max-content;
-}
-.table-cell-color-pop button {
-  width: 18px;
-  height: 18px;
-  border-radius: 3px;
-  border: 1px solid transparent;
-  cursor: pointer;
-  padding: 0;
-}
-.table-cell-color-pop button:hover { transform: scale(1.15); border-color: #0f172a; }
 
 /* Tabla: barra de fila/columna, tiradores de resize y botones de borrado —
    visibles solo con el bloque SELECCIONADO (independiente del modo "doble
@@ -2355,10 +3370,11 @@ button:active {
   position: absolute;
   top: -34px;
   left: 0;
-  z-index: 55;
+  z-index: 999;
   display: flex;
   gap: 4px;
   background: #ffffff;
+  color: black;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   padding: 4px;
@@ -2393,6 +3409,58 @@ button:active {
 }
 .table-col-resize-handle:hover { background: rgba(37, 99, 235, 0.18); }
 
+/* Envoltorio puramente visual (no recibe clics -- pointer-events: none) que
+   agrupa los segmentos-por-columna de UN borde de fila (ver
+   TableBlock.tsx). Sin dueño propio del hover, solo existe para que el
+   :has() de abajo detecte "¿algún segmento hijo está en hover?" y pinte a
+   TODOS los hermanos junto -- así el resaltado azul se ve como una sola
+   línea continua otra vez, aunque por debajo sean varios <div> separados
+   (necesario para no taparle el cursor a los tiradores de columna). */
+.table-row-resize-group {
+  position: absolute;
+  left: 0;
+  pointer-events: none;
+}
+.table-row-resize-handle {
+  position: absolute;
+  cursor: row-resize;
+  z-index: 40;
+  pointer-events: auto;
+}
+.table-row-resize-group:has(.table-row-resize-handle:hover) .table-row-resize-handle {
+  background: rgba(37, 99, 235, 0.18);
+}
+
+.table-cell-align-group,
+.table-cell-numberformat-group {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  padding: 1px;
+}
+.table-cell-align-group > button,
+.table-cell-numberformat-group > button {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #334155;
+  background: transparent;
+}
+.table-cell-align-group > button:hover,
+.table-cell-numberformat-group > button:hover { background: #fff1e9; color: #CC5312; }
+.table-cell-align-group > button.is-active,
+.table-cell-numberformat-group > button.is-active {
+  background: #ffe4d1;
+  color: #CC5312;
+}
+
 .table-col-delete-btn,
 .table-row-delete-btn {
   position: absolute;
@@ -2425,11 +3493,11 @@ button:active {
   padding: 4px;
   border-radius: 8px;
   box-shadow: var(--shadow-md);
-  margin-bottom: 6px;
+  margin-bottom: 53px;
   z-index: 210;
   opacity: 0.4;
   transition: opacity 0.2s, transform 0.2s;
-  transform: translateY(4px);
+  
 }
 
 .text-editor-seamless-container:hover .text-editor-mini-actions,
@@ -2943,6 +4011,154 @@ button:active {
   color: #ffffff;
 }
 
+/* Subrayado rojo en vivo (estilo corrector ortográfico del SO) sobre
+   palabras/frases marcadas por el análisis en segundo plano — ver
+   inlineSpellIssues en PageCanvas.tsx. Se pinta con background-image en
+   vez de text-decoration para no chocar con un subrayado real (Ctrl+U)
+   que el propio span ya pueda tener. */
+.spell-flag {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 3.5 Q1.5 0.5 3 3.5 T6 3.5' stroke='%23e11d48' fill='none' stroke-width='1.1'/%3E%3C/svg%3E");
+  background-repeat: repeat-x;
+  background-position: left bottom;
+  background-size: 6px 4px;
+  padding-bottom: 1px;
+  cursor: text;
+}
+
+.spell-suggest-menu {
+  position: absolute;
+  z-index: 10001;
+  min-width: 140px;
+  max-width: 220px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: black;
+}
+
+.spell-suggest-title {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: #64748b;
+  padding: 2px 6px 4px;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 2px;
+}
+
+.spell-suggest-option {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 6px;
+  font-size: 0.6875rem;
+  font-family: inherit;
+  color: #1e293b;
+  cursor: pointer;
+}
+
+.spell-suggest-option:hover {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.spell-suggest-empty {
+  font-size: 0.625rem;
+  color: #94a3b8;
+  padding: 4px 6px;
+  font-style: italic;
+}
+
+.spell-suggest-ignore {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-top: 1px solid #f1f5f9;
+  margin-top: 2px;
+  padding: 5px 6px 2px;
+  font-size: 0.625rem;
+  font-family: inherit;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.spell-suggest-ignore:hover {
+  color: #ef4444;
+}
+
+/* Picker del comando "/referencia" (pedido explícito 2026-09-04) -- mismo
+   criterio visual que .spell-suggest-menu, minimalista, ubicado justo
+   encima/debajo del cursor mientras se escribe. */
+.slash-ref-menu {
+  position: absolute;
+  z-index: 10001;
+  min-width: 200px;
+  max-width: 300px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-ref-menu-title {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: #64748b;
+  padding: 2px 6px 4px;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 2px;
+}
+
+.slash-ref-menu-empty {
+  font-size: 0.6875rem;
+  color: #94a3b8;
+  font-style: italic;
+  padding: 4px 6px;
+}
+
+.slash-ref-menu-option {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 6px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.slash-ref-menu-option:hover {
+  background: #eff6ff;
+}
+
+.slash-ref-menu-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #1e3a8a;
+  flex-shrink: 0;
+}
+
+.slash-ref-menu-caption {
+  font-size: 0.6875rem;
+  color: #475569;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
@@ -2970,14 +4186,14 @@ button:active {
 .table-block-container {
   box-shadow: 0 2px 8px rgba(0,0,0,0.04);
 }
-.table-block-container td:focus-within {
-  background-color: var(--accent-soft) !important;
-  outline: 2px solid var(--accent);
-}
+/* La selección múltiple se pinta desde TableBlock con un único azul. No se
+   suma un segundo borde de foco (antes rojo/naranja) sobre la celda activa. */
+.table-block-container td:focus-within { outline: none; }
 
 /* Final responsive matrix overrides (ordered by density) */
 @media (max-width: 1440px) {
   .studio-layout {
+    display: grid;
     grid-template-columns: minmax(0, 116px) minmax(0, 1fr) minmax(0, 256px);
   }
 
@@ -3256,6 +4472,97 @@ button:active {
   letter-spacing: 0.05em;
 }
 
+/* Pestañas "Informes guardados" / "Documentos sin conexión" (pedido
+   explícito 2026-09-08) -- ver ReportsAdminModal.tsx. */
+.ra-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 22px 0;
+  background: #111827;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
+}
+.ra-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border-radius: 8px 8px 0 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #64748b;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.ra-tab:hover { color: #94a3b8; }
+.ra-tab-active {
+  color: #a5b4fc;
+  background: #0a1020;
+  border-color: #1e293b;
+  border-bottom-color: #0a1020;
+}
+.ra-tab-badge {
+  background: #6366f1;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 7px;
+  line-height: 1.4;
+}
+
+.ra-offline-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 22px;
+}
+.ra-offline-hint {
+  margin: 0 0 14px;
+  font-size: 0.78rem;
+  color: #64748b;
+  line-height: 1.5;
+}
+.ra-offline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ra-offline-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #1e293b;
+  background: #111827;
+}
+.ra-offline-row-icon { color: #f59e0b; flex-shrink: 0; }
+.ra-offline-row-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ra-offline-row-info strong {
+  color: #e2e8f0;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ra-offline-row-info span {
+  color: #64748b;
+  font-size: 0.74rem;
+}
+.ra-offline-row-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .ra-filters {
   background: #111827;
   border-bottom: 1px solid #1e293b;
@@ -3345,6 +4652,21 @@ button:active {
 
 .ra-table tr:hover td { background: rgba(99, 102, 241, 0.06); }
 .ra-row-selected td  { background: rgba(99, 102, 241, 0.14) !important; }
+
+/* Fila del informe abierto ahora mismo en el editor -- borde naranja
+   completo alrededor de la fila (pedido explícito 2026-09-04). Una tabla
+   HTML no permite un `border` limpio sobre <tr> con border-collapse, así
+   que se arma con box-shadow inset en cada celda: arriba/abajo en todas,
+   izquierda en la primera y derecha en la última, cerrando el rectángulo. */
+.ra-row-current td {
+  box-shadow: inset 0 2px 0 0 #f97316, inset 0 -2px 0 0 #f97316;
+}
+.ra-row-current td:first-child {
+  box-shadow: inset 0 2px 0 0 #f97316, inset 0 -2px 0 0 #f97316, inset 3px 0 0 0 #f97316;
+}
+.ra-row-current td:last-child {
+  box-shadow: inset 0 2px 0 0 #f97316, inset 0 -2px 0 0 #f97316, inset -3px 0 0 0 #f97316;
+}
 
 .ra-sortable { cursor: pointer; user-select: none; }
 .ra-sortable:hover { color: #a5b4fc; }
@@ -3477,6 +4799,8 @@ button:active {
 .ra-send:hover:not(:disabled)   { background: rgba(16,185,129,0.35); }
 .ra-delete { background: rgba(239,68,68,0.2);  color: #fca5a5; border-color: #ef4444; }
 .ra-delete:hover:not(:disabled) { background: rgba(239,68,68,0.35); }
+.ra-duplicate { background: rgba(34,211,238,0.2);  color: #67e8f9; border-color: #22d3ee; }
+.ra-duplicate:hover:not(:disabled) { background: rgba(34,211,238,0.35); }
 
 /* Sub-modals */
 
@@ -3524,6 +4848,40 @@ button:active {
   background: #0a1020;
   flex-shrink: 0;
 }
+
+.save-style-preview-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: -6px;
+}
+.save-style-preview {
+  padding: 14px 16px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #f8fafc;
+  overflow-wrap: break-word;
+}
+.save-style-toggle-row { display: flex; align-items: center; gap: 6px; }
+.save-style-toggle-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  background: #1e293b;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.12s;
+  padding: 0;
+}
+.save-style-toggle-btn:hover { border-color: #6366f1; }
+.save-style-toggle-btn.is-active { border-color: #6366f1; background: rgba(99, 102, 241, 0.18); color: #c7d2fe; }
+.save-style-toggle-sep { width: 1px; height: 20px; background: #334155; margin: 0 2px; }
 
 .ra-search-input {
   background: #1e293b;
@@ -3588,7 +4946,7 @@ button:active {
   font-size: 0.83rem;
   color: #e2e8f0;
   resize: vertical;
-  min-height: 80px;
+  min-height: 70px;
   outline: none;
   font-family: inherit;
 }
@@ -3814,53 +5172,6 @@ button:active {
 }
 .pdf-pw-copy-btn:hover { background: #334155; }
 
-.pdf-pw-qr-block {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: #050810;
-  border: 1px solid #334155;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 16px;
-}
-
-.pdf-pw-qr-img {
-  border-radius: 6px;
-  background: #fff;
-  padding: 4px;
-  flex-shrink: 0;
-}
-
-.pdf-pw-qr-text {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.pdf-pw-qr-text p {
-  margin: 0;
-  font-size: 0.74rem;
-  line-height: 1.45;
-  color: #94a3b8;
-}
-
-.pdf-pw-qr-download-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  padding: 5px 10px;
-  border-radius: 7px;
-  font-size: 0.74rem;
-  font-weight: 600;
-  cursor: pointer;
-  background: #1e293b;
-  border: 1px solid #334155;
-  color: #cbd5e1;
-}
-.pdf-pw-qr-download-btn:hover { background: #334155; }
-
 .pdf-pw-done-btn {
   width: 100%;
   padding: 9px;
@@ -3971,11 +5282,110 @@ button:active {
   position: relative;
   width: 793.7px;
   height: 1122.5px;
+  flex: none;
   background: #fff;
   border-radius: 4px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
+
+/* ── Modo Presentación (visualizador de PPT en pantalla completa) ──
+   Reusa el mismo listado de páginas de ReadOnlyViewer (.ro-content/.ro-pages/
+   .ro-page-wrapper) -- acá solo se cambia cómo se recorren: una por vez,
+   ocupando toda la pantalla, con scroll-snap + navegación por teclado (ver
+   ReadOnlyViewer.tsx) en vez del scroll libre del visor normal. */
+.ro-overlay--presenter { background: #000; }
+
+.ro-presenter-hud {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  opacity: 0.35;
+  transition: opacity 0.2s;
+}
+.ro-presenter-hud:hover { opacity: 1; }
+
+.ro-presenter-counter {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+
+.ro-presenter-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  cursor: pointer;
+}
+.ro-presenter-close:hover { background: rgba(239, 68, 68, 0.3); }
+
+.ro-content--presenter {
+  padding: 0 !important;
+  gap: 0 !important;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  cursor: pointer;
+}
+
+.ro-pages--presenter { gap: 0 !important; }
+
+.ro-page-wrapper--presenter {
+  width: 100vw;
+  height: 100vh;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+/* Animación de ENTRADA de la diapositiva de destino (page.transition, ver
+   SCRUM-36/RibbonToolbar.tsx) -- misma semántica que PowerPoint: la
+   transición es la de la diapositiva a la que se llega, no la que se deja.
+   Se aplican al WRAPPER (no a .ro-page-canvas, que ya trae su propio
+   transform:scale del letterbox) para no pelear por la propiedad `transform`
+   con el escalado. */
+@keyframes roPresenterFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes roPresenterWipeIn { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes roPresenterPushIn { from { opacity: 0.15; transform: translateX(10vw); } to { opacity: 1; transform: translateX(0); } }
+/* Agregadas 2026-09-11 junto con las 3 transiciones nuevas de la galería
+   (ver TRANSITION_OPTIONS en PageCanvas.tsx) -- "cubrir" entra opaca de
+   punta a punta (sin el fundido parcial de "empujar", que es lo que las
+   distingue), "descubrir" es una aproximación de la semántica real (la
+   saliente se aparta revelando la entrante, acá solo se anima la entrante
+   por simplicidad) con un desplazamiento más sutil, y "círculo" revela
+   mediante un clip-path circular que crece desde el centro. */
+@keyframes roPresenterCoverIn { from { transform: translateX(10vw); } to { transform: translateX(0); } }
+@keyframes roPresenterUncoverIn { from { opacity: 0.3; clip-path: inset(0 0 0 100%); } to { opacity: 1; clip-path: inset(0 0 0 0); } }
+@keyframes roPresenterCircleIn { from { clip-path: circle(0% at 50% 50%); } to { clip-path: circle(75% at 50% 50%); } }
+
+/* Pedido explícito 2026-09-08: "muy rápidas, no se aprecian bien" -- de
+   0.45s a 0.9s (el doble) y "push" con un desplazamiento más notorio
+   (4vw -> 10vw) para que el movimiento se perciba claramente, no solo
+   dure más. Si se cambia esta duración, actualizar también el timeout
+   que limpia `presenterAnim` en ReadOnlyViewer.tsx::goToPresenterPage
+   (debe ser un poco MAYOR a esta duración, o la clase se saca a mitad
+   de la animación y se corta en seco en vez de terminar fluida). */
+.ro-page-wrapper.ro-page-anim-fade { animation: roPresenterFadeIn 0.9s ease-out; }
+.ro-page-wrapper.ro-page-anim-wipe { animation: roPresenterWipeIn 0.9s ease-out; }
+.ro-page-wrapper.ro-page-anim-push { animation: roPresenterPushIn 0.9s ease-out; }
+.ro-page-wrapper.ro-page-anim-cover { animation: roPresenterCoverIn 0.9s ease-out; }
+.ro-page-wrapper.ro-page-anim-uncover { animation: roPresenterUncoverIn 0.9s ease-out; }
+.ro-page-wrapper.ro-page-anim-circle { animation: roPresenterCircleIn 0.9s ease-out; }
 
 .ro-no-content {
   display: flex;
@@ -4024,21 +5434,75 @@ button:active {
    !important). Se perfora explícitamente aquí, con mayor especificidad. */
 .report-canvas-html-shield .table-toolbar-strip,
 .report-canvas-html-shield .table-toolbar-strip *,
+.report-canvas-html-shield .table-cell-context-menu,
+.report-canvas-html-shield .table-cell-context-menu *,
 .report-canvas-html-shield .table-col-resize-handle,
+.report-canvas-html-shield .table-row-resize-handle,
 .report-canvas-html-shield .table-col-delete-btn,
-.report-canvas-html-shield .table-row-delete-btn {
+.report-canvas-html-shield .table-row-delete-btn,
+/* Bug real reportado (2026-09-01): los tiradores de resize dejaban de
+   funcionar EN CUANTO se entraba al modo "seleccionar celdas" tipo Excel
+   (PageCanvas.tsx cambia el wrapper de `.report-canvas-html-shield` a
+   `.report-canvas-table-edit-host` -- ver el className condicional junto a
+   <TableBlock> -- en cuanto `canvasTableEditId === element.id`). Esta regla
+   de arriba solo perforaba pointer-events dentro de `.report-canvas-html-
+   shield`; `.report-canvas-table-edit-host` no estaba cubierto, así que los
+   tiradores volvían a heredar el pointer-events:none del contenedor de
+   TableBlock.tsx apenas el usuario hacía clic para seleccionar celdas --
+   justo el caso de uso que el usuario más usa. Se agregan los mismos
+   selectores bajo el otro wrapper. */
+.report-canvas-table-edit-host .table-toolbar-strip,
+.report-canvas-table-edit-host .table-toolbar-strip *,
+.report-canvas-table-edit-host .table-cell-context-menu,
+.report-canvas-table-edit-host .table-cell-context-menu *,
+.report-canvas-table-edit-host .table-col-resize-handle,
+.report-canvas-table-edit-host .table-row-resize-handle,
+.report-canvas-table-edit-host .table-col-delete-btn,
+.report-canvas-table-edit-host .table-row-delete-btn {
   pointer-events: auto !important;
 }
 
-/* Video insertado (ADR-064/065): mismo problema que la tabla de arriba --
-   el <video> vive dentro del shield para heredar el manejador de
-   onContextMenu del bloque, pero eso también apaga sus controles nativos
-   (play, barra de progreso, pantalla completa), que dependen de
-   pointer-events porque viven en el shadow DOM del user-agent y heredan el
-   valor computado del propio <video>. El bloque sigue arrastrándose por el
-   marco/borde -- solo el reproductor en sí queda perforado. */
-.report-canvas-html-shield video {
+/* Entradas del índice dentro del lienzo: se deja pasar el puntero solo a
+   estos enlaces internos; el resto del bloque TOC continúa protegido para
+   que no interfiera con la selección ni el arrastre del objeto. */
+.report-canvas-html-shield .report-canvas-toc-entry,
+.report-canvas-html-shield .report-canvas-toc-entry * {
   pointer-events: auto !important;
+}
+
+/* Botón "Actualizar índice" (esquina superior derecha del bloque toc en el
+   lienzo) -- misma excepción que las entradas de arriba. */
+.report-canvas-html-shield .report-canvas-toc-refresh,
+.report-canvas-html-shield .report-canvas-toc-refresh * {
+  pointer-events: auto !important;
+}
+
+/* Video insertado (ADR-064/065): el <video> vive dentro del shield para
+   heredar el manejador de onContextMenu del bloque, pero perforarlo SIEMPRE
+   (como en la versión del ingeniero) apaga la selección/arrastre del bloque
+   con un solo clic -- el clic siempre caía en el reproductor, nunca en el
+   Rect de Konva de abajo. Pedido explícito de Jhon: un clic selecciona y
+   arrastra el bloque como cualquier otro; recién doble clic entra al modo
+   interactivo (canvasVideoInteractId, ver PageCanvas.tsx) donde el wrapper
+   cambia a esta segunda clase y el reproductor queda perforado -- no hace
+   falta pointer-events:auto explícito porque esta clase nunca entra en la
+   regla `.report-canvas-html-shield *` de arriba, así que el <video> hereda
+   su pointer-events normal (auto) por defecto. */
+/* Insignia siempre visible, no un overlay a :hover -- el propio shield tiene
+   pointer-events:none (ver arriba), así que nunca es el target de un evento
+   de mouse real y su :hover jamás dispara (el hit-test cae directo al canvas
+   de Konva debajo). */
+.report-canvas-video-hint {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  background: rgba(15, 23, 42, 0.75);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  pointer-events: none;
 }
 
 /* Gráfico de sensores (SensorMultiChartWidget.tsx): mismo problema que la
@@ -4073,6 +5537,33 @@ button:active {
 .report-canvas-html-shield .sensor-surface3d-interactive,
 .report-canvas-html-shield .sensor-surface3d-interactive * {
   pointer-events: auto !important;
+}
+
+.report-canvas-toc-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.report-canvas-toc-entry:hover {
+  background: rgba(37, 99, 235, 0.09);
+  border-color: rgba(37, 99, 235, 0.28);
+  transform: translateX(2px);
+}
+
+.report-canvas-toc-entry:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 /* Tabla en modo edición (doble clic): sin escudo; celdas contentEditable reciben puntero. */
@@ -4453,6 +5944,10 @@ button:active {
 .sync-toast--error { background: #b91c1c; }
 
 @media print {
+  @page {
+    margin: 0;
+  }
+
   /* El editor (.studio-layout) y demás modales/toasts viven como hermanos de
      .ro-overlay dentro de .app-shell (no se desmontan al abrir la vista
      previa, solo quedan tapados visualmente por el overlay fixed). Sin esta
@@ -4463,23 +5958,34 @@ button:active {
   .ro-toolbar     { display: none !important; }
   .ro-overlay     { position: static !important; background: white !important; }
   .ro-content     { overflow: visible !important; padding: 0 !important; }
-  .ro-page-canvas { box-shadow: none !important; }
-  .ro-pages       { gap: 0 !important; display: block !important; }
+  .ro-pages       { display: block !important; width: auto !important; }
   .ro-page-wrapper {
     display: block !important;
+    width: fit-content !important;
+    margin: 0 auto !important;
     gap: 0 !important;
-    break-after: page;
-    page-break-after: always;
-    break-inside: avoid;
-    page-break-inside: avoid;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    break-after: page !important;
+    page-break-after: always !important;
   }
-  .ro-page-wrapper:last-child { break-after: auto; page-break-after: auto; }
+  /* La etiqueta es UI del visor: no forma parte del tamaño del papel. */
   .ro-page-label { display: none !important; }
-  .ro-page-canvas {
-    border-radius: 0 !important;
-    break-inside: avoid;
-    page-break-inside: avoid;
+  /* Fuerza el inicio de cada lienzo en una hoja nueva incluso si Chromium
+     ignora el salto posterior del bloque anterior. */
+  .ro-page-wrapper + .ro-page-wrapper {
+    break-before: page !important;
+    page-break-before: always !important;
   }
+  .ro-page-wrapper:last-child {
+    break-after: auto !important;
+    page-break-after: auto !important;
+  }
+  .ro-page-canvas {
+    flex: none !important;
+    transform: none !important;
+  }
+  .ro-page-canvas { box-shadow: none !important; }
   .ro-meta        { display: none !important; }
 }
 
@@ -4624,7 +6130,7 @@ button:active {
   border-radius: 8px;
   border: 1px solid var(--border-light);
   background: rgba(255, 255, 255, 0.04);
-  color: var(--text-muted);
+  border-color: gray;
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
   flex-shrink: 0;
@@ -4691,6 +6197,11 @@ button:active {
 }
 
 .inspector-empty-state {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
   margin-top: 40px;
   text-align: center;
   opacity: 0.55;
@@ -4723,3 +6234,92 @@ button:active {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* ADR-204: sección "enviar copia a más correos" en PdfPasswordModal.tsx --
+   reemplaza el bloque de QR de contraseña que vivía acá (ver CHANGELOG). */
+.pdf-pw-recipients {
+  border-top: 1px solid #1e293b;
+  padding-top: 14px;
+  margin-bottom: 14px;
+}
+
+.pdf-pw-recipients-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin: 0 0 8px;
+}
+
+.pdf-pw-recipients-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.pdf-pw-recipients-input {
+  flex: 1;
+  min-width: 0;
+  background: #050810;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 0.8rem;
+  color: #e2e8f0;
+}
+.pdf-pw-recipients-input:focus { outline: none; border-color: #6366f1; }
+
+.pdf-pw-recipients-add-btn,
+.pdf-pw-recipients-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  flex-shrink: 0;
+}
+.pdf-pw-recipients-add-btn:hover,
+.pdf-pw-recipients-save-btn:hover { background: #334155; }
+.pdf-pw-recipients-save-btn { background: #6366f1; border-color: #6366f1; color: #fff; width: 100%; justify-content: center; margin-top: 4px; }
+.pdf-pw-recipients-save-btn:hover { background: #4f46e5; }
+.pdf-pw-recipients-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.pdf-pw-recipients-error {
+  font-size: 0.72rem;
+  color: #fca5a5;
+  margin: 0 0 8px;
+}
+
+.pdf-pw-recipients-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pdf-pw-recipient-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  padding: 4px 6px 4px 10px;
+  font-size: 0.74rem;
+  color: #cbd5e1;
+}
+
+.pdf-pw-recipient-chip-remove {
+  display: inline-flex;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 50%;
+}
+.pdf-pw-recipient-chip-remove:hover { background: #334155; color: #e2e8f0; }

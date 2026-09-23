@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| **ID** | 016 · **Estado** | **Borrador (a construir)** |
+| **ID** | 016 · **Estado** | **Implementado, verificado E2E en vivo (ADR-140, 2026-09-02/13) — ver notas de alcance en CA-3** |
 | **SOW** | Respuesta ordenada ante alarmas/incidentes (valor de negocio §1.2); O1 |
 | **Constitución** | Art. 1 (multitenant), Art. 2 (tiempo real), Art. 5 (observabilidad) |
 
@@ -37,12 +37,12 @@ evaluación en tiempo real, generación y entrega de alerta (push), historial de
 alertas. **NO incluye:** acciones automáticas de control (solo notifica).
 
 ## 5. Criterios de aceptación
-- [ ] **CA-1:** Una lectura que cruza un umbral genera una alerta en **< 2 s** desde su ingesta.
-- [ ] **CA-2:** Las reglas son configurables por sensor/tipo/empresa (CRUD).
-- [ ] **CA-3:** La alerta se entrega al dashboard por push (SSE, spec 005) sin recargar.
-- [ ] **CA-4:** (multitenant) Reglas y alertas aisladas por empresa.
-- [ ] **CA-5:** Toda alerta queda en historial auditable (quién, cuándo, valor, regla).
-- [ ] **CA-6:** Evitar tormenta de alertas: debounce/agrupación configurable.
+- [x] **CA-1:** Una lectura que cruza un umbral genera una alerta en **< 2 s** desde su ingesta. *Verificado en vivo con timestamp exacto: **179 ms** vía hook `TelemetryIngestor::setOnBatchCommitted` (ADR-140, actualización 2026-09-02). El polling de 10s original sigue existiendo como red de seguridad y como única vía para reglas de `mining_sensor_id` (dashboard de simulación).*
+- [x] **CA-2:** Las reglas son configurables por sensor/tipo/empresa (CRUD). *`GET/POST/PUT/DELETE /api/mining/alarms/rules`, verificado en vivo (ADR-140).*
+- [x] **CA-3 (con desviación de diseño deliberada):** La alerta se entrega al dashboard por push sin recargar. *No se construyó el canal SSE que este CA pedía literalmente — la plataforma ya empujaba alarmas en tiempo real por **WebSocket** (`alarm_notifier.cpp`/`alarmStream.ts`, ADR-034), y agregar SSE en paralelo hubiera sido un segundo transporte para el mismo evento sin pedido de negocio. Decisión consciente, documentada en ADR-140 §"Alternativas descartadas" — no es evidencia faltante.*
+- [x] **CA-4:** (multitenant) Reglas y alertas aisladas por empresa. *Verificado en vivo con DOS tenants demo reales: regla de un tenant no aparece en el listado del otro; `DELETE` cross-tenant → `404`, no `200`/`403` (ADR-140).*
+- [x] **CA-5:** Toda alerta queda en historial auditable (quién, cuándo, valor, regla). *Paginación (`limit`/`offset`/`severity` + `total`) y `ack` (`acknowledged_by`/`acknowledged_at`) verificados en vivo (ADR-140).*
+- [x] **CA-6:** Evitar tormenta de alertas: debounce/agrupación configurable. *Prueba de carga real: 100 lecturas concurrentes cruzando el umbral en 1.31s → exactamente 1 alarma creada (ADR-140, tercera pasada).*
 
 ## 6. Requisitos no funcionales
 | Atributo | Objetivo |
@@ -50,9 +50,16 @@ alertas. **NO incluye:** acciones automáticas de control (solo notifica).
 | Latencia alerta | < 2 s |
 | Evaluación | sobre el flujo (consumidor Kafka o trigger) |
 
-## 7. Plan técnico (esbozo)
-- Reglas en BD; evaluación en el consumidor de ingesta (reusa pipeline 001) o
-  trigger SQL; alertas a tabla + push SSE; agрupación por ventana.
+## 7. Plan técnico (implementado — ver ADR-140)
+- Reglas en `platform_alarm_rules`, alertas en `platform_alarms` (esquema de
+  ADR-034, extendido por `db_scripts/89` con `condition_type`/`debounce_secs`).
+- Evaluación por **dos caminos combinados**, no uno solo: hilo de polling cada
+  10s (`evaluateRulesOnce`, red de seguridad y única vía para
+  `mining_sensor_id`) + hook en tiempo real sobre `TelemetryIngestor::copyBatch()`
+  para reglas de `sensor_id` real (179 ms medido, cierra CA-1).
+- Alertas a tabla + push por **WebSocket** (`alarm_notifier.cpp`), no SSE — ver
+  nota de CA-3 arriba.
+- Agrupación por ventana: `debounce_secs` por regla (`isWithinDebounceWindow()`).
 
 ## 8. Riesgos
 | Riesgo | Mitigación |

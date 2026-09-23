@@ -5,7 +5,7 @@
 | **Plan** | `specs/008-biometria-facial-login/plan.md` |
 | **Sprint·Release** | S6, S11 · R3, R5 |
 | **Responsables** | BE1 (routes/C++), ML (OpenCV/DNN), SYS (Dermalog), QA |
-| **Última revisión** | 2026-09-03 (avatar por difusión local aislado, ADR-141) |
+| **Última revisión** | 2026-09-12 (T16 descartado — ver ADR-180; anterior: 2026-09-03, avatar por difusión local aislado, ADR-141) |
 
 ## Backlog de tareas
 
@@ -26,7 +26,7 @@
 | **T13** | **Test CA-4**: token operador en status → 403 | CA-4 | QA | — | ☑ |
 | **T14** | **Test CA-5**: Dermalog unavailable + REQUIRED=false → legacy responde | CA-5 | QA | — | ☑ |
 | **T15** | **Test perf**: latencia verify-frame < 1 s (O6) con OpenCV | perf | QA | — | ☑ |
-| **T16** | Certificación Dermalog hardware (S11) — integración real con SDK | CA-6/S11 | SYS+ML | **Opus** | ☐ |
+| ~~**T16**~~ | ~~Certificación Dermalog hardware (S11) — integración real con SDK~~ — **descartado 2026-09-12** (ADR-180: licencia comercial con costo adicional, sin caso de negocio que la justifique frente a DeepFace+SilentFace ya vigente sin costo) | CA-6/S11 | SYS+ML | **Opus** | N/A |
 | **T17** | Liveness detection (anti-spoofing, foto vs cara real) | S11/seguridad | ML | **Opus** | ☑ |
 | **T18** | Avatar local MediaPipe/OpenCV + fallback ONNX, miniatura y maestro 4K privado | perfil | ML/BE1 | **Opus** | ☑ |
 | **T19** | Endpoint self-only + modal doble clic/cierre exterior + pruebas | perfil/seguridad | BE1/FE1/QA | **Opus** | ☑ |
@@ -40,7 +40,7 @@ T1 ─► T2 ─► T3 ─► T4         (pipeline completo)
 T5, T6, T7, T8 (paralelo)
 T9 (integración con 006)
 (T1-T9) ─► T10-T15 (tests)
-T16, T17 (Etapa 2/S11)
+~~T16~~ (descartado, ADR-180) — T17 (Etapa 2/S11, ya cerrado)
 ```
 
 ## Definition of Done
@@ -49,7 +49,7 @@ T16, T17 (Etapa 2/S11)
 - [x] CA-1..5 demostrados; CA-6 (login E2E) verificado con spec 006.
 - [x] T18-T19 completadas y backend recompilado (avatar local HD, ADR-074).
 - [x] T17 liveness activo por desafío-respuesta (ISO/IEC 30107-3, ADR-126) — verificado 2026-08-30: `implemented y activo`, reactivado y recalibrado 2026-08-21 (2 de 4 desafíos por sesión, ventana 8s/4 intentos).
-- [ ] T16 (Dermalog hardware real + certificación) — **Sprint S11 pendiente**: la integración CLI existe (ADR-089), pero la certificación con hardware físico no.
+- [x] ~~T16 (Dermalog hardware real + certificación)~~ — **descartado 2026-09-12** (ADR-180): SDK comercial con licencia de costo adicional, sin caso de negocio que la justifique; el sistema real ya opera completo sin él (DeepFace+SilentFace, ADR-105). No cuenta como pendiente de este SPEC.
 - [x] ADR-008-1..4 registrados.
 - [x] T20 (avatar por difusión local, ADR-141) — código e infraestructura
   completos (CA-11..CA-15) y activados en el entorno operativo mediante

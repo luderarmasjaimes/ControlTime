@@ -59,8 +59,20 @@ function extractHeadings(doc: any): TocHeading[] {
 
   doc.pages.forEach((page: any, pageIdx: number) => {
     if (!page.elements) return;
-    page.elements.forEach((el: any) => {
-      if (el.type !== 'text') return;
+    // Orden de LECTURA (Y ascendente), no de inserción en el arreglo — un
+    // bloque movido entre páginas siempre se agrega al FINAL del arreglo de
+    // la página destino (ver moveElementsBetweenPages en useEditorStore.ts),
+    // sin importar dónde quede visualmente; sin este ordenamiento, un
+    // encabezado reubicado más arriba en la página podía numerarse DESPUÉS
+    // de los que ya estaban ahí. Bug real reportado 2026-09-04 ("se supone
+    // que Hallazgos de Instrumentación va primero... pero en el índice no
+    // se refresca" — el refresco sí ocurría, el número calculado era el
+    // incorrecto).
+    const textElements = page.elements
+      .filter((el: any) => el.type === 'text')
+      .slice()
+      .sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0));
+    textElements.forEach((el: any) => {
       const text = String(el.props?.text ?? '');
       if (!text.trim()) return;
 

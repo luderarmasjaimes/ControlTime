@@ -63,6 +63,7 @@
 #include "mining/rp_odoo_sync.hpp"
 #include "mining/rp_gateway_routes.hpp"
 #include "mining/device_alarm_routes.hpp"
+#include "mining/sensor_formula_evaluator.hpp"
 #include "mining/notification_routes.hpp"
 #include "mining/map_aggregator.hpp"
 #include "ws_broadcast.hpp"
@@ -128,10 +129,8 @@ using auth::issueAuthSession;
 using auth::createMfaPendingToken;
 using auth::consumeMfaPendingToken;
 using auth::invalidateMfaPendingToken;
-using auth::normalizeTaxId;
-using auth::validateTaxIdChecksum;
 using auth::revokeAuthSession;
-using auth::resolveRoleForUsername;
+using auth::defaultSelfRegisteredRole;
 using auth::gAuthMutex;
 using auth::loadAuthUsers;
 using auth::saveAuthUsers;
@@ -147,7 +146,6 @@ using auth::migrateLegacyPasswordHashesPg;
 using auth::readAuthAuditPg;
 using auth::registerUserPg;
 using auth::findOrCreateTenantForCompanyPg;
-using auth::validateCompanyPg;
 using auth::loginPasswordPg;
 using auth::loginFaceTargetedPg;
 using auth::updateUserAvatarCartoonPg;
@@ -163,7 +161,6 @@ using biometric::decodeBase64;
 using biometric::stripDataUrlBase64;
 using biometric::analyzeFaceImage;
 using biometric::buildFaceLoginProbe;
-using biometric::fetchFaceEmbeddingFromAiEngine;
 using biometric::fetchCartoonAvatarBestEffort;
 using biometric::getAccessoryDnnContext;
 using biometric::resetRealtimeFaceTracker;
@@ -416,9 +413,22 @@ handleRegister(const http::request<http::string_body> &req,
         const std::string username  = json::value_to<std::string>(obj.at("username"));
         const std::string password  = json::value_to<std::string>(obj.at("password"));
 
-        std::string role   = obj.if_contains("role")   && obj.at("role").is_string()   ? json::value_to<std::string>(obj.at("role"))   : resolveRoleForUsername(username);
+        // ADR-177 (2026-09-12): el autoregistro público YA NO acepta ningún
+        // rol del cliente -- ni el campo "role" del payload ni el heurístico
+        // de username que existía antes (resolveRoleForUsername(), retirada
+        // por completo). Esa capacidad de autoasignarse "admin" era
+        // exclusivamente un atajo de pruebas del ambiente de desarrollo
+        // (ADR-134/135 ya la habían dejado documentada como riesgo
+        // residual); en producción el alta del primer administrador de una
+        // empresa minera cliente es un proceso administrativo propio, nunca
+        // un campo de un formulario público. Toda cuenta autoregistrada nace
+        // con el rol operativo normal ("operator" -- ya era el default real
+        // para el 100% de los registros del producto, que nunca mandan
+        // "role"); cualquier elevación real pasa exclusivamente por el alta
+        // admin-driven ya autenticada (auth_routes.cpp::handleAdminCreateUser,
+        // exige el permiso "usuarios.manage").
+        const std::string role = defaultSelfRegisteredRole();
         std::string ruc    = obj.if_contains("ruc")    && obj.at("ruc").is_string()    ? json::value_to<std::string>(obj.at("ruc"))    : "";
-        std::string country = obj.if_contains("country") && obj.at("country").is_string() ? json::value_to<std::string>(obj.at("country")) : "PE";
         std::string phone  = obj.if_contains("phone")  && obj.at("phone").is_string()  ? json::value_to<std::string>(obj.at("phone"))  : "";
         std::string mobile = obj.if_contains("mobile") && obj.at("mobile").is_string() ? json::value_to<std::string>(obj.at("mobile")) : "";
         std::string email  = obj.if_contains("email")  && obj.at("email").is_string()  ? json::value_to<std::string>(obj.at("email"))  : "";
@@ -498,53 +508,49 @@ handleRegister(const http::request<http::string_body> &req,
             }
             regLog("face_template_from_client_skip_ai_embedding");
         } else {
-            if (!rawRegImage.empty() && !cfg.gAiEngineUrl.empty()) {
-                regLog("embedding_ai_engine_begin");
-                auto em = fetchFaceEmbeddingFromAiEngine(rawRegImage);
-                regLog("embedding_ai_engine_end");
-                if (em.ok()) {
-                    faceTemplate = std::move(em.embedding);
-                    biometricProvider = "insightface_onnx";
-                    qualityScore = 0.92;
+            // Antes de ADR-166/188 se intentaba primero un embedding InsightFace
+            // (fetchFaceEmbeddingFromAiEngine, /face_embedding) ANTES de
+            // analyzeFaceImage() -- eso saltaba por completo el despacho por
+            // gBiometricProvider (SeetaFace6/DeepFace, ADR-104/105/166) que
+            // analyzeFaceImage() ya implementa correctamente. Retirado el
+            // motor secundario, el registro pasa directo por ese despacho real.
+            regLog("analyze_face_legacy_begin");
+            auto face = analyzeFaceImage(regFaceBase64, "register");
+            regLog("analyze_face_legacy_end");
+            if (face.faceTemplate.empty()) {
+                json::array issues;
+                for (const auto &issue : face.issues) {
+                    issues.push_back(json::value(issue));
                 }
+                return makeJsonResponse(
+                    http::status::bad_request,
+                    json::object{{"error", "face not detected"},
+                                 {"provider", face.provider},
+                                 {"issues", issues}});
             }
-            if (faceTemplate.empty()) {
-                regLog("analyze_face_legacy_begin");
-                auto face = analyzeFaceImage(regFaceBase64, "register");
-                regLog("analyze_face_legacy_end");
-                if (face.faceTemplate.empty()) {
-                    json::array issues;
-                    for (const auto &issue : face.issues) {
-                        issues.push_back(json::value(issue));
-                    }
-                    return makeJsonResponse(
-                        http::status::bad_request,
-                        json::object{{"error", "face not detected"},
-                                     {"provider", face.provider},
-                                     {"issues", issues}});
-                }
-                faceTemplate = std::move(face.faceTemplate);
-                biometricProvider = face.provider;
-                qualityScore = face.qualityScore;
-            }
+            faceTemplate = std::move(face.faceTemplate);
+            biometricProvider = face.provider;
+            qualityScore = face.qualityScore;
         }
 
-        // Hallazgo real 2026-09-09: este disparo vivía ANTES de
-        // fetchFaceEmbeddingFromAiEngine, "en paralelo" a propósito -- pero
-        // /cartoon_avatar y /face_embedding pegan al MISMO proceso ai_engine
+        // Hallazgo real 2026-09-09: este disparo vivía ANTES de resolver
+        // faceTemplate, "en paralelo" a propósito -- pero /cartoon_avatar y
+        // el resto de llamadas a ai_engine pegan al MISMO proceso
         // (BEEMETRY_AI_ENGINE_URL, ver docker-compose.yml), así que la
         // generación de avatar (pesada de GPU, con reintentos de fallback
         // visibles como [AVATAR_DIFFUSION] classic_fallback status=500)
-        // competía por el mismo proceso/GPU con el embedding facial que
-        // gatea la respuesta HTTP. Confirmado en logs reales:
-        // embedding_ai_engine_begin -> embedding_ai_engine_end tardando
+        // competía por el mismo proceso/GPU con el análisis facial que
+        // gatea la respuesta HTTP. Confirmado en logs reales (entonces vía
+        // el embedding InsightFace ya retirado, ADR-166/188 -- el mismo
+        // riesgo de contención aplica hoy a analyze_face_legacy_begin/_end,
+        // que puede llamar a SeetaFace6/DeepFace sobre ai_engine):
         // 40-56s (normal: <2s) exactamente en registros donde este future se
         // armaba antes -- la persona veía la captura "colgada" en 5/5 hasta
         // que el cliente cortaba por su propio timeout de 120s. Mover el
         // arranque a DESPUÉS de resolver faceTemplate no cambia nada del
         // resultado (sigue siendo best-effort y se recolecta en el hilo de
         // fondo más abajo, nunca bloquea la respuesta) -- sólo evita que
-        // compita por el mismo proceso mientras el embedding está en vuelo.
+        // compita por el mismo proceso mientras el análisis facial está en vuelo.
         // Piloto QA de avatar por difusión (ADR-141/143, actualización
         // 2026-09-11 de ADR-167): mientras no se autorice producción
         // completa, solo las cuentas en AVATAR_DIFFUSION_QA_USERNAMES ven
@@ -586,71 +592,16 @@ handleRegister(const http::request<http::string_body> &req,
                 json::object{{"error", "first_name, last_name or company contains invalid characters or is too long"}});
         }
 
-        // Hallazgo de red-team CRÍTICO (2026-08-26): el registro público
-        // permitía a cualquier anónimo autoasignarse `role: "admin"` (payload
-        // explícito) al autoregistrarse en una empresa YA EXISTENTE -- toma de
-        // control total de un tenant real, sin invitación ni aprobación de
-        // nadie. También explotable SIN el campo "role": resolveRoleForUsername
-        // (arriba) ya otorgaba "admin" a cualquier username "admin"/"admin_*"
-        // -- un heurístico pensado para bootstrap local que nunca se auditó
-        // contra el registro público.
-        //
-        // Regla: el registro público solo puede elegir su propio rol (el
-        // explícito o el heurístico) para una empresa NUEVA -- nadie más a
-        // quien perjudicar todavía, es el bootstrap legítimo del primer admin
-        // de un tenant recién creado. Si la empresa YA tiene al menos un
-        // usuario, se fuerza el rol más bajo ("viewer") sin excepción --
-        // cualquier elevación real debe pasar por el alta admin-driven ya
-        // autenticada y autorizada (auth_routes.cpp::handleAdminCreateUser,
-        // exige el permiso "usuarios.manage").
-        bool companyAlreadyHasUsers = false;
-        if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
-#if HAS_LIBPQ
-            std::string companyExistsErr;
-            companyAlreadyHasUsers = validateCompanyPg(cfg.gDatabaseUrl, company, "", companyExistsErr);
-#endif
-        } else {
-            const auto existingUsers = loadAuthUsers(dataRoot);
-            companyAlreadyHasUsers = std::any_of(
-                existingUsers.begin(), existingUsers.end(),
-                [&](const auto &u) { return u.company == company; });
-        }
-        if (companyAlreadyHasUsers && role != "viewer") {
-            std::cerr << "[AUTH_REGISTER_ROLE_DOWNGRADED] company=" << company
-                      << " user=" << username << " requested_role=" << role
-                      << " -> viewer" << std::endl;
-            security::sendSecurityAlert("auth_register_role_downgraded",
-                                        "company=" + company + " user=" + username +
-                                            " requested_role=" + role +
-                                            " ip=" + http_utils::getClientIp(req));
-            role = "viewer";
-        }
-
-        // Endurecimiento adicional (ADR-135): el bootstrap de admin de
-        // empresa NUEVA (arriba) sigue siendo posible sin invitación -- es
-        // el flujo legítimo para el primer empleado de un cliente minero
-        // real. Pero "empresa nueva" hoy se decide por IGUALDAD EXACTA de
-        // `company_name` (ADR-066): "Minera Raura " (espacio) o una variante
-        // de mayúsculas/acentos cuenta como "nueva" y permitiría bootstrap de
-        // admin sobre lo que a simple vista parece la misma empresa
-        // (typosquatting de nombre, documentado como riesgo residual en
-        // ADR-134). Exigir un RUC con dígito verificador válido para ESE
-        // bootstrap de admin sube el costo de ese ataque: ya no basta con
-        // escribir un nombre parecido, hace falta un RUC matemáticamente
-        // válido del país declarado -- no impide un RUC real pero ajeno
-        // (verificación contra el padrón real, ADR-102, sigue sin existir
-        // aquí), pero cierra el caso trivial de "cualquier variante de
-        // nombre + cualquier dato".
-        if (!companyAlreadyHasUsers && role == "admin") {
-            const std::string normalizedRuc = normalizeTaxId(ruc);
-            if (normalizedRuc.empty() || !validateTaxIdChecksum(normalizedRuc, country)) {
-                return makeJsonResponse(
-                    http::status::bad_request,
-                    json::object{{"error", "ruc_valido_requerido_para_admin_de_empresa_nueva"}});
-            }
-            ruc = normalizedRuc;
-        }
-
+        // ADR-177 (2026-09-12): decomiso completo del bootstrap de admin vía
+        // autoregistro público. Hasta acá llegaba el gate que ADR-134/135
+        // habían dejado (permitir "admin" solo para empresa nueva + RUC con
+        // checksum válido) -- retirado en su totalidad, no solo endurecido,
+        // porque `role` ya nunca puede ser distinto de "operator" (ver
+        // arriba; nunca "admin" ni ningún otro rol elevado). No queda ningún
+        // camino en este endpoint que produzca un usuario con privilegios
+        // elevados; el alta de un administrador real -- para una empresa
+        // nueva o existente -- es exclusivamente admin-driven
+        // (auth_routes.cpp::handleAdminCreateUser).
         regLog("post_validate");
 
         AuthUser created;
@@ -800,6 +751,14 @@ handleRegister(const http::request<http::string_body> &req,
                     bgLog("thread_start");
                     std::string b64;
                     std::string hdB64;
+                    // Rediseño de avatar (2026-09-20, ADR-203): recorte RGBA
+                    // de solo cabeza, para que "cambiar de vestimenta" sea un
+                    // recompose rápido (sin GPU/difusión) en vez de repetir
+                    // todo el registro. Vacío si ai_engine no pudo aislar la
+                    // cabeza (cae al lienzo blanco clásico) -- no es un fallo
+                    // del registro en sí, solo deshabilita esa función más
+                    // adelante para esta cuenta hasta que regenere el avatar.
+                    std::string headCutoutB64;
                     if (bgCartoonOpt.has_value()) {
                         try {
                             auto cartoonP = bgCartoonOpt->get();
@@ -807,6 +766,7 @@ handleRegister(const http::request<http::string_body> &req,
                             if (cartoonP.ok()) {
                                 b64 = std::move(cartoonP.imageBase64);
                                 hdB64 = std::move(cartoonP.imageHdBase64);
+                                headCutoutB64 = std::move(cartoonP.headCutoutBase64);
                             }
                         } catch (const std::exception &ex) {
                             std::cerr << "[AUTH_REGISTER_CARTOON_BG] future: "
@@ -821,6 +781,7 @@ handleRegister(const http::request<http::string_body> &req,
                         if (cartoon.ok()) {
                             b64 = std::move(cartoon.imageBase64);
                             hdB64 = std::move(cartoon.imageHdBase64);
+                            headCutoutB64 = std::move(cartoon.headCutoutBase64);
                         }
                     }
                     if (b64.empty() && !bgRawReg.empty()) {
@@ -829,6 +790,7 @@ handleRegister(const http::request<http::string_body> &req,
                         if (cartoon2.ok()) {
                             b64 = std::move(cartoon2.imageBase64);
                             hdB64 = std::move(cartoon2.imageHdBase64);
+                            headCutoutB64 = std::move(cartoon2.headCutoutBase64);
                         }
                     }
                     if (b64.empty()) {
@@ -870,6 +832,49 @@ handleRegister(const http::request<http::string_body> &req,
                                 bgLog("avatar_hd_cached");
                             } catch (const std::exception &ex) {
                                 std::cerr << "[AUTH_REGISTER_CARTOON_BG] hd: "
+                                          << ex.what() << std::endl;
+                            }
+                        }
+                    }
+                    // Rediseño de avatar (2026-09-20, ADR-203): recorte RGBA
+                    // de solo cabeza, mismo patrón tmp+rename que avatars_hd
+                    // arriba. Fuera de la fila de la BD a propósito (igual
+                    // que avatars_hd) -- es un derivado biométrico grande,
+                    // sirve solo al recompose rápido de "cambiar de
+                    // vestimenta" (POST /api/auth/avatar/body-template), y
+                    // nunca se expone por ningún endpoint de lectura directa.
+                    if (!headCutoutB64.empty()) {
+                        std::vector<unsigned char> headBytes;
+                        if (decodeBase64(headCutoutB64, headBytes) && !headBytes.empty()) {
+                            try {
+                                const fs::path headDir =
+                                    fs::path(dataRoot) / "auth" / "avatar_heads";
+                                fs::create_directories(headDir);
+                                const fs::path finalPath = headDir / (userId + ".png");
+                                const fs::path tmpPath = headDir / (userId + ".png.tmp");
+                                {
+                                    std::ofstream out(tmpPath, std::ios::binary |
+                                                                   std::ios::trunc);
+                                    out.write(
+                                        reinterpret_cast<const char *>(headBytes.data()),
+                                        static_cast<std::streamsize>(headBytes.size()));
+                                    if (!out.good()) {
+                                        throw std::runtime_error(
+                                            "avatar_head_write_failed");
+                                    }
+                                }
+                                if (fs::exists(finalPath)) {
+                                    fs::remove(finalPath);
+                                }
+                                fs::rename(tmpPath, finalPath);
+                                fs::permissions(
+                                    finalPath,
+                                    fs::perms::owner_read |
+                                        fs::perms::owner_write,
+                                    fs::perm_options::replace);
+                                bgLog("avatar_head_cached");
+                            } catch (const std::exception &ex) {
+                                std::cerr << "[AUTH_REGISTER_CARTOON_BG] head: "
                                           << ex.what() << std::endl;
                             }
                         }
@@ -1267,11 +1272,16 @@ handleLoginPassword(const http::request<http::string_body> &req,
                                             geo.latitude, geo.longitude, geo.accuracy,
                                             http_utils::getClientIp(req));
                 if (!user) {
-                    loginRateIncrement(rateKey);
                     json::object jo{{"error", dbError}};
                     if (!errCode.empty()) {
                         jo["code"] = errCode;
                     }
+                    // BD caída/reiniciando no es un intento fallido del usuario:
+                    // 503 (reintentable) y sin tocar el contador de bloqueo.
+                    if (errCode == "db_unavailable") {
+                        return makeJsonResponse(http::status::service_unavailable, jo);
+                    }
+                    loginRateIncrement(rateKey);
                     return makeJsonResponse(http::status::unauthorized, jo);
                 }
                 found = *user;
@@ -1337,6 +1347,23 @@ handleLoginPassword(const http::request<http::string_body> &req,
         }
 
         loginRateClear(rateKey);  // login exitoso: reinicia contador
+        // Hallazgo real 2026-09-15 (a pedido explícito del usuario): un login
+        // exitoso por CUALQUIER método debe limpiar también el contador del
+        // OTRO método para la misma cuenta. El aislamiento entre buckets
+        // (password vs "face|...") fue deliberado para que FALLAR uno no
+        // contamine al otro (ver comentario junto a faceRateKey más abajo:
+        // "quemar los 5 intentos faciales no debe bloquear el login
+        // normal") -- pero nunca se limpiaba el otro tras un ÉXITO. La
+        // persona ya demostró su identidad por un factor fuerte; no hay
+        // motivo de seguridad para seguir bloqueando el otro método justo
+        // después (reportado en vivo: login facial exitoso, segundos
+        // después "Cuenta bloqueada 5 min" al reintentar login facial con
+        // fallos de ANTES del login por contraseña). Se limpian las 3
+        // variantes de identidad (username/dni/ruc) porque el login facial
+        // puede haberse intentado con cualquiera de ellas.
+        loginRateClear("face|" + company + "|" + found.username);
+        if (!found.dni.empty()) loginRateClear("face|" + company + "|" + found.dni);
+        if (!found.ruc.empty()) loginRateClear("face|" + company + "|" + found.ruc);
 
         // MFA/TOTP (ADR-135): password (o biometría, ver handleLoginFace) es
         // el PRIMER factor -- si la cuenta tiene TOTP activo, no se emite
@@ -1609,7 +1636,7 @@ handleLoginFace(const http::request<http::string_body> &req,
                 auto result = loginFaceTargetedPg(
                     cfg.gDatabaseUrl, company, identityLogin,
                     clientProbeTemplate, rawImageBytes, base64ForLegacy,
-                    legacyThreshold, cfg.gFaceEmbeddingCosineThreshold,
+                    legacyThreshold,
                     dbError, &probeProv, geoAuditSuffix,
                     geo.latitude, geo.longitude, geo.accuracy,
                     http_utils::getClientIp(req));
@@ -1684,7 +1711,6 @@ handleLoginFace(const http::request<http::string_body> &req,
                                          base64ForLegacy, match->faceTemplate,
                                          probe, probeProv, useThr,
                                          legacyThreshold,
-                                         cfg.gFaceEmbeddingCosineThreshold,
                                          probeErr)) {
                     std::cout << "[AUTH_FACE] probe build failed for user="
                               << match->username << " reason=" << probeErr
@@ -1733,6 +1759,13 @@ handleLoginFace(const http::request<http::string_body> &req,
         }
 
         faceAttempt.success();
+        // Simétrico al fix de handleLoginPassword (ver comentario ahí, mismo
+        // hallazgo real 2026-09-15): un login facial exitoso también limpia
+        // el contador de password y las otras variantes de identidad de
+        // face, no solo la que se usó en este intento.
+        loginRateClear(company + "|" + bestUser.username);
+        if (!bestUser.dni.empty()) loginRateClear("face|" + company + "|" + bestUser.dni);
+        if (!bestUser.ruc.empty()) loginRateClear("face|" + company + "|" + bestUser.ruc);
 
         // MFA/TOTP (ADR-135): mismo gate que handleLoginPassword -- la
         // biometría facial es un factor fuerte, pero si la cuenta además
@@ -1937,6 +1970,45 @@ static http::response<http::string_body> handleMetrics(
       << "# TYPE beemetry_wms_proxy_duration_milliseconds_total counter\n"
       << "beemetry_wms_proxy_duration_milliseconds_total " << wms.durationMs.load() << "\n";
 
+    // SPEC-016/ADR-140: motor de alarmas -- Art. 5 de la Constitución exige
+    // métricas de salud/throughput para toda feature; esta era la que
+    // faltaba (ver tasks.md SPEC-016, DoD "Sin violar Constitución").
+    const auto &alarms = mining_iot::alarmEngineStats();
+    m << "# HELP beemetry_alarm_engine_evaluations_total Rule x value evaluations (polling + realtime)\n"
+      << "# TYPE beemetry_alarm_engine_evaluations_total counter\n"
+      << "beemetry_alarm_engine_evaluations_total " << alarms.evaluations.load() << "\n"
+      << "# HELP beemetry_alarm_engine_triggered_total Alarms actually inserted (open transitions)\n"
+      << "# TYPE beemetry_alarm_engine_triggered_total counter\n"
+      << "beemetry_alarm_engine_triggered_total " << alarms.triggered.load() << "\n"
+      << "# HELP beemetry_alarm_engine_debounced_total Threshold crossings suppressed by debounce (Art. 9 anti-tormenta)\n"
+      << "# TYPE beemetry_alarm_engine_debounced_total counter\n"
+      << "beemetry_alarm_engine_debounced_total " << alarms.debounced.load() << "\n"
+      << "# HELP beemetry_alarm_engine_resolved_total Alarms auto-resolved (condition no longer met)\n"
+      << "# TYPE beemetry_alarm_engine_resolved_total counter\n"
+      << "beemetry_alarm_engine_resolved_total " << alarms.resolved.load() << "\n"
+      << "# HELP beemetry_alarm_engine_rules_cached Enabled rules in the in-memory cache (T3)\n"
+      << "# TYPE beemetry_alarm_engine_rules_cached gauge\n"
+      << "beemetry_alarm_engine_rules_cached " << alarms.rules_cached.load() << "\n";
+
+    // ADR-187: motor de fórmulas -- mismo criterio de Art. 5 que el motor de
+    // alarmas arriba.
+    const auto &formulas = mining_iot::formulaEngineStats();
+    m << "# HELP beemetry_formula_engine_evaluations_total Formulas evaluated per poll cycle\n"
+      << "# TYPE beemetry_formula_engine_evaluations_total counter\n"
+      << "beemetry_formula_engine_evaluations_total " << formulas.evaluations.load() << "\n"
+      << "# HELP beemetry_formula_engine_computed_total Results written to telemetry_multivariate\n"
+      << "# TYPE beemetry_formula_engine_computed_total counter\n"
+      << "beemetry_formula_engine_computed_total " << formulas.computed.load() << "\n"
+      << "# HELP beemetry_formula_engine_compile_errors_total Expression failed to compile or evaluated non-finite\n"
+      << "# TYPE beemetry_formula_engine_compile_errors_total counter\n"
+      << "beemetry_formula_engine_compile_errors_total " << formulas.compile_errors.load() << "\n"
+      << "# HELP beemetry_formula_engine_skipped_no_value_total Sensor had no telemetry in the last 15 minutes\n"
+      << "# TYPE beemetry_formula_engine_skipped_no_value_total counter\n"
+      << "beemetry_formula_engine_skipped_no_value_total " << formulas.skipped_no_value.load() << "\n"
+      << "# HELP beemetry_formula_engine_write_errors_total INSERT into telemetry_multivariate failed\n"
+      << "# TYPE beemetry_formula_engine_write_errors_total counter\n"
+      << "beemetry_formula_engine_write_errors_total " << formulas.write_errors.load() << "\n";
+
 #if HAS_LIBPQ
     {
         auto ti = mining::TelemetryIngestor::instance().stats();
@@ -1944,6 +2016,7 @@ static http::response<http::string_body> handleMetrics(
           << "# TYPE mapas_backend_telemetry counter\n"
           << "mapas_backend_telemetry_received_total "        << ti.received        << "\n"
           << "mapas_backend_telemetry_inserted_total "        << ti.inserted        << "\n"
+          << "mapas_backend_telemetry_rejected_bad_value_total " << ti.rejected_bad_value << "\n"
           << "mapas_backend_telemetry_dropped_full_total "    << ti.dropped_full    << "\n"
           << "mapas_backend_telemetry_dropped_unknown_total " << ti.dropped_unknown << "\n"
           << "mapas_backend_telemetry_flushes_total "         << ti.flushes         << "\n"
@@ -2038,7 +2111,11 @@ static void registerRemainingRoutes(router::Router &r) {
 // =========================================================================
 //  SSE: push de KPIs en tiempo real desde la RÉPLICA (sin polling del cliente)
 //  GET /api/live/kpi  → text/event-stream, evento cada N s.
-//  Requiere sesión autenticada; tenant_id viene del token (no del query string).
+//  Requiere sesión autenticada (401 si no hay token válido) -- la consulta a
+//  `mining_runtime_kpis` en sí NO filtra por tenant, porque esa tabla es un
+//  catálogo único de KPIs corporativos sin columna `tenant_id` (igual que su
+//  hermano REST `GET /api/mining/kpis`); la sesión solo gatea el ACCESO al
+//  stream, no particiona los datos que devuelve.
 //  Consulta mining_runtime_kpis (pre-calculados) sobre la réplica de lectura.
 // =========================================================================
 static void handleLiveKpiSse(beast::tcp_stream& stream,
@@ -2082,48 +2159,100 @@ static void handleLiveKpiSse(beast::tcp_stream& stream,
     if (ec) return;
 
 #if HAS_LIBPQ
-    const std::string replicaUrl = getenvOr(
-        "BEEMETRY_REPLICA_DATABASE_URL",
-        "host=db_replica port=5432 dbname=sensors_db user=dashboard_ro "
-        "password=dash_pass");
     int intervalMs = 2000;
     try { intervalMs = std::stoi(getenvOr("BEEMETRY_LIVE_PUSH_INTERVAL_MS", "2000")); }
     catch (...) {}
 
-    // Degradación graceful: si réplica no disponible, usar primario (Art.3 relajado).
-    PGconn* conn = PQconnectdb(replicaUrl.c_str());
-    bool usingFallback = false;
-    if (PQstatus(conn) != CONNECTION_OK) {
-        PQfinish(conn);
-        auto &cfg = AppConfig::instance();
-        if (cfg.gDatabaseUrl.empty()) return;
-        conn = PQconnectdb(cfg.gDatabaseUrl.c_str());
-        if (PQstatus(conn) != CONNECTION_OK) { PQfinish(conn); return; }
-        usingFallback = true;
-        std::cerr << "[SSE] replica unavailable, falling back to primary\n";
-    }
-
     // 4. Query sobre mining_runtime_kpis (valores pre-calculados, sin full-scan
-    //    de telemetry_raw) scoped por tenant_id del token → elimina IDOR.
+    //    de telemetry_raw).
+    //
+    // BUG REAL corregido 2026-09-12: esta query pedía columnas
+    // `name`/`value`/`tenant_id` que NUNCA existieron en `mining_runtime_kpis`
+    // (`db_scripts/26_mining_runtime_kpis.sql`: la PK es `code`, el valor es
+    // `current_value`, y la tabla no tiene `tenant_id` -- es un catálogo único
+    // de KPIs corporativos, igual de no-tenant-scoped que su endpoint REST
+    // hermano `GET /api/mining/kpis`, ver `kpi_service.cpp::handleListKpis`).
+    // `PQexecParams` fallaba en SILENCIO en cada tick desde que se escribió
+    // este endpoint (`r.okTuples()` devolvía false, nunca `kpis:[]` con datos
+    // reales) -- confirmado comparando contra el schema real y contra el
+    // query que sí funciona en `kpi_service.cpp`. Alineado a las columnas
+    // reales, alias `AS name`/`AS value` para no romper el contrato JSON ya
+    // documentado (`{name, value, unit, category}`) que el cliente espera.
     const std::string sql =
-        "SELECT name, value, unit, category "
+        "SELECT code AS name, current_value AS value, unit, category "
         "FROM mining_runtime_kpis "
-        "WHERE tenant_id = $1::uuid "
-        "ORDER BY category, name";
-    const char* params[1] = { tenant.c_str() };
+        "WHERE active = TRUE "
+        "ORDER BY category, sort_order, title";
+    bool loggedQueryError = false;
+    auto &cfg = AppConfig::instance();
 
+    // SPEC-005 T19 (cierre 2026-09-12, ver ADR-181): antes de esta pasada,
+    // ESTA función abría su propia conexión Postgres cruda (`PQconnectdb`)
+    // y la retenía en exclusiva durante TODA la vida de la conexión SSE
+    // (horas, típicamente) -- con N clientes de dashboard simultáneos eso
+    // son N conexiones Postgres dedicadas, por fuera de cualquier pool,
+    // compitiendo directo con el resto de la plataforma por el límite real
+    // de `max_connections` del servidor. 200 viewers de dashboard = 200
+    // conexiones Postgres bloqueadas en esto solo, sin relación con el
+    // límite de hilos del SO (que sí soporta 200 hilos mayormente dormidos
+    // sin problema -- el cuello de botella real nunca fue el modelo de hilo
+    // por conexión, fue esto). Corregido: cada tick pide prestada una
+    // conexión al MISMO pool que ya usa el resto de la plataforma para
+    // lecturas de dashboard (`storage::PgPool::replica()`, ya usado por
+    // `kpi_service.cpp` para el endpoint REST hermano) y la devuelve
+    // inmediatamente después de la query -- 200 SSE viewers pueden
+    // compartir con seguridad las mismas ~64 conexiones pooleadas
+    // (`BEEMETRY_PG_POOL_SIZE`) que ya usa toda la plataforma, en vez de
+    // necesitar 200 conexiones dedicadas propias.
     while (true) {
-        storage::PgResult r{PQexecParams(conn, sql.c_str(), 1, nullptr, params,
-                                         nullptr, nullptr, 0)};
+        bool usingFallback = false;
         json::array kpis;
-        if (r.okTuples()) {
-            for (int i = 0; i < PQntuples(r.get()); ++i) {
-                kpis.push_back(json::object{
-                    {"name",     PQgetvalue(r.get(), i, 0)},
-                    {"value",    std::atof(PQgetvalue(r.get(), i, 1))},
-                    {"unit",     PQgetvalue(r.get(), i, 2)},
-                    {"category", PQgetvalue(r.get(), i, 3)}});
+        bool queryOk = false;
+        {
+            auto lease = storage::PgPool::replica().acquire(cfg.readUrl());
+            if (PQstatus(lease.get()) == CONNECTION_OK) {
+                storage::PgResult r{PQexec(lease.get(), sql.c_str())};
+                if (r.okTuples()) {
+                    queryOk = true;
+                    for (int i = 0; i < PQntuples(r.get()); ++i) {
+                        kpis.push_back(json::object{
+                            {"name",     PQgetvalue(r.get(), i, 0)},
+                            {"value",    std::atof(PQgetvalue(r.get(), i, 1))},
+                            {"unit",     PQgetvalue(r.get(), i, 2)},
+                            {"category", PQgetvalue(r.get(), i, 3)}});
+                    }
+                }
             }
+        } // el lease de réplica se devuelve al pool acá, antes de intentar el fallback
+
+        // Degradación graceful (T9): réplica sin conexión buena o query
+        // fallida -- reintenta esta MISMA tick contra el pool primario
+        // (Art.3 relajado), acotado a esta tick únicamente, nunca reteniendo
+        // la conexión entre ticks tampoco.
+        if (!queryOk && !cfg.gDatabaseUrl.empty()) {
+            auto lease = storage::PgPool::instance().acquire(cfg.gDatabaseUrl);
+            if (PQstatus(lease.get()) == CONNECTION_OK) {
+                storage::PgResult r{PQexec(lease.get(), sql.c_str())};
+                if (r.okTuples()) {
+                    queryOk = true;
+                    usingFallback = true;
+                    for (int i = 0; i < PQntuples(r.get()); ++i) {
+                        kpis.push_back(json::object{
+                            {"name",     PQgetvalue(r.get(), i, 0)},
+                            {"value",    std::atof(PQgetvalue(r.get(), i, 1))},
+                            {"unit",     PQgetvalue(r.get(), i, 2)},
+                            {"category", PQgetvalue(r.get(), i, 3)}});
+                    }
+                }
+            }
+        }
+
+        if (!queryOk && !loggedQueryError) {
+            // Visible una sola vez por conexión (no en cada tick de 2s) --
+            // mismo criterio que el resto del backend para no inundar el log
+            // con un fallo que puede repetirse tick tras tick.
+            std::cerr << "[SSE] /api/live/kpi: réplica y primario no disponibles para esta tick\n";
+            loggedQueryError = true;
         }
         json::object envelope{{"tenant", tenant},
                               {"ts", http_utils::nowIso8601()},
@@ -2134,7 +2263,6 @@ static void handleLiveKpiSse(beast::tcp_stream& stream,
         if (ec) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
     }
-    PQfinish(conn);
 #endif
 }
 
@@ -2646,6 +2774,11 @@ int main() {
         // ADR-034: motor de alarmas (evaluador de reglas en segundo plano,
         // near-real-time por polling — ver razonamiento en device_alarm_routes.cpp).
         mining_iot::startAlarmEvaluator();
+        // ADR-187: motor de fórmulas (parámetros por dispositivo + telemetría
+        // -> resultado calculado con estado ok/warning/error). Mismo patrón de
+        // hilo de fondo por polling, deliberadamente independiente del hook en
+        // tiempo real de TelemetryIngestor -- ver sensor_formula_evaluator.hpp.
+        mining_iot::startFormulaEvaluator();
 
         // Diagnostic output
         std::cout << "beemetry_backend listening on " << address << ":" << port
@@ -2702,8 +2835,6 @@ int main() {
                   << ", timeout_ms: " << cfg.gAiEngineTimeoutMs
                   << ", cartoon_timeout_ms: " << cfg.gAiEngineCartoonTimeoutMs
                   << ", max_image_bytes: " << cfg.gAiEngineMaxImageBytes
-                  << ", face_embed_cos_thr: "
-                  << cfg.gFaceEmbeddingCosineThreshold
                   << ", face_legacy_cos_thr: "
                   << cfg.gFaceLegacyCosineThreshold
                   << ", image_optimizer: "

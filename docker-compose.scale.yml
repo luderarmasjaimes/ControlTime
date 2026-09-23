@@ -45,7 +45,6 @@ volumes:
   prometheus_data: {}
   grafana_data: {}
   loki_data: {}
-  insightface_models: {}
   ollama_data: {}
 
 services:
@@ -256,8 +255,6 @@ services:
     <<: *restart
     environment:
       - GLASSES_ONNX_PATH=/app/models/glasses_classifier.onnx
-    volumes:
-      - insightface_models:/app/.insightface
     networks: [ai]
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]

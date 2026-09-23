@@ -10,8 +10,8 @@ import {
 const VALID_TYPES: ReadonlySet<string> = new Set<LivenessChallengeType>([
     'turn_left',
     'turn_right',
-    'shift_left',
-    'shift_right',
+    'look_down',
+    'look_up',
     'move_closer',
     'move_away',
 ])

@@ -1,7 +1,10 @@
 #include "report_export_jobs.hpp"
 #include "report_service.hpp"
 #include "../config/app_config.hpp"
+#include "../http/http_utils.hpp"
+#include "../mining/alarm_notifier.hpp"
 
+#include <fstream>
 #include <regex>
 
 #include <boost/asio.hpp>
@@ -209,7 +212,7 @@ void runPptxExportJob(const std::string &jobId, const std::string &reportId,
 }
 
 void runDocxExportJob(const std::string &jobId, const std::string &reportId,
-                      const std::string &sessionToken) {
+                      const std::string &sessionToken, const std::string &layout) {
   auto &cfg = config::AppConfig::instance();
   std::string statusError;
   updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "running", "", "", statusError);
@@ -219,7 +222,7 @@ void runDocxExportJob(const std::string &jobId, const std::string &reportId,
 
   const auto sidecarResult =
       postJsonToSidecar(cfg.gPdfExportUrl, "/render-docx",
-                        json::object{{"url", printUrl}, {"job_id", jobId}},
+                        json::object{{"url", printUrl}, {"job_id", jobId}, {"layout", layout}},
                         cfg.gDocxExportTimeoutMs);
 
   if (!sidecarResult.ok) {
@@ -243,7 +246,10 @@ void runDocxExportJob(const std::string &jobId, const std::string &reportId,
 }
 
 void runPdfExportJob(const std::string &jobId, const std::string &reportId,
-                     const std::string &sessionToken, const std::string &watermarkText) {
+                     const std::string &sessionToken, const std::string &watermarkText,
+                     bool unprotected, bool noWatermark, const std::string &ownerEmail,
+                     const std::vector<std::string> &extraRecipients,
+                     const std::string &reportTitle, const std::string &username) {
   auto &cfg = config::AppConfig::instance();
   std::string statusError;
   updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "running", "", "", statusError);
@@ -253,15 +259,19 @@ void runPdfExportJob(const std::string &jobId, const std::string &reportId,
 
   // Endpoint DEDICADO del job async (`/render-pdf`, sidecar) -- separado del
   // `/render` síncrono que sigue usando `exportReportPdf`
-  // (report_pdf_export.cpp) para informes chicos, sin cambios. Mismo
-  // criterio de cifrado (ADR-080, siempre activo) que el pipeline síncrono.
-  const auto sidecarResult = postJsonToSidecar(
-      cfg.gPdfExportUrl, "/render-pdf",
-      json::object{{"url", printUrl},
-                  {"job_id", jobId},
-                  {"watermark", json::object{{"text", watermarkText}}},
-                  {"encrypt", true}},
-      cfg.gPdfExportTimeoutMs);
+  // (report_pdf_export.cpp) para informes chicos, sin cambios. Cifrado
+  // (ADR-080) sigue siendo el default -- `unprotected` (permission code
+  // `informes.export_sin_clave`, ya verificado por el caller) es la ÚNICA
+  // forma de desactivarlo acá. `noWatermark` (ADR-204, permission code
+  // `informes.export_sin_marca_agua`, también ya verificado por el caller):
+  // manda `"watermark": false` explícito -- cualquier otro valor (el objeto
+  // de texto de siempre) sigue dibujando el sello, ver server.js.
+  json::object sidecarBody{
+      {"url", printUrl}, {"job_id", jobId}, {"encrypt", !unprotected}};
+  sidecarBody["watermark"] =
+      noWatermark ? json::value(false) : json::value(json::object{{"text", watermarkText}});
+  const auto sidecarResult =
+      postJsonToSidecar(cfg.gPdfExportUrl, "/render-pdf", sidecarBody, cfg.gPdfExportTimeoutMs);
 
   if (!sidecarResult.ok) {
     updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "failed", "", sidecarResult.error,
@@ -297,6 +307,68 @@ void runPdfExportJob(const std::string &jobId, const std::string &reportId,
 
   updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "success", storagePath, "", statusError,
                           mergeOptions);
+
+  // ADR-204: envío por correo best-effort, ya corriendo en el hilo detached
+  // de este job -- no hace falta un thread aparte acá (a diferencia del
+  // pipeline síncrono, que sí necesita uno para no sumar latencia al
+  // request). Un fallo de lectura/envío nunca revierte el "success" de
+  // arriba: el PDF ya quedó generado y descargable por la vía normal.
+  if (!ownerEmail.empty() || !extraRecipients.empty()) {
+    std::ifstream ifs(storagePath, std::ios::binary);
+    if (ifs) {
+      std::string pdfBytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+      sendPdfExportEmails(reportTitle, username, pdfBytes, unprotected, noWatermark, userPassword,
+                         ownerEmail, extraRecipients);
+    }
+  }
+}
+
+void sendPdfExportEmails(const std::string &reportTitle, const std::string &username,
+                         const std::string &pdfBytes, bool unprotected, bool noWatermark,
+                         const std::string &userPassword, const std::string &ownerEmail,
+                         const std::vector<std::string> &extraRecipients) {
+  std::vector<std::string> recipients;
+  if (!ownerEmail.empty()) recipients.push_back(ownerEmail);
+  for (const auto &e : extraRecipients) {
+    if (e != ownerEmail) recipients.push_back(e);  // evita duplicar si el propio exportador se agregó a la lista
+  }
+  if (recipients.empty()) return;
+
+  auto &cfg = config::AppConfig::instance();
+  const std::string displayTitle = reportTitle.empty() ? "Informe" : reportTitle;
+  const std::string subject = "[Beemetry] PDF exportado: " + displayTitle;
+
+  std::string body = "Se generó el PDF del informe \"" + displayTitle + "\".\n\n";
+  if (!unprotected && !userPassword.empty()) {
+    body += "Contraseña de acceso: " + userPassword + "\n";
+  }
+  body += noWatermark ? "Este PDF NO lleva marca de agua (perfil avanzado).\n"
+                      : "Este PDF lleva marca de agua de confidencialidad.\n";
+
+  const std::size_t maxBytes =
+      static_cast<std::size_t>(cfg.gPdfEmailMaxAttachmentMb) * 1024 * 1024;
+  const bool attach = !pdfBytes.empty() && pdfBytes.size() <= maxBytes;
+  if (!pdfBytes.empty() && !attach) {
+    body += "\nEl PDF (" + std::to_string(pdfBytes.size() / (1024 * 1024)) +
+            " MB) supera el límite de envío por correo -- descárguelo desde la plataforma.\n";
+  }
+  body += "\nGenerado el " + http_utils::nowIso8601().substr(0, 10) +
+         (username.empty() ? "" : (" por " + username)) + ".\n";
+
+  const std::vector<unsigned char> attachmentBytes =
+      attach ? std::vector<unsigned char>(pdfBytes.begin(), pdfBytes.end())
+             : std::vector<unsigned char>{};
+  for (const auto &to : recipients) {
+    std::string detail;
+    if (attach) {
+      mining_iot::sendEmailWithAttachment(to, subject, body, displayTitle + ".pdf",
+                                          "application/pdf", attachmentBytes, detail);
+    } else {
+      mining_iot::sendPlainEmail(to, subject, body, detail);
+    }
+    // Best-effort a propósito -- ver comentario del .hpp: un SMTP caído no
+    // debe borrar el resultado del export, que ya terminó bien.
+  }
 }
 
 void runVideoExportJob(const std::string &jobId, const std::string &pptxStoragePath,
@@ -328,6 +400,40 @@ void runVideoExportJob(const std::string &jobId, const std::string &pptxStorageP
   if (storagePath.empty()) {
     updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "failed", "",
                             "video_export_missing_storage_path", statusError);
+    return;
+  }
+
+  updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "success", storagePath, "", statusError);
+}
+
+void runXlsxExportJob(const std::string &jobId, const std::string &reportId,
+                      const std::string &sessionToken) {
+  auto &cfg = config::AppConfig::instance();
+  std::string statusError;
+  updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "running", "", "", statusError);
+
+  const std::string printUrl = cfg.gFrontendInternalOrigin + "/print-report.html?id=" +
+                               urlEncode(reportId) + "&token=" + urlEncode(sessionToken);
+
+  const auto sidecarResult =
+      postJsonToSidecar(cfg.gPdfExportUrl, "/render-xlsx",
+                        json::object{{"url", printUrl}, {"job_id", jobId}},
+                        cfg.gXlsxExportTimeoutMs);
+
+  if (!sidecarResult.ok) {
+    updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "failed", "", sidecarResult.error,
+                            statusError);
+    return;
+  }
+
+  std::string storagePath;
+  if (sidecarResult.body.if_contains("storage_path") &&
+      sidecarResult.body.at("storage_path").is_string()) {
+    storagePath = json::value_to<std::string>(sidecarResult.body.at("storage_path"));
+  }
+  if (storagePath.empty()) {
+    updateExportJobStatusPg(cfg.gDatabaseUrl, jobId, "failed", "",
+                            "xlsx_export_missing_storage_path", statusError);
     return;
   }
 

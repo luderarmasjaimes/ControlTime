@@ -20,8 +20,9 @@ export interface DocumentTemplateMeta {
   group: 'principal' | 'otros';
   classification: string;
   docCodePrefix: string;
-  /** 'document' = lienzo A4 (Word); 'presentation' = lienzo 16:9 960x540 (PowerPoint,
-   * mismo layoutMode que consume el export PPTX real, ADR-083). Default 'document'
+  /** 'document' = lienzo A4 (Word); 'presentation' = lienzo 16:9 1280x720, el
+   * tamaño real de una diapositiva PowerPoint (13.333x7.5in a 96dpi, ADR-083;
+   * mismo layoutMode que consume el export PPTX real). Default 'document'
    * si se omite -- solo las plantillas de diapositivas necesitan marcarlo. */
   docType?: 'document' | 'presentation';
 }
@@ -846,8 +847,8 @@ function buildFichaInspeccionCampo(flow: Flow, ctx: PersonalizationContext, answ
 // Plantillas tipo presentación (docType 'presentation') -- una diapositiva
 // por bloque de contenido, a diferencia de los builders de documento (que
 // dejan que el flujo pagine solo cuando el texto desborda). `forceNewSlide`
-// fuerza el salto: en un lienzo 960x540 tres párrafos cortos entrarían en la
-// misma diapositiva si se dejara paginar por overflow, que no es la
+// fuerza el salto: en un lienzo 1280x720 tres párrafos cortos entrarían en
+// la misma diapositiva si se dejara paginar por overflow, que no es la
 // convención esperada de una presentación (una idea por diapositiva).
 function forceNewSlide(flow: Flow): void {
   const pageNumber = currentPage(flow).page_number + 1;
@@ -932,7 +933,7 @@ export function buildDocumentTemplate(templateId: string, answers: TemplateAnswe
   const isPresentation = meta.docType === 'presentation';
   const ctx = buildPersonalization(meta.docCodePrefix);
   // getReportLayoutMetrics ignora paperSize/orientation en modo 'presentation'
-  // (lienzo fijo 960x540, ADR-083) -- se pasan igual por uniformidad de firma.
+  // (lienzo fijo 1280x720, ADR-083) -- se pasan igual por uniformidad de firma.
   const m = getReportLayoutMetrics(isPresentation ? 'presentation' : 'document', 'A4', 'portrait');
 
   const coverPage = buildCoverPage(1, m, meta.label, ctx, meta.classification, COVER_TEMPLATE_BY_ID[templateId] || 'corporate');

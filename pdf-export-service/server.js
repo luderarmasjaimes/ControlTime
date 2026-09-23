@@ -14,9 +14,12 @@
 // marca de agua (pdf-lib, dibuja texto) y lo cifra con contraseña real de
 // PDF (qpdf, ISO 32000/AES-256) — pdf-lib no soporta cifrado, por eso qpdf.
 //
-// POST /render  { url: string, watermark?: {text?, tenant?, user?, date?} }
+// POST /render  { url: string, watermark?: {text?, tenant?, user?, date?} | false }
 //   → PDF cifrado (application/pdf), header X-Pdf-User-Password con la
 //     contraseña generada para ESTA descarga (no se persiste en ningún lado).
+//   `watermark: false` explícito (ADR-204, perfil avanzado ya verificado
+//   server-side) es la ÚNICA forma de saltear el sello; cualquier otro valor
+//   (objeto, undefined, ausente) sigue dibujando el default de siempre.
 // GET  /health  → 200 si Chromium está listo
 // ─────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
@@ -30,8 +33,10 @@ const express = require('express');
 const puppeteer = require('puppeteer');
 const { PDFDocument, degrees, rgb, StandardFonts } = require('pdf-lib');
 const PptxGenJS = require('pptxgenjs');
-const AdmZip = require('adm-zip');
 const { buildReportDocx } = require('./reportDocxBuilder');
+const { buildReportPptx } = require('./reportPptxBuilder');
+const { buildReportXlsx } = require('./reportXlsxBuilder');
+const { addPdfOutline, addTocLinkAnnotations } = require('./pdfPostProcess');
 
 const execFileAsync = promisify(execFile);
 
@@ -255,7 +260,25 @@ async function openReportPage(browser, url) {
   attachBrowserDiagnostics(page, 'PDF_EXPORT', null);
   await page.emulateMediaType('print');
   await page.setViewport({ width: 1400, height: 1000, deviceScaleFactor: 2 });
-  await page.goto(url, { waitUntil: 'networkidle0', timeout: RENDER_TIMEOUT_MS });
+  // 2026-09-13 (SPEC-007 T15/O3, ver ADR-183/184): `waitUntil` bajado de
+  // 'networkidle0' a 'domcontentloaded' -- 'networkidle0' exige CERO
+  // peticiones de red en vuelo durante 500ms, una condición mucho más
+  // estricta que lo que este código en realidad necesita, porque la línea
+  // de abajo (`waitForReportRender`) YA hace la espera real y correcta
+  // (widgets/gráficos listos, `window.__PDF_READY__`, fuentes, imágenes).
+  // Instrumentado en vivo con timestamps `performance.now()` dentro de la
+  // propia app (print-report/main.tsx) leídos vía `page.evaluate()`: la app
+  // reporta estar lista (fetch + prefetch de telemetría + fuentes + 2
+  // frames) en ~370ms desde que arranca su propio `useEffect`, pero
+  // `goto()` con 'networkidle0' seguía bloqueado ~1.6s MÁS después de eso,
+  // esperando que la red quedara en silencio absoluto -- tiempo puro
+  // desperdiciado en cada apertura de página, multiplicado por cada
+  // reciclaje de worker (`PAGES_PER_BROWSER_PAGE`, cada 40 hojas) en
+  // documentos grandes. `domcontentloaded` resuelve mucho antes (scripts
+  // tipo module ya arrancaron) y dejar que `waitForReportRender` sea la
+  // única fuente de verdad de "listo" no reduce ninguna garantía de
+  // fidelidad -- sigue esperando exactamente lo mismo que antes.
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: RENDER_TIMEOUT_MS });
   await waitForReportRender(page);
   return page;
 }
@@ -278,8 +301,8 @@ async function openReportPage(browser, url) {
 const PAGES_PER_BROWSER_PAGE = 40;
 
 // ── Checkpoints reanudables + captura en paralelo de PDF ───────────────────
-// Mismo patrón que DOCX/PPTX (ver comentarios de DOCX_CHECKPOINT_ROOT/
-// PPTX_CHECKPOINT_ROOT) -- acá el checkpoint es por PÁGINA, guardando los
+// Mismo patrón que el checkpoint por-elemento de DOCX/PPTX (ver
+// rasterCapturePipeline.js) -- acá el checkpoint es por PÁGINA, guardando los
 // bytes del PDF de UNA sola página (`page.pdf()`) tal cual salen de
 // Chromium, sin fusionar todavía. La fusión final (pdf-lib, todas las
 // páginas en orden) queda como el único paso estrictamente secuencial --
@@ -316,8 +339,8 @@ async function loadPdfCheckpointManifest(hash) {
 }
 
 /** Lee UNA página del checkpoint (bytes de PDF de una sola hoja) -- usado en
- * la fusión final, de a una por vez (mismo criterio que
- * `readPptxCheckpointPage`: nunca todas juntas en memoria). */
+ * la fusión final, de a una por vez (mismo criterio que `loadCheckpoint` en
+ * rasterCapturePipeline.js: nunca todas juntas en memoria). */
 async function readPdfCheckpointPage(hash, pageNumber) {
   try {
     return await fs.readFile(path.join(pdfCheckpointDir(hash), `${pageNumber}.pdf`));
@@ -556,6 +579,13 @@ async function renderReportPages(page, url, realJobId) {
   // (nunca todas juntas en memoria, mismo criterio que PPTX).
   const merged = await PDFDocument.create();
   let placeholderCount = 0;
+  // Página REAL (`page_number`) de cada hoja efectivamente agregada a
+  // `merged`, EN EL MISMO ORDEN -- puede ser un subconjunto de
+  // `allPageNumbers` (una que falló en todos los workers se omite arriba,
+  // ver `placeholderCount`). `addPdfOutline`/`addTocLinkAnnotations` de
+  // abajo necesitan esta lista exacta para mapear cada encabezado/entrada de
+  // TOC al índice 0-based real dentro de `merged`.
+  const mergedPageNumbers = [];
   for (const nth of allPageNumbers) {
     const pageBytes = await readPdfCheckpointPage(contentHash, nth);
     if (!pageBytes) {
@@ -566,7 +596,25 @@ async function renderReportPages(page, url, realJobId) {
     const onePage = await PDFDocument.load(pageBytes);
     const [copied] = await merged.copyPages(onePage, [0]);
     merged.addPage(copied);
+    mergedPageNumbers.push(nth);
   }
+
+  // Índice REAL (ADR pendiente de numerar -- ver pdfPostProcess.js): panel
+  // de marcadores + enlaces internos reales sobre el bloque TOC visible,
+  // misma numeración que el campo TOC nativo de Word. `reportDocument` puede
+  // ser `null` (caso raro "report_document_unavailable", ver arriba) -- en
+  // ese caso no hay de dónde sacar encabezados, se omite sin más. Un fallo
+  // acá NUNCA debe tumbar un export que por lo demás salió bien -- el índice
+  // es una mejora, no un requisito de la exportación.
+  if (reportDocument) {
+    try {
+      addPdfOutline(merged, reportDocument, mergedPageNumbers);
+      addTocLinkAnnotations(merged, reportDocument, mergedPageNumbers);
+    } catch (indexErr) {
+      console.warn('[PDF_EXPORT] pdf_index_failed', String(indexErr && indexErr.stack || indexErr));
+    }
+  }
+
   console.info('[PDF_EXPORT] export_complete', JSON.stringify({
     totalPages: allPageNumbers.length,
     capturedFromCheckpoint: alreadyCaptured.size,
@@ -751,8 +799,15 @@ app.post('/render', async (req, res) => {
     page = rendered.page;
     let pdfBuffer = rendered.buffer;
 
-    const watermarkText = buildWatermarkText(watermark);
-    pdfBuffer = Buffer.from(await applyWatermark(pdfBuffer, watermarkText));
+    // ADR-204: `watermark === false` explícito (perfil avanzado, permission
+    // code informes.export_sin_marca_agua verificado server-side ANTES de
+    // llegar acá) es la ÚNICA forma de saltear el sello -- cualquier otro
+    // valor (objeto, undefined, ausente) sigue dibujando el default, igual
+    // que siempre (retrocompatible con todo caller viejo).
+    if (watermark !== false) {
+      const watermarkText = buildWatermarkText(watermark);
+      pdfBuffer = Buffer.from(await applyWatermark(pdfBuffer, watermarkText));
+    }
 
     res.setHeader('Content-Type', 'application/pdf');
     if (shouldEncrypt) {
@@ -849,8 +904,11 @@ app.post('/render-pdf', async (req, res) => {
     page = rendered.page;
     let pdfBuffer = rendered.buffer;
 
-    const watermarkText = buildWatermarkText(watermark);
-    pdfBuffer = Buffer.from(await applyWatermark(pdfBuffer, watermarkText));
+    // ADR-204: ver comentario equivalente en /render, mismo criterio exacto.
+    if (watermark !== false) {
+      const watermarkText = buildWatermarkText(watermark);
+      pdfBuffer = Buffer.from(await applyWatermark(pdfBuffer, watermarkText));
+    }
 
     let userPassword = null;
     let finalBuffer = pdfBuffer;
@@ -881,161 +939,112 @@ app.post('/render-pdf', async (req, res) => {
   }
 });
 
-// Tamaño fijo del lienzo en layoutMode 'presentation' (reportLayoutMetrics.ts:
-// PAGE_WIDTH=960, PAGE_HEIGHT=540, 96dpi) — 960/96=10in, 540/96=5.625in,
-// exactamente el layout 16:9 estándar de pptxgenjs (LAYOUT_16x9).
-const SLIDE_WIDTH_IN = 10;
-const SLIDE_HEIGHT_IN = 5.625;
-// Techo por captura de diapositiva individual -- mismo criterio que
-// DOCX_CAPTURE_TIMEOUT_MS más abajo (ver su comentario): sin esto, una sola
-// diapositiva cuyo layout nunca "se asienta" cuelga TODO el deck para
-// siempre, sin ningún error que lo delate en los logs.
+// Tamaño de deck/papel (SLIDE_WIDTH_IN/HEIGHT_IN, paperSizeInches,
+// resolvePagePaperSetup): ver reportSharedHelpers.js/reportPptxBuilder.js --
+// PPTX ahora se arma nativamente desde el JSON (mismo criterio que DOCX,
+// checkpoint por ELEMENTO compartido vía rasterCapturePipeline.js, ya NO por
+// página completa), así que ese cálculo de tamaño vive junto al builder que
+// realmente lo usa.
+// Techo por captura de elemento individual -- mismo criterio que
+// DOCX_CAPTURE_TIMEOUT_MS: sin esto, un solo gráfico cuyo layout nunca "se
+// asienta" cuelga TODO el deck para siempre, sin ningún error que lo delate.
 const PPTX_CAPTURE_TIMEOUT_MS = 20000;
-// Techo por diapositiva para "todos sus widgets están listos" -- antes
-// heredaba RENDER_TIMEOUT_MS (10 min) del check GLOBAL inicial
-// (waitForReportRender), pero esperar hasta 10 min por CADA una de 2000+
-// diapositivas es justo el patrón que produjo atascos de horas sin ningún
-// error (reproducido en vivo: 12+ min atascado entre diapositivas 11-19,
-// sin que el try/catch de esa espera llegara siquiera a dispararse). Mismo
-// criterio que DOCX_ELEMENT_READY_TIMEOUT_MS en /render-docx: fallar rápido
-// y capturar la diapositiva tal como esté es preferible a bloquear todo el
-// export por un solo gráfico lento.
-const PPTX_WIDGET_READY_TIMEOUT_MS = 15000;
-
-// Tamaño de papel en mm — MISMOS valores que `PAPER_SIZES_MM` en
-// reportLayoutMetrics.ts (única fuente de verdad del lado cliente); se
-// duplican acá porque este servicio no importa TypeScript del frontend.
-const PAPER_SIZES_MM = { A4: { w: 210, h: 297 }, A3: { w: 297, h: 420 } };
-const MM_TO_IN = 1 / 25.4;
-
-/** Tamaño de hoja (A4/A3 × retrato/paisaje) en pulgadas -- unidad que usa
- * `pptx.defineLayout`/`slide.addImage`. */
-function paperSizeInches(paperSize, orientation) {
-  const sizeMm = PAPER_SIZES_MM[paperSize] || PAPER_SIZES_MM.A4;
-  const isLandscape = orientation === 'landscape';
-  const widthMm = isLandscape ? sizeMm.h : sizeMm.w;
-  const heightMm = isLandscape ? sizeMm.w : sizeMm.h;
-  return { widthIn: widthMm * MM_TO_IN, heightIn: heightMm * MM_TO_IN };
-}
-
-/** Resuelve el papel EFECTIVO de una página: el suyo propio si lo tiene, si
- * no el del documento -- mismo criterio que `resolvePagePaperSetup` en
- * useEditorStore.ts (única fuente de verdad de esta herencia). */
-function resolvePagePaperSetup(page, meta) {
-  return {
-    paperSize: (page && page.paperSize) || (meta && meta.paperSize) || 'A4',
-    orientation: (page && page.orientation) || (meta && meta.orientation) || 'portrait',
-  };
-}
-
-// ── Checkpoints reanudables + captura en paralelo de PPTX ──────────────────
-// Mismo patrón validado en vivo para DOCX (ver comentario de
-// DOCX_CHECKPOINT_ROOT/launchDedicatedExportBrowser más abajo), aplicado a
-// PPTX. Diferencia clave: DOCX arma la mayoría del documento desde JSON y
-// solo rasteriza bloques puntuales (checkpoint por ELEMENTO); PPTX captura
-// la página COMPLETA como imagen de fondo -- acá el checkpoint es por
-// PÁGINA (PNG de fondo + overlays de texto extraídos), y la construcción
-// del .pptx (`pptx.addSlide()`) se hace en una pasada SECUENCIAL final,
-// leyendo del checkpoint en orden de página -- PptxGenJS no admite agregar
-// diapositivas fuera de orden, así que la fase de captura (paralelizable)
-// queda separada de la fase de armado (secuencial pero barata: solo lee
-// buffers ya en disco, no vuelve a tocar el navegador).
-const PPTX_CHECKPOINT_ROOT = path.join(EXPORT_DATA_ROOT, 'pptx_checkpoints');
+// Techo por elemento para "listo" (antes era por diapositiva completa,
+// `waitForPageWidgetsReady` -- PPTX ahora captura por ELEMENTO como DOCX, ver
+// `waitForElementReady` en rasterCapturePipeline.js) -- fallar rápido y
+// capturar el elemento tal como esté es preferible a bloquear todo el export
+// por un solo gráfico lento.
+const PPTX_ELEMENT_READY_TIMEOUT_MS = 15000;
 const PPTX_CAPTURE_PARALLELISM = Math.max(1, parseInt(process.env.PPTX_CAPTURE_PARALLELISM || '4', 10) || 1);
 
-function pptxCheckpointDir(hash) {
-  return path.join(PPTX_CHECKPOINT_ROOT, hash);
-}
+// Frames rasterizados 1:1 por diapositiva, SOLO para /render-video (ver su
+// comentario y el de `captureSlidePreviewsForVideo`) -- desde que /render-pptx
+// arma el .pptx nativamente (0..N imágenes por diapositiva, ya no
+// exactamente 1 "fondo de página completa"), /render-video ya no puede sacar
+// sus frames del propio .pptx.
+const SLIDE_PREVIEW_ROOT = path.join(EXPORT_DATA_ROOT, 'pptx_slide_previews');
 
-/** Lee SOLO el manifest -- qué páginas ya están capturadas -- sin tocar los
- * PNG. Un PNG de página completa (1400x1000 @2x) pesa mucho más que un
- * recorte de elemento DOCX -- para un documento de miles de páginas, cargar
- * TODOS los buffers en memoria de una (como hacía la primera versión de esto)
- * arriesgaba varios GB solo para saber "qué falta". Esto solo dice CUÁLES ya
- * están, listo para filtrar `remainingPageNumbers` sin cargar ni un byte de
- * imagen. */
-async function loadPptxCheckpointManifest(hash) {
-  const dir = pptxCheckpointDir(hash);
-  try {
-    const manifestRaw = await fs.readFile(path.join(dir, 'manifest.json'), 'utf8');
-    const manifest = JSON.parse(manifestRaw);
-    return new Set(manifest.captured || []);
-  } catch {
-    return new Set();
-  }
-}
-
-/** Lee UNA página del checkpoint (PNG + overlays) -- usado en la pasada de
- * armado final, de a una por vez (nunca todas juntas, ver comentario de
- * `loadPptxCheckpointManifest`), para que el buffer de cada página se pueda
- * liberar apenas `pptx.addImage()` termina de leerlo, en vez de mantener
- * miles de páginas en memoria a la vez. */
-async function readPptxCheckpointPage(hash, pageNumber) {
-  const dir = pptxCheckpointDir(hash);
-  try {
-    const png = await fs.readFile(path.join(dir, `${pageNumber}.png`));
-    const overlaysRaw = await fs.readFile(path.join(dir, `${pageNumber}.overlays.json`), 'utf8');
-    return { png, overlays: JSON.parse(overlaysRaw) };
-  } catch {
-    // Página corrupta/faltante (caída a mitad de escritura, o nunca se
-    // capturó con éxito) -- el caller la trata como faltante (placeholder).
-    return null;
-  }
-}
-
-async function savePptxCheckpointPage(hash, pageNumber, png, overlays) {
-  const dir = pptxCheckpointDir(hash);
+/** Reusa el mismo mecanismo de worker dedicado que el resto del pipeline de
+ * export (Chromium propio, activación de página virtualizada, espera de
+ * montaje) pero simplificado a UN solo worker secuencial -- los decks de
+ * presentación (único `layoutMode` desde el que la UI permite exportar
+ * video) son órdenes de magnitud más chicos que los documentos de miles de
+ * páginas que sí necesitan paralelismo real. Guarda un PNG por página bajo
+ * `SLIDE_PREVIEW_ROOT/<jobId>/<pageNumber>.png` -- saltea los que ya existen
+ * (reintento de un job caído a medias no vuelve a capturar todo). */
+async function captureSlidePreviewsForVideo(reportDocument, url, jobId, virtualized) {
+  const dir = path.join(SLIDE_PREVIEW_ROOT, jobId);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, `${pageNumber}.png`), png);
-  await fs.writeFile(path.join(dir, `${pageNumber}.overlays.json`), JSON.stringify(overlays));
-}
-
-async function savePptxManifest(hash, capturedPageNumbers, totalPages) {
-  const dir = pptxCheckpointDir(hash);
-  await fs.mkdir(dir, { recursive: true });
-  const manifest = { captured: capturedPageNumbers, totalPages, updatedAt: new Date().toISOString() };
-  const tmpPath = path.join(dir, 'manifest.json.tmp');
-  const finalPath = path.join(dir, 'manifest.json');
-  await fs.writeFile(tmpPath, JSON.stringify(manifest));
-  await fs.rename(tmpPath, finalPath);
-}
-
-async function clearPptxCheckpoint(hash) {
-  await fs.rm(pptxCheckpointDir(hash), { recursive: true, force: true }).catch(() => {});
+  const pageNumbers = reportDocument.pages.map((p) => p.page_number);
+  const pageFrom = Math.min(...pageNumbers);
+  const pageTo = Math.max(...pageNumbers);
+  const { browser: workerBrowser, page: workerPage } = await openExportWorkerPage(
+    withPageRangeParam(url, pageFrom, pageTo, null), 'PPTX_EXPORT', jobId, 'video-preview',
+  );
+  try {
+    for (const pageNumber of pageNumbers) {
+      const outPath = path.join(dir, `${pageNumber}.png`);
+      try {
+        await fs.access(outPath);
+        continue;
+      } catch {
+        // No existe todavía -- seguir y capturarla.
+      }
+      if (virtualized) {
+        try {
+          await setExportActivePage(workerPage, pageNumber);
+          await waitForMountedPage(workerPage, pageNumber, PPTX_ELEMENT_READY_TIMEOUT_MS);
+        } catch (activateErr) {
+          console.warn('[PPTX_EXPORT] video_preview_activate_failed', pageNumber, String(activateErr));
+        }
+      }
+      // Re-consultada en CADA página (no una sola vez afuera del loop): en un
+      // documento virtualizado, qué `.ro-page-canvas` están montados cambia
+      // con cada `setExportActivePage` -- mismo criterio que
+      // `capturePagesOnWorker` del pipeline viejo.
+      const handles = await workerPage.$$('.ro-page-canvas');
+      const nums = await reportPageNumbers(workerPage);
+      const idx = nums.indexOf(pageNumber);
+      const handle = idx >= 0 ? handles[idx] : null;
+      if (!handle) {
+        console.warn('[PPTX_EXPORT] video_preview_handle_nulo', pageNumber);
+        continue;
+      }
+      try {
+        const png = await withTimeout(handle.screenshot({ type: 'png' }), PPTX_CAPTURE_TIMEOUT_MS, 'video_preview_screenshot_timeout');
+        await fs.writeFile(outPath, png);
+      } catch (captureErr) {
+        console.warn('[PPTX_EXPORT] video_preview_capture_failed', pageNumber, String(captureErr));
+      }
+    }
+  } finally {
+    await workerPage.close().catch(() => {});
+    await workerBrowser.close().catch(() => {});
+  }
 }
 
 // POST /render-pptx  { url: string, job_id: string }
 //   → { storage_path: string } — ruta (dentro de EXPORT_DATA_ROOT) del .pptx
 //     generado; el backend la guarda como report_export_job.storage_uri.
 //
-// Stage 1: cada página del informe se captura como imagen de fondo a
-// pantalla completa de su slide — MISMA fidelidad visual que el PDF (misma
-// navegación, misma espera de __PDF_READY__, mismo componente
-// ReadOnlyViewer), sin overlay de texto nativo todavía (Stage 2). El tamaño
-// del deck depende de `layoutMode`: 'presentation' usa el 16:9 fijo de
-// siempre; 'document' usa el papel real del informe (A4/A3, retrato/
-// paisaje, ver `paperSizeInches`) -- un .pptx solo admite UN tamaño de
-// diapositiva para TODO el archivo (limitación real del formato), así que
-// páginas con un override propio (`setPagePaperSetup`) que no coincida con
-// el papel del documento se encajan (letterbox) dentro del deck preservando
-// su propia proporción, en vez de estirarse.
+// Pipeline nativo PPTX (reemplaza la captura de página completa como imagen
+// de fondo + overlay de texto): igual que /render-docx, la MAYORÍA de la
+// diapositiva se construye directamente desde `window.__REPORT_DOCUMENT__`
+// (`reportPptxBuilder.js`) -- solo los 4 tipos de `RASTER_ELEMENT_TYPES`
+// (chart/sensor_multi_chart/cover/image) se capturan como PNG, con el MISMO
+// checkpoint por-elemento (indexado por hash de contenido, compartido con
+// DOCX) que ya probó ser reanudable en documentos de miles de páginas.
 app.post('/render-pptx', async (req, res) => {
   const { url, job_id: jobId } = req.body || {};
-  if (typeof url !== 'string' || !url) {
-    return res.status(400).json({ error: 'url_required' });
-  }
-  if (typeof jobId !== 'string' || !jobId) {
-    return res.status(400).json({ error: 'job_id_required' });
-  }
+  if (typeof url !== 'string' || !url) return res.status(400).json({ error: 'url_required' });
+  if (typeof jobId !== 'string' || !jobId) return res.status(400).json({ error: 'job_id_required' });
   let parsed;
   try {
     parsed = new URL(url);
   } catch {
     return res.status(400).json({ error: 'invalid_url' });
   }
-  if (parsed.hostname !== ALLOWED_HOST) {
-    return res.status(400).json({ error: 'host_not_allowed' });
-  }
+  if (parsed.hostname !== ALLOWED_HOST) return res.status(400).json({ error: 'host_not_allowed' });
 
   if (!tryAcquireHeavyExport('pptx', jobId)) {
     const active = activeHeavyExport;
@@ -1048,371 +1057,241 @@ app.post('/render-pptx', async (req, res) => {
     return res.status(429).json({ error: 'export_busy' });
   }
 
-  // pptxOverlay=1: ReadOnlyViewer oculta la tinta de los bloques
-  // overlay-eligible (hoy solo `text`, ver lib/pptxOverlayMapping.ts) y los
-  // marca con data-pptx-overlay/data-pptx-meta — este endpoint los lee para
-  // superponer cuadros de texto NATIVOS editables sobre la captura de fondo.
-  const overlayUrl = `${url}${url.includes('?') ? '&' : '?'}pptxOverlay=1`;
-
   let page;
   const exportStartedAt = Date.now();
-  // DIAGNÓSTICO TEMPORAL -- mismo criterio que /render-docx: un job de PPTX
-  // se colgó indefinidamente (45+ min, cero logs, CPU/renderer del job en
-  // 0:00 de tiempo acumulado -- verificado con `ps aux` dentro del
-  // contenedor) sin que NINGÚN paso lanzara error, así que no había forma de
-  // saber en qué punto exacto se atascaba. Checkpoints acotados (`elapsedMs`
-  // desde `exportStartedAt`) antes/después de cada paso potencialmente
-  // lento, para verlo con certeza la próxima vez en vez de adivinar.
-  const checkpoint = (label, extra) => console.info(
-    '[PPTX_EXPORT] checkpoint', JSON.stringify({ jobId, label, elapsedMs: Date.now() - exportStartedAt, ...extra }),
-  );
-  // Referenciados desde el `catch` de abajo para un flush de último recurso
-  // -- mismo criterio que /render-docx.
   let checkpointHashForCleanup = null;
-  let capturedPageNumbersForCleanup = null;
-  let checkpointTotalPagesForCleanup = null;
+  let manifestEntriesForCleanup = null;
+  let checkpointTotalTargets = null;
   try {
-    checkpoint('start');
     const browser = await getBrowser();
-    checkpoint('browser_ready');
     page = await browser.newPage();
     attachBrowserDiagnostics(page, 'PPTX_EXPORT', `${jobId}#discovery`);
-    // 'print' (no 'screen'): misma hoja de estilos @media print que usa el
-    // PDF (oculta ro-meta, quita el box-shadow de la página) — el objetivo es
-    // "el mismo estilo del informe", no el chrome de la barra de solo-lectura.
     await page.emulateMediaType('print');
     await page.setViewport({ width: 1400, height: 1000, deviceScaleFactor: 2 });
-    checkpoint('before_goto');
-    // Rango vacío (0,0) a propósito -- esta página de descubrimiento solo
-    // lee metadata del documento, la captura real la hacen los workers de
-    // más abajo (ver comentario de `withPageRangeParam`).
-    await page.goto(withPageRangeParam(overlayUrl, 0, 0), { waitUntil: 'networkidle0', timeout: RENDER_TIMEOUT_MS });
-    checkpoint('after_goto');
+    // Rango vacío (0,0) a propósito -- ver comentario de `withPageRangeParam`
+    // (mismo criterio que /render-docx: esta página de descubrimiento solo
+    // lee `window.__REPORT_DOCUMENT__`, la captura real la hacen los workers
+    // de más abajo).
+    await page.goto(withPageRangeParam(url, 0, 0), { waitUntil: 'domcontentloaded', timeout: RENDER_TIMEOUT_MS });
     await waitForReportRender(page);
-    checkpoint('after_wait_for_report_render');
 
-    const discoverySlideHandles = await page.$$('.ro-page-canvas');
-    if (discoverySlideHandles.length === 0) {
-      return res.status(422).json({ error: 'no_pages_to_render' });
-    }
-    // Ver comentario de `reportPageNumbers` -- el número de página REAL, no
-    // el índice de DOM. Define el orden final del deck (usado en la pasada
-    // de armado, más abajo).
-    const slidePageNumbers = await reportPageNumbers(page);
-    checkpoint('slide_handles_ready', { count: slidePageNumbers.length });
-
-    // Propiedades de documento + numeración nativa de diapositiva ("premium
-    // enterprise" -- pedido explícito: el archivo debe verse como una
-    // presentación corporativa real al abrir Archivo → Información en
-    // PowerPoint, no como un .pptx anónimo). Misma fuente que ya usa
-    // /render-docx (window.__REPORT_DOCUMENT__.meta +
-    // window.__REPORT_SESSION_CHROME__), leída aquí también.
     const reportDocument = await page.evaluate(() => window.__REPORT_DOCUMENT__ || null);
+    if (!reportDocument || !Array.isArray(reportDocument.pages)) {
+      return res.status(422).json({ error: 'report_document_unavailable' });
+    }
     const sessionChrome = await page.evaluate(() => window.__REPORT_SESSION_CHROME__ || {});
-    const docTitle = (reportDocument && reportDocument.meta && reportDocument.meta.title) || 'Informe técnico';
-    const docAuthor = sessionChrome.fullName || (reportDocument && reportDocument.meta && reportDocument.meta.author) || 'Beemetry';
-    const docCompany = sessionChrome.company || 'Beemetry';
-    const docMeta = (reportDocument && reportDocument.meta) || {};
-    const layoutMode = docMeta.layoutMode === 'presentation' ? 'presentation' : 'document';
-    // Tamaño del deck: fijo 16:9 en modo presentación, papel real del
-    // documento (A4/A3, retrato/paisaje) en modo documento -- ver comentario
-    // de `paperSizeInches` más arriba sobre por qué páginas individuales con
-    // un papel distinto se encajan (letterbox) en vez de redefinir el deck.
-    const deckSize = layoutMode === 'presentation'
-      ? { widthIn: SLIDE_WIDTH_IN, heightIn: SLIDE_HEIGHT_IN }
-      : paperSizeInches(docMeta.paperSize || 'A4', docMeta.orientation || 'portrait');
-    const deckWidthIn = deckSize.widthIn;
-    const deckHeightIn = deckSize.heightIn;
-    const virtualized = await isExportVirtualized(page);
 
-    // Checkpoint reanudable (mismo criterio que /render-docx): indexado por
-    // HASH DEL CONTENIDO, no por jobId.
+    const virtualized = await isExportVirtualized(page);
+    const allTargets = [];
+    for (const docPage of reportDocument.pages) {
+      for (const el of docPage.elements || []) {
+        if (RASTER_ELEMENT_TYPES.has(el.type)) allTargets.push({ el, pageNumber: docPage.page_number });
+      }
+    }
+
+    // Checkpoint reanudable COMPARTIDO con /render-docx (mismo hash de
+    // contenido, mismo directorio -- ver comentario de
+    // rasterCapturePipeline.js::RASTER_CHECKPOINT_ROOT): exportar primero a
+    // DOCX y después a PPTX del mismo informe reusa las capturas ya hechas.
     const contentHash = computeContentHash(reportDocument);
-    const alreadyCaptured = await loadPptxCheckpointManifest(contentHash);
-    const remainingPageNumbers = slidePageNumbers.filter((n) => !alreadyCaptured.has(n));
-    // Páginas ya persistidas + las que se agreguen en este run -- mismo
-    // patrón que `manifestEntries` en /render-docx.
-    const capturedPageNumbers = Array.from(alreadyCaptured);
+    const checkpointData = await loadCheckpoint(contentHash);
+    const rasterAssets = checkpointData.rasterAssets;
+    const imageAssets = checkpointData.imageAssets;
+    const alreadyCaptured = new Set([...rasterAssets.keys(), ...imageAssets.keys()]);
+    const captureTargets = allTargets.filter(({ el }) => !alreadyCaptured.has(el.id));
+    const manifestEntries = allTargets
+      .filter(({ el }) => alreadyCaptured.has(el.id))
+      .map(({ el }) => ({ id: el.id, type: el.type }));
     checkpointHashForCleanup = contentHash;
-    capturedPageNumbersForCleanup = capturedPageNumbers;
-    checkpointTotalPagesForCleanup = slidePageNumbers.length;
+    manifestEntriesForCleanup = manifestEntries;
+    checkpointTotalTargets = allTargets.length;
     let sinceLastManifestSave = 0;
-    const flushManifest = () => savePptxManifest(contentHash, capturedPageNumbers, slidePageNumbers.length).catch((flushErr) => {
-      console.warn('[PPTX_EXPORT] checkpoint_manifest_save_failed', String(flushErr));
+    const flushManifest = () => saveManifest(contentHash, manifestEntries, allTargets.length).catch((err) => {
+      console.warn('[PPTX_EXPORT] checkpoint_manifest_save_failed', String(err));
     });
 
-    // Partición en tramos contiguos de página -- mismo patrón que la Fase 2
-    // de DOCX (ver comentario ahí). Cuota de telemetría por worker también
-    // igual: sin esto, N workers repiten el prefetch completo del documento
-    // cada uno, saturando el rate-limit de Nginx (bug ya encontrado y
-    // corregido en DOCX -- se aplica acá desde el principio).
-    const parallelism = Math.max(1, Math.min(PPTX_CAPTURE_PARALLELISM, remainingPageNumbers.length || 1));
-    const chunkSize = Math.max(1, Math.ceil(remainingPageNumbers.length / parallelism));
+    let readyTimeouts = 0;
+    let capturedCount = 0;
+    let captureFailures = 0;
+    let activatedPageCount = 0;
+
+    // Partición en tramos contiguos -- mismo patrón que /render-docx.
+    const parallelism = Math.max(1, Math.min(PPTX_CAPTURE_PARALLELISM, captureTargets.length || 1));
+    const chunkSize = Math.max(1, Math.ceil(captureTargets.length / parallelism));
     const chunks = [];
-    for (let i = 0; i < remainingPageNumbers.length; i += chunkSize) {
-      chunks.push(remainingPageNumbers.slice(i, i + chunkSize));
+    for (let i = 0; i < captureTargets.length; i += chunkSize) {
+      chunks.push(captureTargets.slice(i, i + chunkSize));
     }
+    console.info('[PPTX_EXPORT] capture_start', JSON.stringify({
+      jobId,
+      contentHash,
+      pages: reportDocument.pages.length,
+      targets: allTargets.length,
+      capturedFromCheckpoint: alreadyCaptured.size,
+      remaining: captureTargets.length,
+      parallelism: chunks.length,
+      virtualized,
+      elementReadyTimeoutMs: PPTX_ELEMENT_READY_TIMEOUT_MS,
+    }));
+    await saveJobProgress(jobId, alreadyCaptured.size, allTargets.length);
+
+    /** Idéntico en espíritu a `captureOnPage` de /render-docx (activar
+     * página → esperar listo → `handle.screenshot()` → guardar en
+     * checkpoint) -- ver sus comentarios para el detalle de cada paso, acá
+     * solo cambia el prefijo de log. */
+    async function captureOnPage(workerPage, targets, workerLabel) {
+      let lastActivatedPage = null;
+      let virtualizationErrorLogged = 0;
+      let missingHandleLogged = 0;
+      // BATCH_SIZE=1 (secuencial) a propósito -- mismo hallazgo que DOCX:
+      // `elementHandle.screenshot()` hace scroll de la página hasta que el
+      // elemento sea visible ANTES de capturar, y varias capturas a la vez
+      // sobre la MISMA página interfieren entre sí (capturas rotas).
+      await runInBatches(targets, 1, async ({ el, pageNumber }) => {
+        if (virtualized && pageNumber !== lastActivatedPage) {
+          try {
+            await setExportActivePage(workerPage, pageNumber);
+            await waitForMountedPage(workerPage, pageNumber, PPTX_ELEMENT_READY_TIMEOUT_MS);
+            lastActivatedPage = pageNumber;
+            activatedPageCount += 1;
+            if (activatedPageCount === 1 || activatedPageCount % 10 === 0) {
+              const memory = process.memoryUsage();
+              console.info('[PPTX_EXPORT] progress', JSON.stringify({
+                jobId,
+                worker: workerLabel,
+                pageNumber,
+                activatedPages: activatedPageCount,
+                capturedThisRun: capturedCount,
+                capturedFromCheckpoint: alreadyCaptured.size,
+                targetsThisRun: captureTargets.length,
+                readyTimeouts,
+                elapsedMs: Date.now() - exportStartedAt,
+                nodeRssBytes: memory.rss,
+                nodeHeapUsedBytes: memory.heapUsed,
+              }));
+              saveJobProgress(jobId, alreadyCaptured.size + capturedCount, allTargets.length);
+            }
+          } catch (activateErr) {
+            if (virtualizationErrorLogged < 5) {
+              virtualizationErrorLogged += 1;
+              console.warn('[PPTX_EXPORT] activar página falló', workerLabel, pageNumber, String(activateErr && activateErr.stack || activateErr));
+            }
+            lastActivatedPage = pageNumber;
+          }
+        }
+        try {
+          await waitForElementReady(workerPage, el.id, PPTX_ELEMENT_READY_TIMEOUT_MS);
+        } catch (readyErr) {
+          readyTimeouts += 1;
+          let snapshot = null;
+          try {
+            snapshot = await elementReadinessSnapshot(workerPage, pageNumber, el.id);
+          } catch (snapshotErr) {
+            snapshot = { diagnosticError: String(snapshotErr) };
+          }
+          console.warn('[PPTX_EXPORT] element_ready_timeout', JSON.stringify({
+            jobId, worker: workerLabel, pageNumber, elementId: el.id, elementType: el.type, error: String(readyErr), snapshot,
+          }));
+        }
+        const handle = await workerPage.$(`[data-element-id="${el.id}"]`);
+        if (!handle) {
+          if (missingHandleLogged < 8) {
+            missingHandleLogged += 1;
+            console.warn('[PPTX_EXPORT] handle nulo para', el.id, 'worker', workerLabel, 'tipo', el.type, 'pageNumber', pageNumber, 'lastActivatedPage', lastActivatedPage);
+          }
+          return;
+        }
+        try {
+          const png = await withTimeout(handle.screenshot({ type: 'png' }), PPTX_CAPTURE_TIMEOUT_MS, 'screenshot_timeout');
+          if (el.type === 'image') imageAssets.set(el.id, png);
+          else rasterAssets.set(el.id, png);
+          capturedCount += 1;
+          try {
+            await saveCheckpointPng(contentHash, el.id, png);
+            manifestEntries.push({ id: el.id, type: el.type });
+            sinceLastManifestSave += 1;
+            if (sinceLastManifestSave >= 50) {
+              sinceLastManifestSave = 0;
+              await flushManifest();
+            }
+          } catch (checkpointErr) {
+            console.warn('[PPTX_EXPORT] checkpoint_png_save_failed', el.id, String(checkpointErr));
+          }
+        } catch (captureErr) {
+          captureFailures += 1;
+          console.warn('[PPTX_EXPORT] captura fallida para', el.id, 'worker', workerLabel, String(captureErr));
+        }
+      });
+    }
+
     const telemetryQuota = chunks.length > 1
       ? {
         maxConcurrency: Math.max(1, Math.floor(16 / chunks.length)),
         minIntervalMs: Math.ceil(62.5 * chunks.length),
       }
       : null;
-    checkpoint('capture_start', {
-      totalPages: slidePageNumbers.length,
-      capturedFromCheckpoint: alreadyCaptured.size,
-      remaining: remainingPageNumbers.length,
-      parallelism: chunks.length,
-      virtualized,
-    });
-    await saveJobProgress(jobId, alreadyCaptured.size, slidePageNumbers.length);
-
-    let capturedCount = 0;
-    let captureFailures = 0;
-    let missingHandleCount = 0;
-
-    /** Captura las páginas de `pageNumbers` sobre `workerPage` -- misma
-     * lógica que el bucle secuencial original (activar página, esperar
-     * widgets, extraer overlays, screenshot), ahora reutilizable por
-     * cualquier worker. Cada página capturada se persiste al checkpoint
-     * INMEDIATAMENTE (ver comentario de `savePptxCheckpointPage`). */
-    async function capturePagesOnWorker(workerPage, pageNumbers, workerLabel) {
-      const handles = await workerPage.$$('.ro-page-canvas');
-      const nums = await reportPageNumbers(workerPage);
-      const handleByPage = new Map();
-      handles.forEach((handle, idx) => handleByPage.set(nums[idx], handle));
-      for (const nth of pageNumbers) {
-        const handle = handleByPage.get(nth);
-        if (!handle) {
-          missingHandleCount += 1;
-          console.warn('[PPTX_EXPORT] handle nulo para página', nth, 'worker', workerLabel);
-          continue;
-        }
-        if (virtualized) {
-          await setExportActivePage(workerPage, nth);
-          try {
-            await waitForPageWidgetsReady(workerPage, nth, PPTX_WIDGET_READY_TIMEOUT_MS);
-          } catch (readyErr) {
-            console.warn('[PPTX_EXPORT] widgets_no_listos', nth, 'worker', workerLabel, String(readyErr && readyErr.message || readyErr));
-          }
-        }
-        const overlays = await withTimeout(handle.evaluate((canvasEl) => {
-          const canvasRect = canvasEl.getBoundingClientRect();
-          return Array.from(canvasEl.querySelectorAll('[data-pptx-overlay="1"]')).map((el) => {
-            const r = el.getBoundingClientRect();
-            let meta = { align: 'left', runs: [] };
-            try {
-              meta = JSON.parse(el.getAttribute('data-pptx-meta') || '{}');
-            } catch { /* meta inválido -> se omite este overlay */ }
-            return {
-              x: r.left - canvasRect.left,
-              y: r.top - canvasRect.top,
-              width: r.width,
-              height: r.height,
-              align: meta.align || 'left',
-              runs: Array.isArray(meta.runs) ? meta.runs : [],
-            };
-          });
-        }), PPTX_CAPTURE_TIMEOUT_MS, `overlay_extract_timeout:${nth}`).catch((overlayErr) => {
-          console.warn('[PPTX_EXPORT] overlay_extract_failed', nth, 'worker', workerLabel, String(overlayErr && overlayErr.message || overlayErr));
-          return [];
-        });
-        try {
-          const pngBuffer = await withTimeout(
-            handle.screenshot({ type: 'png' }), PPTX_CAPTURE_TIMEOUT_MS, `slide_screenshot_timeout:${nth}`,
-          );
-          await savePptxCheckpointPage(contentHash, nth, pngBuffer, overlays);
-          capturedPageNumbers.push(nth);
-          capturedCount += 1;
-          sinceLastManifestSave += 1;
-          if (sinceLastManifestSave >= 20) {
-            sinceLastManifestSave = 0;
-            await flushManifest();
-          }
-          if (capturedCount === 1 || capturedCount % 20 === 0) {
-            console.info('[PPTX_EXPORT] progress', JSON.stringify({
-              jobId,
-              worker: workerLabel,
-              pageNumber: nth,
-              capturedThisRun: capturedCount,
-              capturedFromCheckpoint: alreadyCaptured.size,
-              targetsThisRun: remainingPageNumbers.length,
-              missingHandleCount,
-              elapsedMs: Date.now() - exportStartedAt,
-            }));
-            saveJobProgress(jobId, alreadyCaptured.size + capturedCount, slidePageNumbers.length);
-          }
-        } catch (slideErr) {
-          captureFailures += 1;
-          console.warn('[PPTX_EXPORT] slide_capture_failed', nth, 'worker', workerLabel, String(slideErr && slideErr.message || slideErr));
-        }
-      }
-    }
-
-    // Apertura secuencial de a un worker por vez -- reproducido en vivo en
-    // DOCX: abrir varias páginas de Puppeteer A LA VEZ contra el mismo
-    // Chromium compartido se colgaba de forma silenciosa (condición de
-    // carrera en el protocolo CDP). Acá cada worker además tiene su propio
-    // Chromium DEDICADO (ver `launchDedicatedExportBrowser`) -- otra causa,
-    // ya corregida en DOCX, aplicada acá desde el principio.
     const WORKER_OPEN_TIMEOUT_MS = 120000;
     const workerPages = [];
     const workerBrowsers = [];
     for (let idx = 0; idx < chunks.length; idx += 1) {
       const chunk = chunks[idx];
-      const pageFrom = Math.min(...chunk);
-      const pageTo = Math.max(...chunk);
-      checkpoint('worker_open_start', { worker: idx, pageFrom, pageTo, targetsInChunk: chunk.length, telemetryQuota });
+      const pageNumbers = chunk.map(({ pageNumber }) => pageNumber);
+      const pageFrom = Math.min(...pageNumbers);
+      const pageTo = Math.max(...pageNumbers);
+      console.info('[PPTX_EXPORT] worker_open_start', JSON.stringify({ jobId, worker: idx, pageFrom, pageTo, targetsInChunk: chunk.length, telemetryQuota }));
       const { browser: workerBrowser, page: workerPage } = await withTimeout(
-        openExportWorkerPage(withPageRangeParam(overlayUrl, pageFrom, pageTo, telemetryQuota), 'PPTX_EXPORT', jobId, idx),
+        openExportWorkerPage(withPageRangeParam(url, pageFrom, pageTo, telemetryQuota), 'PPTX_EXPORT', jobId, idx),
         WORKER_OPEN_TIMEOUT_MS,
         `worker_open_timeout(worker=${idx})`,
       );
-      checkpoint('worker_open_done', { worker: idx });
+      console.info('[PPTX_EXPORT] worker_open_done', JSON.stringify({ jobId, worker: idx }));
       workerBrowsers.push(workerBrowser);
       workerPages.push(workerPage);
     }
     try {
-      await Promise.all(chunks.map((chunk, idx) => capturePagesOnWorker(workerPages[idx], chunk, idx)));
+      await Promise.all(chunks.map((chunk, idx) => captureOnPage(workerPages[idx], chunk, idx)));
     } finally {
       await Promise.all(workerPages.map((workerPage) => workerPage.close().catch(() => {})));
       await Promise.all(workerBrowsers.map((workerBrowser) => workerBrowser.close().catch(() => {})));
     }
     await flushManifest();
-    checkpoint('slide_loop_done', { capturedThisRun: capturedCount, captureFailures, missingHandleCount });
 
-    // ── Armado SECUENCIAL final ──────────────────────────────────────────
-    // PptxGenJS no admite agregar diapositivas fuera de orden -- esta pasada
-    // recorre `slidePageNumbers` EN ORDEN, leyendo cada página del
-    // checkpoint de a una (ver comentario de `readPptxCheckpointPage`, nunca
-    // todas juntas en memoria). No vuelve a tocar el navegador: solo I/O de
-    // disco + llamadas a pptxgenjs, rápido incluso con miles de páginas.
-    const pptx = new PptxGenJS();
-    const LAYOUT_NAME = layoutMode === 'presentation' ? 'BEEMETRY_16x9' : 'BEEMETRY_DOC';
-    pptx.defineLayout({ name: LAYOUT_NAME, width: deckWidthIn, height: deckHeightIn });
-    pptx.layout = LAYOUT_NAME;
-    pptx.title = docTitle;
-    pptx.author = docAuthor;
-    pptx.company = docCompany;
-    pptx.subject = 'Informe técnico minero — exportado desde Beemetry';
-    // `revision` DEBE ser un entero puro (sin puntos/comas) -- PowerPoint
-    // rechaza el archivo al abrirlo si no lo es (ver comentario del tipo
-    // `PresentationProps.revision` en pptxgenjs).
-    pptx.revision = '1';
-
-    // Numeración nativa real de PowerPoint (Insertar → Número de diapositiva
-    // ya la reconoce, y se renumera sola si el usuario reordena/borra
-    // diapositivas después de exportar) -- esquina inferior derecha, discreta,
-    // fuera del área de contenido real del informe.
-    const SLIDE_MASTER_NAME = 'BEEMETRY_MASTER';
-    pptx.defineSlideMaster({
-      title: SLIDE_MASTER_NAME,
-      slideNumber: { x: deckWidthIn - 0.55, y: deckHeightIn - 0.32, w: 0.45, h: 0.24, fontSize: 9, color: '94A3B8', align: 'right' },
-    });
-
-    let placeholderCount = 0;
-    for (let i = 0; i < slidePageNumbers.length; i += 1) {
-      const nth = slidePageNumbers[i];
-      const entry = await readPptxCheckpointPage(contentHash, nth);
-      if (!entry) {
-        placeholderCount += 1;
-        const fallbackSlide = pptx.addSlide({ masterName: SLIDE_MASTER_NAME });
-        fallbackSlide.addText(`Página ${nth} — no se pudo capturar para esta exportación`, {
-          x: 0.5, y: deckHeightIn / 2 - 0.25, w: deckWidthIn - 1, h: 0.5,
-          align: 'center', fontSize: 14, italic: true, color: '94A3B8',
-        });
-        continue;
-      }
-      // Página con papel PROPIO (`setPagePaperSetup`) distinto del papel del
-      // deck -- se encaja centrada dentro del deck preservando su propia
-      // proporción (letterbox) en vez de estirarse; `scale`/`imgX`/`imgY`
-      // quedan en 1/0/0 (sin cambios) para el caso normal, incluido SIEMPRE
-      // en modo presentación (16:9 fijo, `resolvePagePaperSetup` no aplica).
-      const docPage = (reportDocument && Array.isArray(reportDocument.pages)) ? reportDocument.pages[i] : null;
-      let scale = 1;
-      let imgX = 0;
-      let imgY = 0;
-      let imgW = deckWidthIn;
-      let imgH = deckHeightIn;
-      if (layoutMode === 'document' && docPage) {
-        const pageSetup = resolvePagePaperSetup(docPage, docMeta);
-        const pageSize = paperSizeInches(pageSetup.paperSize, pageSetup.orientation);
-        if (Math.abs(pageSize.widthIn - deckWidthIn) > 0.01 || Math.abs(pageSize.heightIn - deckHeightIn) > 0.01) {
-          scale = Math.min(deckWidthIn / pageSize.widthIn, deckHeightIn / pageSize.heightIn);
-          imgW = pageSize.widthIn * scale;
-          imgH = pageSize.heightIn * scale;
-          imgX = (deckWidthIn - imgW) / 2;
-          imgY = (deckHeightIn - imgH) / 2;
-        }
-      }
-
-      const slide = pptx.addSlide({ masterName: SLIDE_MASTER_NAME });
-      slide.addImage({
-        data: `image/png;base64,${entry.png.toString('base64')}`,
-        x: imgX,
-        y: imgY,
-        w: imgW,
-        h: imgH,
-        // Accesibilidad (WCAG/ADA) -- describe el contenido real de la
-        // diapositiva en vez de dejar la imagen de fondo sin texto
-        // alternativo, para lectores de pantalla y el panel de accesibilidad
-        // nativo de PowerPoint.
-        altText: `Diapositiva ${i + 1} de ${slidePageNumbers.length}: ${docTitle}`,
-      });
-
-      for (const overlay of entry.overlays) {
-        if (!overlay.runs.length || overlay.width <= 0 || overlay.height <= 0) continue;
-        const runs = overlay.runs
-          .filter((run) => typeof run.text === 'string' && run.text.length > 0)
-          .map((run) => ({
-            text: run.text,
-            options: {
-              bold: !!run.bold,
-              italic: !!run.italic,
-              underline: run.underline ? { style: 'sng' } : undefined,
-              // px (96dpi) -> pt: 1px = 0.75pt; escalado además por `scale` si
-              // esta página se encajó (letterbox) más pequeña que el deck.
-              fontSize: Math.max(1, Math.round((run.fontSize || 14) * 0.75 * scale)),
-              fontFace: (run.fontFamily || 'Arial').split(',')[0].replace(/['"]/g, '').trim() || 'Arial',
-              color: sanitizeHexColor(run.color) || '0F172A',
-              highlight: highlightHexFromName(run.highlightColor) || undefined,
-            },
-          }));
-        if (!runs.length) continue;
-        slide.addText(runs, {
-          x: imgX + (overlay.x / 96) * scale,
-          y: imgY + (overlay.y / 96) * scale,
-          w: (overlay.width / 96) * scale,
-          h: (overlay.height / 96) * scale,
-          align: ['left', 'center', 'right', 'justify'].includes(overlay.align) ? overlay.align : 'left',
-          valign: 'top',
-          margin: 3, // pt — aproxima el padding:6px (4.5pt) del div original.
-          wrap: true,
-        });
-      }
+    // /render-video (narración sobre diapositivas, ADR-164) necesita UN frame
+    // rasterizado por diapositiva para componer el .mp4 -- ya no puede sacarlo
+    // del propio .pptx (el nativo tiene 0..N imágenes por diapositiva, ya no
+    // exactamente 1 "fondo de página completa" como el pipeline viejo). Solo
+    // se genera para 'presentation' (único layoutMode desde el que la UI
+    // permite grabar narración/exportar video, ver App.tsx `handleExportVideo`
+    // -- 'document' nunca llega acá con narración, así que nunca paga este
+    // costo extra). Guardado bajo el mismo `jobId` de ESTE job pptx --
+    // `/render-video` lo deriva de `pptx_path` (ver su comentario).
+    if ((reportDocument.meta && reportDocument.meta.layoutMode) === 'presentation') {
+      await captureSlidePreviewsForVideo(reportDocument, url, jobId, virtualized);
     }
-    checkpoint('assembly_done', { placeholderCount });
+
+    const pptx = new PptxGenJS();
+    buildReportPptx(pptx, reportDocument, { session: sessionChrome, imageAssets, rasterAssets });
+    const buffer = Buffer.from(await pptx.write({ outputType: 'nodebuffer' }));
 
     await fs.mkdir(EXPORT_DATA_ROOT, { recursive: true });
-    // Nombre de archivo derivado únicamente del job_id (generado server-side
-    // como UUID por Postgres, nunca por el cliente) — sin partes de `url` ni
-    // de otro input externo, así que no hace falta sanitizar path traversal.
     const outPath = path.join(EXPORT_DATA_ROOT, `${jobId}.pptx`);
-    await pptx.writeFile({ fileName: outPath });
-    checkpoint('write_file_done');
+    await fs.writeFile(outPath, buffer);
+    const totalCaptured = alreadyCaptured.size + capturedCount;
     console.info('[PPTX_EXPORT] export_complete', JSON.stringify({
       jobId,
       contentHash,
-      totalPages: slidePageNumbers.length,
+      pages: reportDocument.pages.length,
+      targets: allTargets.length,
       capturedFromCheckpoint: alreadyCaptured.size,
       capturedThisRun: capturedCount,
-      placeholders: placeholderCount,
+      captured: totalCaptured,
+      placeholders: allTargets.length - totalCaptured,
+      readyTimeouts,
       captureFailures,
-      missingHandleCount,
+      outputBytes: buffer.length,
       elapsedMs: Date.now() - exportStartedAt,
     }));
-    // Ya no hace falta el checkpoint -- el .pptx final quedó escrito.
-    await clearPptxCheckpoint(contentHash).catch((clearErr) => {
+    await clearCheckpoint(contentHash).catch((clearErr) => {
       console.warn('[PPTX_EXPORT] checkpoint_clear_failed', String(clearErr));
     });
     await clearJobProgress(jobId);
@@ -1420,7 +1299,7 @@ app.post('/render-pptx', async (req, res) => {
   } catch (err) {
     console.error('[PPTX_EXPORT] render_failed:', err && err.stack ? err.stack : err);
     if (checkpointHashForCleanup) {
-      await savePptxManifest(checkpointHashForCleanup, capturedPageNumbersForCleanup, checkpointTotalPagesForCleanup).catch((flushErr) => {
+      await saveManifest(checkpointHashForCleanup, manifestEntriesForCleanup, checkpointTotalTargets).catch((flushErr) => {
         console.warn('[PPTX_EXPORT] checkpoint_manifest_final_flush_failed', String(flushErr));
       });
     }
@@ -1434,17 +1313,35 @@ app.post('/render-pptx', async (req, res) => {
 // POST /render-docx  { url: string, job_id: string }
 //   → { storage_path: string } — ruta del .docx generado.
 //
-// Pipeline B (servidor) del export DOCX: a diferencia de /render-pptx (que
-// solo superpone texto sobre una captura de página completa), la MAYORÍA
-// del documento se construye directamente desde `window.__REPORT_DOCUMENT__`
-// (mismo JSON que ya usa ReadOnlyViewer, leído sin tocar el DOM) —
-// `reportDocxBuilder.js` implementa la misma especificación de mapeo que el
-// pipeline cliente (`frontend/.../lib/docx/buildReportDocx.ts`). Solo los
-// bloques sin representación estática (`chart`/`sensor_multi_chart`/fondo de
-// `cover`) y las imágenes (`image`) se capturan como PNG, vía
+// Pipeline B (servidor) del export DOCX: a diferencia de la vieja versión de
+// /render-pptx (que solo superponía texto sobre una captura de página
+// completa -- ver reportPptxBuilder.js para la versión actual, reconstruida
+// nativamente con el MISMO criterio), la MAYORÍA del documento se construye
+// directamente desde `window.__REPORT_DOCUMENT__` (mismo JSON que ya usa
+// ReadOnlyViewer, leído sin tocar el DOM) — `reportDocxBuilder.js` implementa
+// la misma especificación de mapeo que el pipeline cliente
+// (`frontend/.../lib/docx/buildReportDocx.ts`). Solo los bloques sin
+// representación estática (`chart`/`sensor_multi_chart`/fondo de `cover`) y
+// las imágenes (`image`) se capturan como PNG, vía
 // `elementHandle.screenshot()` sobre el nodo `[data-element-id]` de cada uno
 // (atributo agregado en ReadOnlyViewer.tsx para este propósito).
-const DOCX_RASTER_TYPES = new Set(['chart', 'sensor_multi_chart', 'cover', 'image']);
+//
+// `RASTER_ELEMENT_TYPES`/checkpoints/espera-de-listo viven en
+// `rasterCapturePipeline.js`, COMPARTIDOS con /render-pptx (mismos 4 tipos,
+// mismo checkpoint por hash de contenido) -- alias local `DOCX_RASTER_TYPES`
+// para no tocar el resto de este handler.
+const {
+  RASTER_ELEMENT_TYPES,
+  RASTER_ELEMENT_TYPES: DOCX_RASTER_TYPES,
+  computeContentHash,
+  loadCheckpoint,
+  saveCheckpointPng,
+  saveManifest,
+  clearCheckpoint,
+  waitForElementReady,
+  elementReadinessSnapshot,
+  waitForMountedPage,
+} = require('./rasterCapturePipeline');
 // Cuántas capturas `elementHandle.screenshot()` corren a la vez -- DEBE ser
 // 1 (secuencial). Se probó en paralelo (5 a la vez) y produjo capturas
 // directamente rotas: `elementHandle.screenshot()` de Puppeteer hace scroll
@@ -1600,49 +1497,18 @@ async function openExportWorkerPage(url, scope, jobId, workerIndex) {
   attachBrowserDiagnostics(workerPage, scope, `${jobId}#w${workerIndex}`);
   await workerPage.emulateMediaType('print');
   await workerPage.setViewport({ width: 1400, height: 1000, deviceScaleFactor: 2 });
-  await workerPage.goto(url, { waitUntil: 'networkidle0', timeout: RENDER_TIMEOUT_MS });
+  // 2026-09-13 (SPEC-007 T15/O3, ver ADR-183/184): 'domcontentloaded' en vez
+  // de 'networkidle0' -- ver comentario completo en `openReportPage`.
+  // Especialmente relevante ACÁ: este worker se reabre cada
+  // `PAGES_PER_BROWSER_PAGE` (40) hojas en documentos grandes, así que los
+  // ~1.6s desperdiciados por apertura se multiplican por cada reciclaje (un
+  // documento de 2000+ páginas recicla decenas de veces por worker) -- este
+  // fix ayuda tanto a documentos chicos (O3) como a los grandes que
+  // motivaron la arquitectura de virtualización. Medido en vivo sin
+  // regresión: 378 páginas/1120 gráficos, 0 fallos de captura.
+  await workerPage.goto(url, { waitUntil: 'domcontentloaded', timeout: RENDER_TIMEOUT_MS });
   await waitForReportRender(workerPage);
   return { browser: workerBrowser, page: workerPage };
-}
-
-async function waitForMountedPage(page, pageNumber, timeoutMs) {
-  await page.waitForFunction((n) => {
-    const wrapper = document.querySelector(`.ro-page-wrapper[data-page-number="${n}"]`);
-    return Boolean(wrapper && wrapper.querySelector('[data-element-id]'));
-  }, { timeout: timeoutMs }, pageNumber);
-}
-
-async function waitForElementReady(page, elementId, timeoutMs) {
-  await page.waitForFunction((id) => {
-    const element = document.querySelector(`[data-element-id="${id}"]`);
-    if (!element) return false;
-    const pendingWidgets = element.querySelectorAll('[data-export-widget][data-export-ready="false"]');
-    const pendingCharts = element.querySelectorAll('[data-export-chart="true"][data-export-ready="false"]');
-    return pendingWidgets.length === 0 && pendingCharts.length === 0;
-  }, { timeout: timeoutMs }, elementId);
-}
-
-async function elementReadinessSnapshot(page, pageNumber, elementId) {
-  return page.evaluate((n, id) => {
-    const wrapper = document.querySelector(`.ro-page-wrapper[data-page-number="${n}"]`);
-    const element = document.querySelector(`[data-element-id="${id}"]`);
-    const describe = (node) => Array.from(node ? node.querySelectorAll(
-      '[data-export-widget], [data-export-chart="true"]',
-    ) : []).map((item) => ({
-      tag: item.tagName,
-      widget: item.getAttribute('data-export-widget'),
-      chart: item.getAttribute('data-export-chart'),
-      ready: item.getAttribute('data-export-ready'),
-      error: item.getAttribute('data-export-error'),
-      width: Math.round(item.getBoundingClientRect().width),
-      height: Math.round(item.getBoundingClientRect().height),
-    }));
-    return {
-      wrapperExists: Boolean(wrapper),
-      elementExists: Boolean(element),
-      states: describe(element),
-    };
-  }, pageNumber, elementId);
 }
 
 function withTimeout(promise, ms, message) {
@@ -1695,84 +1561,19 @@ async function clearJobProgress(jobId) {
   await fs.rm(path.join(JOB_PROGRESS_ROOT, `${jobId}.json`), { force: true }).catch(() => {});
 }
 
-// ── Checkpoints reanudables de captura DOCX ────────────────────────────────
-// Un export de miles de páginas puede tardar horas; sin esto, cualquier
-// caída (reinicio del contenedor, del host, un crash de Chromium) pierde
-// TODO el progreso -- reproducido en vivo: 2+ horas de trabajo perdidas por
-// un reinicio de laptop a mitad de un export de 2104 páginas. La clave es
-// el HASH DEL CONTENIDO del informe (no el job_id): el backend C++ nunca
-// reintenta un job con el mismo id (cada intento del usuario genera uno
-// nuevo, ver report_export_jobs.cpp::runDocxExportJob), así que indexar por
-// contenido es lo único que permite que un reintento futuro (cualquier
-// job_id) encuentre y reuse el progreso de un intento previo sobre el MISMO
-// documento -- sin tocar el backend C++ ni el esquema de la base de datos.
-const DOCX_CHECKPOINT_ROOT = path.join(EXPORT_DATA_ROOT, 'docx_checkpoints');
-
-function computeContentHash(doc) {
-  return crypto.createHash('sha256').update(JSON.stringify(doc)).digest('hex').slice(0, 16);
-}
-
-function checkpointDir(hash) {
-  return path.join(DOCX_CHECKPOINT_ROOT, hash);
-}
-
-/** Lee el checkpoint existente para `hash` (si hay) -- devuelve los PNG ya
- * capturados en runs anteriores, listos para precargar en `rasterAssets`/
- * `imageAssets` sin volver a tocar el navegador. */
-async function loadCheckpoint(hash) {
-  const dir = checkpointDir(hash);
-  const result = { rasterAssets: new Map(), imageAssets: new Map(), elementTypeById: new Map() };
-  try {
-    const manifestRaw = await fs.readFile(path.join(dir, 'manifest.json'), 'utf8');
-    const manifest = JSON.parse(manifestRaw);
-    for (const entry of manifest.captured || []) {
-      try {
-        const png = await fs.readFile(path.join(dir, `${entry.id}.png`));
-        if (entry.type === 'image') result.imageAssets.set(entry.id, png);
-        else result.rasterAssets.set(entry.id, png);
-      } catch {
-        // PNG individual corrupto/faltante (caída a mitad de escritura) --
-        // se descarta esa entrada, se vuelve a capturar en este run.
-      }
-    }
-  } catch {
-    // Sin checkpoint previo -- primer intento sobre este contenido, normal.
-  }
-  return result;
-}
-
-/** Escribe UN png de captura al checkpoint inmediatamente (no solo al Map en
- * memoria) -- si el proceso muere un instante después, este archivo ya
- * sobrevive en disco. */
-async function saveCheckpointPng(hash, elementId, buffer) {
-  const dir = checkpointDir(hash);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, `${elementId}.png`), buffer);
-}
-
-/** Reescribe `manifest.json` de forma atómica (archivo temporal + rename) --
- * una caída a mitad de esta escritura nunca dejar un manifest corrupto: o
- * queda el anterior completo, o queda el nuevo completo. */
-async function saveManifest(hash, capturedEntries, totalTargets) {
-  const dir = checkpointDir(hash);
-  await fs.mkdir(dir, { recursive: true });
-  const manifest = { captured: capturedEntries, totalTargets, updatedAt: new Date().toISOString() };
-  const tmpPath = path.join(dir, 'manifest.json.tmp');
-  const finalPath = path.join(dir, 'manifest.json');
-  await fs.writeFile(tmpPath, JSON.stringify(manifest));
-  await fs.rename(tmpPath, finalPath);
-}
-
-/** Borra el checkpoint completo -- se llama solo tras escribir el .docx
- * final con éxito, ya no hace falta conservar el progreso intermedio. */
-async function clearCheckpoint(hash) {
-  await fs.rm(checkpointDir(hash), { recursive: true, force: true }).catch(() => {});
-}
+// Checkpoints/hash de contenido: ver rasterCapturePipeline.js (importado
+// arriba) -- compartido con /render-pptx.
 
 app.post('/render-docx', async (req, res) => {
-  const { url, job_id: jobId } = req.body || {};
+  const { url, job_id: jobId, layout } = req.body || {};
   if (typeof url !== 'string' || !url) return res.status(400).json({ error: 'url_required' });
   if (typeof jobId !== 'string' || !jobId) return res.status(400).json({ error: 'job_id_required' });
+  // 'absolute' (default, ADR-139): cada bloque del lienzo se ancla a su
+  // x/y/w/h exacto (w:framePr) -- máxima fidelidad de layout, pero el
+  // resultado en Word son cuadros de texto independientes, no texto que
+  // fluye. 'flow' (pedido explícito 2026-09-18): reflowa todo como un
+  // documento Word tradicional -- ver reportDocxBuilder.js::buildPageSection.
+  const docxLayout = layout === 'flow' ? 'flow' : 'absolute';
   let parsed;
   try {
     parsed = new URL(url);
@@ -1811,7 +1612,9 @@ app.post('/render-docx', async (req, res) => {
     // captura, la captura real la hacen los workers de más abajo (cada uno
     // con su propia página, navegada con SU rango real). Sin este recorte
     // pagaría un prefetch completo de telemetría que nunca usa.
-    await page.goto(withPageRangeParam(url, 0, 0), { waitUntil: 'networkidle0', timeout: RENDER_TIMEOUT_MS });
+    // 2026-09-13: 'domcontentloaded' en vez de 'networkidle0' -- ver comentario
+    // completo en `openReportPage` (mismo hallazgo real).
+    await page.goto(withPageRangeParam(url, 0, 0), { waitUntil: 'domcontentloaded', timeout: RENDER_TIMEOUT_MS });
     await waitForReportRender(page);
 
     // DIAGNÓSTICO TEMPORAL -- reproducido en vivo: "report_document_unavailable"
@@ -2147,7 +1950,7 @@ app.post('/render-docx', async (req, res) => {
     // último guardado periódico.
     await flushManifest();
 
-    const buffer = await buildReportDocx(reportDocument, { session: sessionChrome, imageAssets, rasterAssets });
+    const buffer = await buildReportDocx(reportDocument, { session: sessionChrome, imageAssets, rasterAssets, layout: docxLayout });
 
     await fs.mkdir(EXPORT_DATA_ROOT, { recursive: true });
     const outPath = path.join(EXPORT_DATA_ROOT, `${jobId}.docx`);
@@ -2190,6 +1993,83 @@ app.post('/render-docx', async (req, res) => {
   } finally {
     if (page) await page.close().catch(() => {});
     releaseHeavyExport('docx', jobId);
+  }
+});
+
+// POST /render-xlsx  { url: string, job_id: string }
+//   → { storage_path: string } — ruta (dentro de EXPORT_DATA_ROOT) del .xlsx
+//     generado.
+//
+// Export nuevo (no existía) -- alcance explícito: solo los bloques `table`
+// del informe (ver reportXlsxBuilder.js), sin fase de captura raster (no
+// toca `chart`/`image`/`cover`/`sensor_multi_chart`) -- así que, a
+// diferencia de /render-docx y /render-pptx, esta ruta no necesita workers
+// paralelos ni checkpoint reanudable: solo lee `window.__REPORT_DOCUMENT__`
+// de la página de descubrimiento y arma el workbook, rápido incluso en
+// informes grandes (las tablas de un informe pesan órdenes de magnitud menos
+// que sus gráficos/imágenes).
+app.post('/render-xlsx', async (req, res) => {
+  const { url, job_id: jobId } = req.body || {};
+  if (typeof url !== 'string' || !url) return res.status(400).json({ error: 'url_required' });
+  if (typeof jobId !== 'string' || !jobId) return res.status(400).json({ error: 'job_id_required' });
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return res.status(400).json({ error: 'invalid_url' });
+  }
+  if (parsed.hostname !== ALLOWED_HOST) return res.status(400).json({ error: 'host_not_allowed' });
+
+  if (!tryAcquireHeavyExport('xlsx', jobId)) {
+    const active = activeHeavyExport;
+    console.warn('[XLSX_EXPORT] export_busy', JSON.stringify({
+      rejectedJobId: jobId,
+      activeKind: active && active.kind,
+      activeJobId: active && active.jobId,
+      activeElapsedMs: active ? Date.now() - active.startedAt : null,
+    }));
+    return res.status(429).json({ error: 'export_busy' });
+  }
+
+  let page;
+  const exportStartedAt = Date.now();
+  try {
+    const browser = await getBrowser();
+    page = await browser.newPage();
+    attachBrowserDiagnostics(page, 'XLSX_EXPORT', `${jobId}#discovery`);
+    await page.emulateMediaType('print');
+    await page.setViewport({ width: 1400, height: 1000, deviceScaleFactor: 2 });
+    // Rango vacío (0,0) a propósito -- esta ruta nunca activa páginas
+    // virtualizadas ni toca telemetría, solo lee el JSON del documento (ver
+    // comentario de `withPageRangeParam`).
+    await page.goto(withPageRangeParam(url, 0, 0), { waitUntil: 'domcontentloaded', timeout: RENDER_TIMEOUT_MS });
+    await waitForReportRender(page);
+
+    const reportDocument = await page.evaluate(() => window.__REPORT_DOCUMENT__ || null);
+    if (!reportDocument || !Array.isArray(reportDocument.pages)) {
+      return res.status(422).json({ error: 'report_document_unavailable' });
+    }
+
+    const workbook = buildReportXlsx(reportDocument);
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    await fs.mkdir(EXPORT_DATA_ROOT, { recursive: true });
+    const outPath = path.join(EXPORT_DATA_ROOT, `${jobId}.xlsx`);
+    await fs.writeFile(outPath, buffer);
+    console.info('[XLSX_EXPORT] export_complete', JSON.stringify({
+      jobId,
+      pages: reportDocument.pages.length,
+      sheets: workbook.worksheets.length,
+      outputBytes: buffer.length,
+      elapsedMs: Date.now() - exportStartedAt,
+    }));
+    res.json({ storage_path: outPath });
+  } catch (err) {
+    console.error('[XLSX_EXPORT] render_failed:', err && err.stack ? err.stack : err);
+    res.status(502).json({ error: 'render_failed', detail: String(err) });
+  } finally {
+    if (page) await page.close().catch(() => {});
+    releaseHeavyExport('xlsx', jobId);
   }
 });
 
@@ -2299,14 +2179,12 @@ async function buildCrossfadeVideo(imagePaths, durationSec, transitionSec, outPa
 // POST /render-video  { pptx_path: string, job_id: string,
 //                        slide_duration_seconds?: number, transition?: 'cut'|'crossfade' }
 //   → { storage_path: string } — ruta (dentro de EXPORT_DATA_ROOT) del .mp4
-//     generado a partir de las MISMAS imágenes de diapositiva que ya se
-//     usaron en el .pptx (`ppt/media/imageN.png`, extraídas del archivo con
-//     adm-zip) — sin volver a lanzar Chromium ni a renderizar nada.
-//
-// Acoplamiento a tener en cuenta: asume que /render-pptx numeró las imágenes
-// 1..N en el mismo orden que las páginas (llama a addImage() una sola vez
-// por slide, en orden, antes de cualquier addText() de esa misma slide) —
-// cierto hoy porque este mismo endpoint es el único que genera esos .pptx.
+//     generado a partir de los frames de `SLIDE_PREVIEW_ROOT` que
+//     `captureSlidePreviewsForVideo` ya dejó listos durante /render-pptx (uno
+//     por diapositiva) — sin volver a lanzar Chromium ni a renderizar nada.
+//     Ya NO se sacan del propio .pptx: desde que /render-pptx lo arma
+//     nativamente (reportPptxBuilder.js), una diapositiva puede tener 0..N
+//     imágenes propias, no exactamente 1 "fondo de página completa".
 //
 // Trade-off de infraestructura (documentado, no resuelto aquí): ffmpeg no
 // necesita Chromium y comparte el límite de CPU/memoria de este contenedor
@@ -2372,37 +2250,43 @@ app.post('/render-video', async (req, res) => {
 
   let tmpDir;
   try {
-    // pptxgenjs nombra los media como image-{slideIndex}-{imageIndexEnLaSlide}.ext
-    // (verificado inspeccionando un .pptx real generado por /render-pptx —
-    // NO es image1.png/image2.png secuencial global como podría asumirse).
-    // Cada slide de /render-pptx solo tiene una imagen (el fondo), así que
-    // ordenar por slideIndex reconstruye el orden de páginas exactamente —
-    // y slideIndex ES el número de página (1-based), usado para casar cada
-    // diapositiva con su narración (`page_number`).
-    const zip = new AdmZip(resolvedPptxPath);
-    const imageEntries = zip
-      .getEntries()
-      .map((entry) => {
-        const match = /^ppt\/media\/image-(\d+)-(\d+)\.(png|jpe?g)$/i.exec(entry.entryName);
-        return match
-          ? { entry, slideIndex: parseInt(match[1], 10), imageIndex: parseInt(match[2], 10), ext: match[3].toLowerCase() }
-          : null;
+    // Los frames vienen de `SLIDE_PREVIEW_ROOT` (ver
+    // `captureSlidePreviewsForVideo`, disparado por /render-pptx cuando
+    // `layoutMode==='presentation'`), NO del .pptx mismo -- desde que
+    // /render-pptx arma el .pptx nativamente (0..N imágenes por diapositiva,
+    // ver reportPptxBuilder.js), ya no hay exactamente una imagen de fondo
+    // por diapositiva que extraer del zip. `pptxJobId` se deriva del nombre
+    // de archivo de `pptx_path` (`EXPORT_DATA_ROOT/<jobId>.pptx`, así lo
+    // escribe siempre /render-pptx) -- mismo `jobId` bajo el que se guardaron
+    // los previews de ESE job.
+    const pptxJobId = path.basename(resolvedPptxPath, path.extname(resolvedPptxPath));
+    const previewDir = path.join(SLIDE_PREVIEW_ROOT, pptxJobId);
+    let previewFiles;
+    try {
+      previewFiles = await fs.readdir(previewDir);
+    } catch {
+      previewFiles = [];
+    }
+    const previewEntries = previewFiles
+      .map((name) => {
+        const match = /^(\d+)\.png$/i.exec(name);
+        return match ? { name, pageNumber: parseInt(match[1], 10) } : null;
       })
       .filter((x) => x !== null)
-      .sort((a, b) => (a.slideIndex - b.slideIndex) || (a.imageIndex - b.imageIndex));
+      .sort((a, b) => a.pageNumber - b.pageNumber);
 
-    if (imageEntries.length === 0) {
-      return res.status(422).json({ error: 'no_slide_images_in_pptx' });
+    if (previewEntries.length === 0) {
+      return res.status(422).json({ error: 'no_slide_previews_for_video' });
     }
 
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pptx-video-'));
     const imagePaths = [];
     const pageNumbers = [];
-    for (const { entry, slideIndex, ext } of imageEntries) {
-      const imgPath = path.join(tmpDir, `slide_${String(slideIndex).padStart(4, '0')}.${ext}`);
-      await fs.writeFile(imgPath, entry.getData());
+    for (const { name, pageNumber } of previewEntries) {
+      const imgPath = path.join(tmpDir, `slide_${String(pageNumber).padStart(4, '0')}.png`);
+      await fs.copyFile(path.join(previewDir, name), imgPath);
       imagePaths.push(imgPath);
-      pageNumbers.push(slideIndex);
+      pageNumbers.push(pageNumber);
     }
 
     await fs.mkdir(EXPORT_DATA_ROOT, { recursive: true });

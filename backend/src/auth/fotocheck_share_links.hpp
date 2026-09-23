@@ -21,5 +21,9 @@ std::string getOrCreateFotocheckShareLinkPg(const std::string &databaseUrl,
 std::optional<std::string> resolveFotocheckShareLinkPg(const std::string &databaseUrl,
                                                         const std::string &token);
 
+/** @brief Nombre de la empresa minera (tenants.tenant_name) del tenant del
+ * usuario -- encabezado del fotocheck. Vacío si no hay tenant o falla. */
+std::string resolveTenantNamePg(const std::string &databaseUrl, const std::string &tenantId);
+
 }  // namespace fotocheck
 }  // namespace auth

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plan de avance actualizado | Plataforma Minera Beemetry</title>
+  <style>
+    :root{--ink:#17212b;--muted:#5d6978;--line:#dfe6ed;--bg:#f6f8fa;--panel:#fff;--green:#127a5b;--green-soft:#e8f5ef;--blue:#1769aa;--blue-soft:#e8f2fb;--amber:#b36b00;--amber-soft:#fff3dc;--red:#b42318;--red-soft:#fde8e7;--slate:#344253;--slate-soft:#eef2f6}
+    *{box-sizing:border-box}body{margin:0;font-family:"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--bg);line-height:1.45}.hero{min-height:500px;color:#fff;background:linear-gradient(90deg,rgba(10,22,34,.94),rgba(10,22,34,.72),rgba(10,22,34,.36)),url("IMAGENES/platform_architecture.png") center/cover no-repeat;display:flex;align-items:center;padding:56px 6vw 72px}.hero-inner{max-width:1120px;width:100%}.eyebrow{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#c7d8e8;font-weight:700;margin-bottom:18px}h1{font-size:clamp(38px,6vw,70px);line-height:1.02;margin:0 0 18px;max-width:980px;letter-spacing:0}.subtitle{max-width:820px;font-size:20px;color:#eef6fb;margin:0 0 32px}.hero-meta{display:flex;flex-wrap:wrap;gap:12px}.pill{display:inline-flex;align-items:center;gap:8px;padding:9px 13px;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.12);border-radius:7px;color:#fff;font-weight:600;backdrop-filter:blur(8px)}main{max-width:1240px;margin:-48px auto 72px;padding:0 24px}section{margin:28px 0}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 26px rgba(23,33,43,.06);padding:28px}.section-head{display:flex;align-items:end;justify-content:space-between;gap:24px;margin-bottom:18px}h2{font-size:28px;line-height:1.15;margin:0;letter-spacing:0}h3{font-size:18px;margin:0 0 12px}.note{color:var(--muted);max-width:780px;margin:8px 0 0}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}.metric{border:1px solid var(--line);border-radius:8px;padding:20px;background:#fff;min-height:150px}.metric .label{color:var(--muted);font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px}.metric .value{font-size:42px;line-height:1;font-weight:800;margin-bottom:9px}.metric .detail{color:var(--muted);font-size:14px}.metric.primary{border-color:#9bd2bd;background:var(--green-soft)}.metric.primary .value{color:var(--green)}.metric.blue .value{color:var(--blue)}.metric.amber .value{color:var(--amber)}.metric.red .value{color:var(--red)}.two-col{display:grid;grid-template-columns:1.08fr .92fr;gap:20px}table{width:100%;border-collapse:collapse;font-size:14px;background:#fff}th,td{padding:12px 11px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}th{color:#263443;background:#f0f4f8;font-size:12px;text-transform:uppercase;letter-spacing:.035em}tr:last-child td{border-bottom:0}.tag{display:inline-block;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:700;white-space:nowrap}.ok{background:var(--green-soft);color:var(--green)}.warn{background:var(--amber-soft);color:var(--amber)}.bad{background:var(--red-soft);color:var(--red)}.info{background:var(--blue-soft);color:var(--blue)}.neutral{background:var(--slate-soft);color:var(--slate)}.bar{height:10px;border-radius:999px;background:#e7edf3;overflow:hidden;margin-top:6px}.bar>span{display:block;height:100%;border-radius:inherit;background:var(--green)}.bar.blue>span{background:var(--blue)}.bar.amber>span{background:var(--amber)}.bar.red>span{background:var(--red)}.timeline{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}.month{border:1px solid var(--line);border-radius:8px;background:#fff;padding:16px;min-height:170px}.month strong{display:block;font-size:18px;margin-bottom:2px}.month .release{color:var(--muted);font-size:13px;margin-bottom:14px}.month .pct{font-size:28px;font-weight:800;margin-bottom:6px}.callout{border-left:5px solid var(--blue);background:var(--blue-soft);padding:18px 20px;border-radius:8px;color:#163850}.callout.warning{border-left-color:var(--amber);background:var(--amber-soft);color:#4a3200}.callout.danger{border-left-color:var(--red);background:var(--red-soft);color:#4c1712}.grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.mini{border:1px solid var(--line);border-radius:8px;padding:18px;background:#fff}.mini p{margin:0;color:var(--muted)}ul{margin:10px 0 0;padding-left:20px}li{margin:6px 0}.footer{color:var(--muted);font-size:13px;text-align:center;margin-top:40px}@media print{body{background:#fff}.hero{min-height:380px;print-color-adjust:exact;-webkit-print-color-adjust:exact}main{margin:0 auto;padding:18px}.panel,.metric,.month,.mini{box-shadow:none;break-inside:avoid}section{break-inside:avoid}}@media(max-width:980px){.metrics,.timeline,.grid-3,.two-col{grid-template-columns:1fr}.section-head{display:block}main{padding:0 16px}}
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <div class="eyebrow">Informe ejecutivo actualizado al 17/09/2026</div>
+      <h1>Plan de avance de la Plataforma Minera Beemetry</h1>
+      <p class="subtitle">Estado real de avance, reconciliacion de metricas, riesgos criticos y decisiones requeridas para sustentar ante Gerencia TI y Gerencia General.</p>
+      <div class="hero-meta">
+        <span class="pill">Proyecto: Plataforma Minera IoT / TimeTelemetry</span>
+        <span class="pill">Ruta fuente: C:\InformeCliente</span>
+        <span class="pill">Corte auditado: 17 septiembre 2026</span>
+      </div>
+    </div>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="section-head"><div><h2>Lectura Ejecutiva</h2><p class="note">La plataforma esta avanzada tecnicamente, pero aun no debe declararse lista para produccion. La diferencia entre la metrica oficial y la auditada proviene de SPEC-027, cuyo avance esta documentado en tablas y no es capturado correctamente por el script automatico.</p></div></div>
+      <div class="metrics">
+        <div class="metric primary"><div class="label">Avance real auditado</div><div class="value">73.3%</div><div class="detail">162 / 221 tareas, usando SPEC-027 recalculada estrictamente.</div></div>
+        <div class="metric blue"><div class="label">Avance oficial por script</div><div class="value">72.5%</div><div class="detail">148 / 204 tareas. Dato repetible, pero subestima SPEC-027.</div></div>
+        <div class="metric amber"><div class="label">R4 Septiembre</div><div class="value">90.3%</div><div class="detail">Integracion avanzada; faltan validaciones operativas.</div></div>
+        <div class="metric red"><div class="label">R5 Octubre</div><div class="value">45.2%</div><div class="detail">Hardening, DR, restore, pentest y UAT pendientes.</div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Reconciliacion de Metricas</h2><p class="note">Para una presentacion honesta se deben mostrar ambas cifras: la oficial automatizada y la real auditada. No se recomienda inflar el avance por encima de 73.5% porque existen bloqueos de salida a produccion.</p></div></div>
+      <div class="two-col">
+        <table><thead><tr><th>Medicion</th><th>Formula</th><th>Resultado</th><th>Uso recomendado</th></tr></thead><tbody>
+          <tr><td>Oficial automatizada</td><td>148 / 204</td><td><strong>72.5%</strong></td><td>Base historica y repetible.</td></tr>
+          <tr><td>Auditada estricta</td><td>162 / 221</td><td><strong>73.3%</strong></td><td>Numero recomendado para Gerencia.</td></tr>
+          <tr><td>Auditada ponderada</td><td>162.5 / 221</td><td><strong>73.5%</strong></td><td>Solo si se acepta una tarea parcial como 0.5.</td></tr>
+        </tbody></table>
+        <div class="callout warning"><h3>Por que cambia el porcentaje</h3><p>SPEC-027 aparece como 0% en el script porque este solo cuenta checkboxes. El archivo real usa tablas con estados: 14 tareas cerradas de 22, mas 1 parcial. La correccion no es subjetiva: es una normalizacion de formato.</p></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Avance por Mes y Release</h2><p class="note">Los meses futuros reflejan readiness actual del release asociado al corte, no trabajo futuro ganado.</p></div></div>
+      <div class="timeline">
+        <div class="month"><strong>Junio</strong><div class="release">R1 / S1-S2</div><div class="pct">100%</div><div class="bar"><span style="width:100%"></span></div><p class="note">Arquitectura, planificacion, base de datos y shell inicial.</p></div>
+        <div class="month"><strong>Julio</strong><div class="release">R2 / S3-S4</div><div class="pct">100%</div><div class="bar"><span style="width:100%"></span></div><p class="note">Motor operacional, seguridad base e ingesta.</p></div>
+        <div class="month"><strong>Agosto</strong><div class="release">R3 / S5-S6</div><div class="pct">97.1%</div><div class="bar blue"><span style="width:97.1%"></span></div><p class="note">Editor, sensores, IA base, biometria y reportabilidad.</p></div>
+        <div class="month"><strong>Septiembre</strong><div class="release">R4 / S7-S8</div><div class="pct">90.3%</div><div class="bar amber"><span style="width:90.3%"></span></div><p class="note">Integracion avanzada; alertas, offline, mapas y sensores.</p></div>
+        <div class="month"><strong>Octubre</strong><div class="release">R5 / S9-S11</div><div class="pct">45.2%</div><div class="bar red"><span style="width:45.2%"></span></div><p class="note">Hardening, continuidad, restore, pentest y UAT.</p></div>
+        <div class="month"><strong>Noviembre</strong><div class="release">R6 / S12-S13</div><div class="pct">No habilitado</div><div class="bar red"><span style="width:40%"></span></div><p class="note">Go-live sujeto a 10 controles de salida.</p></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Estado por Frente Funcional</h2><p class="note">Semaforo ejecutivo del producto al corte. Implementado no equivale automaticamente a aceptado productivamente.</p></div></div>
+      <table><thead><tr><th>Frente</th><th>Estado</th><th>Avance / lectura</th><th>Pendiente decisivo</th></tr></thead><tbody>
+        <tr><td>Ingesta durable</td><td><span class="tag ok">Cerrado</span></td><td>100%</td><td>Operacion regular.</td></tr>
+        <tr><td>Dashboard realtime</td><td><span class="tag ok">Cerrado</span></td><td>100%</td><td>Validacion continua con datos reales.</td></tr>
+        <tr><td>Push SSE / KPIs</td><td><span class="tag ok">Cerrado</span></td><td>100%, prueba 200 conexiones</td><td>Mantener prueba de regresion.</td></tr>
+        <tr><td>Auth / RBAC / multitenant</td><td><span class="tag ok">Funcional</span></td><td>100%</td><td>Pentest externo.</td></tr>
+        <tr><td>ReportStudio / export</td><td><span class="tag ok">Funcional</span></td><td>100%, con desviacion O3 aceptada</td><td>UAT y documentos grandes.</td></tr>
+        <tr><td>Biometria</td><td><span class="tag ok">Funcional</span></td><td>100%</td><td>Calibracion estadistica si se exige.</td></tr>
+        <tr><td>GIS / mapas</td><td><span class="tag warn">Avanzado</span></td><td>83.3% base + ADR-196</td><td>Prueba carga WS y coordenadas oficiales.</td></tr>
+        <tr><td>Formulas</td><td><span class="tag ok">Base cerrada</span></td><td>100% base</td><td>Resolver hallazgo linear_settlement_cell.</td></tr>
+        <tr><td>Alertas</td><td><span class="tag warn">Avanzado</span></td><td>80% + alarma inactividad</td><td>Configurar reglas reales y demo con usuario autorizado.</td></tr>
+        <tr><td>Offline</td><td><span class="tag warn">Parcial avanzado</span></td><td>77.8%</td><td>Cerrar divergencias historicas y QA formal.</td></tr>
+        <tr><td>RP / Odoo</td><td><span class="tag warn">Casi cerrado</span></td><td>95%</td><td>Escritura productiva autorizada.</td></tr>
+        <tr><td>Telemetria 25k/s</td><td><span class="tag ok">Aceptado</span></td><td>100%</td><td>No prometer 100k.</td></tr>
+        <tr><td>Zonas / multiserie</td><td><span class="tag ok">Cerrado</span></td><td>100%</td><td>Regresion antes de release.</td></tr>
+        <tr><td>GEOCATMIN</td><td><span class="tag warn">Parcial</span></td><td>66.7%</td><td>Busquedas y pruebas automatizadas.</td></tr>
+        <tr><td>Sensores directo/gateway</td><td><span class="tag warn">En ejecucion</span></td><td>63.6% SPEC-027</td><td>Inventario fisico real y decisiones por cadena.</td></tr>
+        <tr><td>DR / continuidad</td><td><span class="tag bad">Bloqueante</span></td><td>0%</td><td>Simulacro RTO/RPO.</td></tr>
+        <tr><td>EPP</td><td><span class="tag neutral">Diferido</span></td><td>0%</td><td>Decision de negocio futura.</td></tr>
+        <tr><td>Dictado STT</td><td><span class="tag neutral">No aceptado</span></td><td>0% medible</td><td>Definir alcance o diferir.</td></tr>
+      </tbody></table>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Avances Criticos del 16-17/09</h2><p class="note">Estos avances explican la actualizacion real del corte y deben destacarse en la presentacion.</p></div></div>
+      <div class="grid-3">
+        <div class="mini"><h3>SPEC-027 Sensores</h3><p>Cierre de sensores directo/gateway. 14/22 tareas cerradas, 1 parcial y trazabilidad sensor-tipo-protocolo-canales-formulas-reglas.</p></div>
+        <div class="mini"><h3>ADR-193 Inactividad</h3><p>Nuevo tipo de alarma para detectar sensores silenciosos. Corrige una brecha operacional critica del legado ThingsBoard.</p></div>
+        <div class="mini"><h3>ADR-194 Triaxial</h3><p>Plantilla triaxial_pga implementada. La integracion ACC a VEL a DIS queda pendiente por decision tecnica.</p></div>
+        <div class="mini"><h3>ADR-195 Formula-Calculo</h3><p>El lienzo Calculo se vincula a formulas reales con diagrama autogenerado por formula.</p></div>
+        <div class="mini"><h3>ADR-196 Mapa</h3><p>Mapa con estado compuesto alarma+conectividad, iconos por tipo y popup con ultimo valor y sparkline.</p></div>
+        <div class="mini"><h3>Verificacion Alpayana</h3><p>Se confirmaron 142 sensores visibles tras corregir autoencuadre; antes el mapa mostraba 0 por coordenadas desalineadas.</p></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Riesgos y Bloqueos</h2><p class="note">Riesgos priorizados para decision ejecutiva. Los P0 bloquean salida a produccion.</p></div></div>
+      <table><thead><tr><th>Prioridad</th><th>Riesgo</th><th>Impacto</th><th>Accion requerida</th></tr></thead><tbody>
+        <tr><td><span class="tag bad">P0</span></td><td>DR / continuidad en 0%</td><td>No habilita produccion.</td><td>Simulacro RTO/RPO con fecha y responsable.</td></tr>
+        <tr><td><span class="tag bad">P0</span></td><td>Pentest externo pendiente</td><td>No habilita go-live seguro.</td><td>Contratar proveedor y programar ventana.</td></tr>
+        <tr><td><span class="tag bad">P0</span></td><td>UAT y marcha blanca pendientes</td><td>No hay aceptacion operacional.</td><td>Definir usuarios, casos y acta.</td></tr>
+        <tr><td><span class="tag bad">P0</span></td><td>Cambios masivos sin cierre de trazabilidad</td><td>Riesgo de perdida o mezcla de alcances.</td><td>Congelar corte y commitear por bloques.</td></tr>
+        <tr><td><span class="tag warn">P1</span></td><td>Solo 3 sensores reales con credencial en base auditada</td><td>La integracion de campo sigue piloto.</td><td>Inventario fisico real por Steven/equipo tecnico.</td></tr>
+        <tr><td><span class="tag warn">P1</span></td><td>Plantilla linear_settlement_cell con discrepancia critica</td><td>Puede alterar MCA/ALT 10x a 100x.</td><td>Decision tecnica antes de produccion.</td></tr>
+        <tr><td><span class="tag warn">P1</span></td><td>Alarmas casi sin parametrizacion real</td><td>Motor existe, operacion no configurada.</td><td>Plan de reglas por sensor/tenant.</td></tr>
+        <tr><td><span class="tag warn">P1</span></td><td>Coordenadas de empresa/sensores inconsistentes</td><td>Afecta mapas y lectura operacional.</td><td>Auditoria con fuente oficial.</td></tr>
+      </tbody></table>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Decisiones Pendientes</h2><p class="note">Sin estas decisiones, el proyecto puede seguir avanzando en codigo, pero no puede cerrar readiness productivo.</p></div></div>
+      <div class="two-col">
+        <div><h3>Gerencia TI</h3><ul><li>Aprobar que el reporte use 72.5% oficial y 73.3% auditado real.</li><li>Actualizar el script de metricas o normalizar SPEC-027.</li><li>Confirmar inventario fisico real de sensores.</li><li>Decidir portabilidad de cadenas Cuajone/Huaron/Brocal.</li><li>Resolver linear_settlement_cell y estrategia de acumulados.</li><li>Definir prueba de carga WS de mapa.</li></ul></div>
+        <div><h3>Gerencia General</h3><ul><li>Autorizar pentest externo.</li><li>Programar simulacro DR.</li><li>Programar UAT con operadores.</li><li>Aprobar marcha blanca y criterios de go-live.</li><li>Confirmar cuentas comerciales Meta WhatsApp y Twilio SMS.</li><li>Validar que el go-live queda condicionado a controles R5/R6.</li></ul></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Mensaje Recomendado para Sustento</h2></div></div>
+      <div class="grid-3">
+        <div class="callout"><h3>Gerencia General</h3><p>El proyecto tiene un avance oficial de 72.5% y un avance real auditado de 73.3%. La plataforma ya cuenta con componentes centrales construidos: telemetria, reportabilidad, seguridad, biometria, mapas, formulas, alarmas y sincronizacion con legado. Aun no debe aprobarse go-live hasta cerrar pentest, DR, UAT, marcha blanca y sensores reales.</p></div>
+        <div class="callout"><h3>Gerencia TI</h3><p>La arquitectura esta madura. El foco ya no es solo construir, sino certificar operacion: inventario real de sensores, parametrizacion de alarmas, formulas verificadas con datos de campo, coordenadas oficiales, pruebas de carga y continuidad.</p></div>
+        <div class="callout danger"><h3>Condicion de Go-Live</h3><p>No habilitar produccion hasta completar pentest externo, simulacro DR, UAT firmado, rollback probado, marcha blanca y validacion operativa de sensores reales.</p></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Proximos Pasos Inmediatos</h2><p class="note">Secuencia recomendada para dejar el corte preparado y defendible.</p></div></div>
+      <table><thead><tr><th>Orden</th><th>Accion</th><th>Resultado esperado</th></tr></thead><tbody>
+        <tr><td>1</td><td>Actualizar BACKLOG.md y REGISTRY.md con SPEC-027 real.</td><td>Evitar contradicciones documentales.</td></tr>
+        <tr><td>2</td><td>Ajustar script o normalizar SPEC-027 a checkboxes.</td><td>Que el avance oficial refleje 73.3%.</td></tr>
+        <tr><td>3</td><td>Congelar corte y respaldar cambios por bloques.</td><td>Trazabilidad y control para gerencia.</td></tr>
+        <tr><td>4</td><td>Resolver decisiones P0/P1.</td><td>Desbloquear R5/R6 y go-live.</td></tr>
+        <tr><td>5</td><td>Presentar este HTML como sustento.</td><td>Sustento claro, visual y consistente.</td></tr>
+      </tbody></table>
+    </section>
+    <div class="footer">Beemetry / Plataforma Minera IoT · Informe interno para Gerencia TI y Gerencia General · Corte 17/09/2026</div>
+  </main>
+</body>
+</html>

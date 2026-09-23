@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "source": "https://board.beemetry.com (ThingsBoard real, sesión de Steven Vera, extraído 2026-09-16 vía fetch() autenticado en el navegador, solo lectura)",
+    "ruleChainId": "ffa2f2d0-629d-11ed-8142-dd34011319e1",
+    "ruleChainName": "PiezometerRC-V2",
+    "nodeCount": 79,
+    "connCount": 107,
+    "note": "79 nodos/107 conexiones real, no 78/100 como se citó en investigación previa de ADR-189 — la cadena se siguió editando desde entonces."
+  },
+  "switchNode": {
+    "name": "Filter Equation",
+    "families": ["linear","linear_GF","linear_a","linear_b","linear_c","linear_c1","linear_d","linear_e","linearGeokon","linearSoilInstruments","linearRSTPsi","linearGeokonPsi","polinomial_a (=polynomial_a)","polinomial_a1","polinomial_a2","polinomial_comp","polinomial_casagrande","polinomial_casagrande_rst","polynomialB","polynomialGeokon","polynomialRST","polynomialSlope","linear_psi_geokon","default"],
+    "note": "23 familias reales confirmadas + 'default'. Coincide con el conteo de ADR-189."
+  },
+  "transformNodes": "Ver captura completa en la transcripción de la sesión — 29 nodos TbTransformMsgNode extraídos íntegros: Polynomial RST, Polynomial A2, Linear Geokon, Linear B, Polynomial A, Unknown Equation (polinomial_comp, confirmado MUERTO por comentario propio del legado: 'VERIFICADO EL 13-08-2024 QUE NINGUN SENSOR POSEE polinomial_comp COMO EQUATION'), Linear C, Linear E, Unknown Equation (polinomial_a1, mismo comentario, confirmado MUERTO), Linear A, Polynomial CasaGrande RST, Linear Soil Instruments, Linear C1, Copy of Original Data, Polynomial CasaGrande, Linear, Linear D, Add Umbrals, Only if MPa: to KPa, Polynomial Slope Hz, Polynomial B, Polynomial Geokon, Linear RST PSI, Linear Geokon PSI, Convert Frequency if exist, Convert Temperature if exist, MCA < 0 & Umbrales, Linear_GF, Linear Geokon PSI a KPA-MPA.",
+  "hallazgos_clave": [
+    "GF.PZ VW-1703: excepción CONFIRMADA real en 'Linear_GF' Equation — `if(metadata.deviceName=='GF.PZ VW-1703'){temp=10.98189;}` (temperatura fija hardcodeada). Coincide exactamente con lo que ADR-189 documentó como pendiente de portar.",
+    "Boroo Misquichilca: excepción CONFIRMADA real en 'Linear Geokon' Equation — dispositivos con deviceName que empieza con 'BM.' usan temperatura constante (shared_inputTemp) o un piso de corrección (shared_inputTempCorreccion), agregado '2025-05-09' según el propio comentario del script.",
+    "'Seco' cuando MCA<=0: CONFIRMADO — no vive en ninguna de las 23 fórmulas, vive en un nodo aparte ('MCA < 0 & Umbrales', fuera del switch de familias) que solo aplica a deviceType 'piezometer'/'piezometer_equation'. Confirma que ADR-189 acertó al moverlo a la capa de presentación.",
+    "Densidad del agua por tabla piecewise (Linear D): CONFIRMADA real, tabla completa por rango de temperatura (999.87@<4°C ... 993.68@30-40°C). ADR-189 ya documentó que se simplificó a un valor fijo (998.2 kg/m³) — impacto real: máximo ~0.6% de diferencia entre extremos de la tabla, consistente con '<1%' ya declarado.",
+    "polinomial_a1 y polinomial_comp: CONFIRMADAS muertas por el propio legado (comentario explícito del developer original fechado 13-08-2024), tal como ADR-189 asumió al no portarlas — no es una suposición, está documentado en el código legado mismo.",
+    "'Linear RST PSI' / 'Linear Geokon PSI' / 'Linear Geokon PSI a KPA-MPA': confirman por qué ADR-189 desdobló variantes _kpa/_mpa — el legado literalmente bifurca la conversión de unidad dentro del mismo bloque `if (unidad === 'KPA') {...} else if (unidad === 'MPA') {...}`, con factores de conversión DISTINTOS, no un simple *1000."
+  ]
+}

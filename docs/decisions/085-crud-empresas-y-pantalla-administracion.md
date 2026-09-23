@@ -1,5 +1,7 @@
 # ADR-085 — CRUD completo de empresas y pantalla de administración
 
+> **Actualización 2026-09-23 (ADR-210) — verificación cerrada por uso real.** El "pendiente de verificación E2E" quedó cubierto: migraciones 50/51 registradas en el ledger, 52 empresas y permisos `empresas.view`/`empresas.manage` presentes en la BD viva, y ADR-190 auditó y corrigió 35 de esas empresas en vivo. Estado vigente: **implemented, verificado por uso**. Si Gerencia exige acta de QA, se reabre como tarea de UAT (ADR-212).
+
 **Status**: implemented (backend + frontend; pendiente de verificación E2E contra contenedor real — ver Fase 6 del plan de implementación)
 **Fecha**: 2026-08-05
 **Autores**: EC

@@ -69,7 +69,8 @@ std::string urlEncode(const std::string &value) {
 }  // namespace
 
 PdfExportResult exportReportPdf(const std::string &reportId, const std::string &sessionToken,
-                                const std::string &watermarkText, bool encrypt) {
+                                const std::string &watermarkText, bool encrypt,
+                                bool noWatermark) {
   PdfExportResult result;
   auto &cfg = config::AppConfig::instance();
   if (cfg.gPdfExportUrl.empty()) {
@@ -92,9 +93,12 @@ PdfExportResult exportReportPdf(const std::string &reportId, const std::string &
   // El watermark (ADR-080) viaja como texto ya resuelto (tenant/usuario/fecha
   // insertados server-side, ver report_document_settings.cpp) — el sidecar
   // solo lo dibuja, no conoce ni necesita conocer el modelo de datos.
-  const std::string requestBody = json::serialize(json::object{
-      {"url", printUrl}, {"watermark", json::object{{"text", watermarkText}}},
-      {"encrypt", encrypt}});
+  // `noWatermark` (ADR-204) manda `false` explícito -- única forma de
+  // saltear el sello, ver comentario equivalente en server.js.
+  json::object requestBodyObj{{"url", printUrl}, {"encrypt", encrypt}};
+  requestBodyObj["watermark"] =
+      noWatermark ? json::value(false) : json::value(json::object{{"text", watermarkText}});
+  const std::string requestBody = json::serialize(requestBodyObj);
 
   beast::error_code ec;
   asio::io_context ioc;

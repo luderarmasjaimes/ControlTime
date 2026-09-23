@@ -297,23 +297,6 @@ textarea {
     height: 36px;
     border-radius: 999px;
     object-fit: cover;
-    /* Hallazgo real, sesión 2026-09-09 (usuario 09637600/ALPAYANA, "el
-       rostro debe aparecer centrado en el círculo"): medido con MediaPipe
-       sobre un avatar real (768×1024) -- el nivel de ojos cae a 22.2% de
-       la altura de la imagen, con contenido real (busto) solo hasta ~54%
-       (el resto es el margen blanco de la composición, ver ADR-141). Con
-       `object-position` por defecto (50% 50%, centro geométrico de TODA
-       la imagen), el recorte cuadrado que hace `cover` queda centrado en
-       la MITAD de la imagen completa -- deja los ojos a ~13% de la altura
-       del propio recorte, casi pegados al borde superior, no al centro.
-       `top` (0%) es el mejor punto alcanzable solo con CSS dado que el
-       recorte cuadrado de `cover` mide el 75% de la altura de la imagen
-       (768/1024) y el nivel de ojos (22.2%) está más arriba que el centro
-       de esa ventana aunque se alinee completamente arriba -- lleva los
-       ojos a ~30% de la altura del recorte, mucho más centrado que el
-       ~13% anterior. No llega al 50% exacto porque la imagen fuente en sí
-       tiene ese margen en blanco real debajo del busto. */
-    object-position: top;
     border: 2px solid rgba(251, 146, 60, 0.65);
     box-shadow: 0 4px 12px rgba(2, 6, 23, 0.4);
     flex-shrink: 0;
@@ -400,7 +383,9 @@ textarea {
 }
 
 .avatar-preview-dialog {
-    width: min(92vw, 760px);
+    display: flex;
+    flex-direction: column;
+    width: min(94vw, 860px);
     max-height: 92vh;
     overflow: hidden;
     color: #e2e8f0;
@@ -415,6 +400,23 @@ textarea {
         0 0 45px rgba(240, 126, 65, 0.14);
     transform-origin: center;
     animation: avatar-dialog-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.avatar-preview-dialog__header {
+    flex: 0 0 auto;
+}
+
+/* Bug real (2026-09-20): el diálogo tenía `overflow: hidden` con una altura de
+   imagen fija que asumía SOLO header+imagen+footer -- al agregar la fila de
+   botones y los paneles de vestimenta/cámara, ese contenido de más quedaba
+   cortado e invisible debajo de la imagen (nunca hubo forma de hacer scroll).
+   Esta franja intermedia es la que scrollea; el header queda siempre visible
+   arriba (con el botón de cerrar a mano) sin importar cuánto contenido haya
+   debajo. */
+.avatar-preview-dialog__scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .avatar-preview-dialog__header,
@@ -471,8 +473,8 @@ textarea {
 .avatar-preview-dialog__body {
     position: relative;
     display: grid;
-    min-height: 260px;
-    max-height: calc(92vh - 132px);
+    min-height: 200px;
+    max-height: min(42vh, 380px);
     place-items: center;
     overflow: hidden;
     background:
@@ -484,7 +486,7 @@ textarea {
 .avatar-preview-dialog__body img {
     display: block;
     max-width: 100%;
-    max-height: calc(92vh - 132px);
+    max-height: min(42vh, 380px);
     object-fit: contain;
     user-select: none;
     transition: filter 180ms ease, opacity 180ms ease;
@@ -523,7 +525,7 @@ textarea {
 .avatar-preview-dialog__footer {
     color: #94a3b8;
     border-top: 1px solid rgba(100, 116, 139, 0.25);
-    font-size: 0.7rem;
+    font-size: 0.8rem;
 }
 
 .avatar-preview-dialog__footer span {
@@ -541,6 +543,181 @@ textarea {
 .avatar-preview-dialog__footer small {
     color: #64748b;
     font-size: 0.66rem;
+}
+
+/* Selector de vestimenta del avatar (rediseño 2026-09-20, ADR-203) -- mismo
+   lenguaje visual que avatar-preview-dialog (acento naranja, fondo slate). */
+.avatar-preview-dialog__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px 18px 4px;
+}
+
+.avatar-outfit-toggle {
+    display: inline-flex;
+    flex: 1 1 200px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 12px 16px;
+    color: #fed7aa;
+    border: 1px solid rgba(251, 146, 60, 0.4);
+    border-radius: 12px;
+    background: rgba(124, 45, 18, 0.28);
+    font-size: 0.92rem;
+    font-weight: 750;
+    cursor: pointer;
+    transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+
+.avatar-outfit-toggle:hover,
+.avatar-outfit-toggle:focus-visible {
+    color: #fff;
+    border-color: rgba(251, 146, 60, 0.8);
+    background: rgba(124, 45, 18, 0.5);
+    outline: none;
+}
+
+.avatar-outfit-panel {
+    padding: 14px 18px;
+    border-top: 1px solid rgba(100, 116, 139, 0.25);
+    background: rgba(2, 6, 23, 0.5);
+}
+
+.avatar-outfit-panel h3 {
+    margin: 0 0 12px;
+    color: #f8fafc;
+    font-size: 1rem;
+    font-weight: 800;
+}
+
+.avatar-outfit-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 12px;
+}
+
+.avatar-outfit-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.6);
+    cursor: pointer;
+    font-size: 0.82rem;
+    text-align: center;
+    transition: border-color 150ms ease, background 150ms ease, opacity 150ms ease;
+}
+
+.avatar-outfit-item:hover,
+.avatar-outfit-item:focus-visible {
+    border-color: rgba(251, 146, 60, 0.6);
+    outline: none;
+}
+
+.avatar-outfit-item.is-current {
+    border-color: #6ee7b7;
+    background: rgba(6, 78, 59, 0.35);
+}
+
+.avatar-outfit-item[disabled],
+.avatar-outfit-item.is-applying {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+.avatar-outfit-item img {
+    width: 100px;
+    height: 132px;
+    object-fit: contain;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.avatar-outfit-error {
+    margin: 10px 0 0;
+    color: #fca5a5;
+    font-size: 0.82rem;
+}
+
+.avatar-outfit-loading {
+    color: #94a3b8;
+    font-size: 0.85rem;
+}
+
+/* "Actualizar mi foto" (re-enroll cosmético del avatar, 2026-09-20) -- mismo
+   panel que avatar-outfit-panel, agregado debajo de él en el mismo diálogo. */
+.avatar-reenroll-panel {
+    padding: 14px 18px;
+    border-top: 1px solid rgba(100, 116, 139, 0.25);
+    background: rgba(2, 6, 23, 0.5);
+}
+
+.avatar-reenroll-panel h3 {
+    margin: 0 0 8px;
+    color: #f8fafc;
+    font-size: 1rem;
+    font-weight: 800;
+}
+
+.avatar-reenroll-hint {
+    margin: 0 0 12px;
+    color: #94a3b8;
+    font-size: 0.82rem;
+}
+
+.avatar-reenroll-frame {
+    width: 220px;
+    aspect-ratio: 3 / 4;
+    margin: 0 auto 12px;
+    overflow: hidden;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    background: #0f172a;
+}
+
+.avatar-reenroll-frame video,
+.avatar-reenroll-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+}
+
+.avatar-reenroll-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+}
+
+.avatar-reenroll-actions button {
+    padding: 10px 16px;
+    color: #fed7aa;
+    border: 1px solid rgba(251, 146, 60, 0.4);
+    border-radius: 999px;
+    background: rgba(124, 45, 18, 0.28);
+    font-size: 0.85rem;
+    font-weight: 750;
+    cursor: pointer;
+}
+
+.avatar-reenroll-actions button:hover:not([disabled]),
+.avatar-reenroll-actions button:focus-visible {
+    color: #fff;
+    border-color: rgba(251, 146, 60, 0.8);
+    background: rgba(124, 45, 18, 0.5);
+    outline: none;
+}
+
+.avatar-reenroll-actions button[disabled] {
+    opacity: 0.55;
+    cursor: wait;
 }
 
 @keyframes avatar-overlay-in {
@@ -1058,7 +1235,7 @@ textarea {
 .dashboard-main-scroll {
     scrollbar-gutter: stable both-edges;
     scrollbar-width: auto;
-    scrollbar-color: rgba(71, 85, 105, 0.7) rgba(148, 163, 184, 0.22);
+    scrollbar-color: rgba(195, 125, 13, 0.851) rgba(219, 153, 11, 0.385);
 }
 
 /* Área central: debe poder encogerse (min-height 0) para que overflow-y muestre scroll */
@@ -1422,6 +1599,18 @@ textarea {
     color: #6ee7b7;
 }
 
+.mining-status-chip--offline {
+    border-color: rgba(239, 68, 68, 0.5);
+    background: linear-gradient(145deg, rgba(127, 29, 29, 0.5), rgba(15, 23, 42, 0.8));
+    color: #fca5a5;
+    animation: miningStatusChipOfflinePulse 1.8s ease-in-out infinite;
+}
+
+@keyframes miningStatusChipOfflinePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.62; }
+}
+
 .mining-user-card {
     min-height: 38px;
     max-width: 13rem;
@@ -1461,15 +1650,6 @@ textarea {
     min-width: 0;
     height: 39px;
     padding: 2px 3px 2px 5px;
-    /* Defensa en profundidad (2026-09-10): el fix real vive en
-       AvatarWidget.tsx (TOP_SAFE_ZONE, evita que el widget se pueda
-       arrastrar/posicionar sobre esta franja) -- esto es un respaldo en caso
-       de que algo más algún día se posicione encima con z-index alto:
-       position+z-index acá garantiza que los botones de navegación (incluido
-       "Informes/Reportes") sigan siendo clicables aunque algo quede
-       visualmente por debajo o encima sin querer. */
-    position: relative;
-    z-index: 10000;
     border: 1px solid rgba(71, 85, 105, 0.44);
     border-radius: 12px;
     background:
@@ -2858,6 +3038,16 @@ textarea {
     0%, 100% { transform: translateX(0); opacity: 0.6; }
     50% { transform: translateX(16px); opacity: 1; }
 }
+/* look_down/look_up (2026-09-16, reemplaza a shift_left/shift_right): mismo
+   nudge decorativo que arriba, en vertical en vez de horizontal. */
+@keyframes turn-challenge-nudge-down {
+    0%, 100% { transform: translateY(0); opacity: 0.6; }
+    50% { transform: translateY(16px); opacity: 1; }
+}
+@keyframes turn-challenge-nudge-up {
+    0%, 100% { transform: translateY(0); opacity: 0.6; }
+    50% { transform: translateY(-16px); opacity: 1; }
+}
 .turn-challenge-arrow {
     animation-duration: 0.9s;
     animation-timing-function: ease-in-out;
@@ -2869,6 +3059,12 @@ textarea {
 }
 .turn-challenge-arrow.turn-challenge-arrow-right {
     animation-name: turn-challenge-nudge-right;
+}
+.turn-challenge-arrow.turn-challenge-arrow-down {
+    animation-name: turn-challenge-nudge-down;
+}
+.turn-challenge-arrow.turn-challenge-arrow-up {
+    animation-name: turn-challenge-nudge-up;
 }
 
 /* Icono pulsante del desafío move_closer/move_away (2026-09-07, pedido

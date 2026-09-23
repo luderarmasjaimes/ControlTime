@@ -349,13 +349,26 @@ export async function applyUserMaintenanceUnified(payload: ApplyUserMaintenanceP
     }
   } catch (err) {
     log.error("[MAINTENANCE_STORAGE] Backend apply error:", err);
-    // Solo si el error es de conexión o similar, intentamos fallback local
+    // Hallazgo real 2026-09-16 (usuario real: "eliminó" una cuenta desde
+    // este panel, vio el mensaje de éxito, y la cuenta siguió activa en la
+    // base real -- confirmado con cero filas en auth_user_maintenance_audit
+    // y cero líneas en los logs de nginx/backend para ese intento: la
+    // petición NUNCA llegó al servidor). Antes, un `fetch` que falla a nivel
+    // de red lanza "TypeError: Failed to fetch" -- ese texto por sí solo
+    // hacía caer a este fallback, que muta SOLO el espejo en localStorage
+    // (ver applyUserMaintenance arriba) y devuelve éxito igual, sin ninguna
+    // marca visible en la UI de que la acción de seguridad (bloquear,
+    // suspender, ELIMINAR, resetear password) nunca se aplicó de verdad.
+    // Para acciones que mutan una cuenta real esto es peligroso -- un
+    // operador puede creer que revocó acceso cuando no lo hizo. Se elimina
+    // el fallback silencioso: un fallo de red ahora se reporta como lo que
+    // es, para que el operador reintente sabiendo que nada cambió todavía.
     const message = (err as Error).message;
-    if (message?.includes('failed') || message?.includes('network')) {
-       const local = applyUserMaintenance(payload);
-       return { ...local, source: 'local' };
-    }
-    return { ok: false, source: 'backend', message };
+    return {
+      ok: false,
+      source: 'backend',
+      message: `No se pudo conectar con el servidor para aplicar el cambio. Ningún dato fue modificado. Verifique su conexión e intente de nuevo. (${message})`,
+    };
   }
 
   return { ok: false, source: 'backend', message: 'Error de comunicación con el servidor.' };

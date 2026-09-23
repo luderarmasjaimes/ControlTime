@@ -1,0 +1,56 @@
+
+@layer utilities {
+  @keyframes marqueeRight {
+    0% {
+      transform: translateX(-50%);
+    }
+    100% {
+      transform: translateX(0%);
+    }
+  }
+
+  @keyframes marqueeLeft {
+    0% {
+      transform: translateX(0%);
+    }
+    100% {
+      transform: translateX(-50%);
+    }
+  }
+
+  .animate-marquee-right {
+    display: flex;
+    width: max-content;
+    animation: marqueeRight 35s linear infinite;
+  }
+
+  .animate-marquee-right:hover {
+    animation-play-state: paused;
+  }
+
+  .animate-marquee-left {
+    display: flex;
+    width: max-content;
+    animation: marqueeLeft 30s linear infinite;
+  }
+
+  .animate-marquee-left:hover {
+    animation-play-state: paused;
+  }
+}
+
+/* Color palette variables extracted from PDF (Page 5) */
+:root {
+  --color-copper-primary: #F05A28;  /* Vibrant Copper Orange */
+  --color-safety-orange: #FF6600;   /* Safety Signal Orange */
+  --color-amber-rust: #C85A2B;      /* Warm Copper Rust */
+  --color-sand-peach: #FCD3B0;      /* Soft Sand / Peach Cream Accent */
+  --color-deep-terracotta: #9B3E1B;  /* Earth Oxide Terracotta */
+  --color-chocolate-dark: #3D170A;   /* Dark Earth Oxide */
+  
+  --color-ice-white: #F5F6F8;       /* Clean Light Off-White */
+  --color-slate-light: #E1E4E8;      /* Industrial Light Gray */
+  --color-silver-gray: #B8BCB2;     /* Metallic Silver */
+  --color-graphite: #42474D;        /* Graphite Gray */
+  --color-pit-black: #080C14;       /* Deep Pit Black */
+}

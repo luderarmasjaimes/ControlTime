@@ -3,6 +3,32 @@
 <head>
   <meta charset="UTF-8" />
   <title>Informe — Exportación PDF</title>
+  <!-- Mismas fuentes que index.html (ver App.tsx/styles.css: 'Inter' es la
+       font-family primaria en casi todo el documento). Sin ellas,
+       Chromium headless (pdf-export-service) cae a la fuente sans-serif
+       del sistema del contenedor -- con métricas distintas, un texto largo
+       en una celda de tabla puede envolver a MÁS líneas que en la app
+       normal (donde Inter sí está cargado), haciendo que la tabla necesite
+       más alto del que tiene guardado y que las últimas filas queden
+       recortadas por el overflow:hidden de su contenedor. Encontrado en
+       vivo: una tabla de 6 filas exportaba solo 4 en el PDF, mismo bug que
+       ya pasó una vez con el CSS de esta misma página (ver comentario de
+       PrintReportRoot en main.tsx).
+
+       Auto-hospedadas en vez de Google Fonts (2026-09-13, SPEC-007 T15/O3,
+       ver ADR-184): cada worker del sidecar de export lanza un Chromium
+       COMPLETAMENTE nuevo y sin caché de disco (ver comentario en
+       pdf-export-service/server.js sobre por qué NO se comparte un solo
+       proceso entre workers) -- con Google Fonts, eso significaba una
+       descarga externa real de la fuente en CADA worker de CADA export,
+       midiéndose ~3-3.6s reales de los ~3.3-3.9s totales que tardaba un
+       worker en estar listo para capturar su primera página (instrumentado
+       con TIMING_DIAG contra un job real). Mismos archivos .woff2 exactos
+       que servía Google (`frontend/public/fonts/`, subset "latin", cubre
+       español), solo sin la ida y vuelta de red externa -- cero cambio de
+       fidelidad visual, launch de worker ahora dominado por el costo real
+       de cargar la app, no por una descarga de fuente evitable. -->
+  <link href="/fonts/local-fonts.css" rel="stylesheet">
   <style>
     body { background-color: #ffffff; margin: 0; padding: 0; }
   </style>

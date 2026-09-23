@@ -34,15 +34,10 @@ function blobToDataUrl(blob: Blob): Promise<string> {
  */
 async function getUserMediaWithAudioFallback(): Promise<{ stream: MediaStream; hasAudio: boolean }> {
   try {
-    // Sin ideal de resolución, el navegador elegía su default (a menudo
-    // 640x480) para un video que termina insertado en el informe.
-    const videoConstraints = { width: { ideal: 1920 }, height: { ideal: 1080 } };
-    const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     return { stream, hasAudio: stream.getAudioTracks().length > 0 };
   } catch {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
-    });
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
     return { stream, hasAudio: false };
   }
 }
@@ -288,7 +283,7 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
               <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest leading-none">Multimedia</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-xl transition-colors"><X size={20} /></button>
+          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-xl transition-colors text-black"><X size={20} /></button>
         </div>
 
         <div className="flex gap-6 px-6 border-b border-slate-100">
@@ -319,18 +314,22 @@ function VideoInsertModal({ onClose, onComplete, initialTab = 'webcam' }: VideoI
             </div>
           ) : (
             <div className="space-y-3">
-              {tab === 'webcam' ? (
+              {/* Pestaña "Pantalla/Ventana": antes solo mostraba un ícono +
+                  texto ("Grabando…") mientras grababa, sin ningún <video>
+                  real -- a diferencia de "Cámara web" (que sí reutiliza este
+                  mismo <video ref={videoRef}>, con su efecto de
+                  srcObject más abajo). Se reusa el mismo elemento/ref acá:
+                  las dos pestañas son mutuamente excluyentes (nunca están
+                  activas a la vez), así que el mismo mecanismo alcanza sin
+                  duplicar código. */}
+              {tab === 'webcam' || (isRecording && previewStream) ? (
                 <video ref={videoRef} autoPlay muted playsInline className="w-full max-h-80 bg-black rounded-2xl" />
               ) : (
                 <div className="py-16 border-2 border-dashed border-slate-200 rounded-3xl flex flex-col items-center justify-center bg-slate-50/50 text-center px-6">
                   <MonitorPlay size={48} className="text-slate-200 mb-4" />
-                  {isRecording ? (
-                    <p className="text-sm text-slate-600 font-semibold">Grabando pantalla/ventana seleccionada…</p>
-                  ) : (
-                    <p className="text-sm text-slate-500">
-                      Al iniciar, el navegador le pedirá elegir qué compartir: una ventana específica, una pestaña, o toda la pantalla.
-                    </p>
-                  )}
+                  <p className="text-sm text-slate-500">
+                    Al iniciar, el navegador le pedirá elegir qué compartir: una ventana específica, una pestaña, o toda la pantalla.
+                  </p>
                 </div>
               )}
               {isRecording && (

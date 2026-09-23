@@ -24,10 +24,18 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, cons
                      std::string &error);
 
 /** @brief Crea un informe nuevo. Por ADR-017 solo puede nacer en `draft` — cualquier otro `status` en `r` es rechazado (`error` empieza con "invalid_workflow_transition:"). Por ADR-039 (migración completa), `r.tenantId` es OBLIGATORIO — `error="tenant_required"` si viene vacío, sin tocar la BD. @return true y `outNewId`/`outVersionNumber` poblados (siempre 1, ADR-015) si el INSERT tuvo éxito. */
+/** @brief `conflictResolution` (ADR-022, cierre CA-3 de SPEC-014, 2026-09-13):
+ * cuando no viene vacío (p.ej. "offline_conflict_kept_as_new"), la primera
+ * revisión se etiqueta con ese valor en vez del literal "creacion_inicial" —
+ * deja trazabilidad explícita, visible en el historial de versiones del
+ * frontend, de que este informe nació de un usuario que eligió NO
+ * sobrescribir la versión del servidor tras un conflicto offline. Vacío
+ * preserva el comportamiento normal. */
 bool createReportPg(const std::string &databaseUrl, const Report &r,
                     std::string &outNewId, std::string &error,
                     const std::string &auditUsername, const std::string &auditCompany,
-                    const std::string &auditToken, int &outVersionNumber);
+                    const std::string &auditToken, int &outVersionNumber,
+                    const std::string &conflictResolution = std::string());
 
 /** @brief Actualiza título/contenido/estado de un informe dentro de una transacción con lock de fila (`SELECT ... FOR UPDATE`), filtrado por `tenantId` (UUID, ADR-039). Valida la transición de estado contra la máquina canónica (ADR-017, `report_workflow.hpp`) antes de aplicar cualquier cambio — un salto inválido aborta TODO el update (ni el contenido se guarda). Si la transición es a `signed`, captura la firma documental (ADR-018: nombre/cargo/fecha resueltos server-side desde `signerRole` + `auditUsername`, buscado en `auth_users` por `auditCompany` — la empresa propia de la sesión, no el tenant filtrado) en la misma sentencia; transiciones posteriores (p.ej. `signed`→`archived`) no la sobreescriben. Toda transición real genera una entrada de auditoría con hash encadenado, incluyendo `workflowComment` (p.ej. motivo de rechazo) cuando se provee.
  *
@@ -56,6 +64,14 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
  * `error="forbidden:<permissionCode>"` o `error="report_immutable:<status>"`
  * en los rechazos de negocio. */
 /** @brief `outVersionNumber` (ADR-021/ADR-015): número de versión server-autoritativo recién confirmado en `report_content_revision` — el cliente lo usa para mostrar la versión real del informe en vez de su propio contador local de ediciones (`document.meta.version`, que no representa lo mismo). */
+/** @brief `conflictResolution` (ADR-022, cierre CA-3 de SPEC-014, 2026-09-13):
+ * cuando no viene vacío (p.ej. "offline_conflict_overwrite"), la revisión que
+ * este guardado genera se etiqueta con ese valor en `change_summary` en vez
+ * del literal "autosave" — cierra la brecha de Art. 6 (trazabilidad de
+ * acciones sensibles) que dejaba pendiente el guardado que sobrescribe la
+ * versión de otra terminal tras un conflicto (409 `version_conflict`)
+ * resuelto explícitamente por el usuario a favor de su copia offline. Vacío
+ * preserva el comportamiento normal (autosave/guardado en línea). */
 bool updateReportPg(const std::string &databaseUrl, const std::string &id,
                     const std::string &tenantId, const Report &r, std::string &error,
                     const std::string &auditUsername, const std::string &auditCompany,
@@ -63,7 +79,8 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
                     const std::string &userId,
                     const std::string &signerRole = std::string(),
                     const std::string &workflowComment = std::string(),
-                    const std::string &expectedVersion = std::string());
+                    const std::string &expectedVersion = std::string(),
+                    const std::string &conflictResolution = std::string());
 
 /** @brief Soft-delete de un informe (`deleted_at = NOW()`), filtrado por `tenantId` (UUID, ADR-039). ADR-079: rechaza con `error="report_immutable:signed"` si el informe está firmado (inmutable sin excepción de rol). @return true si la fila existía, pertenecía al tenant y no estaba firmada. */
 bool deleteReportPg(const std::string &databaseUrl, const std::string &id,

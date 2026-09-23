@@ -91,10 +91,23 @@ handleGetFotocheck(const http::request<http::string_body> &req,
     return makeJsonResponse(http::status::service_unavailable,
                             json::object{{"error", "ai_engine_disabled"}});
   }
+  // Lo VISIBLE en la tarjeta es solo nombres/apellidos/documento; el
+  // encabezado lleva la empresa minera del tenant del usuario (fallback: el
+  // texto `company` del registro) y el rol define área de trabajo y color
+  // (ver _AREA_THEMES en ai_engine/fotocheck_render.py). El QR cifrado de
+  // arriba sigue llevando el payload completo que usa scan-qr.
+  std::string tenantName = resolveTenantNamePg(cfg.gDatabaseUrl, user->tenantId);
+  if (tenantName.empty()) tenantName = user->company;
   const json::object requestBody{
       {"photo_base64", user->idPhotoBase64},
       {"qr_payload", qrCiphertext},
-      {"fields", buildFotocheckFields(*user)},
+      {"fields", json::object{
+                     {"tenant_name", tenantName},
+                     {"role", user->role},
+                     {"first_name", user->firstName},
+                     {"last_name", user->lastName},
+                     {"dni", user->dni},
+                 }},
   };
   const auto result = http_client::request(
       cfg.gAiEngineUrl + "/generate_fotocheck", http::verb::post, json::serialize(requestBody),

@@ -2,9 +2,34 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <random>
 
 namespace biometric {
+
+namespace {
+/**
+ * Hallazgo real 2026-09-16 (pedido explícito del usuario): prueba de
+ * esfuerzo de 5 minutos sobre UN solo tipo de reto (primero shift_right,
+ * ahora look_down/look_up) para diagnosticar por qué falla -- sin esto,
+ * pickChallengeQueue sortea uno al azar entre los 6 tipos, así que no hay
+ * forma de acumular datos reales de un solo tipo en una sesión de prueba
+ * manual frente a la cámara. Diagnóstico puro, gateado por variable de
+ * entorno (vacía = comportamiento normal sin cambios):
+ * BEEMETRY_DIAG_FORCE_CHALLENGE=look_down fuerza ESE tipo tanto en el sorteo
+ * inicial como en cualquier reemplazo tras timeout. Debe quitarse (o dejarse
+ * sin definir) fuera de la ventana de prueba.
+ */
+std::string diagForcedChallengeType() {
+  const char *v = std::getenv("BEEMETRY_DIAG_FORCE_CHALLENGE");
+  if (!v || !*v) return {};
+  const std::string type = v;
+  for (const char *c : kLivenessChallengeTypes) {
+    if (type == c) return type;
+  }
+  return {};
+}
+}  // namespace
 
 std::array<LivenessChallengeTypeCounters, kLivenessChallengeTypes.size()>
     gLivenessChallengeMetrics{};
@@ -77,6 +102,10 @@ void advanceOrCompleteChallenge(LivenessChallengeState &st,
 }  // namespace
 
 std::vector<std::string> pickChallengeQueue() {
+  const std::string forced = diagForcedChallengeType();
+  if (!forced.empty()) {
+    return {forced};
+  }
   std::vector<std::string> pool(kLivenessChallengeTypes.begin(), kLivenessChallengeTypes.end());
   std::shuffle(pool.begin(), pool.end(), challengeRng());
   const std::size_t count =
@@ -85,6 +114,10 @@ std::vector<std::string> pickChallengeQueue() {
 }
 
 std::string pickReplacementChallenge(const std::vector<std::string> &exclude) {
+  const std::string forced = diagForcedChallengeType();
+  if (!forced.empty()) {
+    return forced;
+  }
   std::vector<std::string> pool;
   for (const char *c : kLivenessChallengeTypes) {
     if (std::find(exclude.begin(), exclude.end(), c) == exclude.end()) {
@@ -101,7 +134,7 @@ std::string pickReplacementChallenge(const std::vector<std::string> &exclude) {
 }
 
 void evaluateLivenessChallenge(LivenessChallengeState &st, double headYawRatio,
-                                double interEyePx, double faceOvalCx,
+                                double interEyePx, double faceOvalCy,
                                 std::chrono::steady_clock::time_point now) {
   if (st.complete || st.exhausted) {
     return;
@@ -110,11 +143,11 @@ void evaluateLivenessChallenge(LivenessChallengeState &st, double headYawRatio,
     st.queue = pickChallengeQueue();
     st.index = 0;
     // Referencia de "distancia/posición neutral" para move_closer/move_away
-    // y shift_left/shift_right -- se captura UNA vez, al sortear la cola,
-    // sin importar qué tipo termine tocando (turn_left/turn_right no las
-    // usan, pero da igual fijarlas).
+    // y look_down/look_up -- se captura UNA vez, al sortear la cola, sin
+    // importar qué tipo termine tocando (turn_left/turn_right no las usan,
+    // pero da igual fijarlas).
     st.baselineInterEyePx = interEyePx;
-    st.baselineFaceCenterX = faceOvalCx;
+    st.baselineFaceCenterY = faceOvalCy;
     armNextChallenge(st, now);
     if (st.queue.empty()) {
       // No debería pasar (kLivenessChallengeTypes siempre tiene 4), pero
@@ -162,16 +195,17 @@ void evaluateLivenessChallenge(LivenessChallengeState &st, double headYawRatio,
       satisfied = (type == "move_closer") ? (ratio >= kLivenessMoveCloserRatio)
                                            : (ratio <= kLivenessMoveAwayRatio);
     }
-  } else if (type == "shift_left" || type == "shift_right") {
-    // Desplazamiento lateral de TODA la cabeza (sin girar), a diferencia de
-    // turn_left/turn_right -- ver kLivenessHeadShiftRatio. Misma convención
-    // de signo que turn_left/turn_right (positivo = hacia el lado derecho de
-    // la imagen = "su izquierda" del usuario): shift_left exige avanzar
-    // hacia +X, shift_right hacia -X. Fail-closed sin referencia válida.
+  } else if (type == "look_down" || type == "look_up") {
+    // Reemplaza a shift_left/shift_right (hallazgo real 2026-09-16, ver
+    // kLivenessHeadPitchRatio): inclinación VERTICAL de la cabeza. Convención
+    // de signo natural de coordenadas de imagen (Y crece hacia abajo): mirar
+    // hacia abajo mueve el óvalo hacia +Y, mirar hacia arriba hacia -Y -- a
+    // diferencia de izquierda/derecha, acá no hay ambigüedad de "su
+    // izquierda/derecha" posible. Fail-closed sin referencia válida.
     if (st.baselineInterEyePx > 1e-6) {
-      const double shiftRatio = (faceOvalCx - st.baselineFaceCenterX) / st.baselineInterEyePx;
-      satisfied = (type == "shift_left") ? (shiftRatio >= kLivenessHeadShiftRatio)
-                                          : (shiftRatio <= -kLivenessHeadShiftRatio);
+      const double pitchRatio = (faceOvalCy - st.baselineFaceCenterY) / st.baselineInterEyePx;
+      satisfied = (type == "look_down") ? (pitchRatio >= kLivenessHeadPitchRatio)
+                                        : (pitchRatio <= -kLivenessHeadPitchRatio);
     }
   }
 

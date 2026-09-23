@@ -20,6 +20,8 @@ import {
     CheckCircle2,
     ArrowLeftCircle,
     ArrowRightCircle,
+    ArrowDownCircle,
+    ArrowUpCircle,
     ZoomIn,
     ZoomOut,
     Volume2,
@@ -354,6 +356,7 @@ function isImplausibleFaceJump(candidate: WorkingFaceBox, prev: WorkingFaceBox, 
 
 interface AuthGatewayProps {
     onAuthenticated: (session: Session) => void;
+    onBackToHome?: () => void;
 }
 
 interface ContactOtpState {
@@ -498,7 +501,7 @@ function ContactOtpPanel({
     )
 }
 
-const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
+const AuthGateway = ({ onAuthenticated, onBackToHome }: AuthGatewayProps) => {
     const { t, language, countryIso2: country, localizeMessage } = useI18n()
     const activePhonePrefix = phonePrefixForCountry(country, undefined)
     const [mode, setMode] = useState('login')
@@ -607,6 +610,12 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
     const [capturedPortraitOvalBase64, setCapturedPortraitOvalBase64] = useState('')
     const [capturedBustRectBase64, setCapturedBustRectBase64] = useState('')
     const [liveFaceBox, setLiveFaceBox] = useState<WorkingFaceBox | null>(null)
+    // Espejo en ref de liveFaceBox: los efectos de auto-envío de abajo
+    // (login/registro) necesitan la distancia MÁS FRESCA posible en cada
+    // chequeo (se re-evalúan varias veces por segundo vía otros campos de
+    // faceGuide), no la del render en que el efecto fue definido -- ver
+    // isFaceCloseEnoughToSubmit().
+    const liveFaceBoxRef = useRef<WorkingFaceBox | null>(null)
     const [frameMetrics, setFrameMetrics] = useState(() => ({
         width: FACIAL_ICAO.CAMERA.width.ideal,
         height: FACIAL_ICAO.CAMERA.height.ideal,
@@ -778,8 +787,8 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                   (t): t is LivenessChallengeType =>
                       t === 'turn_left' ||
                       t === 'turn_right' ||
-                      t === 'shift_left' ||
-                      t === 'shift_right' ||
+                      t === 'look_down' ||
+                      t === 'look_up' ||
                       t === 'move_closer' ||
                       t === 'move_away'
               ) as LivenessChallengeType[])
@@ -960,6 +969,20 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
      * ni condiciona el resultado de la autenticación. */
     const pendingPasswordLocationRef = useRef<Promise<GeoLocationSample | null> | null>(null)
     const loginSubmitTriggeredRef = useRef(false)
+    /** Mismo tope que livenessIncompleteRetryCountRef (registro) -- ver
+     * hallazgo real 2026-09-15 en handleCaptureForRegistration: liberar este
+     * trigger sin límite ante liveness_challenge_incomplete puede generar la
+     * misma tormenta de reintentos si el servidor nunca vuelve a completar
+     * el gate, no solo cuando sí es una carrera de milisegundos. */
+    const loginLivenessIncompleteRetryCountRef = useRef(0)
+    /** Hallazgo real 2026-09-15 (mismo patrón que biometricRejectionRetryCountRef
+     * en registro, +400 intentos medidos en vivo): un rechazo biométrico
+     * puntual ("No se pudo validar el rostro"/no-match) suele ser ruido del
+     * frame exacto (parpadeo, encuadre momentáneo) -- reportado en vivo:
+     * tras un rechazo así, la captura de login quedaba pegada en 5/5 sin
+     * volver a un estado utilizable, obligando a salir y reingresar. Tope
+     * bajo (no sin límite) para no repetir la tormenta de reintentos. */
+    const loginBiometricRejectionRetryCountRef = useRef(0)
     /** Evita spam en consola cuando el gate de login facial está cerrado con 3/3 muestras. */
     const authFaceAutoDiagAtRef = useRef(0)
     const registerFaceSessionClockRef = useRef<SessionClock>({
@@ -974,6 +997,42 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         (_o?: { errorMessage?: string }) => {}
     )
     const registrationApiInFlightRef = useRef(false)
+    /** Hallazgo real 2026-09-15: liveness_challenge_incomplete se liberaba
+     * SIEMPRE asumiendo que era un problema de milisegundos (ver comentario
+     * en handleCaptureForRegistration) -- en vivo, cuando el servidor de
+     * verdad nunca vuelve a marcar qualityGateReached/challenge.complete
+     * (sesión de captura descartada, reset del servidor, etc.), liberar el
+     * trigger sin límite generó una tormenta real de +2000 POST
+     * /api/auth/register por minuto contra el backend, con la pantalla
+     * atascada en "Enviando registro..." para siempre. Tope duro de
+     * reintentos + demora antes de re-armar el trigger.
+     */
+    const livenessIncompleteRetryCountRef = useRef(0)
+    /** Hallazgo real 2026-09-15 (pruebas en vivo, +400 intentos medidos): un
+     * rechazo biométrico puntual (spoof/calidad) de SeetaFace6 es en gran
+     * parte ruido del frame exacto capturado -- el mismo rostro, misma
+     * posición aproximada, pasó en 1-5 intentos con un frame fresco en la
+     * mayoría de las pruebas reales. Antes de esto, CUALQUIER rechazo
+     * biométrico dejaba el trigger bloqueado a propósito (mismo criterio que
+     * "usuario ya existe": un rechazo de DATOS nunca cambia solo). Pero un
+     * rechazo de CAPTURA (spoof/no_face_detected/calidad) sí puede cambiar
+     * con el siguiente frame -- exigirle a la persona salir y reingresar a
+     * la captura por cada rechazo puntual es fricción real sin motivo de
+     * seguridad (el servidor sigue re-evaluando liveness en cada intento,
+     * fail-closed real). Tope bajo (a diferencia del bucle sin límite del
+     * diagnóstico) para no volver a generar una tormenta si el rechazo
+     * resulta ser persistente de verdad.
+     */
+    const biometricRejectionRetryCountRef = useRef(0)
+    /** Hallazgo real 2026-09-15 (en vivo, el mismo día que se agregó el
+     * reintento de arriba): un 429 de nginx (zone=api_login, ver
+     * frontend/nginx.conf) no estaba marcado como reintentable en ningún
+     * lado -- caía al mismo camino que un rechazo PERMANENTE y dejaba la
+     * captura pegada en 5/5 con "Demasiados intentos..." fijo en pantalla,
+     * aunque el límite se libera solo en unos segundos. Demora más larga que
+     * los otros reintentos (no 1.5s) para no volver a pegarle al límite
+     * mientras nginx todavía no repuso cupo. */
+    const rateLimitRetryCountRef = useRef(0)
     /** Registro empresa: envío automático solo al pasar canRegister de false → true (evita bucle si el API falla). */
     const prevCompanyCanRegisterRef = useRef(false)
     /**
@@ -1015,6 +1074,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         setCapturedBustRectBase64('')
         bestLoginProbeRef.current = null
         loginSubmitTriggeredRef.current = false
+        loginLivenessIncompleteRetryCountRef.current = 0
+        loginBiometricRejectionRetryCountRef.current = 0
+        rateLimitRetryCountRef.current = 0
         validFramesRef.current = 0
         resetBiometricCapture().catch(() => {})
         setFaceGuide((prev) => ({
@@ -1255,6 +1317,44 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 (hasReq && Boolean(faceGuide.lastServerOk)),
         }
     }, [faceGuide.qualityReady, faceGuide.captureCount, faceGuide.lastServerOk, faceGuide.qualityGateReached])
+    /** Hallazgo real 2026-09-15 (263 fotos reales, misma persona/ambiente,
+     * solo variando distancia a la cámara): a "distancia normal" (rostro
+     * ~55-60% del alto del cuadro) SeetaFace6 aprobó ~4-27% de las capturas;
+     * acercándose (~70%+) subió a ~73%. El zoom digital (ver
+     * biometricOvalFrame.ts) compensa parte de esa diferencia, pero no toda
+     * -- este aviso guía a la persona a acercarse de verdad, frontal, sin
+     * gestos raros, solo proximidad. Umbral (0.60) deliberadamente algo por
+     * debajo del target real (0.70) para no molestar a alguien ya
+     * razonablemente cerca, dejando que el zoom digital cierre esa brecha
+     * chica solo. */
+    const FACE_PROXIMITY_HINT_MIN_RATIO = 0.60
+    const showMoveCloserHint = useMemo(() => {
+        const vh = videoRef.current?.videoHeight || 0
+        if (!liveFaceBox || vh < 32 || liveFaceBox.height <= 0) return false
+        return liveFaceBox.height / vh < FACE_PROXIMITY_HINT_MIN_RATIO
+    }, [liveFaceBox])
+    /** Hallazgo real 2026-09-15 (usuario real, en vivo): el auto-envío a
+     * /api/auth/login/face solo miraba el gate de calidad ICAO + reto, nunca
+     * la distancia -- disparaba el primer intento (y cada reintento
+     * automático por rechazo biométrico) aunque la cara siguiera "a
+     * distancia normal", donde el propio estudio de 263 fotos midió ~4-27%
+     * de aprobación en SeetaFace6. Cada uno de esos rechazos SÍ consume una
+     * de las 5 fallas de loginRateCheck (main.cpp) -- a diferencia de
+     * liveness_challenge_incomplete, que el backend excluye explícitamente
+     * del contador. Con reintentos automáticos hasta con cupo propio de 5,
+     * un usuario que nunca se acercó podía agotar el límite de la CUENTA
+     * (bloqueo de 5 min) en la primera sesión, sin haber cometido 5 fallas
+     * reales -- solo 5 envíos del mismo problema (distancia) que nunca tuvo
+     * chance de pasar. Se usa el ref (no el state `liveFaceBox`) porque esto
+     * se llama desde efectos/timers que pueden ejecutar con un closure
+     * viejo del render en que fueron definidos.
+     */
+    const isFaceCloseEnoughToSubmit = () => {
+        const vh = videoRef.current?.videoHeight || 0
+        const box = liveFaceBoxRef.current
+        if (!box || vh < 32 || box.height <= 0) return false
+        return box.height / vh >= FACE_PROXIMITY_HINT_MIN_RATIO
+    }
     const selectedLoginBgUrl = useMemo(() => {
         const key = normalizeCompanyKey(loginForm.company)
         return LOGIN_BG_BY_COMPANY[key] || DEFAULT_LOGIN_BG_URL
@@ -1645,6 +1745,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         setCapturedBustRectBase64('')
         bestLoginProbeRef.current = null
         loginSubmitTriggeredRef.current = false
+        loginLivenessIncompleteRetryCountRef.current = 0
+        loginBiometricRejectionRetryCountRef.current = 0
+        rateLimitRetryCountRef.current = 0
         validFramesRef.current = 0
         resetBiometricCapture().catch(() => {})
         setFaceGuide((prev) => ({
@@ -2011,6 +2114,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 let mouthClosed = false
 
                 if (!bestFace) {
+                    liveFaceBoxRef.current = null
                     setLiveFaceBox(null)
                     setCapturedTemplate(null)
                     setCapturedImageBase64('')
@@ -2095,6 +2199,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                         }
                     }
                     smoothedFaceRef.current = bestFace
+                    liveFaceBoxRef.current = bestFace
                     setLiveFaceBox(bestFace)
 
                     const aspect = bestFace.width / Math.max(1, bestFace.height)
@@ -2177,6 +2282,14 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     const fastScaleDz =
                         mhist.length >= 6
                             ? mhist[mhist.length - 1].nw - mhist[mhist.length - 6].nw
+                            : 0
+                    // Mismo criterio que fastTurnDx, pero en Y -- para look_down/
+                    // look_up (reemplaza a shift_left/shift_right, ver
+                    // liveness_challenge.hpp): adelanta el envío cuando ya hay una
+                    // inclinación vertical clara en curso.
+                    const fastPitchDy =
+                        mhist.length >= 6
+                            ? mhist[mhist.length - 1].ny - mhist[mhist.length - 6].ny
                             : 0
                     if (mhist.length >= 8) {
                         const mx =
@@ -2270,17 +2383,17 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             : null
                     const isTurnChallengeActive =
                         activeChallengeType === 'turn_left' || activeChallengeType === 'turn_right'
-                    const isShiftChallengeActive =
-                        activeChallengeType === 'shift_left' || activeChallengeType === 'shift_right'
+                    const isPitchChallengeActive =
+                        activeChallengeType === 'look_down' || activeChallengeType === 'look_up'
                     const isMoveChallengeActive =
                         activeChallengeType === 'move_closer' || activeChallengeType === 'move_away'
                     const turnBurstReady =
                         isTurnChallengeActive &&
                         Math.abs(fastTurnDx) > 0.045 &&
                         nowSync - lastTurnBurstAtRef.current > 220
-                    const shiftBurstReady =
-                        isShiftChallengeActive &&
-                        Math.abs(fastTurnDx) > 0.030 &&
+                    const pitchBurstReady =
+                        isPitchChallengeActive &&
+                        Math.abs(fastPitchDy) > 0.030 &&
                         nowSync - lastTurnBurstAtRef.current > 180
                     const moveBurstReady =
                         isMoveChallengeActive &&
@@ -2314,12 +2427,12 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                         (isFirstSync ||
                             nowSync - lastSyncRef.current > FACIAL_ICAO.VERIFY_SYNC_MS ||
                             turnBurstReady ||
-                            shiftBurstReady ||
+                            pitchBurstReady ||
                             moveBurstReady)
                     ) {
                         syncingRef.current = true
                         lastSyncRef.current = nowSync
-                        if (turnBurstReady || shiftBurstReady || moveBurstReady) {
+                        if (turnBurstReady || pitchBurstReady || moveBurstReady) {
                             lastTurnBurstAtRef.current = nowSync
                         }
 
@@ -2616,7 +2729,8 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             hasRequiredBiometricSamples &&
             challengesPassedRef.current &&
             !loginSubmitTriggeredRef.current &&
-            cooldownOk
+            cooldownOk &&
+            isFaceCloseEnoughToSubmit()
         ) {
             log.info('[AUTH_FACE_AUTO] disparando login facial', {
                 qualityReady: Boolean(faceGuide.qualityReady),
@@ -2655,6 +2769,9 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
         const samples = Number(faceGuide.captureCount || 0)
         if (!inRegisterCapture) {
             registerAutoSubmitTriggeredRef.current = false
+            livenessIncompleteRetryCountRef.current = 0
+            biometricRejectionRetryCountRef.current = 0
+            rateLimitRetryCountRef.current = 0
             return
         }
         if (samples < FACIAL_ICAO.REQUIRED_VALID_FRAMES) {
@@ -2668,6 +2785,15 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             return
         }
         if (registerAutoSubmitTriggeredRef.current) {
+            return
+        }
+        // Mismo hallazgo que en login (ver isFaceCloseEnoughToSubmit): sin
+        // esto el registro también podía disparar el primer envío (y cada
+        // reintento por rechazo biométrico) a "distancia normal", donde
+        // SeetaFace6 aprueba ~4-27% -- no bloquea la cuenta como en login,
+        // pero sí genera rechazos evitables y consume el cupo de
+        // /api/auth/register de nginx sin necesidad.
+        if (!isFaceCloseEnoughToSubmit()) {
             return
         }
         registerAutoSubmitTriggeredRef.current = true
@@ -2865,7 +2991,33 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
             // justifica reintentar solo -- cualquier OTRO rechazo exige que
             // la persona corrija algo (sacarse los lentes, etc.) y reactive
             // la verificación facial a mano.
-            if (err?.transient) {
+            // Hallazgo real 2026-09-15 (a pedido explícito del usuario, mismo
+            // criterio que en registro): no mostrar el error crudo del
+            // servidor cuando de todas formas se va a reintentar solo un
+            // instante después -- asusta al usuario final con mensajes
+            // técnicos por algo que el sistema ya está resolviendo.
+            let willRetry = false
+            if (err?.rateLimited) {
+                // Hallazgo real 2026-09-15: mismo criterio que en registro --
+                // un 429 de nginx es temporal por definición, demora más
+                // larga (4s) que los demás reintentos para dejar que el
+                // límite se libere antes de volver a intentar.
+                rateLimitRetryCountRef.current += 1
+                if (rateLimitRetryCountRef.current <= 4) {
+                    willRetry = true
+                    setTimeout(() => {
+                        bestLoginProbeRef.current = null
+                        loginSubmitTriggeredRef.current = false
+                        handleFaceLogin()
+                    }, 4000)
+                } else {
+                    log.warn(
+                        '[AUTH_FACE_UI] 429 persistente: tope de reintentos alcanzado, no se libera el trigger',
+                        { attempts: rateLimitRetryCountRef.current }
+                    )
+                }
+            } else if (err?.transient) {
+                willRetry = true
                 loginSubmitTriggeredRef.current = false
             } else if (err?.message === 'liveness_challenge_incomplete') {
                 // Hallazgo real 2026-09-07 (mismo caso ya resuelto del lado
@@ -2884,15 +3036,97 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 // rechazo contra el límite de intentos de la cuenta (ver
                 // handleLoginFace en main.cpp), así que reintentar acá es
                 // seguro.
-                loginSubmitTriggeredRef.current = false
+                //
+                // Hallazgo real 2026-09-15 (registro, mismo patrón acá):
+                // liberar sin límite asume que el servidor SIEMPRE termina
+                // completando el gate poco después -- si la sesión de
+                // captura del servidor se descarta y nunca vuelve a
+                // completarlo, esto reintentaba sin ningún tope, generando
+                // una tormenta de POST /api/auth/login/face (confirmado en
+                // registro: +2000/min contra /api/auth/register en el mismo
+                // escenario). Mismo tope + demora que el registro.
+                loginLivenessIncompleteRetryCountRef.current += 1
+                if (loginLivenessIncompleteRetryCountRef.current <= 3) {
+                    willRetry = true
+                    setTimeout(() => {
+                        loginSubmitTriggeredRef.current = false
+                    }, 600)
+                } else {
+                    log.warn(
+                        '[AUTH_FACE_UI] liveness_challenge_incomplete: tope de reintentos alcanzado, no se libera el trigger',
+                        { attempts: loginLivenessIncompleteRetryCountRef.current }
+                    )
+                }
+            } else if (
+                // Hallazgo real 2026-09-15 (usuario real, en vivo): un
+                // rechazo biométrico puntual ("no se pudo validar el rostro"/
+                // no coincide) dejaba la captura de login PEGADA en 5/5 para
+                // siempre -- el trigger nunca se liberaba (mismo criterio que
+                // "usuario ya existe" en registro: un rechazo de DATOS nunca
+                // cambia solo), pero acá casi siempre SÍ es ruido del frame
+                // exacto (parpadeo, encuadre momentáneo), no un rechazo
+                // permanente -- misma conclusión que en registro, con +400
+                // intentos reales midiendo la variación de un mismo rostro.
+                //
+                // Lista blanca explícita (no "cualquier otro error"): a
+                // diferencia del registro, acá CADA intento (automático o a
+                // mano) le cuesta a la cuenta una de sus 5 fallas antes del
+                // bloqueo de 5 min (loginRateCheck en main.cpp) -- reintentar
+                // un rechazo PERMANENTE (cuenta bloqueada, sin plantilla,
+                // proveedor inseguro, usuario no encontrado) quemaría todo el
+                // cupo sin ninguna chance real de éxito. Solo se reintentan
+                // los mensajes que loginFaceTargetedPg devuelve por una
+                // captura puntual mala, mismo texto exacto que el backend
+                // (auth_storage_pg.cpp) usa en sus 3 motores.
+                [
+                    'No se pudo validar el rostro.',
+                    'La biometría facial no coincide con el usuario indicado.',
+                    'Esta cuenta requiere una imagen de cámara real',
+                ].some((prefix) => String(err?.message || '').startsWith(prefix))
+            ) {
+                loginBiometricRejectionRetryCountRef.current += 1
+                if (loginBiometricRejectionRetryCountRef.current <= 5) {
+                    willRetry = true
+                    // Hallazgo real 2026-09-15 (usuario real: "Cuenta
+                    // bloqueada 5 min" tras crear la cuenta y fallar UNA vez
+                    // el login facial): antes esto volvía a llamar
+                    // handleFaceLogin() a ciegas, sin mirar si la persona
+                    // seguía a la misma distancia que causó el rechazo -- a
+                    // "distancia normal" SeetaFace6 aprueba ~4-27% (ver
+                    // estudio de 263 fotos), así que 5 reintentos ciegos
+                    // podían agotar solos el cupo de 5 fallas de la CUENTA
+                    // (loginRateCheck en main.cpp cuenta cada rechazo
+                    // biométrico, a diferencia de liveness_challenge_incomplete
+                    // que está exento). Ahora solo se libera el trigger; el
+                    // efecto de auto-envío (más arriba) no vuelve a disparar
+                    // hasta que isFaceCloseEnoughToSubmit() sea true, así que
+                    // nunca se reenvía el mismo frame condenado a fallar por
+                    // distancia -- espera a que la persona se acerque.
+                    setTimeout(() => {
+                        bestLoginProbeRef.current = null
+                        loginSubmitTriggeredRef.current = false
+                    }, 1500)
+                } else {
+                    log.warn(
+                        '[AUTH_FACE_UI] rechazo biométrico: tope de reintentos alcanzado, no se libera el trigger',
+                        { attempts: loginBiometricRejectionRetryCountRef.current }
+                    )
+                }
             }
             log.warn('[AUTH_FACE_UI] login failed', {
                 message: err?.message || String(err),
                 transient: Boolean(err?.transient),
+                willRetry,
                 company: String(loginForm.company || '').trim(),
                 identity: id,
             })
-            setError(localizeMessage(err.message))
+            if (willRetry) {
+                setError('')
+                setMessage(t('auth.verifyingRetry'))
+            } else {
+                setMessage('')
+                setError(localizeMessage(err.message))
+            }
         } finally {
             setIsProcessing(false)
         }
@@ -3184,8 +3418,40 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 setCapturedImageBase64('')
                 setCapturedPortraitOvalBase64('')
                 setCapturedBustRectBase64('')
-                setError(localizeMessage(err.message))
-                if (err?.transient) {
+                // Hallazgo real 2026-09-15 (a pedido explícito del usuario):
+                // antes se mostraba SIEMPRE el error crudo del servidor
+                // ("seetaface_liveness_spoof", "liveness_challenge_incomplete")
+                // aunque el sistema fuera a reintentar solo un instante
+                // después -- eso asustaba al usuario final con mensajes
+                // técnicos por algo que ya se estaba corrigiendo. `willRetry`
+                // se decide en las ramas de abajo; el mensaje real solo se
+                // muestra si NO va a haber un reintento automático (error
+                // permanente o tope de reintentos agotado).
+                let willRetry = false
+                if (err?.rateLimited) {
+                    // Hallazgo real 2026-09-15: 429 de nginx (rate limit de
+                    // /api/auth/login|register, ver frontend/nginx.conf) es
+                    // por definición temporal -- se libera solo en unos
+                    // segundos. Demora más larga que los demás reintentos
+                    // (4s, no 1.5s) para no volver a pegarle al límite antes
+                    // de que nginx reponga cupo. Tope propio para no
+                    // insistir para siempre si algo más (proxy caído, etc.)
+                    // sigue devolviendo 429.
+                    rateLimitRetryCountRef.current += 1
+                    if (rateLimitRetryCountRef.current <= 4) {
+                        willRetry = true
+                        setTimeout(() => {
+                            bestLoginProbeRef.current = null
+                            releaseRegisterAutoTrigger('rate_limited')
+                            handleCaptureForRegistration()
+                        }, 4000)
+                    } else {
+                        log.warn(
+                            '[AUTH_REGISTER_FLOW] 429 persistente: tope de reintentos alcanzado, no se libera el trigger',
+                            { attempts: rateLimitRetryCountRef.current }
+                        )
+                    }
+                } else if (err?.transient) {
                     // Timeout/red (ver postJson en authApi.ts) -- nunca hubo
                     // respuesta del servidor, así que SÍ tiene sentido
                     // reintentar con los mismos datos (a diferencia del caso
@@ -3193,6 +3459,7 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     // trabada para siempre con "verifique red e intente de
                     // nuevo" en pantalla sin que el reintento fuera posible
                     // -- hallazgo real 2026-09-04.
+                    willRetry = true
                     releaseRegisterAutoTrigger('transient_error')
                 } else if (err?.message === 'liveness_challenge_incomplete') {
                     // Hallazgo real 2026-09-04: a diferencia de "username
@@ -3209,7 +3476,65 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                     // tras el rechazo), pero sin liberar el trigger acá la
                     // pantalla quedaba atascada para siempre con este error
                     // fijo en pantalla aunque el reto ya estuviera cumplido.
-                    releaseRegisterAutoTrigger('liveness_challenge_incomplete')
+                    //
+                    // Hallazgo real 2026-09-15: ese razonamiento asume que el
+                    // servidor SIEMPRE termina alcanzando el gate poco
+                    // después -- en vivo no fue así en dos sesiones reales
+                    // (sesión de captura descartada del lado del servidor):
+                    // liberar el trigger sin límite ni demora generó +2000
+                    // POST /api/auth/register por minuto (confirmado en logs
+                    // de nginx), la pantalla igual quedaba atascada en
+                    // "Enviando registro...", y el backend absorbía la
+                    // tormenta sin motivo. Tope duro de reintentos con una
+                    // demora entre cada uno: si el servidor de verdad estaba
+                    // a milisegundos de completar el gate, esto lo sigue
+                    // resolviendo; si nunca lo completa, corta el bucle y
+                    // muestra el error real en vez de girar para siempre.
+                    livenessIncompleteRetryCountRef.current += 1
+                    if (livenessIncompleteRetryCountRef.current <= 3) {
+                        willRetry = true
+                        setTimeout(() => {
+                            releaseRegisterAutoTrigger('liveness_challenge_incomplete')
+                        }, 600)
+                    } else {
+                        log.warn(
+                            '[AUTH_REGISTER_FLOW] liveness_challenge_incomplete: tope de reintentos alcanzado, no se libera el trigger',
+                            { attempts: livenessIncompleteRetryCountRef.current }
+                        )
+                    }
+                } else if (String(err?.message || '').startsWith('Validación Biométrica Fallida')) {
+                    // Hallazgo real 2026-09-15 (+400 intentos medidos en
+                    // pruebas en vivo con SeetaFace6 contra la webcam de esta
+                    // laptop): un rechazo puntual (spoof/calidad) suele ser
+                    // ruido del frame exacto -- misma persona, misma posición
+                    // aproximada, pasó en 1-5 intentos frescos casi siempre.
+                    // A diferencia de "username already exists" (rechazo de
+                    // DATOS, nunca cambia solo), un rechazo de CAPTURA sí
+                    // puede cambiar con el siguiente frame. Tope bajo (5, no
+                    // sin límite como en el diagnóstico) para no volver a
+                    // generar una tormenta si el rechazo es persistente de
+                    // verdad -- a los 5 intentos se deja el mensaje real en
+                    // pantalla y hace falta reingresar a mano, igual que
+                    // antes.
+                    biometricRejectionRetryCountRef.current += 1
+                    if (biometricRejectionRetryCountRef.current <= 5) {
+                        willRetry = true
+                        // Mismo hallazgo que en login (ver
+                        // isFaceCloseEnoughToSubmit): ya no se vuelve a
+                        // llamar handleCaptureForRegistration() a ciegas --
+                        // solo se libera el trigger, y el efecto de
+                        // auto-envío (que ahora exige proximidad) decide
+                        // cuándo reintentar de verdad.
+                        setTimeout(() => {
+                            bestLoginProbeRef.current = null
+                            releaseRegisterAutoTrigger('biometric_rejection_retry')
+                        }, 1500)
+                    } else {
+                        log.warn(
+                            '[AUTH_REGISTER_FLOW] rechazo biométrico: tope de reintentos alcanzado, no se libera el trigger',
+                            { attempts: biometricRejectionRetryCountRef.current }
+                        )
+                    }
                 }
                 // Para cualquier OTRO error (el servidor sí respondió y
                 // rechazó, ej. "username already exists"), NO se libera el
@@ -3222,9 +3547,17 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                 // borraba solo, viéndose como un parpadeo sin error real.
                 // Dejar el trigger armado obliga a salir de la captura
                 // (cambia usuario/dni) para reintentar.
+                if (willRetry) {
+                    setError('')
+                    setMessage(t('auth.verifyingRetry'))
+                } else {
+                    setMessage('')
+                    setError(localizeMessage(err.message))
+                }
                 log.warn('[AUTH_REGISTER_FLOW] registerUser error', {
                     message: err?.message || String(err),
                     transient: Boolean(err?.transient),
+                    willRetry,
                     stack: err?.stack || null,
                 })
             } finally {
@@ -3940,30 +4273,43 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                                       ? t('liveness.challenge.retry')
                                                       : t(challengeInstructionKey(chType))}
                                             </span>
-                                            {/* Flecha grande animada (ADR-149, ampliada 2026-09-07
-                                                a shift_left/shift_right): ayuda visual para los 4
-                                                gestos laterales -- puramente decorativa
+                                            {/* Flecha grande animada (ADR-149): ayuda visual para
+                                                los gestos de giro -- puramente decorativa
                                                 (pointer-events-none, capa CSS sobre el video), la
                                                 captura real lee el frame del <video>/canvas
                                                 directamente y nunca incluye este overlay. */}
                                             {!isSuccess &&
                                                 !isTimeout &&
-                                                (chType === 'turn_left' ||
-                                                    chType === 'turn_right' ||
-                                                    chType === 'shift_left' ||
-                                                    chType === 'shift_right') && (
+                                                (chType === 'turn_left' || chType === 'turn_right') && (
                                                     <div
                                                         className={`turn-challenge-arrow turn-challenge-arrow-${
-                                                            chType === 'turn_left' || chType === 'shift_left'
-                                                                ? 'left'
-                                                                : 'right'
+                                                            chType === 'turn_left' ? 'left' : 'right'
                                                         } pointer-events-none`}
                                                         aria-hidden="true"
                                                     >
-                                                        {chType === 'turn_left' || chType === 'shift_left' ? (
+                                                        {chType === 'turn_left' ? (
                                                             <ArrowLeftCircle size={56} className="text-sky-300" />
                                                         ) : (
                                                             <ArrowRightCircle size={56} className="text-sky-300" />
+                                                        )}
+                                                    </div>
+                                                )}
+                                            {/* Mismo criterio que la flecha de giro, en vertical --
+                                                reemplaza a shift_left/shift_right (2026-09-16, ver
+                                                liveness_challenge.hpp). */}
+                                            {!isSuccess &&
+                                                !isTimeout &&
+                                                (chType === 'look_down' || chType === 'look_up') && (
+                                                    <div
+                                                        className={`turn-challenge-arrow turn-challenge-arrow-${
+                                                            chType === 'look_down' ? 'down' : 'up'
+                                                        } pointer-events-none`}
+                                                        aria-hidden="true"
+                                                    >
+                                                        {chType === 'look_down' ? (
+                                                            <ArrowDownCircle size={56} className="text-sky-300" />
+                                                        ) : (
+                                                            <ArrowUpCircle size={56} className="text-sky-300" />
                                                         )}
                                                     </div>
                                                 )}
@@ -4027,6 +4373,54 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                         <RefreshCw size={16} className="animate-spin text-sky-300" />
                                         <span className="text-white text-sm font-bold">
                                             {t('auth.sendingRegistration')}
+                                        </span>
+                                    </div>
+                                )}
+
+                            {/* Hallazgo real 2026-09-15 (263 fotos reales medidas): a
+                                distancia "normal" SeetaFace6 aprueba ~4-27% de los
+                                intentos; acercándose sube a ~73%. El aviso anterior
+                                era una línea de texto chica debajo del video, fácil
+                                de pasar por alto -- a pedido explícito del usuario
+                                ("mas visible"), ahora es un cartel grande sobre el
+                                propio video, con ícono animado, mismo tratamiento
+                                visual que el resto de overlays de esta pantalla
+                                (envío/reto), no solo texto suelto. */}
+                            {faceCaptureOnlyView &&
+                                cameraReady &&
+                                !isProcessing &&
+                                showMoveCloserHint &&
+                                // Hallazgo real 2026-09-15: este aviso ("acércate, de
+                                // frente, sin mover la cabeza") y el cartel del reto activo
+                                // (que puede pedir justo lo contrario: girar la cabeza o
+                                // alejarse en move_away) compartían la misma posición en
+                                // pantalla y ninguno miraba el estado del otro -- durante un
+                                // reto en curso ambos podían aparecer simultáneamente con
+                                // instrucciones contradictorias, confundiendo al usuario a
+                                // mitad de la verificación. El aviso de proximidad solo debe
+                                // mostrarse en la etapa de calidad ICAO, antes de que arranque
+                                // el reto activo.
+                                !(
+                                    ACTIVE_CHALLENGE_ENABLED &&
+                                    !isChallengeSequenceComplete(challengeUiState) &&
+                                    currentChallenge(challengeUiState)
+                                ) && (
+                                    <div
+                                        className="absolute left-1/2 top-3 -translate-x-1/2 flex items-center gap-2 px-4 py-2.5 rounded-xl text-center animate-pulse"
+                                        style={{
+                                            zIndex: 26,
+                                            position: 'absolute',
+                                            background: 'rgba(120, 53, 15, 0.92)',
+                                            border: '2px solid #f59e0b',
+                                            boxShadow: '0 0 18px rgba(245, 158, 11, 0.55)',
+                                            minWidth: 260,
+                                            maxWidth: '92%',
+                                        }}
+                                        role="status"
+                                    >
+                                        <ZoomIn size={20} className="text-amber-300 flex-shrink-0" />
+                                        <span className="text-white text-sm font-bold leading-snug">
+                                            {t('auth.moveCloserHint')}
                                         </span>
                                     </div>
                                 )}
@@ -4098,7 +4492,6 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                                 {message}
                             </div>
                         )}
-
                         <div className="bio-icao-panel">
                             <div className="bio-icao-section">
                                 <div className="bio-icao-title">{t('auth.icaoQuality')}</div>
@@ -4252,6 +4645,17 @@ const AuthGateway = ({ onAuthenticated }: AuthGatewayProps) => {
                             : ''
                     }`}
                 >
+                    {onBackToHome && (
+                    <button
+                        type="button"
+                        onClick={onBackToHome}
+                        className="inline-flex items-center gap-2 mb-3 rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-100 transition hover:border-amber-400 hover:bg-slate-800"
+                        aria-label="Volver al inicio"
+                        >
+                        <span aria-hidden="true">←</span>
+                        Volver al inicio
+                    </button>
+                    )}
                     <PlatformBrandPanelHeader compact={registerFormNarrowFitView} subtitle={t('auth.platformSubtitle')} />
                     <PlatformRegionBar variant="auth" />
                     {mode === 'login' ? (

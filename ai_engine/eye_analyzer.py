@@ -45,6 +45,7 @@ from glasses_fusion import (
     warmup_glasses_onnx,
 )
 from dni_scan import scan_dni_image
+import ocr_engine_client
 from fotocheck_render import generate_fotocheck_image
 from seetaface6_adapter import analyze as analyze_seetaface6
 from seetaface6_adapter import status as seetaface6_status
@@ -118,7 +119,9 @@ from mediapipe_models_fetch import (
     ensure_mediapipe_models,
     get_face_model_path,
     get_selfie_model_path,
+    get_selfie_multiclass_model_path,
 )
+import avatar_body_templates
 
 if not ensure_mediapipe_models():
     raise RuntimeError(
@@ -128,6 +131,7 @@ if not ensure_mediapipe_models():
 
 MODEL_PATH = get_face_model_path()
 SELFIE_SEGMENTER_PATH = get_selfie_model_path()
+SELFIE_MULTICLASS_PATH = get_selfie_multiclass_model_path()
 
 base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
 options = vision.FaceLandmarkerOptions(
@@ -159,6 +163,21 @@ _mediapipe_lock = threading.Lock()
 
 _selfie_segmenter = None
 _selfie_segmenter_failed = False
+
+_multiclass_segmenter = None
+_multiclass_segmenter_failed = False
+# Orden de categorías documentado por el modelo oficial de MediaPipe
+# (selfie_multiclass_256x256): 0 fondo, 1 pelo, 2 piel-cuerpo, 3 piel-cara,
+# 4 ropa, 5 otros/accesorios (aros, lentes, etc). NUNCA se usa la categoría 4
+# (ropa) para el recorte de cabeza -- ese es justamente el punto del
+# rediseño: la vestimenta ya no sale de la foto, sale de la plantilla
+# (avatar_body_templates.py).
+_MULTICLASS_BACKGROUND = 0
+_MULTICLASS_HAIR = 1
+_MULTICLASS_BODY_SKIN = 2
+_MULTICLASS_FACE_SKIN = 3
+_MULTICLASS_CLOTHES = 4
+_MULTICLASS_OTHERS = 5
 
 # Índices ojos (malla MediaPipe 478 puntos) — orden estándar EAR
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
@@ -212,6 +231,7 @@ class _SessionState:
         "left_ear_hist",
         "right_ear_hist",
         "last_touched",
+        "head_yaw_hist",
     )
 
     def __init__(self):
@@ -222,6 +242,15 @@ class _SessionState:
         self.glasses_fusion_state_prev = False
         self.onnx_confident_no_glasses_streak = 0
         self.onnx_confident_glasses_streak = 0
+        # Hallazgo real 2026-09-15: el veredicto final de lentes usa
+        # histéresis/suavizado sobre varios frames (glasses_fusion_hist) --
+        # suprimir solo con el yaw del frame ACTUAL dejaba pasar falsos
+        # positivos "de arrastre": la cabeza ya volvía a casi frontal, pero
+        # el puntaje suavizado todavía reflejaba el pico de giro de un par
+        # de frames antes. Mismo largo de ventana que glasses_fusion_hist
+        # para cubrir exactamente el mismo historial que alimenta esa
+        # decisión.
+        self.head_yaw_hist = deque(maxlen=_glasses_fusion_hist_maxlen())
         self.left_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
         self.right_ear_hist = deque(maxlen=EAR_SMOOTH_WIN)
         self.last_touched = time.monotonic()
@@ -1190,6 +1219,40 @@ def analyze_eyes():
     face_frontal = face_frontal_from_points(points)
     head_yaw_ratio = head_yaw_ratio_from_points(points)
 
+    # Hallazgo real 2026-09-15 (usuario real, en vivo): el reto activo "gira
+    # la cabeza" (turn_left/turn_right, ADR-142/146) pide un giro de
+    # head_yaw_ratio ~0.20-0.25 -- bastante por debajo del límite de "no
+    # frontal" del chequeo ICAO (0.42, ver face_frontal_from_points). Pero
+    # glasses_from_frame asume geometría FRONTAL (ROI simétrica alrededor
+    # del punto medio de ambos ojos, "puente nasal" medido como franja
+    # horizontal centrada) -- ya con ese giro moderado la sombra real de la
+    # nariz se desplaza fuera de esa franja y empieza a leerse como
+    # oscuridad de montura/puente, reportado en vivo como "gafas
+    # detectadas" sobre una cara sin lentes justo durante el giro que el
+    # propio reto exige hacer. La señal nunca se calibró (ADR-156) fuera de
+    # pose frontal.
+    #
+    # Primera versión de este fix (mismo día) solo miraba el yaw del frame
+    # ACTUAL -- insuficiente: reproducido en vivo, glasses_hit usa
+    # histéresis/mediana sobre glasses_fusion_hist (varios frames), así que
+    # el veredicto final todavía reflejaba el pico de giro de 1-2 frames
+    # antes aunque la cabeza YA hubiera vuelto a yaw bajo en el frame
+    # actual (glasses:True con head_yaw_ratio actual 0.03-0.05, giro real
+    # unos frames atrás). Ahora se mira el yaw MÁXIMO de la misma ventana
+    # que alimenta esa histéresis (head_yaw_hist, mismo largo que
+    # glasses_fusion_hist), no solo el instante presente.
+    st.head_yaw_hist.append(float(head_yaw_ratio))
+    recent_max_yaw = max((abs(y) for y in st.head_yaw_hist), default=abs(head_yaw_ratio))
+    if recent_max_yaw > 0.12:
+        if glasses_hit:
+            print(
+                f"[EYE_AI] glasses_suppressed_non_frontal head_yaw_ratio:{head_yaw_ratio:.3f} "
+                f"recent_max_yaw:{recent_max_yaw:.3f} fused_score:{fused_score:.1f}",
+                flush=True,
+            )
+        glasses_hit = False
+        no_glasses = True
+
     conf = estimate_confidence(left_ear, right_ear, blink_l, blink_r, True)
     _t_end = time.perf_counter()
 
@@ -1305,6 +1368,42 @@ def _get_selfie_segmenter():
         _selfie_segmenter_failed = True
         return None
     return _selfie_segmenter
+
+
+def _get_multiclass_segmenter():
+    """ImageSegmenter multiclase (fondo/pelo/piel-cuerpo/piel-cara/ropa/otros)
+    -- rediseño de avatar (2026-09-20): recorte de SOLO cabeza sin depender de
+    segmentar hombros/ropa reales (ver _head_only_mask). Modelo distinto y
+    ADICIONAL al selfie_segmenter binario de arriba; ambos son TFLite/CPU, sin
+    costo de VRAM -- no compite con avatar_engine/avatar_animation_engine por
+    los ~8GB de GPU compartidos de este host (ADR-160)."""
+    global _multiclass_segmenter, _multiclass_segmenter_failed
+    if _multiclass_segmenter_failed:
+        return None
+    if _multiclass_segmenter is not None:
+        return _multiclass_segmenter
+    if not os.path.isfile(SELFIE_MULTICLASS_PATH):
+        print(
+            "[!] Falta selfie_multiclass_256x256.tflite; recorte de cabeza "
+            "cae al fallback binario (_person_mask_selfie_or_fallback).",
+            flush=True,
+        )
+        _multiclass_segmenter_failed = True
+        return None
+    try:
+        base = python.BaseOptions(model_asset_path=SELFIE_MULTICLASS_PATH)
+        opts = vision.ImageSegmenterOptions(
+            base_options=base,
+            running_mode=vision.RunningMode.IMAGE,
+            output_category_mask=True,
+            output_confidence_masks=False,
+        )
+        _multiclass_segmenter = vision.ImageSegmenter.create_from_options(opts)
+    except Exception as ex:  # noqa: BLE001
+        print(f"[!] ImageSegmenter multiclase no disponible: {ex}", flush=True)
+        _multiclass_segmenter_failed = True
+        return None
+    return _multiclass_segmenter
 
 
 def _refine_person_mask_u8(m: np.ndarray) -> np.ndarray:
@@ -1464,6 +1563,303 @@ def _person_mask_selfie_or_fallback(img_bgr: np.ndarray) -> np.ndarray:
     if gc is not None:
         return gc
     return np.full((h, w), 255, dtype=np.uint8)
+
+
+_CHIN_LANDMARK_IDX = 152  # malla FaceLandmarker estándar (478 pts) -- punta del mentón.
+
+
+def _head_only_mask(
+    out_bgr: np.ndarray, alpha_sm: Optional[np.ndarray]
+) -> Optional[np.ndarray]:
+    """Máscara 0-255 de SOLO cabeza (pelo+orejas+piel de cara), cortada a lo
+    bruto por debajo del cuello.
+
+    Rediseño de avatar (2026-09-20, pedido explícito del usuario): el resto
+    del cuerpo ya NO sale de la foto real (viene de una plantilla pre-hecha,
+    ver avatar_body_templates.py), así que este recorte nunca necesita
+    clasificar hombros/ropa fotografiados -- la fuente documentada de la
+    mayoría de los incidentes de borde de este pipeline (halos, manchas
+    grises cerca de la mandíbula/hombro, degradados anchos de confianza, ver
+    avatar_animation_engine/matting.py). Devuelve None si no se detecta
+    rostro; el llamador cae a _compose_avatar_canvas (comportamiento previo a
+    este cambio, nunca se rompe la generación del avatar por esto)."""
+    try:
+        h, w = out_bgr.shape[:2]
+        points = _avatar_face_landmarks(out_bgr)
+        if points is None or len(FACE_OVAL_INDICES) < 10:
+            return None
+        oval = points[FACE_OVAL_INDICES]
+        face_top_y = float(oval[:, 1].min())
+        face_h = float(oval[:, 1].max() - face_top_y)
+        if face_h < 8:
+            return None
+        chin_y = (
+            float(points[_CHIN_LANDMARK_IDX, 1])
+            if points.shape[0] > _CHIN_LANDMARK_IDX
+            else float(oval[:, 1].max())
+        )
+        # Margen fijo (fracción del alto de rostro) entre el mentón y la
+        # línea de corte -- incluye el borde inferior de la mandíbula/algo de
+        # cuello, nunca hombros. Mismo estilo de margen fijo ya usado en todo
+        # este archivo (p.ej. 0.22*fh/0.82*fh en _bust_roi_mask_from_mediapipe).
+        # Bajado de 0.32 a 0.18 (bug real probado con foto real, 2026-09-20):
+        # con cabeza inclinada hacia la cámara (mentón hacia abajo, ángulo de
+        # webcam típico) 0.32*face_h llegaba hasta la base del cuello/arranque
+        # de hombro -- compose_head_on_template mide el "ancho de cuello" justo
+        # en esa franja (ver _measure_neck_width_px en avatar_body_templates.py)
+        # para escalar la cabeza entera, así que un corte que alcanza el hombro
+        # se mide como "cuello" ancho y termina agrandando toda la cabeza muy
+        # por encima de una proporción humana real.
+        neck_margin_frac = _env_float_avatar("AVATAR_HEAD_NECK_MARGIN_FRAC", 0.18)
+        neck_y = max(1, int(round(min(float(h), chin_y + neck_margin_frac * face_h))))
+
+        # Corte ovalado en vez de línea recta (pedido explícito del usuario,
+        # 2026-09-21: "recorta la cabeza de forma más ovalada... se nota una
+        # mancha oscura grande debajo del mentón"): una foto real con la
+        # cámara mirando hacia arriba desde abajo (ángulo de selfie típico)
+        # deja el lado de ABAJO del mentón/cuello genuinamente en sombra --
+        # eso no es un bug de iluminación que se pueda "arreglar" recortando,
+        # pero SÍ era un corte RECTO (línea horizontal, `mask[neck_y:,:]=0`)
+        # el que lo hacía ver como una mancha rectangular pegada, no como una
+        # sombra natural de cuello. Curva parabólica: en el CENTRO (mentón)
+        # llega hasta neck_y igual que antes; hacia los COSTADOS sube (corta
+        # antes), seudo-imitando el óvalo real de la mandíbula -- así la
+        # sombra que queda dentro del recorte es solo la franja angosta
+        # bajo el mentón, no el ancho rectángulo completo hasta los bordes.
+        chin_x = (
+            float(points[_CHIN_LANDMARK_IDX, 0])
+            if points.shape[0] > _CHIN_LANDMARK_IDX
+            else float(oval[:, 0].mean())
+        )
+        oval_half_w = max(1.0, (float(oval[:, 0].max()) - float(oval[:, 0].min())) / 2.0)
+        # Óvalo SOLO en la mitad inferior (pedido explícito del usuario,
+        # 2026-09-21): el primer intento aplicó la elipse también ARRIBA de
+        # la nariz, y eso recortó el pelo en una forma de huevo puntiaguda --
+        # "deja la parte de arriba como estaba antes". Arriba de
+        # `nose_mouth_y` no se toca nada (seguridad = True, se apoya 100% en
+        # la máscara de pelo/piel real de más abajo, igual que siempre).
+        # Abajo, la primera versión también salió "en forma de pera" -- el
+        # ancho en la unión (a la altura nariz/boca) usaba el ancho de cara
+        # medido × 1.2 (margen pensado para orejas, que ya no aplica acá,
+        # las orejas quedan en la mitad de ARRIBA sin tocar) -- ese extra
+        # ensanchaba la base de la curva más de lo que la mandíbula real mide
+        # ahí, y al angostarse hacia el mentón se veía como una pera, no un
+        # óvalo. Sin el margen de oreja, el ancho de la unión coincide con el
+        # ancho de cara medido de verdad.
+        eye_y = float(
+            np.mean([points[LEFT_EYE][:, 1].mean(), points[RIGHT_EYE][:, 1].mean()])
+        )
+        nose_mouth_y = eye_y + 0.62 * (chin_y - eye_y)
+        a_half_w = oval_half_w
+        b_bottom = max(1.0, neck_y - nose_mouth_y)
+        yy_grid, xx_grid = np.mgrid[0:h, 0:w].astype(np.float32)
+        dx_e = (xx_grid - chin_x) / a_half_w
+        dy_e = (yy_grid - nose_mouth_y) / b_bottom
+        inside_oval_lower = (dx_e ** 2 + dy_e ** 2) <= 1.0
+        below_neck_curve = (yy_grid > nose_mouth_y) & (~inside_oval_lower)
+
+        seg = _get_multiclass_segmenter()
+        mask = None
+        if seg is not None:
+            try:
+                rgb = cv2.cvtColor(out_bgr, cv2.COLOR_BGR2RGB)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                with _mediapipe_lock:
+                    res = seg.segment(mp_image)
+                if res.category_mask is not None:
+                    cat = np.asarray(res.category_mask.numpy_view(), dtype=np.uint8)
+                    # NUNCA categoría "ropa" (4) -- justamente el punto de
+                    # este rediseño es dejar de depender de eso.
+                    small_mask = (
+                        np.isin(
+                            cat,
+                            [
+                                _MULTICLASS_HAIR,
+                                _MULTICLASS_BODY_SKIN,
+                                _MULTICLASS_FACE_SKIN,
+                                _MULTICLASS_OTHERS,
+                            ],
+                        ).astype(np.uint8)
+                        * 255
+                    )
+                    # Bug real encontrado probando con una foto real (2026-09-20,
+                    # pedido explícito del usuario de "máxima precisión" en el
+                    # borde de pelo/orejas): el modelo multiclase sale nativamente
+                    # en baja resolución (256x256) -- reescalar el mapa de
+                    # categorías con INTER_NEAREST ANTES de aplicar isin() (como
+                    # se hacía acá) "hornea" el bloqueo en escalón de esa baja
+                    # resolución dentro de la máscara final a resolución completa
+                    # (cada bloque NEAREST se vuelve un escalón visible en el
+                    # contorno del pelo). Resolver isin() a la resolución NATIVA
+                    # del modelo primero, y reescalar el resultado BINARIO con
+                    # INTER_LINEAR, da un degradado suave en el borde que el
+                    # blur+sigmoide de abajo puede afinar en vez de solo
+                    # cuadricular un contorno ya en escalones.
+                    if small_mask.shape[0] != h or small_mask.shape[1] != w:
+                        mask = cv2.resize(
+                            small_mask, (w, h), interpolation=cv2.INTER_LINEAR
+                        )
+                    else:
+                        mask = small_mask
+            except Exception:
+                mask = None
+        if mask is None:
+            # Sin el modelo multiclase (no descargado / falló la carga):
+            # cae a la máscara binaria persona/fondo ya existente en este
+            # archivo. Pierde la clasificación fina pelo/orejas vs. resto,
+            # pero conserva la mejora estructural central -- el corte duro de
+            # cuello de más abajo se aplica igual, así que sigue sin depender
+            # de segmentar hombros/ropa reales.
+            mask = _person_mask_selfie_or_fallback(out_bgr)
+
+        if mask is not None and mask.ndim == 3:
+            # Bug real probado con foto real (2026-09-21): el category_mask del
+            # segmentador multiclase a veces trae un canal final de tamaño 1
+            # (h, w, 1) en vez de (h, w) -- combinarlo por multiplicación con
+            # alpha_sm (siempre 2D) rompe el broadcast (ValueError). Aplanar
+            # acá cubre ambos caminos (con y sin resize) sin tocar valores.
+            mask = mask[..., 0]
+
+        if alpha_sm is not None and alpha_sm.shape[:2] == (h, w):
+            # Bug real probado con foto real (2026-09-21, "los bordes de la
+            # cara... parecen recortados con serrucho"): alpha_sm ya viene
+            # como gradiente suave (0-1, con su propio Gaussian blur, ver el
+            # llamador) -- binarizarlo acá (`> 0.12`) y combinarlo con
+            # bitwise_and tira ese gradiente a la basura y fuerza un borde en
+            # escalón donde este segundo mask sea más restrictivo que el
+            # multiclase, aunque el multiclase mismo haya salido suave.
+            # Multiplicar como floats conserva el gradiente de AMBOS en vez
+            # de heredar el más duro de los dos.
+            person_soft = np.clip(alpha_sm, 0.0, 1.0).astype(np.float32)
+            mask = (mask.astype(np.float32) * person_soft).astype(np.uint8)
+
+        mask = _restrict_mask_to_face_component(mask, out_bgr)
+        mask[below_neck_curve] = 0  # Corte ovalado -- nunca por debajo de la curva.
+
+        if np.count_nonzero(mask) < max(64, (h * w) // 400):
+            return None
+
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        # Agudizado sigmoide centrado en el punto de decisión (mismo criterio
+        # ya verificado en avatar_animation_engine/matting.py): empuja los
+        # valores intermedios hacia los extremos sin desplazar el borde real,
+        # da un contorno de pelo definido sin verse serruchado.
+        #
+        # Bug real probado con foto real (2026-09-21, "el pelo perdió
+        # precisión, se ve mal ajustado"): con fondos de bajo contraste
+        # contra el pelo (puerta oscura, iluminación pareja), el mask crudo
+        # del segmentador ya venía con ruido en el contorno -- un agudizado
+        # tan fuerte (k=6) no "define" ese contorno, lo convierte en escalón
+        # visible (amplifica el ruido existente en vez de solo afinar un
+        # borde ya bueno). Bajado a k=4: sigue empujando a los extremos,
+        # pero menos agresivo, así que un contorno con algo de ruido queda
+        # más suave en vez de más serruchado.
+        mf = mask.astype(np.float32) / 255.0
+        k = 4.0
+        raw = 1.0 / (1.0 + np.exp(-k * (np.clip(mf, 0.0, 1.0) - 0.5)))
+        floor = 1.0 / (1.0 + np.exp(k * 0.5))
+        ceil = 1.0 / (1.0 + np.exp(-k * 0.5))
+        mf = np.clip((raw - floor) / (ceil - floor), 0.0, 1.0)
+        mask = (mf * 255.0).astype(np.uint8)
+        mask[below_neck_curve] = 0  # El agudizado no debe reabrir el corte.
+        return mask
+    except Exception:
+        return None
+
+
+def _head_cutout_rgba(
+    out_bgr: np.ndarray, head_mask_u8: np.ndarray, pad_frac: float = 0.05
+) -> Optional[np.ndarray]:
+    """Recorte BGRA ajustado al bounding box de la cabeza (+ padding chico) --
+    listo para persistir (recompose rápido al cambiar de vestimenta, sin
+    volver a correr difusión ni detección) o para pegar directo sobre una
+    plantilla (avatar_body_templates.compose_head_on_template)."""
+    try:
+        ys, xs = np.where(head_mask_u8 > 10)
+        if ys.size < 16 or xs.size < 16:
+            return None
+        h, w = head_mask_u8.shape[:2]
+        # Bug real probado con foto real (2026-09-21, "una hebra suelta de
+        # cabello... reducido el tamaño de la cabeza que no guarda
+        # proporción"): min()/max() estrictos son sensibles a un solo pixel
+        # -- una hebra de pelo suelta y colgante (normal en fotos reales,
+        # casi invisible apoyada contra hombros/ropa reales, pero muy visible
+        # como línea negra flotando sola sobre una plantilla de color claro)
+        # estira el bounding box mucho más de lo que representa la cabeza
+        # real, y esa altura/ancho inflados son justo lo que
+        # avatar_body_templates.compose_head_on_template usa para escalar --
+        # una hebra larga encogía la cabeza ENTERA para "hacerla caber".
+        #
+        # Bug real probado con foto real (2026-09-21, "le has quitado las
+        # orejas"): la primera versión de este fix usaba percentil 0.5/99.5
+        # de POSICIÓN en vez de min/max -- pero una oreja parcialmente
+        # cubierta por pelo también puede ser una porción chica de los
+        # píxeles totales, así que el mismo criterio que recorta una hebra
+        # angosta también recortaba la oreja. La distinción real no es
+        # "cuántos píxeles", es la FORMA: una hebra es angosta (1-3px de
+        # ancho) en toda su longitud; una oreja es una forma sólida
+        # (ancha), aunque chica. Apertura morfológica (erosionar + dilatar)
+        # con un kernel un poco más ancho que una hebra suelta: le pasa por
+        # encima a formas anchas como la oreja o la masa principal del pelo,
+        # pero erosiona hasta desaparecer cualquier protuberancia angosta --
+        # el bounding box se calcula sobre esa máscara "abierta" (solo para
+        # decidir el recorte), nunca sobre el contenido real que se pega
+        # abajo (crop_mask usa el mask ORIGINAL completo, con el detalle
+        # fino intacto adentro del recorte ya bueno).
+        k_size = max(9, int(round(min(head_mask_u8.shape[:2]) * 0.015)))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
+        opened = cv2.morphologyEx(head_mask_u8, cv2.MORPH_OPEN, kernel)
+        ys_o, xs_o = np.where(opened > 10)
+        if ys_o.size >= 16 and xs_o.size >= 16:
+            y0, y1 = int(ys_o.min()), int(ys_o.max())
+            x0, x1 = int(xs_o.min()), int(xs_o.max())
+        else:
+            # La apertura se comió casi toda la máscara (cabeza muy chica o
+            # muy angosta en la foto de origen) -- fail-safe, usar el
+            # bounding box crudo antes que devolver None por esto.
+            y0, y1 = int(ys.min()), int(ys.max())
+            x0, x1 = int(xs.min()), int(xs.max())
+
+        # Piso mínimo de ancho geométrico (pedido explícito del usuario,
+        # 2026-09-21: "ubicar las orejas geométricamente en base a la
+        # ubicación de los ojos y boca"): la apertura morfológica de arriba
+        # puede angostar el bbox más de lo anatómicamente correcto si el
+        # pelo sobre la oreja tiene un contorno irregular -- se calcula el
+        # ancho de cara real (FACE_OVAL_INDICES, llega hasta cerca de la
+        # línea de la oreja) desde los landmarks ya disponibles, y el bbox
+        # NUNCA se angosta por debajo de ese piso (solo puede ensancharse,
+        # nunca recorta más de lo que la apertura morfológica ya decidió).
+        # No inventa una oreja que no está en la foto (si el pelo la tapa
+        # del todo, esto no cambia nada) -- solo evita recortar de más
+        # cuando SÍ hay contenido de oreja/pelo lateral pero angosto.
+        try:
+            face_pts = _avatar_face_landmarks(out_bgr)
+        except Exception:
+            face_pts = None
+        if face_pts is not None and len(FACE_OVAL_INDICES) >= 10:
+            oval = face_pts[FACE_OVAL_INDICES]
+            face_w = float(oval[:, 0].max() - oval[:, 0].min())
+            ear_margin = face_w * 0.12
+            min_x0 = int(round(float(oval[:, 0].min()) - ear_margin))
+            min_x1 = int(round(float(oval[:, 0].max()) + ear_margin))
+            x0 = max(0, min(x0, min_x0))
+            x1 = min(w - 1, max(x1, min_x1))
+
+        pad_y = max(2, int(round((y1 - y0) * pad_frac)))
+        pad_x = max(2, int(round((x1 - x0) * pad_frac)))
+        y0 = max(0, y0 - pad_y)
+        x0 = max(0, x0 - pad_x)
+        y1 = min(h - 1, y1 + pad_y)
+        x1 = min(w - 1, x1 + pad_x)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            return None
+        crop_bgr = out_bgr[y0 : y1 + 1, x0 : x1 + 1]
+        crop_mask = head_mask_u8[y0 : y1 + 1, x0 : x1 + 1]
+        return cv2.merge(
+            [crop_bgr[:, :, 0], crop_bgr[:, :, 1], crop_bgr[:, :, 2], crop_mask]
+        )
+    except Exception:
+        return None
 
 
 def _local_avatar_stylize(work_bgr: np.ndarray, alpha_f: np.ndarray) -> np.ndarray:
@@ -2317,6 +2713,21 @@ def _diffusion_stylize_with_quality_retry(
     matte_oval: bool,
 ) -> Optional[np.ndarray]:
     """
+    Intento real probado y DESCARTADO (2026-09-21, foto real con luz dura de
+    un solo lado, reclamo del usuario "mucho brillo parece plastificado"):
+    comprimir el pico de brillo (canal L de Lab) de work_wb ANTES de mandarlo
+    a difusión, para no reproducir el reflejo tal cual. Probado contra la
+    foto real de esta sesión, el resultado fue MUCHO peor -- no solo no
+    arregló el brillo, perdió el parecido casi por completo (rasgos
+    deformes, colores verdes/morados falsos, sin pelo) porque ControlNet-
+    Canny deriva sus bordes de esa misma imagen: alterar el mapa de
+    luminancia de entrada cambia los bordes que guían toda la generación,
+    no solo el brillo. Revertido por completo (ver también el intento de
+    tocar el PROMPT en avatar_engine/avatar_diffusion.py, también probado y
+    descartado, sin efecto medible). El brillo de esta foto específica queda
+    como limitación conocida de la luz real de la habitación del usuario,
+    sin arreglo encontrado todavía que no empeore la identidad.
+
     Prueba las seeds de difusión (hasta 3, ver _avatar_diffusion_retry_seeds)
     y devuelve la de MAYOR similitud de identidad entre las que pasan los dos
     controles de calidad (raw + compuesto) -- no la primera que pasa.
@@ -2420,8 +2831,10 @@ def _diffusion_stylize_with_quality_retry(
 
 
 def _cartoonify_face_bgr(
-    img_bgr: np.ndarray, style_override: Optional[str] = None
-) -> Optional[Tuple[str, str, str]]:
+    img_bgr: np.ndarray,
+    style_override: Optional[str] = None,
+    body_template_slug: Optional[str] = None,
+) -> Optional[Tuple[str, str, str, str]]:
     """
     Un único avatar PNG por imagen, 100 % local: segmentación selfie / GrabCut,
     fondo blanco, y estilo con CLAHE + realce suave (por defecto, ver
@@ -2487,7 +2900,8 @@ def _cartoonify_face_bgr(
         # El trabajo se conserva hasta 1600 px para no destruir detalle de la
         # captura antes de componer el máster 4K. Sigue siendo una operación
         # asíncrona de registro, no del render interactivo de la cabecera.
-        max_side = 1600 if not matte_oval else 1280
+        fast_template_mode = style_override == "fast"
+        max_side = 960 if fast_template_mode else (1600 if not matte_oval else 1280)
         sc = min(max_side / float(max(rh, rw)), 1.0)
         tw = max(96, int(round(rw * sc)))
         th = max(96, int(round(rh * sc)))
@@ -2544,7 +2958,7 @@ def _cartoonify_face_bgr(
             out = cv2.bilateralFilter(flat, 3, 20, 20)
         else:
             out = None
-            if style_override != "classic" and avatar_diffusion_enabled():
+            if style_override not in ("classic", "fast") and avatar_diffusion_enabled():
                 out = _diffusion_stylize_with_quality_retry(
                     work_wb, a, alpha_sm, matte_oval
                 )
@@ -2580,7 +2994,35 @@ def _cartoonify_face_bgr(
                 + ink_strength * ink
             ).astype(np.uint8)
 
-        thumb = _compose_avatar_canvas(out, alpha_sm, matte_oval, 768, 1024)
+        # Rediseño de avatar (2026-09-20, pedido explícito del usuario):
+        # recortar SOLO la cabeza y componerla sobre una plantilla de cuerpo/
+        # vestimenta pre-hecha en vez de sobre un lienzo en blanco con los
+        # hombros/torso de la foto real -- elimina la dependencia de
+        # segmentar hombros/ropa fotografiados (ver _head_only_mask arriba y
+        # el historial de incidentes de avatar_animation_engine/matting.py).
+        # Cualquier fallo en esta ruta nueva (sin rostro detectable, máscara
+        # degenerada, etc.) cae al compuesto de lienzo blanco previo -- nunca
+        # se rompe la generación del avatar por esto.
+        head_rgba = None
+        head_mask = _head_only_mask(out, alpha_sm)
+        if head_mask is not None:
+            head_rgba = _head_cutout_rgba(out, head_mask)
+
+        head_cutout_b64 = ""
+        if head_rgba is not None:
+            try:
+                slug = body_template_slug or avatar_body_templates.default_template_slug()
+                thumb = avatar_body_templates.compose_head_on_template(
+                    head_rgba, slug, 768, 1024
+                )
+                ok_cut, buf_cut = cv2.imencode(".png", head_rgba)
+                if ok_cut:
+                    head_cutout_b64 = base64.b64encode(buf_cut.tobytes()).decode("ascii")
+            except Exception:
+                head_rgba = None
+                thumb = _compose_avatar_canvas(out, alpha_sm, matte_oval, 768, 1024)
+        else:
+            thumb = _compose_avatar_canvas(out, alpha_sm, matte_oval, 768, 1024)
 
         # Control final sobre el compuesto REAL que se va a persistir, sin
         # importar qué motor lo generó. Incidente real ALPAYANA/09637600
@@ -2594,7 +3036,10 @@ def _cartoonify_face_bgr(
         # en `auth_users.avatar_cartoon_base64` y en el maestro HD. Mejor no
         # generar avatar (el llamador ya trata None como fallo silencioso,
         # ver ADR-074: la cabecera muestra el placeholder de iniciales) que
-        # guardar uno mutilado.
+        # guardar uno mutilado. Este control mide geometría del óvalo facial
+        # dentro del lienzo final (fracción de blanco, tamaño, margen
+        # superior) -- sigue siendo válido con el compuesto sobre plantilla:
+        # no depende de qué haya alrededor de la cara, solo de la cara misma.
         _avatar_debug_save("99_thumb_final_candidate", thumb)
         final_reason = _avatar_composed_quality_reason(thumb)
         if final_reason is not None:
@@ -2607,7 +3052,12 @@ def _cartoonify_face_bgr(
 
         # Maestro 4K vertical (3:4). Se persiste fuera de la sesión y se
         # descarga únicamente al ampliar el avatar.
-        hd = _compose_avatar_canvas(out, alpha_sm, matte_oval, 2880, 3840)
+        if head_rgba is not None:
+            hd = avatar_body_templates.compose_head_on_template(
+                head_rgba, slug, 2880, 3840
+            )
+        else:
+            hd = _compose_avatar_canvas(out, alpha_sm, matte_oval, 2880, 3840)
         ok_thumb, buf_thumb = cv2.imencode(
             ".png", thumb, [cv2.IMWRITE_PNG_COMPRESSION, 3]
         )
@@ -2620,6 +3070,7 @@ def _cartoonify_face_bgr(
             base64.b64encode(buf_thumb.tobytes()).decode("ascii"),
             base64.b64encode(buf_hd.tobytes()).decode("ascii"),
             generator_name,
+            head_cutout_b64,
         )
     except Exception:
         return None
@@ -2642,11 +3093,21 @@ def cartoon_avatar():
     # AVATAR_DIFFUSION_QA_USERNAMES; cualquier otro valor se ignora (None,
     # mismo comportamiento previo gateado solo por el flag global).
     style_raw = (request.form.get("style") or "").strip().lower()
-    style_override = style_raw if style_raw in ("classic", "diffusion") else None
-    avatars = _cartoonify_face_bgr(img, style_override=style_override)
+    style_override = style_raw if style_raw in ("classic", "diffusion", "fast") else None
+    # Rediseño de avatar (2026-09-20): slug de plantilla de cuerpo/vestimenta
+    # opcional -- si el backend no lo manda todavía (cuentas/llamadores sin
+    # actualizar) o el valor no es válido, cae a la primera del catálogo
+    # (avatar_body_templates.default_template_slug()).
+    body_template_raw = (request.form.get("body_template_slug") or "").strip()
+    body_template_slug = (
+        body_template_raw if avatar_body_templates.is_valid_slug(body_template_raw) else None
+    )
+    avatars = _cartoonify_face_bgr(
+        img, style_override=style_override, body_template_slug=body_template_slug
+    )
     if not avatars:
         return jsonify({"ok": False, "error": "cartoonify_failed"}), 200
-    thumb_b64, hd_b64, generator_name = avatars
+    thumb_b64, hd_b64, generator_name, head_cutout_b64 = avatars
     return jsonify(
         {
             "ok": True,
@@ -2658,6 +3119,60 @@ def cartoon_avatar():
             "hd_width": 2880,
             "hd_height": 3840,
             "generator": generator_name,
+            # Recorte RGBA de SOLO cabeza, persistido por el backend
+            # (/data/auth/avatar_heads/{userId}.png) para que "cambiar de
+            # vestimenta" sea un recompose rápido (/recompose_avatar_body,
+            # sin GPU) en vez de una difusión completa. Vacío si no se pudo
+            # aislar la cabeza (cae al lienzo blanco clásico, generator_name
+            # sigue siendo el real usado para el estilizado).
+            "head_cutout_base64": head_cutout_b64,
+        }
+    )
+
+
+@app.route("/avatar_body_templates", methods=["GET"])
+def avatar_body_templates_list():
+    """Catálogo de cuerpos/vestimenta pre-hechos (rediseño de avatar,
+    2026-09-20) -- sin datos de usuario, solo las plantillas fijas."""
+    return jsonify({"ok": True, "templates": avatar_body_templates.list_templates()})
+
+
+@app.route("/recompose_avatar_body", methods=["POST"])
+def recompose_avatar_body():
+    """Recompositing RÁPIDO (sin GPU, sin difusión, sin volver a detectar
+    rostro): pega un recorte de cabeza YA generado sobre otra plantilla de
+    cuerpo/vestimenta. Usado por "cambiar de vestimenta" -- ver
+    POST /api/auth/avatar/body-template en el backend C++.
+
+    multipart: 'head_cutout' (PNG RGBA, el mismo que devolvió /cartoon_avatar
+    como head_cutout_base64) + 'body_template_slug'.
+    """
+    if "head_cutout" not in request.files:
+        return jsonify({"ok": False, "error": "no_head_cutout"}), 400
+    raw = request.files["head_cutout"].read()
+    if not raw:
+        return jsonify({"ok": False, "error": "empty_head_cutout"}), 400
+    nparr = np.frombuffer(raw, np.uint8)
+    head_rgba = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+    if head_rgba is None or head_rgba.ndim != 3 or head_rgba.shape[2] != 4:
+        return jsonify({"ok": False, "error": "invalid_head_cutout"}), 400
+    slug = (request.form.get("body_template_slug") or "").strip()
+    if not avatar_body_templates.is_valid_slug(slug):
+        return jsonify({"ok": False, "error": "invalid_body_template_slug"}), 400
+    try:
+        thumb = avatar_body_templates.compose_head_on_template(head_rgba, slug, 768, 1024)
+        hd = avatar_body_templates.compose_head_on_template(head_rgba, slug, 2880, 3840)
+        ok_thumb, buf_thumb = cv2.imencode(".png", thumb, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        ok_hd, buf_hd = cv2.imencode(".png", hd, [cv2.IMWRITE_PNG_COMPRESSION, 5])
+        if not ok_thumb or not ok_hd:
+            return jsonify({"ok": False, "error": "encode_failed"}), 500
+    except Exception as ex:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"recompose_failed: {ex}"}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "image_base64": base64.b64encode(buf_thumb.tobytes()).decode("ascii"),
+            "image_hd_base64": base64.b64encode(buf_hd.tobytes()).decode("ascii"),
         }
     )
 
@@ -2714,6 +3229,21 @@ def seetaface_analyze():
         return jsonify({"ok": False, "pass": False, "error": "empty_image"}), 400
     mode = request.form.get("mode", "verify").strip().lower()
     payload = analyze_seetaface6(raw, mode)
+    # Hallazgo 2026-09-15: seetaface6_adapter.py/seetaface6_cli no dejaban
+    # NINGÚN rastro de clarity/reality/issues -- el resultado se escribía a un
+    # JSON temporal que el propio adapter borra tras leerlo, así que un
+    # rechazo de liveness quedaba sin evidencia para diagnosticar después.
+    # Mismo criterio que [EYE_AI_TIMING] (print+flush, visible en logs del
+    # contenedor beemetry-ai-vision).
+    liveness = payload.get("liveness") or {}
+    quality = payload.get("quality") or {}
+    print(
+        f"[SEETAFACE6] mode={mode} pass={payload.get('pass')} "
+        f"liveness_status={liveness.get('status')} "
+        f"clarity={liveness.get('clarity')} reality={liveness.get('reality')} "
+        f"issues={quality.get('issues')} error={payload.get('error')}",
+        flush=True,
+    )
     # Un rechazo biométrico válido (spoof/fuzzy/calidad) es HTTP 200. Los
     # errores de contrato del cliente sí son 400; indisponibilidad es 503.
     if payload.get("error") == "invalid_mode":
@@ -2870,6 +3400,34 @@ def extract_cv_text():
     if not text:
         return jsonify({"ok": False, "error": "empty_document"}), 200
     return jsonify({"ok": True, "text": text, "char_count": len(text)})
+
+
+PDF_OCR_IMPORT_MAX_BYTES = 60 * 1024 * 1024  # informe técnico completo, no un CV -- tope mayor que CV_EXTRACT_MAX_BYTES
+
+
+@app.route("/ocr_pdf", methods=["POST"])
+def ocr_pdf():
+    """Proxy hacia el sidecar `ocr_engine` (PaddleOCR PP-StructureV2) -- ver
+    ocr_engine/server.py. Este proceso NO instala paddlepaddle (mismo motivo
+    que avatar_engine/silentface_engine, ADR-141): solo reenvía el archivo y
+    devuelve la respuesta tal cual, sin interpretar contenido."""
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "no_file_provided"}), 400
+    file = request.files["file"]
+    file_bytes = file.read()
+    if not file_bytes:
+        return jsonify({"ok": False, "error": "empty_file"}), 400
+    if len(file_bytes) > PDF_OCR_IMPORT_MAX_BYTES:
+        return jsonify({"ok": False, "error": "file_too_large"}), 400
+
+    result = ocr_engine_client.ocr_pdf(file_bytes, file.filename or "documento.pdf")
+    if not result.get("ok"):
+        # Errores de infraestructura del sidecar (caído/no listo/timeout) se
+        # devuelven como 200 con ok=False -- mismo criterio que
+        # /extract_cv_text: el backend C++ decide cómo mostrarlo, esto nunca
+        # inventa contenido ante un fallo.
+        return jsonify(result), 200
+    return jsonify(result)
 
 
 IMAGE_ANALYZE_MAX_BYTES = 10 * 1024 * 1024  # 10MB -- mismo tope que CV_EXTRACT_MAX_BYTES

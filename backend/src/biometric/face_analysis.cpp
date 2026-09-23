@@ -33,6 +33,7 @@ using config::BiometricProvider;
 #define gBiometricProvider          config::AppConfig::instance().gBiometricProvider
 #define gDermalogRequired           config::AppConfig::instance().gDermalogRequired
 #define gSeetaFace6Required         config::AppConfig::instance().gSeetaFace6Required
+#define gSeetaFace6DeepfaceFallback config::AppConfig::instance().gSeetaFace6DeepfaceFallback
 #define gFaceSeetaCosineThreshold   config::AppConfig::instance().gFaceSeetaCosineThreshold
 #define gDeepFaceSilentRequired         config::AppConfig::instance().gDeepFaceSilentRequired
 #define gDeepFaceSilentDermalogFallback config::AppConfig::instance().gDeepFaceSilentDermalogFallback
@@ -968,7 +969,7 @@ FaceAnalysis analyzeFaceImage(const std::string &base64Image,
     }
     // No requerido y no cayó a Dermalog (o Dermalog tampoco lo tenía
     // disponible): sigue el mismo patrón que SeetaFace6 no-requerido, cae al
-    // pipeline InsightFace/legacy de abajo.
+    // pipeline legacy de abajo.
   }
 
   if (gBiometricProvider == BiometricProvider::SeetaFace6 && computeEmbedding) {
@@ -980,7 +981,45 @@ FaceAnalysis analyzeFaceImage(const std::string &base64Image,
       return invalid;
     }
     auto fromSeeta = fetchSeetaFaceAnalysisFromAiEngine(raw, mode);
-    if (fromSeeta.ok || gSeetaFace6Required) {
+    if (fromSeeta.ok) {
+      return fromSeeta;
+    }
+    // Hallazgo real 2026-09-16 (pedido explícito del usuario): DeepFace/
+    // Silent-Face como motor SECUNDARIO de SeetaFace6 -- ver comentario largo
+    // en gSeetaFace6DeepfaceFallback (app_config.hpp). A diferencia de la
+    // cascada deepface_silentface->dermalog de abajo (que exige
+    // gDeepFaceSilentRequired=false, lo que TAMBIÉN abre la puerta a caer al
+    // pipeline legacy ante un rechazo de seguridad), esta NO toca
+    // gSeetaFace6Required: un rechazo de seguridad real (spoof/no-match/
+    // calidad) sigue devolviendo fromSeeta fail-closed más abajo sin
+    // excepción. Solo un fallo de INFRAESTRUCTURA (ai_engine caído/timeout/
+    // JSON inválido -- nunca alcanzable manipulando la cámara) dispara la
+    // cascada al motor secundario, que sigue siendo tan fuerte como el
+    // primario (no un motor "más débil" como dermalog).
+    static const char *kSeetaInfraErrorTags[] = {
+        "ai_engine_disabled",          "ai_engine_connect_failed",
+        "ai_engine_resolve_failed",    "ai_engine_write_failed",
+        "ai_engine_read_failed",       "ai_engine_skipped_size_limit",
+        "seetaface6_invalid_json",     "seetaface6_parse_failed"};
+    bool isInfraFailure = false;
+    if (!fromSeeta.issues.empty()) {
+      for (const char *tag : kSeetaInfraErrorTags) {
+        if (fromSeeta.issues.front() == tag) {
+          isInfraFailure = true;
+          break;
+        }
+      }
+    }
+    if (isInfraFailure && gSeetaFace6DeepfaceFallback) {
+      std::cout << "[BIOMETRIC_FALLBACK] seetaface6 infra failure ("
+                << fromSeeta.issues.front()
+                << "), cascading to deepface_silentface" << std::endl;
+      auto fromDeepFace = fetchDeepFaceSilentAnalysisFromAiEngine(raw, mode);
+      if (fromDeepFace.ok || gDeepFaceSilentRequired) {
+        return fromDeepFace;
+      }
+    }
+    if (gSeetaFace6Required) {
       return fromSeeta;
     }
   }
@@ -989,25 +1028,6 @@ FaceAnalysis analyzeFaceImage(const std::string &base64Image,
     auto fromSdk = analyzeFaceImageDermalogCli(base64Image, mode);
     if (fromSdk.ok || gDermalogRequired) {
       return fromSdk;
-    }
-  }
-
-  if (computeEmbedding && !gAiEngineUrl.empty()) {
-    std::vector<unsigned char> raw;
-    if (decodeBase64(base64Image, raw) && !raw.empty()) {
-      auto aiEm = fetchFaceEmbeddingFromAiEngine(raw);
-      if (aiEm.ok()) {
-        FaceAnalysis result;
-        result.provider = "insightface_onnx";
-        result.ok = true;
-        result.qualityScore = 1.0;
-        result.faceTemplate = std::move(aiEm.embedding);
-        return result;
-      }
-      // InsightFace es motor secundario (ADR-089): si falla (baja luz,
-      // movimiento, modelo aun cargando), cae al pipeline legacy en vez
-      // de bloquear la validacion completa. kLegacyStripCore ya limpia
-      // los issues legacy cuando MediaPipe/ai_engine confirma el ICAO.
     }
   }
 
@@ -1023,8 +1043,8 @@ FaceAnalysis analyzeFaceImage(const std::string &base64Image,
     // y sin computeEmbedding se ejecutaba en CADA frame solo para tirar el
     // resultado. La decision de seguridad real (registro/login) sigue
     // pasando por aqui con computeEmbedding=true y SI corre este pipeline
-    // completo cuando corresponde (SeetaFace6/DeepFace no requeridos,
-    // InsightFace no disponible).
+    // completo cuando corresponde (SeetaFace6/DeepFace no requeridos o no
+    // disponibles).
     FaceAnalysis skipped;
     skipped.provider = "legacy_skipped_preview";
     skipped.ok = true;
@@ -1144,8 +1164,9 @@ bool trySalvageFaceLoginQuality(FaceAnalysis &face,
 }
 
 /**
- * Construye el vector de comparación para login: embedding ONNX (512) si el registro lo usa,
- * si no plantilla legacy desde imagen.
+ * Construye el vector de comparación para login: plantilla del proveedor
+ * configurado (SeetaFace6/DeepFace) si aplica, si no plantilla legacy desde
+ * imagen.
  */
 bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
                                 const std::optional<std::vector<unsigned char>> &rawImageBytes,
@@ -1153,13 +1174,18 @@ bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
                                 const std::vector<double> &storedTemplate,
                                 std::vector<double> &outProbe, std::string &outProvider,
                                 double &outThreshold, double legacyThreshold,
-                                double embeddingThreshold, std::string &error) {
+                                std::string &error) {
   const bool providerIsSeeta = gBiometricProvider == BiometricProvider::SeetaFace6;
   const bool providerIsDeepFace = gBiometricProvider == BiometricProvider::DeepFaceSilent;
+  // Distingue una plantilla real (embedding, p.ej. DeepFace/Facenet512) de la
+  // miniatura 24x24 del fallback legacy -- solo para etiquetar outProvider
+  // abajo, ya no gobierna qué umbral se usa (ese era el único rol que
+  // cumplía "embeddingThreshold", propio del proveedor InsightFace retirado
+  // -- ADR-166/188).
   const bool storedIsEmbedding = storedTemplate.size() == kFaceEmbeddingVectorDim;
   outThreshold = providerIsSeeta ? gFaceSeetaCosineThreshold
                 : providerIsDeepFace ? gFaceDeepfaceCosineThreshold
-                                 : (storedIsEmbedding ? embeddingThreshold : legacyThreshold);
+                                 : legacyThreshold;
 
   // En modo Seeta/DeepFace nunca se confía en una plantilla proporcionada
   // por el cliente: debe provenir de una imagen evaluada localmente con
@@ -1189,9 +1215,7 @@ bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
   // DeepFace/Silent-Face SOLO validan vivacidad (anti-spoof) + calidad de
   // plantilla -- ninguno de los dos adaptadores Python menciona lentes en
   // absoluto (confirmado: no hay ninguna referencia a "glasses" en
-  // seetaface6_adapter.py ni deepface_silentface_adapter.py); y el fallback
-  // de embedding InsightFace (storedIsEmbedding, más abajo) llamaba
-  // directo a /face_embedding, que SOLO extrae el vector 512-dim. El
+  // seetaface6_adapter.py ni deepface_silentface_adapter.py). El
   // resultado real, verificado contra ai_engine_probe_logs/glasses_probe.jsonl:
   // el registro (runBiometricVerifyForImageBase64) sí exige noGlasses, pero
   // el LOGIN facial -- con cualquier proveedor configurado -- nunca lo
@@ -1258,21 +1282,6 @@ bool buildFaceLoginProbe(const std::vector<double> &clientProbeTemplate,
     }
     outProbe = std::move(face.faceTemplate);
     outProvider = face.provider;
-    return true;
-  }
-
-  if (storedIsEmbedding) {
-    auto em = fetchFaceEmbeddingFromAiEngine(*rawImageBytes);
-    if (!em.ok()) {
-      error =
-          "No se pudo extraer el embedding facial de alta seguridad "
-          "(InsightFace/ONNX). Compruebe cámara, iluminación y que el "
-          "servicio ai_engine esté actualizado. Código: " +
-          (em.error.empty() ? "unknown" : em.error);
-      return false;
-    }
-    outProbe = std::move(em.embedding);
-    outProvider = "insightface_onnx";
     return true;
   }
 

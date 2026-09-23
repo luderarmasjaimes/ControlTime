@@ -27,7 +27,7 @@ function FloatingContextualToolbar({
   onUpdate,
   onRemove,
   onOpenInspector,
-  onAction
+  onAction,
 }: FloatingContextualToolbarProps) {
   if (!element) return null;
 
@@ -42,7 +42,21 @@ function FloatingContextualToolbar({
   };
 
   return (
-    <div className="floating-contextual-toolbar">
+    // Sin posición propia: el wrapper Html de Konva que lo contiene
+    // (PageCanvas.tsx, groupProps={{ x: toolbarX, y: toolbarY }}) ya lo
+    // coloca exactamente donde debe ir, recalculado en cada render a
+    // partir de element.x/y — este componente solo dibuja su contenido en
+    // el origen (0,0) de ese wrapper. Antes tenía SU PROPIO cálculo de
+    // posición aparte (position:absolute + useLayoutEffect buscando en el
+    // DOM un nodo con `data-element-id`/`.element-selected` que ningún
+    // componente de la app llegó a escribir nunca — la búsqueda siempre
+    // caía al último `|| parentEl`, es decir, se medía a sí mismo y sumaba
+    // un desplazamiento extra más o menos constante). Con el empuje
+    // automático (que puede mover un bloque de golpe, no gradualmente como
+    // un arrastre) ese cálculo redundante quedaba visiblemente "atrás" —
+    // bug real reportado. Quitar el cálculo duplicado, no parchear su
+    // resultado, es la corrección de raíz.
+    <div className="floating-contextual-toolbar" style={{ zIndex: 100 }}>
       <div className="floating-toolbar-group">
         <button
           className="floating-tool-btn"

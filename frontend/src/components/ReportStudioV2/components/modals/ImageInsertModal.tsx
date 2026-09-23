@@ -128,13 +128,9 @@ function ImageInsertModal({
         targetDeviceId = videos[0]?.deviceId || '';
       }
       try {
-        // Sin ideal de resolución, el navegador elegía su default (a menudo
-        // 640x480) para una foto que termina insertada en el informe --
-        // pedimos la mayor calidad razonable (el navegador ajusta al máximo
-        // real de la cámara si no llega a este ideal).
         const constraints = targetDeviceId
-          ? { video: { deviceId: { exact: targetDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } } }
-          : { video: { width: { ideal: 1920 }, height: { ideal: 1080 } } };
+          ? { video: { deviceId: { exact: targetDeviceId } } }
+          : { video: true };
         const ms = await navigator.mediaDevices.getUserMedia(constraints);
         if (cancelled) { ms.getTracks().forEach((t) => t.stop()); return; }
         localStream = ms;
@@ -166,9 +162,7 @@ function ImageInsertModal({
     if (tab !== 'camera' || !newDeviceId) return;
     stopStream();
     try {
-      const ms = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: newDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      });
+      const ms = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: newDeviceId } } });
       streamRef.current = ms;
       setStream(ms);
       if (videoRef.current) videoRef.current.srcObject = ms;
@@ -197,9 +191,29 @@ function ImageInsertModal({
       return;
     }
     try {
-      const ms = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: false });
+      // `frameRate` solo (sin width/height) deja que Chrome elija la
+      // resolución del stream a su criterio -- en la práctica, sobre todo
+      // capturando UNA VENTANA (no la pantalla completa), suele componer el
+      // stream bastante por debajo de la resolución real de esa ventana. La
+      // foto capturada más abajo se toma al tamaño del VIDEO (videoWidth/
+      // videoHeight), así que hereda esa merma -- no es un problema del
+      // propio canvas/PNG (eso ya es sin pérdida). `ideal` (no `exact`): es
+      // una preferencia, nunca falla si la fuente real es más chica --
+      // Chrome no puede inventar píxeles que la ventana/pantalla no tiene,
+      // pero con esto deja de recortar de más cuando sí podría entregar más.
+      const ms = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 15, width: { ideal: 3840 }, height: { ideal: 2160 } },
+        audio: false,
+      });
       screenStreamRef.current = ms;
       setScreenStream(ms);
+      // Asignación directa: casi siempre un no-op -- el <video> de abajo solo
+      // se monta CUANDO `screenStream` ya es verdadero (a diferencia de la
+      // pestaña "Webcam", cuyo <video> existe siempre), así que en este mismo
+      // instante `screenVideoRef.current` todavía es `null` (React recién va
+      // a montarlo tras este render). Se deja igual como red de seguridad
+      // barata para el caso en que ya estuviera montado; el efecto de abajo
+      // es el que realmente lo resuelve.
       if (screenVideoRef.current) screenVideoRef.current.srcObject = ms;
       // Si el usuario detiene el compartir desde el control nativo del
       // navegador (no desde nuestro botón "Detener"), el track termina solo.
@@ -211,6 +225,17 @@ function ImageInsertModal({
       setScreenError('No se pudo iniciar la captura de pantalla (permiso denegado o cancelado).');
     }
   }, []);
+
+  // Red de seguridad real (mismo patrón que la pestaña "Webcam" un poco más
+  // arriba): recién acá `screenVideoRef.current` ya apunta al <video> recién
+  // montado -- sin este efecto la vista previa en vivo se queda en blanco (el
+  // <video> nunca recibe `srcObject`) y "Capturar e Insertar" no hacía nada
+  // porque `videoWidth` quedaba en 0 para siempre.
+  useEffect(() => {
+    if (screenVideoRef.current && screenStream && screenVideoRef.current.srcObject !== screenStream) {
+      screenVideoRef.current.srcObject = screenStream;
+    }
+  }, [screenStream]);
 
   const captureScreenPhoto = useCallback(() => {
     const v = screenVideoRef.current;
@@ -370,7 +395,7 @@ function ImageInsertModal({
                <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest leading-none">Multimedia</p>
              </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-xl transition-colors"><X size={20}/></button>
+          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-xl transition-colors text-black"><X size={20}/></button>
         </div>
 
         <div className="flex gap-6 px-6 border-b border-slate-100">

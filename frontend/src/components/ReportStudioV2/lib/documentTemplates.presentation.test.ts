@@ -51,13 +51,13 @@ describe('buildDocumentTemplate — plantilla de presentación', () => {
     expect(doc?.pages?.length).toBe(4);
   });
 
-  it('cada elemento de contenido cae dentro del lienzo 960x540 (métricas de presentación)', () => {
+  it('cada elemento de contenido cae dentro del lienzo 1280x720 (métricas de presentación)', () => {
     const doc = buildDocumentTemplate('presentacion-resultados');
     const contentPages = (doc?.pages ?? []).slice(1); // salta la carátula
     for (const page of contentPages) {
       for (const el of page.elements) {
         expect(el.x).toBeGreaterThanOrEqual(0);
-        expect(el.x + el.width).toBeLessThanOrEqual(960);
+        expect(el.x + el.width).toBeLessThanOrEqual(1280);
         expect(el.y).toBeGreaterThanOrEqual(0);
       }
     }

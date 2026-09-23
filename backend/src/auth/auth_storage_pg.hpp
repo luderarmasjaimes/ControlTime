@@ -112,6 +112,17 @@ bool updateUserAvatarCartoonPg(const std::string &databaseUrl,
                                const std::string &sessionToken,
                                std::string &error);
 
+/** @brief Rediseño de avatar (2026-09-20): persiste el slug de plantilla de
+ * cuerpo/vestimenta elegido junto con la miniatura ya recompuesta contra esa
+ * plantilla (ai_engine /recompose_avatar_body). Sin contexto de auditoría --
+ * es una preferencia del propio usuario sobre su propio avatar. @return true
+ * si el UPDATE tuvo éxito. */
+bool updateUserAvatarBodyTemplatePg(const std::string &databaseUrl,
+                                    const std::string &userId,
+                                    const std::string &slug,
+                                    const std::string &avatarBase64,
+                                    std::string &error);
+
 // Devuelve una cláusula SQL que matchea la identidad (username/dni/ruc) usando
 // el placeholder $paramIndex (reutilizado en cada posición). El valor se pasa
 // como parámetro en el PQexecParams del llamador; no se interpola.
@@ -180,7 +191,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                     const std::vector<double> &clientProbeTemplate,
                     const std::optional<std::vector<unsigned char>> &rawImageBytes,
                     const std::optional<std::string> &base64ForLegacy,
-                    double legacyThreshold, double embeddingThreshold,
+                    double legacyThreshold,
                     std::string &error, std::string *probeProviderOut = nullptr,
                     /** Anexado tal cual al `detail` de la fila de auditoría del
                      * login EXITOSO (p. ej. ubicación del cliente); vacío por

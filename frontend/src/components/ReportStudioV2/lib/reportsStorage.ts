@@ -140,6 +140,15 @@ interface SaveReportParams {
   // Si no coincide con la versión real del servidor, el backend responde
   // 409 `version_conflict` sin tocar el informe — ver reconcileOfflineSave.
   expectedVersion?: number;
+  // ADR-022, cierre CA-3 de SPEC-014 (2026-09-13): presente solo cuando este
+  // guardado es la resolución explícita de un conflicto offline (ver
+  // App.tsx `handleSaveReport`) — "offline_conflict_overwrite" (el usuario
+  // eligió sobrescribir la versión del servidor) o
+  // "offline_conflict_kept_as_new" (eligió guardar su copia offline como
+  // informe nuevo). El backend lo usa como `change_summary` de la revisión
+  // en vez del literal "autosave"/"creacion_inicial" — deja la resolución
+  // visible en el historial de versiones, no solo en el código.
+  conflictResolution?: string;
 }
 
 /**
@@ -152,6 +161,7 @@ export async function saveReportAsync({
   status,
   workflowComment,
   expectedVersion,
+  conflictResolution,
 }: SaveReportParams): Promise<any> {
   const payload: Record<string, unknown> = { title, project_id: null, content_json: contentJson, status };
   if (workflowComment) {
@@ -159,6 +169,9 @@ export async function saveReportAsync({
   }
   if (typeof expectedVersion === 'number') {
     payload.expected_version = String(expectedVersion);
+  }
+  if (conflictResolution) {
+    payload.conflict_resolution = conflictResolution;
   }
   try {
     if (id && !id.startsWith('seed_')) {

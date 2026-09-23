@@ -1,707 +1,60 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Layer, Rect, Stage, Text, Transformer } from 'react-konva';
 import { Html } from 'react-konva-utils';
-import {
-  Wand2,
-  Mic,
-  MicOff,
-  CheckCheck,
-  Save,
-  Bold,
-  Italic,
-  Underline,
-  Highlighter,
-} from 'lucide-react';
-import { useEditorStore, defaultBorderByType, resolvePagePaperSetup, tocSliceForElementId, type ReportElement, type ReportPage } from '../../store/useEditorStore';
-import { resolveHeadingRefLabel } from './TableOfContents';
-import { getReportLayoutMetrics } from '../../lib/reportLayoutMetrics';
+import { ArrowLeftRight } from 'lucide-react';
+import { useEditorStore, defaultBorderByType, resolvePagePaperSetup, type ReportComment, type ReportElement, type ReportPage } from '../../store/useEditorStore';
+import { parseHtmlClipboardTable, parsePlainTextClipboardGrid, escapeHtml, computeAdaptiveTableFit } from '../../lib/tableClipboard';
+import { serializeElementsForClipboard, extractInternalElementsFromHtml, stripLiveBindingForCrossUserPaste } from '../../lib/elementsClipboard';
 import { getSession } from '../../../../auth/authStorage';
-import { resolveMiningUnitName } from '../../lib/sessionChrome';
+import { usePopover } from '../../lib/usePopover';
+import { resolveHeadingRefLabel } from './TableOfContents';
+import { resolveAnnexRefLabel } from './AnnexList';
+import { getReportLayoutMetrics } from '../../lib/reportLayoutMetrics';
 import { WRAP_MODE_OPTIONS, normalizeWrapMode } from '../layout/RightInspector';
-
-/** Tipografía "impactante" de plataforma para encabezado/pie de página fijos
- * (ADR-046 revisado) — Arial Black (o su fallback sans-serif bold) a 9px,
- * la misma en ambos bloques para que luzcan como una sola franja corporativa
- * consistente, no como texto de contenido editable. */
-const PLATFORM_CHROME_FONT = "'Arial Black', 'Arial Bold', Arial, sans-serif";
-const PLATFORM_CHROME_FONT_SIZE = 9;
-/** Gris de encabezado/pie estilo Word (Word usa un gris ~#595959 para texto
- * de encabezado/pie por defecto, no negro puro) — pedido explícito del
- * usuario tras ver el primer color (#0f172a, casi negro) demasiado oscuro. */
-const PLATFORM_CHROME_COLOR = '#595959';
 import {
-  textCorrectQuick,
   textCorrectAdvanced,
   textRewriteOnPremise,
 } from '../../lib/api';
 import { textForSpellOrRewrite } from '../../lib/textSpellUtils';
 import { measurePerfAsync } from '../../lib/performanceMonitor';
 import { resolveReportImageSrc } from '../../lib/reportImageSrc';
-import { fixRecordedVideoElement } from '../../lib/videoDurationFix';
-import LiveChartBlock from '../dashboard/LiveChartBlock';
-import TableBlock from './TableBlock';
-import SensorWidget from './SensorWidget';
-import SensorMultiChartWidget from './SensorMultiChartWidget';
-import { sensorDashboardMinHeight } from '../../lib/sensorMultiChartLayout';
-import MiningKpiWidget from './MiningKpiWidget';
-import SeismicReportWidget from './SeismicReportWidget';
-import FloatingContextualToolbar from './FloatingContextualToolbar';
-import { getTenantLogoDataUrl } from '../../lib/tenantLogo';
-import ColorPalette from '../shared/ColorPalette';
+import TableBlock from './InsertBlocks/TableBlock';
+import CreateChartFromTableModal from '../modals/CreateChartFromTableModal';
+import HeaderBlock from './InsertBlocks/HeaderBlock';
+import FooterBlock from './InsertBlocks/FooterBlock';
+import CoverBlock from './InsertBlocks/CoverBlock';
+import ImageBlock from './InsertBlocks/ImageBlock';
+import VideoBlock from './InsertBlocks/VideoBlock';
+import ChartBlock from './InsertBlocks/ChartBlock';
+import TocBlock from './InsertBlocks/TocBlock';
+import { navigateToTocEntry } from './InsertBlocks/shared/tocNavigation';
+import KpiBlock from './InsertBlocks/KpiBlock';
+import SeismicReportBlock from './InsertBlocks/SeismicReportBlock';
+import SensorBlock from './InsertBlocks/SensorBlock';
+import SensorMultiChartBlock from './InsertBlocks/SensorMultiChartBlock';
+import ShapeVisual from './InsertBlocks/ShapeBlock';
+import TextBlock from './InsertBlocks/TextBlock/TextBlock';
+import WordArtVisual from './InsertBlocks/WordArtBlock';
+import {
+  DEFAULT_TEXT_PROPS,
+  getTextProps,
+  getAutoSizedTextBox,
+  getSpeechCtor,
+  type AdvancedSuggestion,
+} from './InsertBlocks/TextBlock/textBlockModel';
 import {
   type TextStyleSpan,
   type BaseTextStyle,
-  type EffectiveTextStyle,
   sanitizeSpans,
-  buildStyledSegments,
-  applyStyleToRange,
-  remapSpansForTextChange,
-  styleToCss,
-  getEffectiveStyleAt,
+  reindexSpans,
 } from '../../lib/textSpans';
 import { registerActiveTextFormatHandler, registerActiveCaseHandler, registerActiveRefInsertHandler } from '../../lib/activeTextFormatBridge';
-import { applyListToText, stripListMarkers } from '../../lib/listFormatting';
-import { SELECTION_HEADING_OPTIONS, findHeadingStyle } from '../../lib/headingStyles';
-import { findCoverTemplate } from '../../lib/coverTemplates';
+import { splitTextForHeight } from '../../lib/textPagination';
+import { parseRichClipboardBlocks, pairCaptionsWithMedia, readImageSize, type PasteBlock, type ParagraphFormat } from '../../lib/richPaste';
+import { useDragPreviewStore } from '../../store/useDragPreviewStore';
 
 const GRID = 12;
-
-/** Logo corporativo del encabezado — carga async (fetch + cache, ver
- * lib/tenantLogo.ts) con placeholder discreto mientras no hay logo
- * configurado o falla la red y no hay copia cacheada (nunca bloquea el
- * render del resto del encabezado). */
-function HeaderLogoImg({ tenantId }: { tenantId?: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    if (!tenantId) {
-      setSrc(null);
-      return undefined;
-    }
-    getTenantLogoDataUrl(tenantId).then((url) => {
-      if (!cancelled) setSrc(url);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [tenantId]);
-
-  if (!src) {
-    return (
-      <div style={{
-        width: 90, height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 9, color: '#cbd5e1', fontStyle: 'italic', textAlign: 'right',
-      }}>
-        {tenantId ? '' : 'Sin logo'}
-      </div>
-    );
-  }
-  return (
-    <img
-      src={src}
-      alt="Logotipo de la empresa"
-      style={{ height: '100%', width: 'auto', maxWidth: 140, objectFit: 'contain', display: 'block' }}
-    />
-  );
-}
-
-interface TextProps {
-  text: string;
-  fontFamily: string;
-  fontSize: number;
-  fontColor: string;
-  backgroundColor: string;
-  textAlign: string;
-  lineHeight: number;
-  listType: string;
-  bold: boolean;
-  italic: boolean;
-  underline: boolean;
-  /** Estilo de encabezado del BLOQUE completo ('title'|'h1'..'h6'|'normal'|
-   * 'quote'), aplicado por el ribbon (onApplyHeadingStyle). '' = sin
-   * encabezado. Ya lo escribía App.tsx directo en props.headingStyle sin
-   * pasar por este tipo; se agrega acá para poder leerlo como base del
-   * estilo por selección (ver textBaseStyle) y para el nuevo selector de
-   * encabezado de la barra flotante. */
-  headingStyle: string;
-  /** Color de RESALTADO (marcador) del BLOQUE completo cuando se aplica
-   * desde el ribbon fijo SIN selección de texto activa — distinto de
-   * `backgroundColor` (el fondo de todo el cuadro/caja) y del
-   * `highlightColor` por SPAN (barra flotante, solo la porción
-   * seleccionada). Sirve de estilo "base" cuando no hay spans que lo
-   * cubran, igual que `fontColor` con `color`. */
-  highlightColor: string;
-  /** Formato por selección (negrita/color/tamaño/fuente solo en una parte
-   * del texto) — ver lib/textSpans.ts. Vacío = comportamiento histórico
-   * (todo el bloque usa las props de arriba de forma uniforme). */
-  spans: TextStyleSpan[];
-}
-
-const DEFAULT_TEXT_PROPS: TextProps = {
-  text: '',
-  fontFamily: 'Arial',
-  fontSize: 16,
-  fontColor: '#0f172a',
-  backgroundColor: 'transparent',
-  textAlign: 'left',
-  lineHeight: 1.35,
-  listType: 'none',
-  bold: false,
-  italic: false,
-  underline: false,
-  headingStyle: '',
-  highlightColor: 'transparent',
-  spans: [],
-};
-
-function getTextProps(element: ReportElement): TextProps {
-  const props = element.props || {};
-  const text = props.text == null ? '' : String(props.text);
-  return {
-    text,
-    fontFamily: String(props.fontFamily ?? DEFAULT_TEXT_PROPS.fontFamily),
-    fontSize: Number(props.fontSize ?? DEFAULT_TEXT_PROPS.fontSize),
-    fontColor: String(props.fontColor ?? DEFAULT_TEXT_PROPS.fontColor),
-    backgroundColor: String(props.backgroundColor ?? DEFAULT_TEXT_PROPS.backgroundColor),
-    textAlign: String(props.textAlign ?? DEFAULT_TEXT_PROPS.textAlign),
-    lineHeight: Number(props.lineHeight ?? DEFAULT_TEXT_PROPS.lineHeight),
-    listType: String(props.listType ?? DEFAULT_TEXT_PROPS.listType),
-    bold: Boolean(props.bold ?? DEFAULT_TEXT_PROPS.bold),
-    italic: Boolean(props.italic ?? DEFAULT_TEXT_PROPS.italic),
-    // Bug real encontrado: el botón "Subrayar" (RibbonToolbar) y
-    // `props.underline` ya existían y se guardaban, pero ni el <Text> de
-    // Konva ni el <textarea> de edición los leían — el toggle no tenía
-    // ningún efecto visual. Corregido acá y en el render de abajo.
-    underline: Boolean(props.underline ?? DEFAULT_TEXT_PROPS.underline),
-    headingStyle: String(props.headingStyle ?? DEFAULT_TEXT_PROPS.headingStyle),
-    highlightColor: String(props.highlightColor ?? DEFAULT_TEXT_PROPS.highlightColor),
-    spans: sanitizeSpans(props.spans, text.length),
-  };
-}
-
-function normalizeDictationText(rawText: string): string {
-  const normalized = ` ${rawText.toLowerCase()} `
-    .replace(/\s+punto y coma\s+/g, '; ')
-    .replace(/\s+dos puntos\s+/g, ': ')
-    .replace(/\s+nueva linea\s+/g, '\n')
-    .replace(/\s+nueva línea\s+/g, '\n')
-    .replace(/\s+salto de linea\s+/g, '\n')
-    .replace(/\s+salto de línea\s+/g, '\n')
-    .replace(/\s+abrir parentesis\s+/g, ' (')
-    .replace(/\s+abrir paréntesis\s+/g, ' (')
-    .replace(/\s+cerrar parentesis\s+/g, ') ')
-    .replace(/\s+cerrar paréntesis\s+/g, ') ')
-    .replace(/\s+coma\s+/g, ', ')
-    .replace(/\s+punto\s+/g, '. ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return normalized
-    .replace(/\s+([,.;:!?])/g, '$1')
-    .replace(/\(\s+/g, '(')
-    .replace(/\s+\)/g, ')');
-}
-
-function isLikelyLowQualityTranscript(rawText: string): boolean {
-  const trimmed = rawText.trim();
-  if (!trimmed) {
-    return true;
-  }
-
-  const normalized = trimmed
-    .toLowerCase()
-    .replace(/[^a-záéíóúñü0-9\s]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!normalized) {
-    return true;
-  }
-
-  const weakTokens = new Set(['eh', 'mmm', 'uh', 'ah', 'ruido', 'hmm']);
-  const tokens = normalized.split(' ').filter(Boolean);
-
-  if (tokens.length === 1 && tokens[0].length <= 2) {
-    return true;
-  }
-
-  if (tokens.length <= 2 && tokens.every((token) => weakTokens.has(token))) {
-    return true;
-  }
-
-  return false;
-}
-
-function pickBestTranscriptAlternative(result: any): { transcript: string; confidence: number } {
-  let bestTranscript = '';
-  let bestConfidence = -1;
-
-  const alternativesCount = Number(result?.length ?? 0);
-  for (let altIndex = 0; altIndex < alternativesCount; altIndex += 1) {
-    const candidate = result[altIndex];
-    const transcript = String(candidate?.transcript || '').trim();
-    const confidenceValue = Number(candidate?.confidence ?? 0);
-
-    if (!transcript) {
-      continue;
-    }
-
-    if (confidenceValue > bestConfidence) {
-      bestConfidence = confidenceValue;
-      bestTranscript = transcript;
-      continue;
-    }
-
-    if (confidenceValue === bestConfidence && transcript.length > bestTranscript.length) {
-      bestTranscript = transcript;
-    }
-  }
-
-  if (!bestTranscript && result?.[0]?.transcript) {
-    return {
-      transcript: String(result[0].transcript),
-      confidence: Number(result[0].confidence ?? 0),
-    };
-  }
-
-  return {
-    transcript: bestTranscript,
-    confidence: Math.max(0, bestConfidence),
-  };
-}
-
-/* ── Medidor de texto singleton + caché de anchos de palabra ──────────────
-   Patrón tomado del motor de ONLYOffice (sdkjs): un ÚNICO medidor
-   compartido (`g_oTextMeasurer`, Run.js) en vez de crear un <canvas> por
-   llamada, y anchos cacheados por (fuente, texto) en vez de re-medir lo
-   mismo en cada tecla (grapheme.js/file.js cachean por glifo; aquí basta
-   granularidad de palabra). Antes, CADA pulsación creaba un canvas nuevo y
-   re-medía TODO el bloque palabra por palabra — el costo dominante del
-   editor. */
-let sharedMeasureCtx: CanvasRenderingContext2D | null = null;
-function getSharedMeasureCtx(): CanvasRenderingContext2D | null {
-  if (sharedMeasureCtx) return sharedMeasureCtx;
-  if (typeof document === 'undefined') return null;
-  sharedMeasureCtx = document.createElement('canvas').getContext('2d');
-  return sharedMeasureCtx;
-}
-
-const WORD_WIDTH_CACHE_MAX = 20000;
-const wordWidthCache = new Map<string, number>();
-function measureWordCached(context: CanvasRenderingContext2D, fontSpec: string, word: string): number {
-  const key = `${fontSpec} ${word}`;
-  const hit = wordWidthCache.get(key);
-  if (hit !== undefined) return hit;
-  const width = context.measureText(word).width;
-  if (wordWidthCache.size >= WORD_WIDTH_CACHE_MAX) wordWidthCache.clear();
-  wordWidthCache.set(key, width);
-  return width;
-}
-
-/* ── Ajuste de texto alrededor de objetos (ADR-049, estilo Word) ──────────
-   Port del mecanismo de rangos por línea de ONLYOffice (sdkjs):
-   - WrapManager.checkRanges (WrapManager.js:807-1013): cada objeto flotante
-     aporta un intervalo X prohibido; los intervalos se ordenan y fusionan.
-   - private_RecalculateLineFillRanges (Paragraph_Recalculate.js:1116-1200):
-     los huecos ENTRE prohibidos son los sub-rangos permitidos de la línea —
-     una línea puede quedar partida en varios tramos (texto a la izquierda Y
-     a la derecha de la imagen).
-   Solo se implementan los dos modos útiles para informes: 'square'
-   (rect del objeto excluido, texto a ambos lados) y 'topbottom' (la línea
-   completa se salta el tramo vertical del objeto). 'Tight/Through'
-   (polígono) quedan fuera a propósito — maquinaria pesada de CWrapPolygon
-   sin beneficio para layouts de informe. */
-interface WrapExclusion {
-  x0: number;
-  x1: number;
-  yTop: number;
-  yBot: number;
-  mode: 'square' | 'topbottom';
-}
-
-interface WrappedSegment {
-  text: string;
-  x: number;
-  y: number;
-  /** Estilo efectivo del tramo (formato por selección, lib/textSpans.ts) —
-   * cada segmento emitido tiene estilo UNIFORME; un cambio de estilo a
-   * mitad de línea produce segmentos separados con x contiguos. */
-  style: EffectiveTextStyle;
-}
-
-/** Fragmento de palabra con estilo uniforme — una palabra que cruza un
- * límite de span se parte en varios frags que SIEMPRE se colocan juntos
- * (la unidad de salto de línea sigue siendo la palabra completa). */
-interface WordFrag {
-  text: string;
-  style: EffectiveTextStyle;
-  fontSpec: string;
-  width: number;
-}
-
-const fontSpecOf = (s: EffectiveTextStyle) =>
-  `${s.italic ? 'italic ' : ''}${s.bold ? '700 ' : ''}${s.fontSize}px ${s.fontFamily}`;
-
-function computeWrappedTextLines(
-  text: unknown,
-  base: BaseTextStyle,
-  lineHeight: number,
-  contentWidth: number,
-  exclusions: WrapExclusion[],
-  spans: TextStyleSpan[],
-): { segments: WrappedSegment[]; totalHeight: number } {
-  const sourceText = String(text ?? '');
-  const context = getSharedMeasureCtx();
-  // Altura de línea uniforme para todo el bloque, usando el tamaño de
-  // fuente MÁS GRANDE presente (base o algún span) — mismo criterio simple
-  // que un procesador de texto con "interlineado exacto": líneas parejas,
-  // sin recalcular alto línea a línea.
-  const maxFontSize = Math.max(base.fontSize, ...spans.map((s) => s.fontSize ?? base.fontSize));
-  const lineH = maxFontSize * lineHeight;
-  if (!context || !sourceText.trim()) {
-    return { segments: [], totalHeight: lineH };
-  }
-  const baseSpec = fontSpecOf(base);
-  context.font = baseSpec;
-  const spaceWidth = measureWordCached(context, baseSpec, '   ') / 3 || measureWordCached(context, baseSpec, 'i');
-
-  /** Parte la palabra [wStart,wEnd) del texto fuente en frags por límite de
-   * span, cada uno medido con SU estilo (negrita/tamaño/fuente propios). */
-  const fragmentWord = (wStart: number, wEnd: number): WordFrag[] => {
-    const cuts = new Set<number>([wStart, wEnd]);
-    for (const span of spans) {
-      if (span.start > wStart && span.start < wEnd) cuts.add(span.start);
-      if (span.end > wStart && span.end < wEnd) cuts.add(span.end);
-    }
-    const sorted = Array.from(cuts).sort((a, b) => a - b);
-    const frags: WordFrag[] = [];
-    for (let i = 0; i < sorted.length - 1; i += 1) {
-      const from = sorted[i];
-      const to = sorted[i + 1];
-      const style = getEffectiveStyleAt(spans, base, from);
-      const spec = fontSpecOf(style);
-      context.font = spec;
-      const fragText = sourceText.slice(from, to);
-      frags.push({ text: fragText, style, fontSpec: spec, width: measureWordCached(context, spec, fragText) });
-    }
-    return frags;
-  };
-
-  const segments: WrappedSegment[] = [];
-  let cursorY = 0;
-
-  /** Sub-rangos X permitidos para la banda vertical [top, bot) — los huecos
-   * entre exclusiones 'square' fusionadas; null = línea salteada por un
-   * objeto 'topbottom' (devuelve el Y donde retomar). */
-  const rangesForLine = (top: number, bot: number): { ranges: Array<[number, number]> } | { skipToY: number } => {
-    const active = exclusions.filter((e) => e.yBot > top && e.yTop < bot);
-    const tb = active.filter((e) => e.mode === 'topbottom');
-    if (tb.length > 0) {
-      return { skipToY: Math.max(...tb.map((e) => e.yBot)) };
-    }
-    const cuts = active
-      .map((e) => [Math.max(0, e.x0), Math.min(contentWidth, e.x1)] as [number, number])
-      .filter(([a, b]) => b > a)
-      .sort((p, q) => p[0] - q[0]);
-    const merged: Array<[number, number]> = [];
-    for (const [a, b] of cuts) {
-      const last = merged[merged.length - 1];
-      if (last && a <= last[1]) last[1] = Math.max(last[1], b);
-      else merged.push([a, b]);
-    }
-    const ranges: Array<[number, number]> = [];
-    let cursor = 0;
-    for (const [a, b] of merged) {
-      if (a - cursor >= base.fontSize) ranges.push([cursor, a]); // hueco útil (≥ ~1 carácter)
-      cursor = Math.max(cursor, b);
-    }
-    if (contentWidth - cursor >= base.fontSize) ranges.push([cursor, contentWidth]);
-    return { ranges };
-  };
-
-  const maxExclusionBottom = exclusions.length ? Math.max(...exclusions.map((e) => e.yBot)) : 0;
-
-  // Offsets GLOBALES de cada palabra dentro de sourceText — necesarios para
-  // resolver el estilo por span de cada fragmento (los spans usan offsets
-  // absolutos del string completo, incluyendo los '\n').
-  let paragraphOffset = 0;
-  for (const paragraph of sourceText.split('\n')) {
-    const words: WordFrag[][] = [];
-    const wordRegex = /\S+/g;
-    let match: RegExpExecArray | null;
-    while ((match = wordRegex.exec(paragraph)) !== null) {
-      words.push(fragmentWord(paragraphOffset + match.index, paragraphOffset + match.index + match[0].length));
-    }
-    paragraphOffset += paragraph.length + 1; // +1 por el '\n' consumido por split
-    if (words.length === 0) {
-      cursorY += lineH;
-      continue;
-    }
-    let wordIndex = 0;
-    while (wordIndex < words.length) {
-      const band = rangesForLine(cursorY, cursorY + lineH);
-      if ('skipToY' in band) {
-        cursorY = Math.max(band.skipToY, cursorY + lineH);
-        continue;
-      }
-      let placedAnyInLine = false;
-      for (const [rx0, rx1] of band.ranges) {
-        if (wordIndex >= words.length) break;
-        const segWidth = rx1 - rx0;
-        // Acumulador de "runs": frags consecutivos con el MISMO estilo se
-        // concatenan en un solo segmento (menos nodos Konva); un cambio de
-        // estilo cierra el run y abre otro en el x acumulado.
-        let penX = rx0;
-        let runText = '';
-        let runStyle: EffectiveTextStyle | null = null;
-        let runStartX = rx0;
-        const flushRun = () => {
-          if (runText && runStyle) {
-            segments.push({ text: runText, x: runStartX, y: cursorY, style: runStyle });
-            placedAnyInLine = true;
-          }
-          runText = '';
-          runStyle = null;
-        };
-        const placeFrag = (frag: WordFrag) => {
-          if (runStyle && runStyle === frag.style) {
-            runText += frag.text;
-          } else if (runStyle && fontSpecOf(runStyle) === frag.fontSpec && runStyle.color === frag.style.color && runStyle.underline === frag.style.underline) {
-            // Mismo estilo por valor (objetos distintos) — seguir el run.
-            runText += frag.text;
-          } else {
-            flushRun();
-            runStartX = penX;
-            runStyle = frag.style;
-            runText = frag.text;
-          }
-          penX += frag.width;
-        };
-        let lineWidth = 0;
-        while (wordIndex < words.length) {
-          const word = words[wordIndex];
-          const wordWidth = word.reduce((acc, f) => acc + f.width, 0);
-          const candidate = lineWidth > 0 ? lineWidth + spaceWidth + wordWidth : wordWidth;
-          if (candidate <= segWidth) {
-            if (lineWidth > 0) {
-              // Espacio entre palabras: se agrega al run activo (mismo
-              // estilo que la palabra anterior) y avanza el lápiz.
-              runText += ' ';
-              penX += spaceWidth;
-            }
-            for (const frag of word) placeFrag(frag);
-            lineWidth = candidate;
-            wordIndex += 1;
-            continue;
-          }
-          // Palabra más ancha que CUALQUIER espacio disponible (aún sin
-          // exclusiones activas): trocearla por caracteres para no ciclar.
-          if (lineWidth === 0 && wordWidth > contentWidth && segWidth >= contentWidth - 1) {
-            let remaining = segWidth;
-            const rest: WordFrag[] = [];
-            for (let fi = 0; fi < word.length; fi += 1) {
-              const frag = word[fi];
-              if (rest.length > 0) { rest.push(frag); continue; }
-              if (frag.width <= remaining) {
-                placeFrag(frag);
-                remaining -= frag.width;
-                continue;
-              }
-              context.font = frag.fontSpec;
-              let chunk = '';
-              let chunkWidth = 0;
-              for (const char of frag.text) {
-                const cw = measureWordCached(context, frag.fontSpec, char);
-                if (chunkWidth + cw > remaining && chunk) break;
-                chunk += char;
-                chunkWidth += cw;
-              }
-              if (chunk) placeFrag({ ...frag, text: chunk, width: chunkWidth });
-              const restText = frag.text.slice(chunk.length);
-              if (restText) {
-                context.font = frag.fontSpec;
-                rest.push({ ...frag, text: restText, width: measureWordCached(context, frag.fontSpec, restText) });
-              }
-              remaining = 0;
-            }
-            if (rest.length > 0) words[wordIndex] = rest;
-            else wordIndex += 1;
-          }
-          break;
-        }
-        flushRun();
-      }
-      if (wordIndex < words.length) {
-        cursorY += lineH;
-        // Línea totalmente bloqueada y ya por debajo de todos los objetos:
-        // no puede pasar (rangesForLine devolvería el ancho completo), pero
-        // por robustez, si no se colocó nada y no hay exclusiones restantes
-        // hacia abajo, evitar un bucle infinito troceando en el siguiente
-        // ciclo (la guardia de palabra-más-ancha se encarga).
-        if (!placedAnyInLine && cursorY > maxExclusionBottom + lineH * 200) {
-          break;
-        }
-      } else {
-        cursorY += lineH;
-      }
-    }
-  }
-
-  return { segments, totalHeight: Math.max(lineH, cursorY) };
-}
-
-function getAutoSizedTextBox(
-  text: unknown,
-  fontSize: number,
-  fontFamily: string,
-  bold: boolean,
-  italic: boolean,
-  lineHeight: number,
-  minWidth: number,
-  minHeight: number,
-  maxWidth: number,
-  maxHeight: number,
-  // Mientras se está editando, deja siempre una línea en blanco visible
-  // debajo de la última línea escrita (como el espacio que Word deja para
-  // seguir tecleando) — pedido explícito: "la parte inferior debe mostrar
-  // siempre una línea en blanco según la línea que se está escribiendo".
-  // Solo aplica en vivo: el bloque YA CERRADO (no editando) se ajusta
-  // exacto al contenido, sin la línea de cortesía de más.
-  reserveTrailingLine = false,
-): { width: number; height: number } {
-  const safeMaxWidth = Math.max(minWidth, maxWidth);
-  const safeMaxHeight = Math.max(minHeight, maxHeight);
-  const horizontalPadding = 16;
-  const verticalPadding = 16;
-  const availableContentWidth = Math.max(20, safeMaxWidth - horizontalPadding);
-  const sourceText = String(text ?? '').trim();
-
-  if (!sourceText) {
-    return { width: minWidth, height: minHeight };
-  }
-
-  const context = getSharedMeasureCtx();
-  if (!context) {
-    return { width: minWidth, height: minHeight };
-  }
-
-  const fontSpec = `${italic ? 'italic ' : ''}${bold ? '700 ' : ''}${fontSize}px ${fontFamily}`;
-  context.font = fontSpec;
-
-  const visualLines: string[] = [];
-  const paragraphs = sourceText.split('\n');
-
-  // Como en sdkjs, el ancho de una línea se ACUMULA sumando anchos ya
-  // conocidos (allí por glifo, aquí por palabra + un ancho de espacio
-  // cacheado) — nunca se re-mide la línea completa concatenada, que es una
-  // cadena casi única en la que ningún caché acierta. La suma ignora el
-  // kerning entre palabras, una desviación de sub-píxel irrelevante para
-  // estimar el quiebre de línea.
-  const spaceWidth = measureWordCached(context, fontSpec, '   ') / 3 || measureWordCached(context, fontSpec, 'i');
-  let maxLineWidth = 0;
-  const pushLine = (lineText: string, lineWidth: number) => {
-    visualLines.push(lineText);
-    if (lineWidth > maxLineWidth) maxLineWidth = lineWidth;
-  };
-
-  const pushWordByChunks = (word: string) => {
-    let chunk = '';
-    let chunkWidth = 0;
-    for (const char of word) {
-      const charWidth = measureWordCached(context, fontSpec, char);
-      if (chunkWidth + charWidth <= availableContentWidth) {
-        chunk += char;
-        chunkWidth += charWidth;
-        continue;
-      }
-
-      if (chunk) {
-        pushLine(chunk, chunkWidth);
-      }
-      chunk = char;
-      chunkWidth = charWidth;
-    }
-    if (chunk) {
-      pushLine(chunk, chunkWidth);
-    }
-  };
-
-  for (const paragraph of paragraphs) {
-    const normalizedParagraph = paragraph.trim();
-    if (!normalizedParagraph) {
-      visualLines.push('');
-      continue;
-    }
-
-    const words = normalizedParagraph.split(/\s+/).filter(Boolean);
-    let currentLine = '';
-    let currentWidth = 0;
-
-    for (const word of words) {
-      const wordWidth = measureWordCached(context, fontSpec, word);
-      const candidateWidth = currentLine ? currentWidth + spaceWidth + wordWidth : wordWidth;
-      if (candidateWidth <= availableContentWidth) {
-        currentLine = currentLine ? `${currentLine} ${word}` : word;
-        currentWidth = candidateWidth;
-        continue;
-      }
-
-      if (currentLine) {
-        pushLine(currentLine, currentWidth);
-        currentLine = '';
-        currentWidth = 0;
-      }
-
-      if (wordWidth <= availableContentWidth) {
-        currentLine = word;
-        currentWidth = wordWidth;
-      } else {
-        pushWordByChunks(word);
-      }
-    }
-
-    if (currentLine) {
-      pushLine(currentLine, currentWidth);
-    }
-  }
-
-  const measuredLineWidth = maxLineWidth;
-
-  const lineCountForHeight = Math.max(1, visualLines.length) + (reserveTrailingLine ? 1 : 0);
-  const calculatedWidth = Math.ceil(measuredLineWidth + horizontalPadding);
-  const calculatedHeight = Math.ceil(lineCountForHeight * fontSize * lineHeight + verticalPadding);
-
-  return {
-    width: Math.min(safeMaxWidth, Math.max(minWidth, calculatedWidth)),
-    height: Math.min(safeMaxHeight, Math.max(minHeight, calculatedHeight)),
-  };
-}
-
-function getSpellcheckLang(): string {
-  if (typeof navigator === 'undefined') {
-    return 'es-PE';
-  }
-
-  const preferred = [navigator.language, ...(navigator.languages || [])]
-    .filter(Boolean)
-    .map((value) => value.toLowerCase());
-
-  if (preferred.some((value) => value.startsWith('es'))) {
-    return 'es-PE';
-  }
-
-  return 'es-PE';
-}
-
-/** Web Speech API sin tipos oficiales del DOM lib; se usa `any` para SpeechRecognition. */
-function getSpeechCtor(): any {
-  if (typeof window === 'undefined') {
-    return undefined;
-  }
-
-  const speechWindow = window as any;
-  return speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-}
 
 function snap(value: number, enabled: boolean): number {
   if (!enabled) {
@@ -710,12 +63,149 @@ function snap(value: number, enabled: boolean): number {
   return Math.round(value / GRID) * GRID;
 }
 
-interface AdvancedSuggestion {
-  offset: number;
-  length: number;
-  message: string;
-  replacements: string[];
-  context: string;
+// Debe coincidir con CONTENT_FLOW_GAP en useEditorStore.ts
+// (pushDownContentAfterChange) — mismo margen que el empuje persistido, para
+// que la vista previa en vivo de applyLivePushBelow no "salte" al soltar.
+const LIVE_PUSH_GAP = 12;
+
+function dominantImportedFontSize(spans: TextStyleSpan[], fallback = 12): number {
+  const votes = new Map<number, number>();
+  spans.forEach((span) => {
+    if (typeof span.fontSize !== 'number' || span.fontSize <= 0) return;
+    const size = Math.max(6, Math.min(72, Math.round(span.fontSize)));
+    votes.set(size, (votes.get(size) || 0) + Math.max(1, span.end - span.start));
+  });
+  let bestSize = fallback;
+  let bestVotes = -1;
+  votes.forEach((chars, size) => {
+    if (chars > bestVotes) {
+      bestVotes = chars;
+      bestSize = size;
+    }
+  });
+  return bestSize;
+}
+
+function scaleImportedSpans(spans: TextStyleSpan[], ratio: number): TextStyleSpan[] {
+  if (Math.abs(ratio - 1) < 0.01) return spans;
+  return spans.map((span) => (
+    typeof span.fontSize === 'number' && span.fontSize > 0
+      ? { ...span, fontSize: Math.max(6, Math.round(span.fontSize * ratio)) }
+      : span
+  ));
+}
+
+function isFlowChromeElement(type: string): boolean {
+  return type === 'header' || type === 'footer' || type === 'cover';
+}
+
+/** Misma tolerancia de 24px que sameFlowColumn en useEditorStore.ts. */
+function sharesFlowColumn(anchorX: number, anchorWidth: number, x: number, width: number): boolean {
+  return x < anchorX + anchorWidth - 24 && anchorX < x + width - 24;
+}
+
+/** Descarga y convierte una URL http(s) de imagen (Google Docs sirve las
+ * suyas así, desde su CDN) a data: URI -- compartida por el pegado del
+ * portapapeles (imagen suelta y documento mixto, ver el `useEffect` de
+ * `onSystemPaste` más abajo). Sin dependencias de React, módulo-nivel. */
+async function fetchImageAsDataUrl(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    // Imagen no descargable desde acá (CORS/expiró/requiere sesión) -- no
+    // se pega nada, sin romper el resto del flujo.
+    return null;
+  }
+}
+
+async function resolveImagePasteSize(
+  src: string,
+  hintWidth: number | undefined,
+  hintHeight: number | undefined,
+  maxWidth: number,
+  maxHeight: number,
+): Promise<{ width: number; height: number } | null> {
+  let width = hintWidth;
+  let height = hintHeight;
+  if (width === undefined || height === undefined) {
+    const natural = await new Promise<{ w: number; h: number } | null>((resolve) => {
+      const img = new window.Image();
+      img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+    if (natural && natural.w > 0 && natural.h > 0) {
+      if (width === undefined && height === undefined) {
+        width = natural.w;
+        height = natural.h;
+      } else if (width === undefined) {
+        width = Math.round(height! * (natural.w / natural.h));
+      } else if (height === undefined) {
+        height = Math.round(width! * (natural.h / natural.w));
+      }
+    }
+  }
+  if (!width || !height) return null;
+  const scale = Math.min(1, maxWidth / width, maxHeight / height);
+  return { width: Math.round(width * scale), height: Math.round(height * scale) };
+}
+
+/** Galería de transiciones (SCRUM-36, PageCanvas.tsx::page-transition-control)
+ * — antes un <select> nativo invisible superpuesto al botón circular
+ * (truco "select transparente encima"), pedido explícito 2026-09-08:
+ * reemplazarlo por un popover con miniatura animada por opción. Ampliado
+ * 2026-09-11 (pedido explícito, feedback de cliente "mas detallado"): 3
+ * transiciones nuevas (cover/uncover/circle, ver TRANSITION_XML en
+ * pdf-export-service/server.js para el mapeo real a PowerPoint) y la
+ * miniatura pasó de reproducirse solo al pasar el cursor a reproducirse en
+ * bucle sola (ver TransitionPreview) -- "a veces se traban" era justamente
+ * que, al ser un `transition:` de una sola pasada gatillado por :hover, la
+ * miniatura quedaba congelada en el estado final hasta un nuevo hover. */
+const TRANSITION_OPTIONS: { value: NonNullable<ReportPage['transition']>; label: string; desc: string }[] = [
+  { value: 'none', label: 'Ninguna', desc: 'Corte directo, sin animación' },
+  { value: 'fade', label: 'Desvanecer', desc: 'La diapositiva se disuelve en la siguiente' },
+  { value: 'push', label: 'Empujar', desc: 'La siguiente empuja a la actual fuera de pantalla' },
+  { value: 'wipe', label: 'Barrido', desc: 'La siguiente cubre a la actual de izquierda a derecha' },
+  { value: 'cover', label: 'Cubrir', desc: 'La siguiente entra encima sin desplazar a la actual' },
+  { value: 'uncover', label: 'Descubrir', desc: 'La actual se retira dejando ver a la siguiente' },
+  { value: 'circle', label: 'Círculo', desc: 'La siguiente aparece desde un círculo que crece en el centro' },
+];
+
+/** Contenido genérico de relleno (barra de título + líneas de texto, y un
+ * cuadrado tipo imagen/gráfico solo en la diapositiva "B") -- pedido
+ * explícito 2026-09-11: antes cada capa era un rectángulo de color sólido
+ * sin nada adentro, así que la transición no se leía como "una diapositiva
+ * reemplaza a otra", solo como un bloque de color tapando a otro. */
+function TransitionMockSlide({ variant }: { variant: 'a' | 'b' }) {
+  return (
+    <div className={`tp-mock tp-mock--${variant}`}>
+      <div className="tp-mock-bar" />
+      <div className="tp-mock-line tp-mock-line--1" />
+      <div className="tp-mock-line tp-mock-line--2" />
+      {variant === 'b' && <div className="tp-mock-square" />}
+    </div>
+  );
+}
+
+function TransitionPreview({ kind }: { kind: NonNullable<ReportPage['transition']> }) {
+  return (
+    <div className={`transition-option-preview transition-option-preview--${kind}`}>
+      <div className="tp-layer tp-layer-a">
+        <TransitionMockSlide variant="a" />
+      </div>
+      <div className="tp-layer tp-layer-b">
+        <TransitionMockSlide variant="b" />
+      </div>
+    </div>
+  );
 }
 
 export interface PageCanvasProps {
@@ -737,59 +227,124 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   const layerRef = useRef<any>(null);
   const stageRef = useRef<any>(null);
   const dragInProgressRef = useRef(false);
+  const multiDragStartRef = useRef<Record<string, { x: number; y: number }>>({});
+  // Ancla + su caja ORIGINAL (antes del gesto) para la vista previa en vivo
+  // del empuje hacia abajo (ver applyLivePushBelow más abajo) — solo se
+  // arma en arrastre/redimensionado de UN elemento (nunca en selección
+  // múltiple, donde "quién empuja a quién" es ambiguo); el empuje
+  // definitivo (que además encadena entre páginas) lo sigue calculando
+  // pushDownContentAfterChange en el store al confirmar.
+  const dragPushAnchorRef = useRef<{ id: string; x: number; y: number; width: number; height: number } | null>(null);
+  const transformPushAnchorRef = useRef<{ id: string; x: number; y: number; width: number; height: number } | null>(null);
+  // IDs de elementos que applyLivePushBelow movió imperativamente (solo
+  // visual) durante el gesto en curso — ver resetLivePushPreview más abajo.
+  const livePushedIdsRef = useRef<Set<string>>(new Set());
   const wasSelectedRef = useRef(false);
+  // Último punto (coordenadas de contenido de la página, no de pantalla)
+  // donde el usuario hizo clic dentro de este lienzo — pedido explícito:
+  // "pegar" (Ctrl+V) debe soltar el contenido AHÍ, no en un punto
+  // auto-calculado del flujo del documento. Se actualiza en CADA mousedown
+  // sobre el Stage (tanto en área vacía como sobre un objeto existente, ver
+  // más abajo), y lo usan tanto el pegado interno de objetos (pasteElement)
+  // como el pegado de imagen/tabla desde el portapapeles del sistema.
+  const lastCanvasClickRef = useRef<{ x: number; y: number } | null>(null);
+  // Offset (en unidades LÓGICAS de página, sin escala) entre dónde agarró
+  // el usuario el bloque y su esquina superior izquierda -- capturado en
+  // onDragStart, usado en onDragMove para que el fantasma flotante
+  // (DragPreviewOverlay, ver useDragPreviewStore.ts) siga al cursor
+  // alineado con el punto exacto donde se hizo clic, en vez de saltar a que
+  // su esquina quede bajo el cursor.
+  const dragGhostGrabOffsetRef = useRef<{ x: number; y: number } | null>(null);
   const scale = Math.min(4, Math.max(0.1, Number(viewportScale) || 1));
   const recognitionRef = useRef<any>(null);
   const dictationTargetRef = useRef<string | null>(null);
-  // Guardia de composición IME (patrón sdkjs, text_input.js: todo se gatea
-  // en IsComposition): mientras el navegador compone un carácter con tecla
-  // muerta (´ + a → á, común en español), NO medir/redimensionar — la
-  // medición a mitad de composición causa saltos visuales y estados
-  // intermedios erróneos. Solo hay un editor de texto abierto a la vez, un
-  // ref único basta.
+  const selectedElementIds = useEditorStore(s => s.selectedElementIds);
+  const toggleSelection = useEditorStore(s => s.toggleSelection);
+  const moveElementsBetweenPages = useEditorStore(s => s.moveElementsBetweenPages);
+  const applyLivePushBelow = (
+    anchorId: string,
+    anchorOriginal: { x: number; y: number; width: number; height: number },
+    anchorLive: { x: number; y: number; width: number; height: number },
+  ) => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    const candidates = page.elements
+      .filter((el) =>
+        el.id !== anchorId &&
+        !isFlowChromeElement(el.type) &&
+        !el.locked &&
+        !selectedElementIds.includes(el.id) &&
+        el.y > anchorOriginal.y &&
+        sharesFlowColumn(anchorOriginal.x, anchorOriginal.width, el.x, el.width),
+      )
+      .sort((a, b) => a.y - b.y);
+    if (candidates.length === 0) return;
+
+    let cursorY = anchorLive.y + anchorLive.height + LIVE_PUSH_GAP;
+    for (const el of candidates) {
+      const desiredY = Math.max(el.y, cursorY);
+      const node = layer.findOne(`#${el.id}`);
+      if (node) {
+        node.position({ x: node.x(), y: desiredY });
+        livePushedIdsRef.current.add(el.id);
+      }
+      cursorY = desiredY + el.height + LIVE_PUSH_GAP;
+    }
+    layer.batchDraw();
+  };
+
+  /**
+   * Deshace el desplazamiento visual de applyLivePushBelow al terminar el
+   * gesto. react-konva solo reaplica una prop a un nodo si su VALOR
+   * cambió respecto al render anterior — si el ancla termina yéndose a
+   * OTRA página (moveElementsBetweenPages), estos elementos empujados en
+   * vivo nunca son tocados por el commit del store (su `y` real nunca
+   * cambió), así que React jamás vuelve a fijar su posición real y el
+   * nodo Konva queda "fantasma" en la posición de la vista previa. Bug
+   * reportado 2026-09-04: "cuando muevo un objeto a esa hoja libre, todo
+   * lo que esta en la hoja de abajo se descuadra". Se corrige forzando
+   * cada nodo tocado de vuelta a su `y` verdadero, leído fresco del store
+   * (no de `page`, que puede estar desactualizado en este cierre).
+   */
+  const resetLivePushPreview = () => {
+    if (livePushedIdsRef.current.size === 0) return;
+    const ids = livePushedIdsRef.current;
+    livePushedIdsRef.current = new Set();
+    const layer = layerRef.current;
+    if (!layer) return;
+    const freshPage = useEditorStore.getState().doc.pages.find((p) => p.page_number === page.page_number);
+    if (!freshPage) return;
+    ids.forEach((id) => {
+      const node = layer.findOne(`#${id}`);
+      const el = freshPage.elements.find((e) => e.id === id);
+      if (node && el) {
+        node.position({ x: node.x(), y: el.y });
+      }
+    });
+    layer.batchDraw();
+  };
+  const splitOverflowingText = useEditorStore(s => s.splitOverflowingText);
+  const pasteTextAcrossPages = useEditorStore(s => s.pasteTextAcrossPages);
+  const splitOverflowingTable = useEditorStore(s => s.splitOverflowingTable);
+  const addChartFromTable = useEditorStore(s => s.addChartFromTable);
+  const pendingTextContinuation = useEditorStore(s => s.pendingTextContinuation);
+  const clearPendingTextContinuation = useEditorStore(s => s.clearPendingTextContinuation);
+  const copiedTextFormat = useEditorStore(s => s.copiedTextFormat);
+  const setCopiedTextFormat = useEditorStore(s => s.setCopiedTextFormat);
   const isComposingRef = useRef(false);
-  // Referencia al <textarea> del bloque de texto actualmente en edición —
-  // usada por `applyFormatToSelection` para leer selectionStart/End (rango
-  // que el usuario marcó con el mouse/teclado) y aplicar negrita/color/
-  // tamaño/fuente SOLO a ese rango, en vez de a todo el bloque. Solo un
-  // editor de texto abierto a la vez, un ref único basta (mismo patrón que
-  // isComposingRef).
   const activeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  // Rango de selección "congelado" al abrir el picker de color (ver
-  // captureSelection/applyFormatToSelection) — evita que abrir el popover
-  // de la paleta y elegir un swatch colapse la selección del textarea.
+  const textSplitInProgressRef = useRef(false);
+  const pendingCaretToEndRef = useRef<string | null>(null);
   const selectionRangeRef = useRef<{ start: number; end: number } | null>(null);
-  // Última función `applyFormatToSelection` del bloque en edición — se
-  // reasigna en cada render dentro del .map() de abajo (asignación simple,
-  // no un hook, así que no viola las reglas de hooks pese a estar dentro de
-  // un array-map). El useEffect de más abajo (keyed en openTextEditorId) es
-  // el único punto que registra/desregistra esto en el puente global.
   const activeFormatBridgeRef = useRef<((patch: Partial<BaseTextStyle>) => boolean) | null>(null);
-  // Mismo patrón que activeFormatBridgeRef, para el puente del botón "Aa"
-  // (tryApplyCaseToActiveTextSelection) — ver activeTextFormatBridge.ts.
   const activeCaseBridgeRef = useRef<(() => boolean) | null>(null);
   // Mismo patrón, para el puente de "Insertar referencia" (ADR-019, ver
   // activeTextFormatBridge.ts::tryInsertRefAtActiveTextSelection).
   const activeRefInsertBridgeRef = useRef<((targetId: string) => boolean) | null>(null);
-  // Cambiar la selección con el mouse/teclado dentro del textarea NO
-  // dispara por sí solo un re-render de React (no toca ningún estado) — sin
-  // este contador, el "cuadro de fuente de la selección" de la barra de
-  // formato (ver más abajo) quedaría desactualizado hasta la próxima tecla.
-  // Se incrementa en onSelect/onMouseUp/onKeyUp del textarea.
   const [selectionTick, setSelectionTick] = useState(0);
-  // Cursor visual propio (bug real reportado 2026-07-27): el <textarea>
-  // invisible es quien controla dónde aparece el caret NATIVO del
-  // navegador, pero su propio motor de layout (centrado/alineado, negrita,
-  // tamaños grandes tipo "Título") no calcula el ancho del texto pixel a
-  // pixel IGUAL que el overlay fantasma de abajo — con texto centrado o
-  // en negrita/tamaño grande, ambos divergen lo suficiente para que el
-  // caret nativo se vea "flotando" dentro de una palabra en vez de al
-  // final del texto, aunque el índice de carácter (selectionStart) sea
-  // correcto (escribir sí inserta en el lugar correcto — el problema es
-  // puramente visual). Se resuelve dibujando un caret propio, posicionado
-  // con la Range API sobre el DOM REAL del overlay (que es exactamente lo
-  // que el usuario ve) en vez de confiar en el caret nativo del textarea.
   const ghostWrapRef = useRef<HTMLDivElement | null>(null);
+  const textMouseAnchorRef = useRef<number | null>(null);
+  const textSelectionFrameRef = useRef<number | null>(null);
   const [caretRect, setCaretRect] = useState<{ left: number; top: number; height: number } | null>(null);
   const layoutMode = useEditorStore((s) =>
     s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
@@ -799,6 +354,10 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   // documento — ver `resolvePagePaperSetup`.
   const docPaperSize = useEditorStore((s) => s.doc.meta?.paperSize);
   const docOrientation = useEditorStore((s) => s.doc.meta?.orientation);
+  const marginLeft = useEditorStore((s) => s.doc.meta?.marginLeft);
+  const marginRight = useEditorStore((s) => s.doc.meta?.marginRight);
+  const marginTop = useEditorStore((s) => s.doc.meta?.marginTop);
+  const marginBottom = useEditorStore((s) => s.doc.meta?.marginBottom);
   const { paperSize, orientation } = resolvePagePaperSetup(
     { paperSize: page.paperSize, orientation: page.orientation },
     { paperSize: docPaperSize, orientation: docOrientation },
@@ -809,6 +368,10 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   // página, dejando el índice desactualizado hasta que algo más forzara un
   // re-render por otro motivo ("a veces parecía no haber aplicado el cambio").
   const docVersion = useEditorStore((s) => s.doc.meta?.version);
+  const linkedComments = useEditorStore((s) => ((s.doc.meta.comments as ReportComment[] | undefined) || []).filter(
+    (comment) => comment.pageNumber === page.page_number && Boolean(comment.elementId),
+  ));
+  const hoveredCommentId = useEditorStore((s) => s.hoveredCommentId);
   // Resolver de referencias cruzadas (ADR-019) — mismo patrón que el bloque
   // TOC: lee el doc completo via getState() (imperativo) en vez de
   // suscribirse a `doc.pages` entero (evitaría re-renderizar TODAS las
@@ -817,7 +380,10 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   // invocación (no captura el doc), así que siempre refleja la numeración
   // vigente aunque el usuario mueva/inserte una sección después de este render.
   const resolveTextRef = useMemo(
-    () => (targetId: string) => resolveHeadingRefLabel(useEditorStore.getState().doc, targetId),
+    () => (targetId: string) => {
+      const doc = useEditorStore.getState().doc;
+      return resolveHeadingRefLabel(doc, targetId) ?? resolveAnnexRefLabel(doc, targetId);
+    },
     [docVersion],
   );
   const {
@@ -829,30 +395,61 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
     CONTENT_BOTTOM,
     CONTENT_LEFT,
     CONTENT_RIGHT,
-  } = useMemo(() => getReportLayoutMetrics(layoutMode, paperSize, orientation), [layoutMode, paperSize, orientation]);
+  } = useMemo(
+    () => getReportLayoutMetrics(layoutMode, paperSize, orientation, marginLeft, marginRight, marginTop, marginBottom),
+    [layoutMode, paperSize, orientation, marginLeft, marginRight, marginTop, marginBottom],
+  );
+  // Métricas (CONTENT_TOP/BOTTOM/LEFT/RIGHT, PAGE_WIDTH/HEIGHT) de OTRA
+  // página del documento -- necesario para el fantasma de arrastre
+  // (DragPreviewOverlay): mientras se arrastra cerca del límite de ESTA
+  // página, hay que saber los límites de la página vecina bajo el cursor
+  // para recortar el fantasma ahí y no dejarlo "flotar" sobre su
+  // encabezado/pie. Mismo criterio que `paperSize`/`orientation` arriba,
+  // pero resuelto para el número de página que se pida, no solo `page`.
+  const getMetricsForPageNumber = (targetPageNumber: number) => {
+    if (targetPageNumber === page.page_number) {
+      return { PAGE_WIDTH, PAGE_HEIGHT, CONTENT_LEFT, CONTENT_RIGHT, CONTENT_TOP, CONTENT_BOTTOM };
+    }
+    const docState = useEditorStore.getState().doc;
+    const targetPage = docState.pages.find((p) => p.page_number === targetPageNumber);
+    const targetSetup = resolvePagePaperSetup(
+      { paperSize: targetPage?.paperSize, orientation: targetPage?.orientation },
+      { paperSize: docState.meta?.paperSize, orientation: docState.meta?.orientation },
+    );
+    return getReportLayoutMetrics(
+      layoutMode, targetSetup.paperSize, targetSetup.orientation,
+      docState.meta?.marginLeft, docState.meta?.marginRight, docState.meta?.marginTop, docState.meta?.marginBottom,
+    );
+  };
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
   const selectElement = useEditorStore((s) => s.selectElement);
   const selectPage = useEditorStore((s) => s.selectPage);
   const updateElement = useEditorStore((s) => s.updateElement);
+  const relocateWrapAdjustedText = useEditorStore((s) => s.relocateWrapAdjustedText);
   const removeElement = useEditorStore((s) => s.removeElement);
+  const removeElements = useEditorStore((s) => s.removeElements);
   const copyElement = useEditorStore((s) => s.copyElement);
   const pasteElement = useEditorStore((s) => s.pasteElement);
+  const addElement = useEditorStore((s) => s.addElement);
+  const addPage = useEditorStore((s) => s.addPage);
   const clipboardElement = useEditorStore((s) => s.clipboardElement);
+  const copySelection = useEditorStore((s) => s.copySelection);
+  const pasteSelection = useEditorStore((s) => s.pasteSelection);
+  const selectAllDocument = useEditorStore((s) => s.selectAllDocument);
   const selectedPage = useEditorStore((s) => s.selectedPage);
+  const pendingImportBlocks = useEditorStore((s) => s.pendingImportBlocks);
+  const setPendingImportBlocks = useEditorStore((s) => s.setPendingImportBlocks);
   const gridEnabled = useEditorStore((s) => s.gridEnabled);
   const snapEnabled = useEditorStore((s) => s.snapEnabled);
+  const setPageTransition = useEditorStore((s) => s.setPageTransition);
+  const transitionPopover = usePopover();
   const [openTextEditorId, setOpenTextEditorId] = useState<string | null>(null);
-  // Fase 2 (patrón sdkjs: el textarea invisible nunca toca el modelo por
-  // tecla — aquí, el visible tampoco toca el store Zustand por tecla). El
-  // texto tecleado vive en este estado LOCAL de PageCanvas mientras se
-  // edita; el store solo se actualiza en una confirmación diferida (o al
-  // cerrar), así el resto de la app (panel derecho, ribbon, otras páginas
-  // con su propio PageCanvas, el índice si vive en otra página) no se
-  // re-renderiza en cada pulsación — solo lo hace esta página.
   const [liveEdit, setLiveEdit] = useState<{ id: string; text: string; width: number; height: number; spans: TextStyleSpan[] } | null>(null);
+  const [pendingTypingStyle, setPendingTypingStyle] = useState<{ elementId: string; style: Partial<BaseTextStyle> } | null>(null);
   const liveEditCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Tabla: edición en lienzo solo tras doble clic; si no, el DOM bloquea selección como con KPI. */
   const [canvasTableEditId, setCanvasTableEditId] = useState<string | null>(null);
+  const [canvasVideoInteractId, setCanvasVideoInteractId] = useState<string | null>(null);
   /** Menú contextual (click derecho) sobre un bloque: bloquear/desbloquear y
    * eliminar — pedido explícito del negocio ("borrarse por medio del menú
    * contextual"). Posicionado en coordenadas de viewport (fixed), no de
@@ -862,6 +459,9 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
    * picker del panel derecho, pedida explícitamente ("clic derecho sobre el
    * objeto seleccionado" para cambiar el modo más rápido). */
   const [contextWrapSubmenuOpen, setContextWrapSubmenuOpen] = useState(false);
+  /** Modal "Crear gráfico desde esta tabla", abierto desde el menú contextual
+   * de celda de TableBlock (clic derecho) -- pedido explícito 2026-09-11. */
+  const [chartFromTableRequest, setChartFromTableRequest] = useState<{ tableElementId: string } | null>(null);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -888,79 +488,6 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
     selectElement(elementId);
     setContextMenu({ x: event.clientX, y: event.clientY, elementId });
   };
-
-  /** Bloque `image` -- extraído a función para poder renderizarlo en DOS
-   * puntos distintos del orden de pintado según `wrapMode` (ver los dos
-   * `.filter(...).map(renderImageElement)` en el JSX): el pintado de los
-   * overlays Html sigue el orden de DECLARACIÓN en el JSX, no `zIndex`, así
-   * que "Detrás del texto" se declara temprano (antes de chart/kpi/tabla/
-   * sensor) y todo lo demás (incl. "Delante del texto") se declara tarde
-   * (después de sensor_multi_chart) para que sí pueda quedar realmente
-   * encima de un gráfico de sensores superpuesto. */
-  const renderImageElement = (element: ReportElement) => {
-    // 'Detrás/delante del texto': ambos flotan libremente (sin afectar el
-    // flujo, ver wrapExclusions arriba); el z-index solo desempata DENTRO
-    // de este mismo punto de declaración (p.ej. contra 'cover').
-    const imageZIndex = element.wrapMode === 'behind' ? 5 : 15;
-    return (
-      <Html key={`${element.id}-image`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none', zIndex: imageZIndex } }}>
-        <div
-          className="report-canvas-html-shield"
-          onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-          style={{
-            width: element.width - 8,
-            height: element.height - 8,
-            overflow: 'hidden',
-            borderRadius: '4px',
-          }}
-        >
-          <img
-            src={resolveReportImageSrc(element)}
-            alt={element.props?.alt || element.id}
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: (element.objectFit as any) || 'cover',
-              display: 'block',
-            }}
-          />
-        </div>
-      </Html>
-    );
-  };
-
-  /** Bloque `video` -- mismo motivo/patrón que `renderImageElement`. */
-  const renderVideoElement = (element: ReportElement) => (
-    <Html key={`${element.id}-video`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'auto', zIndex: element.wrapMode === 'behind' ? 5 : 15 } }}>
-      <div
-        className="report-canvas-html-shield"
-        onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-        style={{
-          width: element.width - 8,
-          height: element.height - 8,
-          overflow: 'hidden',
-          borderRadius: '4px',
-          background: '#000',
-        }}
-      >
-        {element.src ? (
-          <video
-            src={element.src}
-            controls
-            // ADR-064/065: los .webm de MediaRecorder no traen
-            // Duration/índice de búsqueda -- sin este fix se ven
-            // en negro con "0:00" (ver lib/videoDurationFix.ts).
-            ref={(el) => fixRecordedVideoElement(el)}
-            style={{ width: '100%', height: '100%', display: 'block' }}
-          />
-        ) : (
-          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 12 }}>
-            Sin video
-          </div>
-        )}
-      </div>
-    </Html>
-  );
   const [isDictating, setIsDictating] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   // Vista previa de dictado (resultados NO finales de SpeechRecognition):
@@ -1016,26 +543,142 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   };
   const [advancedSuggestions, setAdvancedSuggestions] = useState<AdvancedSuggestion[]>([]);
   const [isAnalyzingSpelling, setIsAnalyzingSpelling] = useState(false);
-  const spellcheckLang = getSpellcheckLang();
+  // Subrayado rojo en vivo (estilo corrector nativo del SO): mientras se
+  // edita, cada pausa de tecleo dispara un análisis en segundo plano
+  // (mismo backend LanguageTool que "Corrección avanzada") y las palabras/
+  // frases marcadas se subrayan directamente en el overlay fantasma (ver
+  // buildStyledSegments más abajo). Clic sobre una marca abre el menú de
+  // reemplazo — ver spellMenu.
+  const [inlineSpellIssues, setInlineSpellIssues] = useState<AdvancedSuggestion[]>([]);
+  const [spellMenu, setSpellMenu] = useState<{ issue: AdvancedSuggestion; left: number; top: number } | null>(null);
+  /** Menú "Separar en bloque nuevo" -- clic derecho con texto SELECCIONADO
+   * dentro del editor (pedido explícito 2026-09-09: "facilitará el proceso
+   * para arreglar la estructura al importar Word" -- complemento MANUAL a
+   * la partición automática por salto de página que ya hace la importación
+   * de .docx). Solo abre el menú, nunca separa de una vez con el clic
+   * derecho -- pedido explícito. Mismo criterio visual/posicional que
+   * spellMenu arriba: `left`/`top` relativos al wrap del editor, no al
+   * viewport (vive dentro del mismo <Html> que el textarea).
+   */
+  const [splitBlockMenu, setSplitBlockMenu] = useState<{ elementId: string; start: number; end: number; left: number; top: number } | null>(null);
+  // Mismo patrón de cierre que contextMenu (clic afuera/scroll/Esc).
+  useEffect(() => {
+    if (!splitBlockMenu) return undefined;
+    const close = () => setSplitBlockMenu(null);
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [splitBlockMenu]);
+  // Comando "/referencia" (pedido explícito 2026-09-04): apenas el texto
+  // tecleado hasta el cursor termina en este comando, se abre un picker
+  // minimalista (mismo criterio visual que spellMenu) con todos los pies de
+  // imagen/tabla/gráfico del documento (ver AnnexList.tsx). `triggerStart`/
+  // `triggerEnd` son el rango [start,end) del propio "/referencia" tecleado
+  // -- se reemplaza entero por el rótulo corto elegido ("Imagen 3") al
+  // hacer clic en una opción, ver applyAnnexRefInsert más abajo.
+  const SLASH_REF_TRIGGER = '/referencia';
+  const BULLET_MARKER = '•   ';
+  const [slashRefMenu, setSlashRefMenu] = useState<{ elementId: string; triggerStart: number; triggerEnd: number } | null>(null);
+  const liveEditSnapshotRef = useRef(liveEdit);
+  liveEditSnapshotRef.current = liveEdit;
+  const spellMenuRef = useRef<HTMLDivElement | null>(null);
+  const wrapAutoHeightRef = useRef<Map<string, { y: number; height: number }>>(new Map());
   const speechSupported = Boolean(getSpeechCtor());
+  const getIndexFromClickPoint = (clientX: number, clientY: number): number => {
+    const ghost = ghostWrapRef.current;
+    if (!ghost) return 0;
+
+    let range: Range | null = null;
+    const textarea = activeTextareaRef.current;
+    const previousPointerEvents = textarea?.style.pointerEvents;
+
+    // El textarea está encima del ghost y, aunque su texto sea transparente,
+    // el navegador puede devolver un caretRange dentro de él. Desactívalo
+    // solo durante la medición para consultar las métricas del texto visible.
+    if (textarea) textarea.style.pointerEvents = 'none';
+
+    try {
+      // Obtener el rango nativo del DOM bajo el puntero del ratón.
+      if (document.caretRangeFromPoint) {
+        range = document.caretRangeFromPoint(clientX, clientY);
+      } else if ((document as any).caretPositionFromPoint) {
+        const pos = (document as any).caretPositionFromPoint(clientX, clientY);
+        if (pos) {
+          range = document.createRange();
+          range.setStart(pos.offsetNode, pos.offset);
+          range.collapse(true);
+        }
+      }
+    } finally {
+      if (textarea) textarea.style.pointerEvents = previousPointerEvents || '';
+    }
+
+    if (!range || !ghost.contains(range.startContainer)) return 0;
+
+    // Recorrer los nodos del ghost hasta la posición clickeada para contar el total de caracteres
+    let charCount = 0;
+    const targetNode = range.startContainer;
+    const targetOffset = range.startOffset;
+
+    const walk = (node: Node): boolean => {
+      if (node === targetNode) {
+        charCount += targetOffset;
+        return true;
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        charCount += node.textContent?.length ?? 0;
+      } else {
+        for (const child of Array.from(node.childNodes)) {
+          if (walk(child)) return true;
+        }
+      }
+      return false;
+    };
+
+    walk(ghost);
+    return charCount;
+  };
 
   useEffect(() => {
     if (!transformerRef.current || !layerRef.current) {
       return;
     }
 
-    const node = layerRef.current.findOne(`#${selectedElementId}`);
-    const selectedEl = page.elements.find((el) => el.id === selectedElementId);
-    // Sin manijas de redimensionar mientras se edita texto en el lienzo, o
-    // si el bloque está bloqueado (encabezado/pie de página de plataforma,
-    // ADR-046: fijos — no se pueden mover ni redimensionar).
-    if (node && openTextEditorId !== selectedElementId && !selectedEl?.locked) {
+    // El Transformer actual se mantiene únicamente para selección única.
+    // La multiselección visual se representa mediante los Rect individuales.
+    if (selectedElementIds.length !== 1) {
+      transformerRef.current.nodes([]);
+      layerRef.current.batchDraw();
+      return;
+    }
+
+    const selectedId = selectedElementIds[0];
+    const node = layerRef.current.findOne(`#${selectedId}`);
+    const selectedEl = page.elements.find((el) => el.id === selectedId);
+    // El elemento de "texto plano" de la página (ver
+    // ReportPage.plainTextElementId) nunca lleva asas de redimensión --
+    // está siempre en edición, igual que si openTextEditorId lo apuntara.
+    const isPageTextEl = selectedEl?.type === 'text' && page.plainTextElementId === selectedId;
+
+    if (
+      node &&
+      openTextEditorId !== selectedId &&
+      !isPageTextEl &&
+      !selectedEl?.locked
+    ) {
       transformerRef.current.nodes([node]);
     } else {
       transformerRef.current.nodes([]);
     }
+
     layerRef.current.batchDraw();
-  }, [selectedElementId, page.elements, openTextEditorId]);
+  }, [selectedElementIds, page.elements, openTextEditorId, page.plainTextElementId]);
 
   const stopDictation = () => {
     const recognition = recognitionRef.current;
@@ -1072,12 +715,32 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
     const el = page.elements.find((e) => e.id === openTextEditorId);
     if (el) {
       const seedText = String(el.props?.text ?? '');
+      const tp = getTextProps(el);
+      const fullColumnWidthForEl = CONTENT_RIGHT - el.x - tp.indentRight;
+      const seedSpans = sanitizeSpans(el.props?.spans, seedText.length);
+      // Con spans (p.ej. un encabezado pegado dentro de un párrafo, ver
+      // lib/richPaste.ts) hay que pasarle a la medición el mismo estilo
+      // "base" que ve el resto del bloque -- si no, una porción en fuente
+      // más grande que la base queda subestimada y el cuadro reabre más
+      // chico de lo que el contenido real necesita (bug real reportado).
+      const seedBaseStyle: BaseTextStyle = {
+        bold: tp.bold, italic: tp.italic, underline: tp.underline, strikethrough: false, color: tp.fontColor,
+        fontSize: tp.fontSize, fontFamily: tp.fontFamily,
+        highlightColor: tp.highlightColor, headingStyle: tp.headingStyle, textAlign: tp.textAlign,
+      };
+      const seededSize = getAutoSizedTextBox(
+        seedText, tp.fontSize, tp.fontFamily, tp.bold, tp.italic, tp.lineHeight,
+        fullColumnWidthForEl, 28, fullColumnWidthForEl, PAGE_HEIGHT - el.y - 8, true,
+        seedSpans, seedBaseStyle,
+      );
+
+      const seededHeight = Math.max(seededSize.height, el.height);
       setLiveEdit({
         id: el.id,
         text: seedText,
-        width: el.width,
-        height: el.height,
-        spans: sanitizeSpans(el.props?.spans, seedText.length),
+        width: fullColumnWidthForEl,
+        height: seededHeight,
+        spans: seedSpans,
       });
     }
     // No depende de `page.elements` a propósito: solo se resiembra al ABRIR
@@ -1086,14 +749,45 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openTextEditorId]);
 
-  // Puente ribbon↔selección (ver lib/activeTextFormatBridge.ts): mientras
-  // ESTA página tiene un editor de texto abierto, registra un wrapper que
-  // siempre llama a la función `applyFormatToSelection` MÁS RECIENTE (la
-  // reasignada en cada render dentro del .map() de elementos, vía
-  // activeFormatBridgeRef) — así los botones Negrita/Cursiva/Subrayado/
-  // Color/Tamaño del ribbon superior aplican a la palabra seleccionada en
-  // vez de a todo el bloque, sin que el ribbon (otro componente) necesite
-  // saber nada de textareas ni de spans.
+
+  useEffect(() => {
+    if (!pendingTextContinuation || pendingTextContinuation.pageNumber !== page.page_number) return;
+    const el = page.elements.find((e) => e.id === pendingTextContinuation.elementId);
+    clearPendingTextContinuation();
+    if (!el) return;
+    selectElement(el.id);
+   
+    pendingCaretToEndRef.current = el.id;
+    setOpenTextEditorId(el.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingTextContinuation]);
+
+  // Coloca el cursor al FINAL del texto trasladado en cuanto `liveEdit`
+  // realmente contenga ese texto (no antes) — el usuario seguía escribiendo
+  // hacia adelante justo cuando el bloque se partió, así que el cursor debe
+  // quedar donde él se quedó, no al inicio (lo que pasaría con el
+  // autoFocus por defecto de un textarea recién montado).
+  // useLayoutEffect (NO useEffect) a propósito: useEffect corre DESPUÉS de
+  // que el navegador pinta, y para entonces el usuario (que sigue
+  // escribiendo rápido, sin pausar) ya puede haber mandado la SIGUIENTE
+  // tecla — el navegador la procesa contra el cursor por defecto del
+  // autoFocus (posición 0) ANTES de que mi efecto llegara a corregirlo,
+  // insertando esa tecla al INICIO en vez de al final (bug real
+  // reportado: "se" apareciendo antes de "observando" en vez de después).
+  // useLayoutEffect corre SÍNCRONO, en el mismo commit que monta el
+  // textarea, antes de pintar y antes de que el navegador pueda procesar
+  // cualquier tecla nueva — cierra esa ventana de carrera.
+  useLayoutEffect(() => {
+    const targetId = pendingCaretToEndRef.current;
+    if (!targetId || !liveEdit || liveEdit.id !== targetId) return;
+    const ta = activeTextareaRef.current;
+    if (!ta) return;
+    pendingCaretToEndRef.current = null;
+    ta.focus({ preventScroll: true });
+    const end = liveEdit.text.length;
+    ta.setSelectionRange(end, end);
+  }, [liveEdit]);
+
   useEffect(() => {
     if (!openTextEditorId) return undefined;
     registerActiveTextFormatHandler((patch) => {
@@ -1115,84 +809,219 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
     };
   }, [openTextEditorId]);
 
-  // Recalcula el cursor visual propio (ver comentario de `caretRect` más
-  // arriba) cada vez que cambia la selección o el texto. Solo cubre el
-  // caso de cursor COLAPSADO (sin nada seleccionado, el 99% del tecleo
-  // normal) — con una selección real, el resaltado propio que ya pinta el
-  // overlay (ver `getLiveSelectionRange`) sigue siendo suficiente
-  // indicación visual, y el caret nativo del navegador para ese caso no
-  // es el que el usuario reportó como confuso.
   useEffect(() => {
     if (!openTextEditorId) {
       setCaretRect(null);
       return;
     }
-    const ta = activeTextareaRef.current;
-    const ghost = ghostWrapRef.current;
-    if (!ta || !ghost) {
-      setCaretRect(null);
-      return;
-    }
-    const start = ta.selectionStart ?? 0;
-    const end = ta.selectionEnd ?? 0;
-    if (start !== end) {
-      setCaretRect(null);
-      return;
-    }
-    try {
-      let remaining = start;
-      let targetNode: Node | null = null;
-      let targetOffset = 0;
-      const walk = (node: Node): boolean => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          const len = node.textContent?.length ?? 0;
-          if (remaining <= len) {
-            targetNode = node;
-            targetOffset = remaining;
-            return true;
-          }
-          remaining -= len;
-          return false;
-        }
-        for (const child of Array.from(node.childNodes)) {
-          if (walk(child)) return true;
-        }
-        return false;
-      };
-      walk(ghost);
-      if (!targetNode) {
+    const frame = requestAnimationFrame(() => {
+      const ta = activeTextareaRef.current;
+      const ghost = ghostWrapRef.current;
+      if (!ta || !ghost) {
         setCaretRect(null);
         return;
       }
-      const range = document.createRange();
-      range.setStart(targetNode, targetOffset);
-      range.collapse(true);
-      let rect: DOMRect = range.getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0 && rect.top === 0 && rect.left === 0) {
-        const rects = range.getClientRects();
-        if (rects.length > 0) rect = rects[0];
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? 0;
+      if (start !== end) {
+        setCaretRect(null);
+        return;
       }
-      const ghostRect = ghost.getBoundingClientRect();
-      // Altura de respaldo cuando el Range no devuelve una caja con alto
-      // (pasa con un párrafo vacío: no hay glifo que medir). Se toma del
-      // tamaño de fuente del bloque que se está editando — `textProps` de
-      // más abajo es una variable local del map de render y aquí no está en
-      // alcance, así que se resuelve el elemento por su id, igual que hacen
-      // los otros efectos keyed en `openTextEditorId`.
-      const editingEl = page.elements.find((e) => e.id === openTextEditorId);
-      const fallbackFontSize = editingEl
-        ? getTextProps(editingEl).fontSize
-        : DEFAULT_TEXT_PROPS.fontSize;
-      setCaretRect({
-        left: rect.left - ghostRect.left,
-        top: rect.top - ghostRect.top,
-        height: rect.height || fallbackFontSize * 1.2,
-      });
-    } catch {
-      setCaretRect(null);
-    }
+      try {
+        let remaining = start;
+        let targetNode: Node | null = null;
+        let targetOffset = 0;
+        
+        const walk = (node: Node): boolean => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const len = node.textContent?.length ?? 0;
+            if (remaining <= len) {
+              targetNode = node;
+              targetOffset = remaining;
+              return true;
+            }
+            remaining -= len;
+            return false;
+          }
+          for (const child of Array.from(node.childNodes)) {
+            if (walk(child)) return true;
+          }
+          return false;
+        };
+        
+        walk(ghost);
+        
+        if (!targetNode) {
+          setCaretRect(null);
+          return;
+        }
+
+        const range = document.createRange();
+        range.setStart(targetNode, targetOffset);
+        range.collapse(true);
+
+        const hasGeometry = (candidate: DOMRect) =>
+          candidate.width > 0 || candidate.height > 0 || candidate.x !== 0 || candidate.y !== 0;
+        let rect: DOMRect = range.getBoundingClientRect();
+
+        if (!hasGeometry(rect)) {
+          const rects = range.getClientRects();
+          if (rects.length > 0) rect = rects[0];
+        }
+
+        if (!hasGeometry(rect)) {
+          const marker = document.createElement('span');
+          marker.textContent = '\u200b';
+          marker.style.display = 'inline-block';
+          marker.style.width = '0';
+          marker.style.height = '1em';
+          marker.style.padding = '0';
+          marker.style.margin = '0';
+          range.insertNode(marker);
+          rect = marker.getBoundingClientRect();
+          marker.remove();
+        }
+
+        const ghostRect = ghost.getBoundingClientRect();
+        
+        const ghostStyles = window.getComputedStyle(ghost);
+        const paddingLeft = parseFloat(ghostStyles.paddingLeft) || 0;
+        const paddingTop = parseFloat(ghostStyles.paddingTop) || 0;
+
+        const editingEl = page.elements.find((e) => e.id === openTextEditorId);
+        const fallbackFontSize = editingEl
+          ? getTextProps(editingEl).fontSize
+          : DEFAULT_TEXT_PROPS.fontSize;
+
+        setCaretRect({
+          left: (rect.left - ghostRect.left) - paddingLeft,
+          top: (rect.top - ghostRect.top) - paddingTop,
+          height: rect.height || (fallbackFontSize * 1.2),
+        });
+      } catch (err) {
+        console.warn("Error calculando el cursor:", err);
+        setCaretRect(null);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openTextEditorId, selectionTick, liveEdit]);
+
+  // Dispara el análisis ortográfico en vivo tras 900ms sin teclear (no en
+  // cada tecla — LanguageTool es un backend real, no un chequeo local).
+  // Se limpia solo al cerrar el editor o cambiar de bloque; una respuesta
+  // que llega tarde para un bloque que ya se cerró/cambió simplemente no
+  // se aplica (guardia por id abajo).
+  useEffect(() => {
+    if (!openTextEditorId || !liveEdit || liveEdit.id !== openTextEditorId) {
+      setInlineSpellIssues([]);
+      setSpellMenu(null);
+      return;
+    }
+    const sourceText = textForSpellOrRewrite(liveEdit.text);
+    if (!sourceText) {
+      setInlineSpellIssues([]);
+      return;
+    }
+    const targetId = liveEdit.id;
+    const targetText = liveEdit.text;
+    const timer = setTimeout(async () => {
+      try {
+        const data = await textCorrectAdvanced(sourceText, { language: 'es-PE', level: 'picky' });
+        if (data?.error) return;
+        // El bloque pudo cerrarse, cambiarse, o el texto pudo seguir
+        // editándose mientras la petición viajaba — ver comentario de
+        // liveEditSnapshotRef más arriba.
+        const current = liveEditSnapshotRef.current;
+        if (!current || current.id !== targetId || current.text !== targetText) return;
+        const raw = Array.isArray(data?.suggestions) ? data.suggestions : [];
+        const suggestions: AdvancedSuggestion[] = raw
+          .map((row: any) => ({
+            offset: Number(row?.offset ?? 0),
+            length: Number(row?.length ?? 0),
+            message: String(row?.message ?? 'Posible corrección'),
+            replacements: Array.isArray(row?.replacements)
+              ? row.replacements.map((r: unknown) => String(r ?? '').trim()).filter(Boolean).slice(0, 5)
+              : [],
+            context: String(row?.context ?? ''),
+          }))
+          .filter((item: AdvancedSuggestion) => item.length > 0);
+        setInlineSpellIssues(suggestions);
+      } catch {
+        // Silencioso: un fallo de red durante el tecleo en vivo no debe
+        // interrumpir ni notificar al usuario, a diferencia del botón
+        // manual "Corrección avanzada".
+      }
+    }, 900);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTextEditorId, liveEdit?.id, liveEdit?.text]);
+
+  useLayoutEffect(() => {
+    if (!spellMenu) return;
+    const el = spellMenuRef.current;
+    if (!el) return;
+    el.style.transform = '';
+    const menuRect = el.getBoundingClientRect();
+    const pageShell = document.querySelector<HTMLElement>(
+      `.multipage-page-shell[data-page-number="${page.page_number}"]`,
+    );
+    const bounds = (pageShell ?? document.documentElement).getBoundingClientRect();
+    const margin = 8;
+
+    let translateX = 0;
+    let translateY = 0;
+    if (menuRect.right > bounds.right - margin) {
+      // Voltea hacia la izquierda: el borde derecho del menú queda donde
+      // antes estaba su borde izquierdo (el punto de clic).
+      translateX = -menuRect.width;
+    }
+    if (menuRect.bottom > bounds.bottom - margin) {
+      // Voltea hacia arriba, con aire extra para no tapar la palabra.
+      translateY = -(menuRect.height + 24);
+    }
+
+    el.style.transform = `translate(${translateX}px, ${translateY}px)`;
+    const flipped = el.getBoundingClientRect();
+    let dx = 0;
+    let dy = 0;
+    if (flipped.right > bounds.right - margin) dx = (bounds.right - margin) - flipped.right;
+    if (flipped.left + dx < bounds.left + margin) dx = (bounds.left + margin) - flipped.left;
+    if (flipped.bottom > bounds.bottom - margin) dy = (bounds.bottom - margin) - flipped.bottom;
+    if (flipped.top + dy < bounds.top + margin) dy = (bounds.top + margin) - flipped.top;
+    if (dx || dy) {
+      el.style.transform = `translate(${translateX + dx}px, ${translateY + dy}px)`;
+    }
+  }, [spellMenu, page.page_number]);
+
+  // Aplica DESPUÉS de pintar (ver wrapAutoHeightRef arriba) dónde y cuánto
+  // necesita el recuadro para envolver el texto REALMENTE dibujado con
+  // ajuste alrededor de un objeto — incluye Y, no solo el alto: si todo el
+  // texto terminó cayendo DESPUÉS del objeto (nada cupo antes), el
+  // recuadro entero se reubica ahí, para poder hacer clic justo sobre el
+  // texto y moverlo/agrandarlo como cualquier globo normal. A diferencia
+  // del resto del empuje automático (que solo CRECE, nunca encoge/mueve
+  // algo que el usuario puso a mano), acá SÍ se corrige libremente — pero
+  // solo para bloques con ajuste de texto activo AHORA MISMO (los únicos
+  // que entran en este mapa; uno sin ajuste nunca se toca), porque esta
+  // posición/alto no son una medida manual del usuario, son un valor que
+  // el propio sistema de ajuste ya recalcula en cada render — mantenerlo
+  // exacto es corregir, no "mover algo por su cuenta". Solo si la
+  // diferencia es real (>0.5px, margen para ruido de punto flotante). Usa
+  // `relocateWrapAdjustedText` (no `updateElement` a secas): el cálculo de
+  // arriba es puramente geométrico, sin ninguna noción de dónde termina la
+  // página — si el objeto crece tanto que el texto ajustado ya no entra en
+  // lo que resta de la hoja, esa acción lo pasa entera a la siguiente en
+  // vez de dejarlo superpuesto al pie de página (bug real reportado).
+  useEffect(() => {
+    wrapAutoHeightRef.current.forEach(({ y, height }, elementId) => {
+      const current = page.elements.find((el) => el.id === elementId);
+      if (!current || current.type !== 'text') return;
+      if (Math.abs(y - current.y) > 0.5 || Math.abs(height - current.height) > 0.5) {
+        relocateWrapAdjustedText(page.page_number, elementId, y, height);
+      }
+    });
+  }, [page.elements, page.page_number, relocateWrapAdjustedText]);
 
   useEffect(() => {
     return () => {
@@ -1203,25 +1032,30 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
   useEffect(() => {
     if (!selectedElementId) {
       setCanvasTableEditId(null);
+      setCanvasVideoInteractId(null);
       return;
     }
     if (canvasTableEditId && selectedElementId !== canvasTableEditId) {
       setCanvasTableEditId(null);
     }
-  }, [selectedElementId, canvasTableEditId]);
+    if (canvasVideoInteractId && selectedElementId !== canvasVideoInteractId) {
+      setCanvasVideoInteractId(null);
+    }
+  }, [selectedElementId, canvasTableEditId, canvasVideoInteractId]);
 
   useEffect(() => {
-    if (!canvasTableEditId) {
+    if (!canvasTableEditId && !canvasVideoInteractId) {
       return undefined;
     }
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setCanvasTableEditId(null);
+        setCanvasVideoInteractId(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [canvasTableEditId]);
+  }, [canvasTableEditId, canvasVideoInteractId]);
 
   useEffect(() => {
     const clearDrag = () => {
@@ -1245,93 +1079,874 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
     };
   }, []);
 
-  // Copiar/pegar de objetos del lienzo (Ctrl/Cmd+C / +V) — pedido explícito
-  // ("seleccionar un objeto, copiar y pegarlo en el mismo lienzo"). Solo la
-  // página "actual" (selectedPage) atiende el evento, para no pegar N veces
-  // (una por cada PageCanvas montado). Se ignora si el foco está en un campo
-  // de texto/celda (ahí Ctrl+C/V es copia de TEXTO, no del objeto).
+  // Copiar de objetos del lienzo (Ctrl/Cmd+C) — pedido explícito
+  // ("seleccionar un objeto, copiar y pegarlo en el mismo lienzo") — y
+  // Ctrl/Cmd+A para seleccionar TODO el contenido del DOCUMENTO COMPLETO
+  // (todas las páginas, pedido explícito 2026-09-09: "extenderlo a todo el
+  // documento" -- antes solo abarcaba la página actual). Solo la página
+  // "actual" (selectedPage) atiende el evento de teclado, para no
+  // copiar/seleccionar N veces (una por cada PageCanvas montado) -- pero la
+  // selección/copia en sí ya no está acotada a esta página. Se ignora si el
+  // foco está en un campo de texto/celda (ahí Ctrl+C/Ctrl+A son la
+  // copia/selección nativa de TEXTO, no del objeto).
+  // Copiar ahora ADEMÁS escribe HTML real al portapapeles del SISTEMA
+  // (navigator.clipboard.write) -- pedido explícito: poder pegar en Word o
+  // Google Docs, con tablas e imágenes, no solo dentro de este editor (ver
+  // lib/elementsClipboard.ts). El pegado interno (Ctrl+V dentro de la app)
+  // sigue funcionando aunque esa escritura falle (permiso denegado,
+  // navegador sin soporte): el portapapeles INTERNO (clipboardElements) se
+  // actualiza siempre, aparte -- por eso se lee de vuelta del store justo
+  // después de copySelection en vez de recalcular los grupos acá (una sola
+  // fuente de verdad para el agrupado por página).
+  // El PEGADO (Ctrl/Cmd+V) se maneja aparte, en el efecto de más abajo
+  // (onSystemPaste) que escucha el evento nativo `paste` en vez de
+  // `keydown` — a diferencia de copiar, pegar necesita poder leer el
+  // portapapeles real del sistema (imagen/tabla/marcador interno) antes de
+  // decidir qué crea.
   useEffect(() => {
     if (page.page_number !== selectedPage) return undefined;
-    const onCopyPaste = (event: KeyboardEvent) => {
+    const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) return;
-      const k = event.key.toLowerCase();
-      if (k !== 'c' && k !== 'v') return;
       const target = event.target as HTMLElement | null;
       if (target) {
         const tag = target.tagName?.toLowerCase();
         if (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable) return;
       }
-      if (k === 'c') {
-        if (!selectedElementId) return;
-        const el = page.elements.find((e) => e.id === selectedElementId);
-        // No copiar bloques de plataforma (encabezado/pie/carátula).
-        if (!el || el.type === 'header' || el.type === 'footer' || el.type === 'cover') return;
+      const key = event.key.toLowerCase();
+
+      if (key === 'a') {
         event.preventDefault();
-        copyElement(page.page_number, selectedElementId);
-      } else if (k === 'v') {
-        event.preventDefault();
-        pasteElement(page.page_number);
+        selectAllDocument();
+        return;
+      }
+
+      if (key !== 'c') return;
+      const ids = selectedElementIds.length > 0 ? selectedElementIds : (selectedElementId ? [selectedElementId] : []);
+      if (!ids.length) return;
+      event.preventDefault();
+      copySelection(ids);
+      const groups = useEditorStore.getState().clipboardElements;
+      if (!groups || !groups.length) return;
+      try {
+        const { html, text } = serializeElementsForClipboard(groups);
+        if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+          void navigator.clipboard
+            .write([
+              new ClipboardItem({
+                'text/html': new Blob([html], { type: 'text/html' }),
+                'text/plain': new Blob([text], { type: 'text/plain' }),
+              }),
+            ])
+            // Permiso denegado o navegador sin soporte -- el pegado interno
+            // (dentro de este editor) igual funciona vía copySelection.
+            .catch(() => { /* no-op */ });
+        }
+      } catch {
+        /* nunca romper el copiado interno por un fallo al escribir al portapapeles del sistema */
       }
     };
-    window.addEventListener('keydown', onCopyPaste);
-    return () => window.removeEventListener('keydown', onCopyPaste);
-  }, [page.page_number, selectedPage, selectedElementId, page.elements, copyElement, pasteElement]);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [page.page_number, selectedPage, selectedElementId, selectedElementIds, copySelection, selectAllDocument]);
+
+  const processPasteBlocks = async (pasteBlocks: PasteBlock[]): Promise<void> => {
+    // Estilo base para el texto pegado en el lienzo vacío (sin bloque
+    // existente del que heredar formato) -- mismo criterio que un bloque
+    // de texto nuevo cualquiera (14px/Inter/1.35).
+    const pasteTextBaseStyle: BaseTextStyle = {
+      bold: false, italic: false, underline: false, strikethrough: false, color: '#1a1a1a',
+      fontSize: 14, fontFamily: 'Inter', highlightColor: 'transparent', headingStyle: '', textAlign: 'left',
+    };
+    const fullColumnWidth = CONTENT_RIGHT - CONTENT_LEFT;
+    const waitForRender = () => new Promise<void>((resolve) => { setTimeout(resolve, 30); });
+    const insertTextWithPagination = async (fullText: string, fullSpans: TextStyleSpan[], paragraphFormat: ParagraphFormat = {}) => {
+      let remainingText = fullText;
+      let remainingSpans = fullSpans;
+      const MAX_CHUNKS = 500; // salvaguarda -- nunca páginas sin fin
+      // Id compartido por TODOS los fragmentos que produzca esta llamada
+      // (un solo párrafo pegado puede terminar partido en 2+ páginas) --
+      // pedido explícito 2026-09-09: "que siga perteneciendo al mismo
+      // bloque original... si lo muevo, se mueve todo en conjunto".
+      // `updateElement` (useEditorStore.ts) usa este id para desplazar a
+      // los demás fragmentos por el mismo delta al mover uno. Si al
+      // final resulta en un solo fragmento (no hubo partición), queda
+      // sin hermanos y el enlace no tiene ningún efecto -- inofensivo.
+      const linkedGroupId = `linked-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      for (let i = 0; i < MAX_CHUNKS; i += 1) {
+        const state = useEditorStore.getState();
+        const pageObj = state.doc.pages.find((p) => p.page_number === state.selectedPage);
+        const contentEls = (pageObj?.elements || []).filter((e) => e.type !== 'header' && e.type !== 'footer');
+        const maxBottom = contentEls.length ? Math.max(...contentEls.map((e) => e.y + e.height)) : CONTENT_TOP - 12;
+        const anchorY = Math.max(CONTENT_TOP, maxBottom + 12);
+        const availableHeight = CONTENT_BOTTOM - anchorY;
+        // Techo GENEROSO acá a propósito -- bug real encontrado en vivo
+        // 2026-09-11 con un documento real ("su recuadro del objeto solo
+        // abarca un poquito pero el texto sigue fluyendo hacia abajo"):
+        // esta primera medición es para saber cuánto alto NECESITA el
+        // texto de verdad, ANTES de decidir dónde ponerlo -- pasarle como
+        // techo `PAGE_HEIGHT - anchorY - 8` (lo que queda de ESTA página,
+        // que cerca del fondo puede ser bien chico) hacía que
+        // `getAutoSizedTextBox` RECORTARA la medición a ese resto en vez
+        // de devolver el alto real -- ese número chico y artificial
+        // después SÍ pasaba la comprobación de "¿entra en una página
+        // vacía?" (`fullPageAvailable` de abajo, cualquier número chico
+        // entra ahí), así que el bloque se insertaba COMPLETO con un alto
+        // muy por debajo del que en verdad necesitaba: el cuadro quedaba
+        // chico y el texto seguía fluyendo visualmente por debajo, sin
+        // caja. Un techo grande y fijo (nunca depende de dónde va a
+        // terminar cayendo el bloque) deja que las comprobaciones de más
+        // abajo (`availableHeight`/`fullPageAvailable`) decidan bien con
+        // el alto REAL, no con uno ya recortado de antemano.
+        const realSize = getAutoSizedTextBox(
+          remainingText, 14, 'Inter', false, false, 1.35, fullColumnWidth, 28, fullColumnWidth,
+          50000, false, remainingSpans, pasteTextBaseStyle,
+        );
+        // Deselecciona ANTES de cada inserción: `addElement` ancla el
+        // bloque nuevo a la posición del elemento SELECCIONADO (estilo
+        // Word, "insertar en el cursor") si hay uno -- y como cada
+        // `addElement` deja seleccionado lo que acaba de crear, sin este
+        // deselect cada bloque de este pegado múltiple se ancla al
+        // ANTERIOR en vez de apilarse debajo (bug real: tabla/imagen
+        // quedaban todas superpuestas en la misma posición). Sin
+        // selección, `addElement` cae solo a su apilado normal debajo de
+        // todo el contenido existente.
+        selectElement(undefined);
+        const withSafetyMargin = (h: number) => Math.ceil(h * 1.15) + 24;
+        const paddedRealHeight = withSafetyMargin(realSize.height);
+        if (paddedRealHeight <= availableHeight) {
+          addElement('text', {
+            props: { text: remainingText, spans: remainingSpans, fontSize: 14, fontFamily: 'Inter', fontColor: '#1a1a1a', lineHeight: 1.35, ...paragraphFormat },
+            width: fullColumnWidth, height: paddedRealHeight, linkedGroupId,
+          });
+          await waitForRender();
+          return;
+        }
+        // No cabe en lo que queda de ESTA página -- pedido explícito
+        // 2026-09-09: si el bloque completo SÍ entraría entero en una
+        // página nueva (vacía), es mejor pasarlo entero a la siguiente
+        // que partirlo acá: partir cerca del borde de la hoja producía
+        // un pedacito chico en esta página + el resto en la otra, que
+        // es justo el "descuadre" reportado (a veces con el resto de la
+        // página nueva empezando en una posición rara). Solo tiene
+        // sentido partir cuando ni siquiera una página entera y vacía
+        // alcanzaría. `addElement` ya sabe saltar de página sola
+        // cuando lo que le pasamos no entra en el flujo actual -- no
+        // hace falta forzarlo a mano, solo NO intentar partirlo primero.
+        const fullPageAvailable = CONTENT_BOTTOM - CONTENT_TOP;
+        if (paddedRealHeight <= fullPageAvailable) {
+          addElement('text', {
+            props: { text: remainingText, spans: remainingSpans, fontSize: 14, fontFamily: 'Inter', fontColor: '#1a1a1a', lineHeight: 1.35, ...paragraphFormat },
+            width: fullColumnWidth, height: paddedRealHeight, linkedGroupId,
+          });
+          await waitForRender();
+          return;
+        }
+        // Reserva el colchón de seguridad ANTES de pedir el trozo que
+        // "cabe" -- bug real que encontré probando esto: pedía a
+        // splitTextForHeight un trozo que llenara TODO availableHeight
+        // y RECIÉN DESPUÉS le sumaba el colchón (+15%/24px) al alto ya
+        // ajustado al límite -- ese colchón lo empujaba otra vez POR
+        // ENCIMA del límite que se suponía debía respetar (un trozo que
+        // ya llenaba una página entera terminaba con un alto MAYOR a lo
+        // que cabía en cualquier página, dejando availableHeight
+        // NEGATIVO en la iteración siguiente -- ahí es de donde salía
+        // el desapareamiento). Pidiendo un presupuesto ya achicado para
+        // el colchón, el resultado final (ya con colchón) sí respeta
+        // availableHeight de verdad.
+        const marginBudget = (budget: number) => Math.max(40, (budget - 24) / 1.15);
+        const splitBudget = marginBudget(availableHeight);
+        const split = splitTextForHeight(
+          remainingText, 14, 'Inter', false, false, 1.35, fullColumnWidth, splitBudget, remainingSpans, pasteTextBaseStyle,
+        );
+        if (!split) {
+          // No se pudo partir (p.ej. availableHeight demasiado chico) --
+          // se deja el trozo completo, que addElement mande a una
+          // página nueva por su cuenta antes que perder contenido.
+          addElement('text', {
+            props: { text: remainingText, spans: remainingSpans, fontSize: 14, fontFamily: 'Inter', fontColor: '#1a1a1a', lineHeight: 1.35, ...paragraphFormat },
+            width: fullColumnWidth, height: paddedRealHeight, linkedGroupId,
+          });
+          await waitForRender();
+          return;
+        }
+        const fittingSpans = reindexSpans(remainingSpans, 0, split.fittingEnd);
+        const fittingSize = getAutoSizedTextBox(
+          split.fittingText, 14, 'Inter', false, false, 1.35, fullColumnWidth, 28, fullColumnWidth,
+          splitBudget, true, fittingSpans, pasteTextBaseStyle,
+        );
+        addElement('text', {
+          props: { text: split.fittingText, spans: fittingSpans, fontSize: 14, fontFamily: 'Inter', fontColor: '#1a1a1a', lineHeight: 1.35, ...paragraphFormat },
+          width: fullColumnWidth, height: withSafetyMargin(fittingSize.height), linkedGroupId,
+        });
+        await waitForRender();
+        remainingSpans = reindexSpans(remainingSpans, split.overflowStart, remainingText.length);
+        remainingText = split.overflowText;
+      }
+    };
+    for (const { block, caption } of pairCaptionsWithMedia(pasteBlocks)) {
+      if (block.kind === 'text') {
+        if (!block.text.trim()) continue;
+        // Solo incluye las claves que el HTML de origen SÍ traía --
+        // esparcir `{ textAlign: undefined, ... }` en `props` pisaría el
+        // default sensato ('left', etc.) con `undefined` en vez de dejarlo
+        // como estaba.
+        const paragraphFormat: ParagraphFormat = {};
+        if (block.textAlign !== undefined) paragraphFormat.textAlign = block.textAlign;
+        if (block.indentLeft !== undefined) paragraphFormat.indentLeft = block.indentLeft;
+        if (block.specialIndent !== undefined) paragraphFormat.specialIndent = block.specialIndent;
+        if (block.specialIndentBy !== undefined) paragraphFormat.specialIndentBy = block.specialIndentBy;
+        await insertTextWithPagination(block.text, block.spans, paragraphFormat);
+      } else if (block.kind === 'table') {
+        const escapedRows = block.rows.map((row) => row.map((cell) => escapeHtml(cell)));
+        const toStringGrid = (g: (string | undefined)[][]): string[][] => g.map((row) => row.map((v) => v ?? ''));
+        selectElement(undefined); // ver nota de deselección en insertTextWithPagination
+        // Autoajuste ADAPTATIVO ya calculado ANTES de insertar (no solo al
+        // apretar el botón manual "Autoajustar") -- pedido explícito
+        // 2026-09-10: una tabla ancha importada de un .docx (o pegada de
+        // Word/Excel) no debe depender de que el usuario se acuerde de
+        // ajustarla a mano, se salía de CONTENT_RIGHT sin nada que lo
+        // evitara. El padding YA NO queda fijo en 10 ("eso no es una
+        // regla"): `computeAdaptiveTableFit` prueba de 10 a 3px, usa el
+        // mayor con el que las columnas quepan sin apretarse, y solo aprieta
+        // proporcionalmente si ni 3px alcanza. El tamaño de fuente se toma
+        // del documento de origen si se detectó alguno (color/tamaño real
+        // de Word, o el marcador de nuestro import de .docx -- ver
+        // `detectCellFontSizePx` en tableClipboard.ts), con 14 como default
+        // solo si la tabla no trae ninguna señal.
+        const colCount = escapedRows[0]?.length || 0;
+        const detectedFontSize = block.fontSize && Number.isFinite(block.fontSize) ? block.fontSize : 14;
+        const adaptiveFit = computeAdaptiveTableFit(escapedRows, colCount, {
+          fontSize: detectedFontSize, maxTableWidth: fullColumnWidth,
+        });
+        addElement('table', {
+          // El ANCHO DEL ELEMENTO (no solo colWidths) también debe reflejar
+          // el autoajuste -- si se deja en el default (`Math.min(420, contentW)`,
+          // ver createElement en useEditorStore.ts), una tabla cuyas
+          // columnas ajustadas suman más de 420px quedaría con colWidths
+          // correctos pero un contenedor más angosto que ellos, el mismo
+          // "se rompe" que se está corrigiendo.
+          ...(adaptiveFit ? { width: adaptiveFit.colWidths.reduce((sum, w) => sum + w, 0) } : {}),
+          props: {
+            rows: escapedRows,
+            mergedCells: block.merges,
+            cellBackgrounds: toStringGrid(block.backgrounds),
+            cellAligns: toStringGrid(block.aligns),
+            fontSize: detectedFontSize,
+            // Color de texto del ENCABEZADO detectado en la tabla de origen
+            // -- pedido explícito 2026-09-11 ("no esta trayendo bien el
+            // color del header que lo deja en negro el texto"). La fila de
+            // encabezado SÍ es un solo color representativo válido (todas
+            // sus celdas suelen compartir el mismo, p.ej. blanco sobre un
+            // fondo oscuro), así que una sola medida global para toda la
+            // fila tiene sentido acá.
+            ...(block.headerTextColor ? { headerTextColor: block.headerTextColor } : {}),
+            // Color de texto POR CELDA del cuerpo -- bug real reportado en
+            // vivo 2026-09-11: una tabla con distintos colores según el
+            // valor de cada celda (p.ej. una columna "Estado" con verde/
+            // ámbar/azul según CUMPLE/PARCIAL/POR ACLARAR) se importaba con
+            // el color de la PRIMERA celda coloreada aplicado como
+            // `textColor` GLOBAL a las demás -- pintaba de ese único color
+            // hasta columnas que nunca tuvieron color propio en el
+            // documento. A diferencia del encabezado, el CUERPO no admite
+            // "una sola medida representativa": se usa la grilla por celda
+            // (ver `cellTextColors` en tableClipboard.ts) y NO se toca el
+            // `textColor` global de la tabla -- las celdas sin color propio
+            // simplemente heredan el default normal (negro), en vez de
+            // heredar el de otra celda cualquiera.
+            cellTextColors: toStringGrid(block.cellTextColors || []),
+            ...(adaptiveFit ? { colWidths: adaptiveFit.colWidths, cellPadding: adaptiveFit.cellPadding } : {}),
+            // Leyenda ("Tabla N. ...") emparejada por `pairCaptionsWithMedia`
+            // -- pedido explícito 2026-09-11: va en el campo dedicado para
+            // eso, no como un párrafo suelto que además arrastraba su
+            // alineación centrada al contenido siguiente.
+            ...(caption ? { caption } : {}),
+          },
+        });
+        // Espera a que TableBlock mida su alto REAL (filas reales,
+        // no el default de 200px) y lo reporte -- ver nota de
+        // waitForRender más arriba. Sin esto, el siguiente bloque se
+        // posiciona antes de que la tabla termine de "crecer" a su
+        // alto verdadero, y la tabla acaba creciendo ENCIMA de él.
+        await waitForRender();
+      } else if (block.kind === 'image') {
+        const resolvedSrc = block.src.startsWith('data:image/')
+          ? block.src
+          : /^https?:\/\//i.test(block.src)
+            ? await fetchImageAsDataUrl(block.src)
+            : null;
+        if (resolvedSrc) {
+          selectElement(undefined); // ver nota de deselección en insertTextWithPagination
+          const size = await resolveImagePasteSize(resolvedSrc, block.width, block.height, fullColumnWidth, CONTENT_BOTTOM - CONTENT_TOP);
+          // Leyenda ("Figura N. ...") emparejada por `pairCaptionsWithMedia`
+          // -- pedido explícito 2026-09-11, va al campo dedicado de
+          // ImageBlock.tsx (ya la renderizaba, nunca la recibía del import).
+          // +30 de alto extra cuando hay leyenda: mismo fijo que
+          // ImageBlock.tsx ya asume para su propio MediaCaption (a
+          // diferencia de una tabla, una imagen no tiene medición real de
+          // DOM que ajuste el alto del bloque sola) -- sin este ajuste el
+          // cuadro del elemento quedaría más chico que lo que en verdad se
+          // dibuja, el mismo síntoma que el bug de texto que no crecía con
+          // su contenido.
+          const captionExtra = caption ? 30 : 0;
+          addElement('image', {
+            ...(size ? { src: resolvedSrc, width: size.width, height: size.height + captionExtra } : { src: resolvedSrc }),
+            ...(caption ? { props: { caption } } : {}),
+          });
+          await waitForRender();
+        }
+      } else if (block.kind === 'shape') {
+        // Línea horizontal de un .docx importado (borde de párrafo `w:pBdr`,
+        // ver lib/docxPageBreaks.ts::markHorizontalRuleParagraphs +
+        // lib/richPaste.ts) -- se traduce al mismo bloque de forma tipo
+        // línea que ya existe en la barra de inserción, a todo el ancho de
+        // columna, en vez de perderse o colarse como texto.
+        selectElement(undefined); // ver nota de deselección en insertTextWithPagination
+        addElement('shape', {
+          width: fullColumnWidth,
+          height: 20,
+          props: { shapeType: 'line', stroke: '#94a3b8', strokeWidth: 1.5 },
+        });
+        await waitForRender();
+      }
+    }
+  };
+
+  // Importación de PDF+OCR con posición REAL (pedido explícito: "no pierdas
+  // las ubicaciones, mapas, fotos, tablas, fondos de hoja... documentos con
+  // secciones de 2 o más columnas"). A diferencia de `processPasteBlocks`
+  // (auto-flujo de una sola columna, pensado para .docx/portapapeles que
+  // NUNCA traen posición real de origen), acá cada bloque ya trae
+  // `geometry` (x/y/width/height en px, calculados en
+  // pdfOcrImport.ts::bboxToGeometry desde el bbox real del PDF, escalado al
+  // tamaño de hoja del editor) -- se coloca ahí tal cual con `addElement`
+  // (que YA soporta posición explícita, ver `hasExplicitPosition` en
+  // useEditorStore.ts, solo que ningún importador lo usaba hasta ahora).
+  // Reproduce layout multi-columna GRATIS (cada párrafo cae en su columna
+  // real, no hace falta modelar "secciones" -- el editor no tiene ese
+  // concepto, ver investigación previa) y posición relativa imagen/texto.
+  // Un `{kind:'page-break'}` por cada salto de página de ORIGEN fuerza una
+  // hoja nueva del lienzo por cada página del PDF (fidelidad de paginación
+  // 1:1, en vez de que el auto-flujo decida cuántas hojas hacen falta).
+  const processPositionedBlocks = async (pasteBlocks: PasteBlock[]): Promise<void> => {
+    const pasteTextBaseStyle: BaseTextStyle = {
+      bold: false, italic: false, underline: false, strikethrough: false, color: '#1a1a1a',
+      fontSize: 14, fontFamily: 'Inter', highlightColor: 'transparent', headingStyle: '', textAlign: 'left',
+    };
+    const waitForRender = () => new Promise<void>((resolve) => { setTimeout(resolve, 30); });
+    // Ceder el hilo cada tantos bloques (no en cada uno -- a diferencia de
+    // `processPasteBlocks`, ningún bloque acá depende de medir el resultado
+    // RENDERIZADO del anterior, cada uno trae su propia posición absoluta
+    // independiente, así que esperar 30ms después de CADA `addElement`
+    // volvía la importación de un PDF de ~1300 párrafos en varios minutos
+    // sin necesidad real -- probado en vivo). Solo se cede after cada
+    // página nueva (`addPage`) y cada tantos bloques dentro de la misma
+    // página, lo justo para que el navegador no se sienta trabado.
+    let opsSinceYield = 0;
+    const maybeYield = async () => {
+      opsSinceYield += 1;
+      if (opsSinceYield >= 40) {
+        opsSinceYield = 0;
+        await waitForRender();
+      }
+    };
+    // El bbox del PDF es relativo a la esquina física de SU hoja (0,0 =
+    // borde superior izquierdo real, incluido el margen) -- el lienzo del
+    // editor reserva además una franja fija de encabezado/pie (ADR-046,
+    // `HEADER_HEIGHT`/`FOOTER_HEIGHT`, fuera del área de contenido) que el
+    // PDF de origen no tiene. Se resta el margen ya aplicado
+    // (`marginLeft`/`marginTop`, puntos->px, ver App.tsx::handleImportPdfOcr)
+    // y se suma `CONTENT_LEFT`/`CONTENT_TOP` (que YA incluyen esa franja) --
+    // así el primer bloque de contenido cae justo debajo del encabezado en
+    // vez de encima, sin tocar el bbox original en sí.
+    const marginLeftPx = marginLeft ?? 0;
+    const marginTopPx = marginTop ?? 0;
+    const toEditorX = (x: number) => x - marginLeftPx + CONTENT_LEFT;
+    const toEditorY = (y: number) => y - marginTopPx + CONTENT_TOP;
+    const MIN_TEXT_WIDTH = 24;
+    const placedBoxesByPage = new Map<number, { x: number; y: number; width: number; height: number }[]>();
+    const overlapsX = (a: { x: number; width: number }, b: { x: number; width: number }) => {
+      const overlap = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+      return overlap > Math.min(a.width, b.width) * 0.25;
+    };
+    const reserveBox = (pageNumber: number, box: { x: number; y: number; width: number; height: number }) => {
+      const boxes = placedBoxesByPage.get(pageNumber) || [];
+      let y = box.y;
+      let guard = 0;
+      while (guard < 200) {
+        const hit = boxes.find((other) => overlapsX(box, other) && y < other.y + other.height + 2 && y + box.height > other.y + 2);
+        if (!hit) break;
+        y = hit.y + hit.height + 2;
+        guard += 1;
+      }
+      const resolved = { ...box, y };
+      boxes.push(resolved);
+      boxes.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+      placedBoxesByPage.set(pageNumber, boxes);
+      return resolved;
+    };
+    let targetPageNumber = selectedPage;
+
+    for (const block of pasteBlocks) {
+      if (block.kind === 'page-break') {
+        targetPageNumber += 1;
+        await maybeYield();
+        continue;
+      }
+      if (block.kind === 'text' && block.geometry) {
+        if (!block.text.trim()) continue;
+        const width = Math.max(MIN_TEXT_WIDTH, block.geometry.width);
+        const targetHeight = Math.max(12, block.geometry.height);
+        const importedFontSize = dominantImportedFontSize(block.spans, 12);
+        const fontFamily = block.spans.find((span) => span.fontFamily)?.fontFamily || 'Inter';
+        const lineHeight = 1.18;
+        let fittedFontSize = importedFontSize;
+        let fittedSpans = block.spans;
+        let size = getAutoSizedTextBox(
+          block.text, fittedFontSize, fontFamily, false, false, lineHeight, width, 12, width, 50000, false, fittedSpans,
+          { ...pasteTextBaseStyle, fontSize: fittedFontSize, fontFamily },
+        );
+        while (size.height > targetHeight + 3 && fittedFontSize > 7) {
+          fittedFontSize -= 1;
+          const ratio = fittedFontSize / importedFontSize;
+          fittedSpans = scaleImportedSpans(block.spans, ratio);
+          size = getAutoSizedTextBox(
+            block.text, fittedFontSize, fontFamily, false, false, lineHeight, width, 12, width, 50000, false, fittedSpans,
+            { ...pasteTextBaseStyle, fontSize: fittedFontSize, fontFamily },
+          );
+        }
+        const height = Math.max(12, Math.min(Math.max(size.height, targetHeight), targetHeight + 3));
+        const box = reserveBox(targetPageNumber, { x: toEditorX(block.geometry.x), y: toEditorY(block.geometry.y), width, height });
+        addElement('text', {
+          pageNumber: targetPageNumber,
+          x: box.x, y: box.y,
+          width: box.width, height: box.height,
+          props: {
+            text: block.text,
+            spans: fittedSpans,
+            fontSize: fittedFontSize,
+            fontFamily,
+            fontColor: '#1a1a1a',
+            lineHeight,
+          },
+        });
+        await maybeYield();
+      } else if (block.kind === 'table' && block.geometry) {
+        const escapedRows = block.rows.map((row) => row.map((cell) => escapeHtml(cell)));
+        const toStringGrid = (g: (string | undefined)[][]): string[][] => g.map((row) => row.map((v) => v ?? ''));
+        const colCount = escapedRows[0]?.length || 0;
+        const width = Math.max(40, block.geometry.width);
+        const adaptiveFit = computeAdaptiveTableFit(escapedRows, colCount, { fontSize: 14, maxTableWidth: width });
+        const tableWidth = adaptiveFit ? adaptiveFit.colWidths.reduce((sum, w) => sum + w, 0) : width;
+        const tableBox = reserveBox(targetPageNumber, { x: toEditorX(block.geometry.x), y: toEditorY(block.geometry.y), width: tableWidth, height: Math.max(20, block.geometry.height) });
+        addElement('table', {
+          pageNumber: targetPageNumber,
+          x: tableBox.x, y: tableBox.y,
+          width: tableBox.width,
+          props: {
+            rows: escapedRows,
+            mergedCells: block.merges,
+            cellBackgrounds: toStringGrid(block.backgrounds),
+            cellAligns: toStringGrid(block.aligns),
+            fontSize: 14,
+            cellTextColors: toStringGrid(block.cellTextColors || []),
+            ...(adaptiveFit ? { colWidths: adaptiveFit.colWidths, cellPadding: adaptiveFit.cellPadding } : {}),
+          },
+        });
+        // La tabla SÍ necesita este respiro (no el yield liviano de arriba):
+        // TableBlock mide su alto real recién después de renderizar (mismo
+        // motivo que processPasteBlocks) -- sin esto, su `height` en el
+        // store se queda en el default chico, aunque acá ningún bloque
+        // siguiente dependa de esa medición para su PROPIA posición.
+        await waitForRender();
+      } else if (block.kind === 'image' && block.geometry) {
+        const resolvedSrc = block.src.startsWith('data:image/') ? block.src : null;
+        if (!resolvedSrc) continue;
+        const isBackground = !!block.geometry.isBackground;
+        const imageBox = isBackground
+          ? { x: block.geometry.x, y: block.geometry.y, width: block.geometry.width, height: block.geometry.height }
+          : reserveBox(targetPageNumber, { x: toEditorX(block.geometry.x), y: toEditorY(block.geometry.y), width: block.geometry.width, height: block.geometry.height });
+        addElement('image', {
+          // El fondo de página completa NO se corre por el margen (ocupa la
+          // hoja entera de borde a borde, ver bboxToGeometry) -- restarle
+          // marginLeft/Top acá lo desplazaría lejos de 0,0.
+          pageNumber: targetPageNumber,
+          x: imageBox.x,
+          y: imageBox.y,
+          width: imageBox.width,
+          height: imageBox.height,
+          src: resolvedSrc,
+          // Detrás de todo lo demás en esta página -- se inserta ANTES que
+          // el resto de bloques de su misma página (orden de lectura real
+          // del backend), así que ya cae primero en el z-order; zIndex 0
+          // explícito lo asegura aunque el orden de inserción cambiara.
+          ...(isBackground ? { zIndex: 0 } : {}),
+        });
+        await maybeYield();
+      }
+    }
+  };
+
+  // Importación de un .docx (ribbon Datos > Importación) -- App.tsx convierte
+  // el archivo a HTML con mammoth.js y lo deja en
+  // useEditorStore::pendingImportBlocks ya parseado a bloques (mismo tipo
+  // `PasteBlock` del pegado). Solo la página SELECCIONADA lo procesa (mismo
+  // criterio que el `useEffect` de `onSystemPaste` debajo) y lo limpia de
+  // inmediato para no procesarlo dos veces.
+  //
+  // PDF+OCR (App.tsx::handleImportPdfOcr) es la ÚNICA fuente que deja
+  // bloques con `geometry`/`page-break` (ver pdfOcrImport.ts) -- alcanza con
+  // mirar el primero para elegir el camino de posición real en vez del
+  // auto-flujo de una columna (ver processPositionedBlocks arriba).
+  useEffect(() => {
+    if (page.page_number !== selectedPage) return;
+    if (!pendingImportBlocks || pendingImportBlocks.length === 0) return;
+    const blocksToImport = pendingImportBlocks;
+    setPendingImportBlocks(null);
+    const isPositioned = blocksToImport.some(
+      (b) => b.kind === 'page-break' || (b.kind !== 'shape' && 'geometry' in b && b.geometry),
+    );
+    void (isPositioned ? processPositionedBlocks(blocksToImport) : processPasteBlocks(blocksToImport));
+  }, [pendingImportBlocks, page.page_number, selectedPage]);
+
+  // Pegado desde el portapapeles del SISTEMA (Ctrl/Cmd+V) cuando NO hay un
+  // campo de texto o una celda de tabla enfocados (esos casos ya tienen su
+  // propio manejo de `paste`, más abajo en este archivo y en
+  // TableBlock.tsx). Pedido explícito: (1) copiar una imagen de un Word o
+  // Google Docs (clic en la imagen + Ctrl+C) y pegarla directo en el
+  // lienzo, sin pasar por el modal de "Insertar imagen"; (2) pegar una
+  // selección de celdas de Excel/Sheets SIN tener que crear una tabla antes
+  // -- hasta ahora el pegado inteligente de tablas (SCRUM-30, ver
+  // parseHtmlClipboardTable) solo funcionaba pegando DENTRO de una celda ya
+  // existente. Si el portapapeles no trae ni imagen ni datos con forma de
+  // tabla, cae al pegado interno de objetos de siempre (pasteElement) --
+  // mismo comportamiento que antes para "copiar un objeto del lienzo y
+  // pegarlo". TODO lo que se pega (imagen, tabla nueva, u objeto interno)
+  // se ancla en `lastCanvasClickRef` -- el último punto donde el usuario
+  // hizo clic en ESTE lienzo -- en vez del auto-acomodo genérico, pedido
+  // explícito ("pegar donde esté el cursor/último clic, sin excepción").
+  useEffect(() => {
+    if (page.page_number !== selectedPage) return undefined;
+    const onSystemPaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName?.toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable) return;
+      }
+      const cd = event.clipboardData;
+      const html = cd?.getData('text/html') ?? '';
+      const dropPoint = lastCanvasClickRef.current;
+      const clampToPage = (x: number, y: number, width: number, height: number) => ({
+        x: Math.min(Math.max(x, 0), Math.max(0, PAGE_WIDTH - width)),
+        y: Math.min(Math.max(y, 0), Math.max(0, PAGE_HEIGHT - height)),
+      });
+      // Reancla al último clic solo lo que cayó en ESTA página (el grupo de
+      // offset 0) -- lo que haya generado páginas NUEVAS (offset > 0, ver
+      // pasteSelection) no tiene sentido reanclarlo a un clic hecho en una
+      // página distinta, conserva su propia disposición relativa. Comparte
+      // esta lógica el pegado por marcador interno (0) y el respaldo cuando
+      // el portapapeles del sistema no traía nada útil (más abajo).
+      const repositionPastedGroupToClick = (pastedIds: string[]) => {
+        if (!pastedIds.length || !dropPoint) return;
+        const freshPage = useEditorStore.getState().doc.pages.find((p) => p.page_number === page.page_number);
+        const pastedEls = pastedIds
+          .map((id) => freshPage?.elements.find((e) => e.id === id))
+          .filter((e): e is ReportElement => Boolean(e));
+        if (!pastedEls.length) return;
+        const curMinX = Math.min(...pastedEls.map((e) => e.x));
+        const curMinY = Math.min(...pastedEls.map((e) => e.y));
+        pastedEls.forEach((el) => {
+          const next = clampToPage(dropPoint.x + (el.x - curMinX), dropPoint.y + (el.y - curMinY), el.width, el.height);
+          updateElement(page.page_number, el.id, next);
+        });
+      };
+
+      // 0) Marcador interno propio (Ctrl+A/Ctrl+C de VARIOS elementos de
+      // ESTA app, ver lib/elementsClipboard.ts) -- se revisa ANTES que
+      // cualquier otro detector: el mismo copiado también escribió HTML
+      // visual real (tablas/imágenes) para que Word/Docs lo entiendan, y sin
+      // esta comprobación el detector de tabla de más abajo
+      // (parseHtmlClipboardTable) tomaría solo la PRIMERA tabla de ese HTML
+      // como si fuera una tabla suelta nueva, descartando el resto de lo
+      // copiado (texto, imágenes, otras tablas).
+      const internalPayload = html ? extractInternalElementsFromHtml(html) : null;
+      if (internalPayload && internalPayload.groups.length) {
+        event.preventDefault();
+        // ADR-051 (actualización 2026-09-11): un sensor/KPI/gráfico en vivo
+        // solo se reconstruye "vivo" si quien pega es quien copió -- de otro
+        // autor, se degrada a nota de texto (mismo trato que Word/Excel/
+        // PowerPoint, ver stripLiveBindingForCrossUserPaste). El bloqueo por
+        // informe firmado/archivado ya lo cubre pasteSelection (documentLocked).
+        const currentUserId = getSession()?.userId ?? null;
+        const isSameAuthor = internalPayload.ownerUserId !== null && internalPayload.ownerUserId === currentUserId;
+        const groupsToPaste = isSameAuthor
+          ? internalPayload.groups
+          : stripLiveBindingForCrossUserPaste(internalPayload.groups);
+        repositionPastedGroupToClick(pasteSelection(page.page_number, groupsToPaste));
+        return;
+      }
+
+      const insertImage = async (src: string, hintWidth?: number, hintHeight?: number) => {
+        if (!src) return;
+        const patch: { src: string; x?: number; y?: number; width?: number; height?: number } = { src };
+        if (dropPoint) { patch.x = dropPoint.x; patch.y = dropPoint.y; }
+        // Tamaño real de la imagen (pedido explícito 2026-09-09: "el mismo
+        // tamaño en el que se encuentra la imagen") -- ver
+        // resolveImagePasteSize más arriba. Sin esto, quedaba el
+        // default fijo (360x220) de cualquier bloque imagen nuevo.
+        const size = await resolveImagePasteSize(src, hintWidth, hintHeight, CONTENT_RIGHT - CONTENT_LEFT, CONTENT_BOTTOM - CONTENT_TOP);
+        if (size) { patch.width = size.width; patch.height = size.height; }
+        addElement('image', patch);
+      };
+      const imageItem = cd ? Array.from(cd.items || []).find((it) => it.kind === 'file' && it.type.startsWith('image/')) : null;
+      if (imageItem) {
+        const file = imageItem.getAsFile();
+        if (file) {
+          event.preventDefault();
+          const reader = new FileReader();
+          reader.onload = () => { void insertImage(String(reader.result || '')); };
+          reader.readAsDataURL(file);
+        }
+        return;
+      }
+      const pasteBlocks = html ? parseRichClipboardBlocks(html) : [];
+      const isMixedOrTextOnly = pasteBlocks.length > 1 || (pasteBlocks.length === 1 && pasteBlocks[0].kind === 'text');
+      if (isMixedOrTextOnly) {
+        event.preventDefault();
+        void processPasteBlocks(pasteBlocks);
+        return;
+      }
+
+      const htmlDoc = html ? new DOMParser().parseFromString(html, 'text/html') : null;
+      // Si el HTML trae una <table> real, eso se maneja en el punto 2 de
+      // abajo -- no tratar como imagen un <img> decorativo dentro de una
+      // celda.
+      const htmlImgEl = htmlDoc && !htmlDoc.querySelector('table') ? htmlDoc.querySelector('img') : null;
+      const htmlImgSrc = htmlImgEl?.getAttribute('src') || '';
+      // Tamaño MOSTRADO en el documento de origen, si el HTML lo trae (ver
+      // readImageSize en lib/richPaste.ts) -- mismo criterio que el pegado
+      // de documento mixto/importación de .docx más abajo.
+      const htmlImgSize = htmlImgEl ? readImageSize(htmlImgEl) : {};
+      if (htmlImgSrc.startsWith('data:image/')) {
+        event.preventDefault();
+        void insertImage(htmlImgSrc, htmlImgSize.width, htmlImgSize.height);
+        return;
+      }
+      if (/^https?:\/\//i.test(htmlImgSrc)) {
+        event.preventDefault();
+        void fetchImageAsDataUrl(htmlImgSrc).then((dataUrl) => { if (dataUrl) void insertImage(dataUrl, htmlImgSize.width, htmlImgSize.height); });
+        return;
+      }
+
+      // 2) Selección de celdas de Excel/Sheets (o cualquier tabla HTML/TSV
+      // de más de una celda) sin una tabla en foco -- crea la tabla desde
+      // cero con esos datos, en vez de exigir insertar una tabla vacía
+      // primero. Mismo parser que el pegado dentro de una celda existente
+      // (ver TableBlock.tsx::handlePasteGrid) — lib/tableClipboard.ts.
+      const parsedTable = html ? parseHtmlClipboardTable(html) : null;
+      const grid = parsedTable ? parsedTable.rows : parsePlainTextClipboardGrid(cd?.getData('text/plain') ?? '');
+      const isMultiCell = !!grid && (grid.length > 1 || (grid[0]?.length ?? 0) > 1);
+      if (grid && isMultiCell) {
+        event.preventDefault();
+        const escapedRows = grid.map((row) => row.map((cell) => escapeHtml(cell)));
+        const toStringGrid = (g: (string | undefined)[][]): string[][] => g.map((row) => row.map((v) => v ?? ''));
+        const patch: { props: Record<string, unknown>; x?: number; y?: number } = {
+          props: {
+            rows: escapedRows,
+            ...(parsedTable ? {
+              mergedCells: parsedTable.merges,
+              cellBackgrounds: toStringGrid(parsedTable.backgrounds),
+              cellAligns: toStringGrid(parsedTable.aligns),
+              ...(parsedTable.headerTextColor ? { headerTextColor: parsedTable.headerTextColor } : {}),
+              cellTextColors: toStringGrid(parsedTable.cellTextColors || []),
+            } : {}),
+          },
+        };
+        if (dropPoint) { patch.x = dropPoint.x; patch.y = dropPoint.y; }
+        addElement('table', patch);
+        return;
+      }
+
+      event.preventDefault();
+      if (useEditorStore.getState().clipboardElements?.length) {
+        repositionPastedGroupToClick(pasteSelection(page.page_number));
+        return;
+      }
+      const newId = pasteElement(page.page_number);
+      if (newId && dropPoint) {
+        const created = useEditorStore.getState().doc.pages
+          .find((p) => p.page_number === page.page_number)?.elements.find((e) => e.id === newId);
+        if (created) {
+          updateElement(page.page_number, newId, clampToPage(dropPoint.x, dropPoint.y, created.width, created.height));
+        }
+      }
+    };
+    window.addEventListener('paste', onSystemPaste);
+    return () => window.removeEventListener('paste', onSystemPaste);
+  }, [page.page_number, selectedPage, addElement, pasteElement, pasteSelection, updateElement, PAGE_WIDTH, PAGE_HEIGHT]);
 
   useEffect(() => {
-    const selectedElement = page.elements.find((element) => element.id === selectedElementId);
-    if (!selectedElement || selectedElement.locked) {
+    // No hay nada seleccionado.
+    if (selectedElementIds.length === 0) {
       return;
     }
-    if (selectedElement.type === 'text' && openTextEditorId === selectedElement.id) {
-      return;
-    }
-    if (selectedElement.type === 'table' && canvasTableEditId === selectedElement.id) {
+
+    // Si estamos editando texto, una tabla, o interactuando con un video
+    // (barra espaciadora para play/pausa, flechas para adelantar/atrasar),
+    // las teclas siguen perteneciendo al editor/reproductor, no al manejo de
+    // objetos del lienzo.
+    if (openTextEditorId || canvasTableEditId || canvasVideoInteractId) {
       return;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+
       if (target) {
         const tag = target.tagName?.toLowerCase();
-        if (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable) {
+
+        if (
+          tag === 'input' ||
+          tag === 'textarea' ||
+          tag === 'select' ||
+          target.isContentEditable
+        ) {
           return;
         }
       }
 
-      const key = event.key;
-      if (key !== 'ArrowLeft' && key !== 'ArrowRight' && key !== 'ArrowUp' && key !== 'ArrowDown') {
+      // ─────────────────────────────────────
+      // ELIMINAR SELECCIÓN
+      // ─────────────────────────────────────
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+
+        const deletableIds = selectedElementIds.filter((id) => {
+          const element = page.elements.find((el) => el.id === id);
+          return element && !element.locked;
+        });
+
+        if (deletableIds.length > 0) {
+          removeElements(page.page_number, deletableIds);
+        }
+
+        return;
+      }
+
+      // ─────────────────────────────────────
+      // MOVIMIENTO CON FLECHAS
+      // ─────────────────────────────────────
+      if (
+        event.key !== 'ArrowLeft' &&
+        event.key !== 'ArrowRight' &&
+        event.key !== 'ArrowUp' &&
+        event.key !== 'ArrowDown'
+      ) {
         return;
       }
 
       event.preventDefault();
 
       const step = event.shiftKey ? GRID : 1;
-      const deltaX = key === 'ArrowLeft' ? -step : key === 'ArrowRight' ? step : 0;
-      const deltaY = key === 'ArrowUp' ? -step : key === 'ArrowDown' ? step : 0;
 
-      const w = Math.max(20, selectedElement.width ?? 120);
-      const h = Math.max(20, selectedElement.height ?? 56);
+      const deltaX =
+        event.key === 'ArrowLeft'
+          ? -step
+          : event.key === 'ArrowRight'
+            ? step
+            : 0;
 
-      const boundedX = Math.min(Math.max((selectedElement.x ?? CONTENT_LEFT) + deltaX, CONTENT_LEFT), CONTENT_RIGHT - w);
-      const boundedY = Math.min(Math.max((selectedElement.y ?? CONTENT_TOP) + deltaY, CONTENT_TOP), CONTENT_BOTTOM - h);
+      const deltaY =
+        event.key === 'ArrowUp'
+          ? -step
+          : event.key === 'ArrowDown'
+            ? step
+            : 0;
 
-      updateElement(page.page_number, selectedElement.id, {
-        x: snap(boundedX, snapEnabled),
-        y: snap(boundedY, snapEnabled),
+      // Caso de un solo objeto.
+      if (selectedElementIds.length === 1) {
+        const selectedElement = page.elements.find(
+          (element) => element.id === selectedElementIds[0],
+        );
+
+        if (!selectedElement || selectedElement.locked) {
+          return;
+        }
+
+        const w = Math.max(20, selectedElement.width ?? 120);
+        const h = Math.max(20, selectedElement.height ?? 56);
+
+        const boundedX = Math.min(
+          Math.max(
+            (selectedElement.x ?? CONTENT_LEFT) + deltaX,
+            CONTENT_LEFT,
+          ),
+          CONTENT_RIGHT - w,
+        );
+
+        const boundedY = Math.min(
+          Math.max(
+            (selectedElement.y ?? CONTENT_TOP) + deltaY,
+            CONTENT_TOP,
+          ),
+          CONTENT_BOTTOM - h,
+        );
+
+        updateElement(page.page_number, selectedElement.id, {
+          x: snap(boundedX, snapEnabled),
+          y: snap(boundedY, snapEnabled),
+        });
+
+        return;
+      }
+
+      // Caso de selección múltiple.
+      selectedElementIds.forEach((id) => {
+        const element = page.elements.find((el) => el.id === id);
+
+        if (!element || element.locked) {
+          return;
+        }
+
+        const w = Math.max(20, element.width ?? 120);
+        const h = Math.max(20, element.height ?? 56);
+
+        const boundedX = Math.min(
+          Math.max(
+            (element.x ?? CONTENT_LEFT) + deltaX,
+            CONTENT_LEFT,
+          ),
+          CONTENT_RIGHT - w,
+        );
+
+        const boundedY = Math.min(
+          Math.max(
+            (element.y ?? CONTENT_TOP) + deltaY,
+            CONTENT_TOP,
+          ),
+          CONTENT_BOTTOM - h,
+        );
+
+        updateElement(page.page_number, id, {
+          x: snap(boundedX, snapEnabled),
+          y: snap(boundedY, snapEnabled),
+        });
       });
     };
 
     window.addEventListener('keydown', handleKeyDown);
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [
     openTextEditorId,
     canvasTableEditId,
+    canvasVideoInteractId,
     page.elements,
     page.page_number,
-    selectedElementId,
+    selectedElementIds,
     snapEnabled,
+    removeElements,
     updateElement,
     layoutMode,
     CONTENT_LEFT,
@@ -1358,15 +1973,84 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
       }}
     >
       <div className="page-meta">{pageLabel}</div>
+      {layoutMode === 'presentation' && (
+        // El ref de posicionamiento del popover (usePopover) necesita una
+        // caja real y medible vía getBoundingClientRect() -- un wrapper
+        // "display: contents" (como estaba antes) no genera caja propia y
+        // devuelve un rect vacío en (0,0), por eso el popover aparecía en
+        // la esquina superior izquierda de la pantalla en vez de junto al
+        // botón. Se resuelve poniendo el ref DIRECTAMENTE en el elemento
+        // que ya es "el botón circular" visualmente (antes era un <button>
+        // envuelto en ese div fantasma).
+        <div
+          ref={transitionPopover.rootRef}
+          role="button"
+          tabIndex={0}
+          className={`page-transition-control${page.transition && page.transition !== 'none' ? ' page-transition-control--active' : ''}`}
+          title="Transición de ESTA diapositiva al exportar a PPTX (no se anima acá, solo en PowerPoint)"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); transitionPopover.toggle(); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              e.stopPropagation();
+              transitionPopover.toggle();
+            }
+          }}
+        >
+          <ArrowLeftRight size={13} />
+          {transitionPopover.isOpen && createPortal(
+            <div
+              ref={transitionPopover.popoverRef}
+              className="transition-gallery-dropdown"
+              style={{ position: 'fixed', top: `${transitionPopover.coords.top}px`, left: `${transitionPopover.coords.left}px`, zIndex: 99999 }}
+            >
+              <span className="transition-gallery-title">Transición de esta diapositiva</span>
+              <span className="transition-gallery-hint">Se aplica al exportar a PPTX — cada miniatura muestra el efecto en bucle</span>
+              <div className="transition-gallery-grid">
+                {TRANSITION_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={`transition-option-card${(page.transition || 'none') === opt.value ? ' transition-option-card--active' : ''}`}
+                    onClick={() => {
+                      setPageTransition(page.page_number, opt.value);
+                      transitionPopover.close();
+                    }}
+                  >
+                    <TransitionPreview kind={opt.value} />
+                    <span className="transition-option-label">{opt.label}</span>
+                    <span className="transition-option-desc">{opt.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>,
+            document.body,
+          )}
+        </div>
+      )}
+      <div className="report-page-capture-surface" data-report-page-capture="true">
       <Stage
         ref={stageRef}
         width={PAGE_WIDTH * scale}
         height={PAGE_HEIGHT * scale}
         onMouseDown={(event: any) => {
           selectPage(page.page_number);
+          // Recordar dónde fue este clic (sea sobre un objeto o sobre área
+          // vacía) para que un Ctrl+V posterior sepa dónde soltar el
+          // contenido pegado -- ver lastCanvasClickRef arriba.
+          const pointerPos = event.target.getStage()?.getPointerPosition();
+          if (pointerPos) {
+            lastCanvasClickRef.current = { x: pointerPos.x / scale, y: pointerPos.y / scale };
+          }
           if (event.target === event.target.getStage()) {
-            wasSelectedRef.current = useEditorStore.getState().selectedElementId != null || openTextEditorId != null || canvasTableEditId != null;
+            wasSelectedRef.current =
+              useEditorStore.getState().selectedElementIds.length > 0 ||
+              openTextEditorId != null ||
+              canvasTableEditId != null ||
+              canvasVideoInteractId != null;
             setCanvasTableEditId(null);
+            setCanvasVideoInteractId(null);
             selectElement(undefined);
             setOpenTextEditorId(null);
           }
@@ -1377,62 +2061,22 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
         onMouseLeave={() => {
           dragInProgressRef.current = false;
         }}
-        onClick={(event: any) => {
-          if (event.target === event.target.getStage() && !dragInProgressRef.current) {
-            if (!wasSelectedRef.current) {
-              const pos = event.target.getStage().getPointerPosition();
-              if (pos) {
-                const x = snap(pos.x / scale, snapEnabled);
-                const y = snap(pos.y / scale, snapEnabled);
-
-                // Si ya habia un editor abierto, lo cerramos
-                if (openTextEditorId) {
-                  setOpenTextEditorId(null);
-                }
-
-                useEditorStore.getState().addElement('text', {
-                  width: 350,
-                  height: 40,
-                  props: { text: '' }
-                });
-                const newId = useEditorStore.getState().selectedElementId;
-                if (newId) {
-                  useEditorStore.getState().updateElement(page.page_number, newId, { x, y });
-                }
-                setOpenTextEditorId(newId ?? null);
-              }
-            }
-          }
-        }}
         onDblClick={(event: any) => {
           if (event.target === event.target.getStage()) {
             const pos = event.target.getStage().getPointerPosition();
             if (pos) {
               const y = snap(pos.y / scale, snapEnabled);
-
               if (openTextEditorId) {
                 setOpenTextEditorId(null);
               }
-
-              // Un bloque de texto creado con doble clic en la hoja debe
-              // ocupar TODO el ancho disponible de la columna de contenido
-              // (como un párrafo nuevo de Word), igual que ya hace el botón
-              // "Insertar texto" del ribbon (ver createElement en
-              // useEditorStore.ts) — antes quedaba fijo en 350px de ancho
-              // sin relación con el ancho real de la hoja, un recuadro
-              // angosto en medio de una página A4/A3. Se ancla al margen
-              // izquierdo del contenido; la Y sí respeta dónde se hizo doble
-              // clic.
               useEditorStore.getState().addElement('text', {
                 x: CONTENT_LEFT,
+                y,
                 width: CONTENT_RIGHT - CONTENT_LEFT,
-                height: 40,
+                height: 35,
                 props: { text: '' }
               });
               const newId = useEditorStore.getState().selectedElementId;
-              if (newId) {
-                useEditorStore.getState().updateElement(page.page_number, newId, { x: CONTENT_LEFT, y });
-              }
               setOpenTextEditorId(newId ?? null);
             }
           }
@@ -1460,8 +2104,8 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
             y={CONTENT_TOP}
             width={CONTENT_RIGHT - CONTENT_LEFT}
             height={CONTENT_BOTTOM - CONTENT_TOP}
-            stroke="#e2e8f0"
-            dash={[4, 4]}
+            // stroke="#e2e8f0"
+            // dash={[4, 4]}
             listening={false}
           />
 
@@ -1478,7 +2122,15 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
             .sort((a, b) => a.zIndex - b.zIndex)
             .map((element) => {
               const isTextElement = element.type === 'text';
-              const isEditingText = isTextElement && openTextEditorId === element.id;
+              // Modo "texto plano" de la página (pedido explícito
+              // 2026-09-08, ver ReportPage.plainTextElementId): ESTE bloque
+              // en particular se comporta como si estuviera SIEMPRE en
+              // edición -- nunca muestra el borde de selección sólido (más
+              // abajo, en el if/else que arma strokeColor/strokeW a partir
+              // de isEditingText). Cualquier OTRO bloque de texto conserva
+              // su comportamiento normal, esto compara por id, no por tipo.
+              const isPageTextElement = isTextElement && page.plainTextElementId === element.id;
+              const isEditingText = isTextElement && (openTextEditorId === element.id || isPageTextElement);
               const openTextEditorOnDoubleClick = () => {
                 if (!isTextElement) {
                   return;
@@ -1525,10 +2177,25 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 onRequestImageReplace(page.page_number, element.id);
               };
 
+              const openVideoInteractOnDoubleClick = () => {
+                if (element.type !== 'video') {
+                  return;
+                }
+                if (element.locked) {
+                  return;
+                }
+                if (dragInProgressRef.current) {
+                  return;
+                }
+                selectElement(element.id);
+                setCanvasVideoInteractId(element.id);
+              };
+
               const onRectDoubleClick = () => {
                 openTextEditorOnDoubleClick();
                 openTableEditorOnDoubleClick();
                 openImageReplaceOnDoubleClick();
+                openVideoInteractOnDoubleClick();
               };
 
               // Borde configurable por el usuario (panel de propiedades) —
@@ -1536,7 +2203,8 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               // visualmente mientras el bloque está seleccionado. Fallback a
               // defaultBorderByType para documentos guardados ANTES de que
               // este campo existiera (element.border === undefined).
-              const isSelectedEl = selectedElementId === element.id;
+              const isSelectedEl = selectedElementIds.includes(element.id);
+              const isLineShape = element.type === 'shape' && element.props?.shapeType === 'line';
               const effectiveBorder = element.border || defaultBorderByType(element.type);
               let strokeColor: string;
               let strokeW: number;
@@ -1549,7 +2217,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 strokeColor = 'transparent';
                 strokeW = 0;
                 strokeDash = undefined;
-              } else if (isSelectedEl) {
+              } else if (isSelectedEl && !isLineShape) {
                 strokeColor = 'var(--accent)';
                 strokeW = 2;
                 strokeDash = undefined;
@@ -1566,30 +2234,30 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 // Guía de edición sutil para cuadros de texto sin borde propio
                 // configurado — no es el borde del usuario, solo una ayuda
                 // visual para ubicar el cuadro vacío en el lienzo.
-                strokeColor = 'rgba(99, 102, 241, 0.2)';
-                strokeW = 1;
-                strokeDash = [4, 4];
+                strokeColor = 'transparent';
+                strokeW = 0;
+                strokeDash = undefined;
               } else {
                 strokeColor = 'transparent';
                 strokeW = 0;
                 strokeDash = undefined;
               }
 
-              const renderedHeight = element.type === 'sensor_multi_chart'
-                ? Math.max(Number(element.height) || 0, sensorDashboardMinHeight(element.props || {}, Number(element.width) || 0))
-                : element.height;
-
               return (
+              <React.Fragment key={element.id}>
+              {element.type === 'shape' && normalizeWrapMode(element.wrapMode) !== 'infront' && (
+                <ShapeVisual element={element} />
+              )}
               <Rect
-                key={element.id}
                 id={element.id}
                 x={element.x}
                 y={element.y}
                 width={element.width}
-                height={renderedHeight}
+                height={element.height}
+                rotation={element.rotation || 0}
                 fill={
-                  isTextElement
-                    ? 'rgba(255,255,255,0.001)'
+                  isTextElement || element.type === 'chart' || element.type === 'shape'
+                    ? 'transparent'
                     : element.type === 'kpi'
                       ? '#e8eefb'
                       : '#f8fbff'
@@ -1602,19 +2270,43 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 cornerRadius={8}
                 dash={strokeDash}
                 draggable={!element.locked && !isEditingText}
-                onClick={() => {
+                onClick={(event: any) => {
                   if (openTextEditorId) {
                     stopDictation();
                     setOpenTextEditorId(null);
                   }
-                  selectElement(element.id);
+
+                  // El bloque de "texto plano" de la página se abre con UN
+                  // solo clic (no doble) -- se supone que se comporta como
+                  // escribir directo sobre la hoja, no como seleccionar un
+                  // cuadro de texto aparte primero.
+                  if (isPageTextElement) {
+                    openTextEditorOnDoubleClick();
+                    return;
+                  }
+
+                  toggleSelection(element.id, Boolean(event.evt.ctrlKey || event.evt.metaKey));
+                  // Un solo clic ya desbloquea la interacción con las celdas
+                  // (selección múltiple estilo Excel, ver TableBlock.tsx) --
+                  // antes hacía falta doble clic. TableBlock.tsx distingue
+                  // internamente "celdas seleccionadas" de "editando el
+                  // texto de una celda puntual" (esto último sigue
+                  // requiriendo doble clic EN una celda).
+                  if (element.type === 'table' && !element.locked) setCanvasTableEditId(element.id);
                 }}
-                onTap={() => {
+                onTap={(event: any) => {
                   if (openTextEditorId) {
                     stopDictation();
                     setOpenTextEditorId(null);
                   }
-                  selectElement(element.id);
+
+                  if (isPageTextElement) {
+                    openTextEditorOnDoubleClick();
+                    return;
+                  }
+
+                  toggleSelection(element.id, Boolean(event.evt.ctrlKey || event.evt.metaKey));
+                  if (element.type === 'table' && !element.locked) setCanvasTableEditId(element.id);
                 }}
                 onDblClick={onRectDoubleClick}
                 onDblTap={onRectDoubleClick}
@@ -1623,145 +2315,451 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                   selectElement(element.id);
                   setContextMenu({ x: event.evt.clientX, y: event.evt.clientY, elementId: element.id });
                 }}
-                onDragStart={() => {
+                onDragStart={(event: any) => {
                   dragInProgressRef.current = true;
-                  selectElement(element.id);
+
+                  const isPartOfMultiSelection =
+                    selectedElementIds.length > 1 &&
+                    selectedElementIds.includes(element.id);
+
+                  // Si arrastramos un objeto que ya pertenece a la selección múltiple,
+                  // conservamos toda la selección.
+                  if (!isPartOfMultiSelection) {
+                    selectElement(element.id);
+                  }
+
+                  // Ancla para la vista previa en vivo del empuje hacia abajo
+                  // (applyLivePushBelow) — solo en arrastre de UN elemento.
+                  dragPushAnchorRef.current = isPartOfMultiSelection
+                    ? null
+                    : { id: element.id, x: element.x, y: element.y, width: element.width, height: element.height };
+
+                  // Guardamos la posición inicial de todos los seleccionados.
+                  multiDragStartRef.current = {};
+
+                  const idsToDrag = isPartOfMultiSelection
+                    ? selectedElementIds
+                    : [element.id];
+
+                  for (const id of idsToDrag) {
+                    const selected = page.elements.find((el) => el.id === id);
+
+                    if (selected) {
+                      multiDragStartRef.current[id] = {
+                        x: selected.x,
+                        y: selected.y,
+                      };
+                    }
+                  }
+
                   if (openTextEditorId) {
                     stopDictation();
                     setOpenTextEditorId(null);
                   }
+
+                  // Fantasma flotante (DragPreviewOverlay) -- pedido
+                  // explícito 2026-09-09: "al querer pasarlo a otra página
+                  // no se ve el bloque, como que desaparece". Solo para el
+                  // elemento PRINCIPAL del gesto (no cada uno de una
+                  // selección múltiple) -- ver useDragPreviewStore.ts.
+                  const stageForGhost = event?.target?.getStage?.();
+                  const pointerForGhost = stageForGhost?.getPointerPosition?.();
+                  dragGhostGrabOffsetRef.current = pointerForGhost
+                    ? { x: pointerForGhost.x / scale - element.x, y: pointerForGhost.y / scale - element.y }
+                    : { x: 0, y: 0 };
+                  const stageRectForGhost = stageForGhost?.container?.().getBoundingClientRect();
+                  const ghostLeft = stageRectForGhost ? stageRectForGhost.left + element.x * scale : 0;
+                  const ghostTop = stageRectForGhost ? stageRectForGhost.top + element.y * scale : 0;
+                  if (element.type === 'text') {
+                    useDragPreviewStore.getState().show({
+                      kind: 'text',
+                      text: String(element.props?.text || ''),
+                      fontSize: Number(element.props?.fontSize || 14) * scale,
+                      fontFamily: element.props?.fontFamily || 'Inter',
+                      fontColor: element.props?.fontColor || '#1a1a1a',
+                      lineHeight: Number(element.props?.lineHeight || 1.35),
+                      width: element.width * scale,
+                      height: element.height * scale,
+                      left: ghostLeft,
+                      top: ghostTop,
+                    });
+                  } else if (element.type === 'image') {
+                    useDragPreviewStore.getState().show({
+                      kind: 'image',
+                      src: resolveReportImageSrc(element),
+                      width: element.width * scale,
+                      height: element.height * scale,
+                      left: ghostLeft,
+                      top: ghostTop,
+                    });
+                  } else {
+                    const typeLabels: Record<string, string> = {
+                      table: 'Tabla', chart: 'Gráfico', kpi: 'KPI', shape: 'Forma', video: 'Video',
+                    };
+                    useDragPreviewStore.getState().show({
+                      kind: 'generic',
+                      label: typeLabels[element.type] || 'Elemento',
+                      width: element.width * scale,
+                      height: element.height * scale,
+                      left: ghostLeft,
+                      top: ghostTop,
+                    });
+                  }
                 }}
                 onDragMove={(event: any) => {
-                  const boundedX = Math.min(Math.max(event.target.x(), CONTENT_LEFT), CONTENT_RIGHT - element.width);
-                  const boundedY = Math.min(Math.max(event.target.y(), CONTENT_TOP), CONTENT_BOTTOM - element.height);
+                  const node = event.target;
+
+                  const start = multiDragStartRef.current[element.id];
+
+                  if (!start) {
+                    return;
+                  }
+
+                  const boundedX = Math.min(
+                    Math.max(node.x(), CONTENT_LEFT),
+                    CONTENT_RIGHT - element.width,
+                  );
+
+                  const boundedY = Math.min(
+                    Math.max(node.y(), CONTENT_TOP),
+                    CONTENT_BOTTOM - element.height,
+                  );
+
                   const x = snap(boundedX, snapEnabled);
                   const y = snap(boundedY, snapEnabled);
-                  event.target.position({ x, y });
+
+                  node.position({ x, y });
+
+                  if (dragPushAnchorRef.current && dragPushAnchorRef.current.id === element.id) {
+                    applyLivePushBelow(
+                      element.id,
+                      dragPushAnchorRef.current,
+                      { x, y, width: element.width, height: element.height },
+                    );
+                  }
+
+                  const deltaX = x - start.x;
+                  const deltaY = y - start.y;
+
+                  // Si hay selección múltiple, mover visualmente todos los nodos.
+                  if (
+                    selectedElementIds.length > 1 &&
+                    selectedElementIds.includes(element.id)
+                  ) {
+                    for (const id of selectedElementIds) {
+                      if (id === element.id) {
+                        continue;
+                      }
+
+                      const otherStart = multiDragStartRef.current[id];
+                      if (!otherStart) {
+                        continue;
+                      }
+
+                      const otherElement = page.elements.find((el) => el.id === id);
+                      if (!otherElement) {
+                        continue;
+                      }
+
+                      const otherNode = layerRef.current?.findOne(`#${id}`);
+                      if (!otherNode) {
+                        continue;
+                      }
+
+                      const nextX = Math.min(
+                        Math.max(otherStart.x + deltaX, CONTENT_LEFT),
+                        CONTENT_RIGHT - otherElement.width,
+                      );
+
+                      const nextY = Math.min(
+                        Math.max(otherStart.y + deltaY, CONTENT_TOP),
+                        CONTENT_BOTTOM - otherElement.height,
+                      );
+
+                      otherNode.position({
+                        x: snap(nextX, snapEnabled),
+                        y: snap(nextY, snapEnabled),
+                      });
+                    }
+                  }
+
+                  // Fantasma flotante -- a diferencia del `node.position`
+                  // de arriba (recortado a los límites de ESTA página), acá
+                  // se sigue el cursor SIN ese recorte, cruzando visualmente
+                  // hacia la página vecina bajo el puntero -- recién
+                  // recortado a los límites de contenido de la página que
+                  // esté REALMENTE bajo el cursor en este instante (nunca
+                  // entre su encabezado/pie, "siempre dentro del lienzo").
+                  const stage = event.target.getStage();
+                  const pointerPos = stage?.getPointerPosition();
+                  if (pointerPos) {
+                    const containerRect = stage.container().getBoundingClientRect();
+                    const clientX = containerRect.left + pointerPos.x;
+                    const clientY = containerRect.top + pointerPos.y;
+                    const hoverShell = document.elementFromPoint(clientX, clientY)?.closest('[data-page-number]');
+                    const hoverPageNumber = hoverShell ? Number(hoverShell.getAttribute('data-page-number')) : page.page_number;
+                    const hoverStageEl = (hoverShell?.querySelector('.konvajs-content') as HTMLElement | null) || (hoverShell as HTMLElement | null);
+                    const hoverStageRect = hoverStageEl?.getBoundingClientRect();
+                    if (hoverStageRect && hoverStageRect.width > 0) {
+                      const hoverMetrics = getMetricsForPageNumber(hoverPageNumber || page.page_number);
+                      const grabOffset = dragGhostGrabOffsetRef.current || { x: 0, y: 0 };
+                      const rawLocalX = (clientX - hoverStageRect.left) / scale - grabOffset.x;
+                      const rawLocalY = (clientY - hoverStageRect.top) / scale - grabOffset.y;
+                      const clampedLocalX = Math.min(
+                        Math.max(rawLocalX, hoverMetrics.CONTENT_LEFT),
+                        Math.max(hoverMetrics.CONTENT_LEFT, hoverMetrics.CONTENT_RIGHT - element.width),
+                      );
+                      const clampedLocalY = Math.min(
+                        Math.max(rawLocalY, hoverMetrics.CONTENT_TOP),
+                        Math.max(hoverMetrics.CONTENT_TOP, hoverMetrics.CONTENT_BOTTOM - element.height),
+                      );
+                      useDragPreviewStore.getState().move(
+                        hoverStageRect.left + clampedLocalX * scale,
+                        hoverStageRect.top + clampedLocalY * scale,
+                      );
+                    }
+                  }
                 }}
-                onDragEnd={(event: any) => {
-                  setTimeout(() => {
-                    dragInProgressRef.current = false;
-                  }, 0);
-                  updateElement(page.page_number, element.id, {
-                    x: event.target.x(),
-                    y: event.target.y(),
+                onDragEnd={(e: any) => {
+                  useDragPreviewStore.getState().hide();
+                  // La vista previa en vivo del empuje termina con el gesto
+                  // — el resultado definitivo lo decide el store al confirmar.
+                  dragPushAnchorRef.current = null;
+                  resetLivePushPreview();
+
+                  const stage = e.target.getStage();
+                  const pointerPos = stage.getPointerPosition();
+                  if (!pointerPos) return;
+
+                  // Convertir a coordenadas globales de la pantalla
+                  const containerRect = stage.container().getBoundingClientRect();
+                  const clientX = containerRect.left + pointerPos.x;
+                  const clientY = containerRect.top + pointerPos.y;
+
+                  // Detectar si el puntero cayó en otra página
+                  const elementUnderPointer = document.elementFromPoint(clientX, clientY);
+                  const targetPageWrapper = elementUnderPointer?.closest('[data-page-number]');
+
+                  if (targetPageWrapper) {
+                    const targetPageNum = Number(targetPageWrapper.getAttribute('data-page-number'));
+
+                    if (targetPageNum !== page.page_number) {
+                      // Se soltó en otra página — si el elemento soltado
+                      // pertenece a una selección múltiple, TODA la
+                      // selección cruza junto conservando su distancia
+                      // original respecto al ancla (pedido explícito
+                      // 2026-09-04: antes solo cruzaba el que recibía el
+                      // evento de soltar).
+                      const targetRect = targetPageWrapper.getBoundingClientRect();
+                      const newX = clientX - targetRect.left;
+                      const newY = clientY - targetRect.top;
+
+                      const isMultiDrag =
+                        selectedElementIds.length > 1 &&
+                        selectedElementIds.includes(element.id);
+
+                      moveElementsBetweenPages(
+                        isMultiDrag ? selectedElementIds : [element.id],
+                        element.id,
+                        targetPageNum,
+                        newX,
+                        newY,
+                      );
+                      multiDragStartRef.current = {};
+                      return;
+                    }
+                  }
+
+                  // Si no cambió de página, aplicar lógica normal de movimiento
+                  // (Aquí puedes incluir la lógica de mover múltiples elementos a la vez si están en `selectedElementIds`)
+                  const start = multiDragStartRef.current[element.id];
+
+                  if (!start) {
+                    updateElement(page.page_number, element.id, {
+                      x: e.target.x(),
+                      y: e.target.y(),
+                    });
+                    return;
+                  }
+
+                  const deltaX = e.target.x() - start.x;
+                  const deltaY = e.target.y() - start.y;
+
+                  const isMultiDrag =
+                    selectedElementIds.length > 1 &&
+                    selectedElementIds.includes(element.id);
+
+                  if (!isMultiDrag) {
+                    updateElement(page.page_number, element.id, {
+                      x: e.target.x(),
+                      y: e.target.y(),
+                    });
+
+                    multiDragStartRef.current = {};
+                    return;
+                  }
+
+                  // Guardamos cada elemento con el mismo desplazamiento.
+                  selectedElementIds.forEach((id) => {
+                    const selected = page.elements.find((el) => el.id === id);
+                    const initial = multiDragStartRef.current[id];
+
+                    if (!selected || !initial) {
+                      return;
+                    }
+
+                    const nextX = Math.min(
+                      Math.max(initial.x + deltaX, CONTENT_LEFT),
+                      CONTENT_RIGHT - selected.width,
+                    );
+
+                    const nextY = Math.min(
+                      Math.max(initial.y + deltaY, CONTENT_TOP),
+                      CONTENT_BOTTOM - selected.height,
+                    );
+
+                    updateElement(page.page_number, id, {
+                      x: snap(nextX, snapEnabled),
+                      y: snap(nextY, snapEnabled),
+                    });
                   });
+
+                  multiDragStartRef.current = {};
+
+                  if (selectedElementIds.includes(element.id)) {
+                    selectedElementIds.forEach(id => {
+                      // Llama a tu función actual para actualizar posición sumando deltaX y deltaY
+                      // updateElementPosition(page.page_number, id, deltaX, deltaY);
+                    });
+                  } else {
+                    updateElement(page.page_number, element.id, { x: e.target.x(), y: e.target.y() });
+                  }
                 }}
-                onTransformEnd={(event: any) => {
-                  const node = event.target;
-                  const scaleX = node.scaleX();
-                  const scaleY = node.scaleY();
-                  const nextWidth = Math.max(isTextElement ? 120 : 60, node.width() * scaleX);
-                  const nextHeight = Math.max(isTextElement ? 56 : 40, node.height() * scaleY);
-                  node.scaleX(1);
-                  node.scaleY(1);
-                  node.width(nextWidth);
-                  node.height(nextHeight);
-                  updateElement(page.page_number, element.id, {
-                    x: node.x(),
-                    y: node.y(),
-                    width: nextWidth,
-                    height: nextHeight,
-                  });
+                onTransformStart={() => {
+                  // Ancla para la vista previa en vivo del empuje hacia abajo
+                  // (applyLivePushBelow) mientras se redimensiona — el
+                  // Transformer solo se adjunta con selección única (ver el
+                  // useEffect de transformerRef más arriba), así que nunca
+                  // hay ambigüedad de "cuál elemento empuja" aquí.
+                  transformPushAnchorRef.current = {
+                    id: element.id, x: element.x, y: element.y, width: element.width, height: element.height,
+                  };
                 }}
                 onTransform={(event: any) => {
+                  // Igual que onDragMove: solo vista previa visual, nunca
+                  // toca el store — Konva ya escala el nodo en vivo por su
+                  // cuenta (scaleX/scaleY), acá solo se lee esa escala para
+                  // saber dónde cae el borde inferior EN VIVO.
+                  const node = event.target;
+                  if (!transformPushAnchorRef.current || transformPushAnchorRef.current.id !== element.id) return;
+                  applyLivePushBelow(
+                    element.id,
+                    transformPushAnchorRef.current,
+                    {
+                      x: node.x(),
+                      y: node.y(),
+                      width: node.width() * node.scaleX(),
+                      height: node.height() * node.scaleY(),
+                    },
+                  );
+                }}
+                onTransformEnd={(event: any) => {
+                  transformPushAnchorRef.current = null;
+                  resetLivePushPreview();
                   const node = event.target;
                   const scaleX = node.scaleX();
                   const scaleY = node.scaleY();
-                  const nextWidth = Math.max(isTextElement ? 120 : 60, node.width() * scaleX);
-                  const nextHeight = Math.max(isTextElement ? 56 : 40, node.height() * scaleY);
+                  const minWidth = isTextElement ? 120 : 60;
+                  const minHeight = isTextElement ? 28 : 40;
+                  const nextX = Math.min(Math.max(node.x(), CONTENT_LEFT), CONTENT_RIGHT - minWidth);
+                  const nextY = Math.min(Math.max(node.y(), CONTENT_TOP), CONTENT_BOTTOM - minHeight);
+                  const nextWidth = Math.min(
+                    Math.max(minWidth, node.width() * scaleX),
+                    CONTENT_RIGHT - nextX,
+                  );
+                  const nextHeight = Math.min(
+                    Math.max(minHeight, node.height() * scaleY),
+                    CONTENT_BOTTOM - nextY,
+                  );
                   node.scaleX(1);
                   node.scaleY(1);
+                  node.x(nextX);
+                  node.y(nextY);
                   node.width(nextWidth);
                   node.height(nextHeight);
                   updateElement(page.page_number, element.id, {
+                    x: nextX,
+                    y: nextY,
                     width: nextWidth,
                     height: nextHeight,
+                    rotation: node.rotation(),
                   });
                 }}
               />
+              </React.Fragment>
               );
             })}
 
           {page.elements
             .filter(
-              (element) => element.type === 'text' && selectedElementId === element.id && openTextEditorId === element.id,
+              // El elemento de "texto plano" de la página (ver
+              // ReportPage.plainTextElementId) nunca muestra este recuadro
+              // punteado -- pedido explícito: "siempre en modo edición pero
+              // sin ver el contenedor de líneas discontinuas".
+              (element) => element.type === 'text' && selectedElementId === element.id && openTextEditorId === element.id && page.plainTextElementId !== element.id,
             )
-            .map((element) => (
-              <Rect
-                key={`${element.id}-text-selected`}
-                x={element.x}
-                y={element.y}
-                width={element.width}
-                height={element.height}
-                stroke="#2d6cdf"
-                strokeWidth={1}
-                dash={[4, 4]}
-                fill="rgba(0,0,0,0)"
-                cornerRadius={4}
-                listening={false}
-              />
-            ))}
+            .map((element) => {
+              // El recuadro punteado de edición debe crecer EN VIVO con
+              // cada tecla, no solo cuando el store confirma (debounce de
+              // 600ms) — por eso usa liveEdit.width/height (estado local,
+              // actualizado en cada pulsación por handleLiveTyping) en vez
+              // de element.width/height (el store, desactualizado hasta el
+              // commit). Pedido explícito: "eso es lo que debe de ir
+              // creciendo mientras el usuario va escribiendo... en tiempo
+              // real".
+              const isLive = liveEdit?.id === element.id;
+              const boxWidth = isLive ? liveEdit.width : element.width;
+              const boxHeight = isLive ? liveEdit.height : element.height;
+              return (
+                <Rect
+                  key={`${element.id}-text-selected`}
+                  x={element.x}
+                  y={element.y}
+                  width={boxWidth}
+                  height={boxHeight}
+                  rotation={element.rotation || 0}
+                  stroke="#2d6cdf"
+                  strokeWidth={1}
+                  dash={[4, 4]}
+                  fill="rgba(0,0,0,0)"
+                  cornerRadius={4}
+                  listening={false}
+                />
+              );
+            })}
 
           {page.elements
             .filter((element) => element.type === 'chart')
             .map((element) => (
-              <Html key={`${element.id}-chart`} groupProps={{ x: element.x + 4, y: element.y + 28, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                <div
-                  className="report-canvas-html-shield"
-                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                  style={{
-                    width: Math.max(120, element.width - 8),
-                    height: Math.max(80, element.height - 34),
-                  }}
-                >
-                  <LiveChartBlock width={Math.max(120, element.width - 8)} height={Math.max(80, element.height - 34)} data={element.props} />
-                </div>
-              </Html>
+              <ChartBlock key={element.id} element={element} onContextMenu={handleHtmlBlockContextMenu} />
+            ))}
+
+          {page.elements
+            .filter((element) => element.type === 'wordart')
+            .map((element) => (
+              <WordArtVisual key={element.id} element={element} />
             ))}
 
           {page.elements
             .filter((element) => element.type === 'kpi')
             .map((element) => (
-              <Html key={`${element.id}-kpi`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                <div
-                  className="report-canvas-html-shield"
-                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                  style={{ width: element.width - 8, height: element.height - 8 }}
-                >
-                  <MiningKpiWidget
-                    kpiCode={element.props?.kpiCode}
-                    title={element.props?.title}
-                    trendViz={element.props?.trendViz}
-                    connected={element.props?.connected !== false}
-                    width={Math.max(90, element.width - 8)}
-                    height={Math.max(60, element.height - 8)}
-                  />
-                </div>
-              </Html>
+              <KpiBlock key={element.id} element={element} onContextMenu={handleHtmlBlockContextMenu} />
             ))}
 
           {page.elements
             .filter((element) => element.type === 'seismic-report')
             .map((element) => (
-              <Html key={`${element.id}-seismic-report`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                <div
-                  className="report-canvas-html-shield"
-                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                  style={{ width: element.width - 8, height: element.height - 8 }}
-                >
-                  <SeismicReportWidget
-                    title={element.props?.title}
-                    source={element.props?.source}
-                    startDate={element.props?.startDate}
-                    endDate={element.props?.endDate}
-                    connected={element.props?.connected !== false}
-                    snapshot={element.props?.snapshot || null}
-                    width={Math.max(200, element.width - 8)}
-                    height={Math.max(140, element.height - 8)}
-                  />
-                </div>
-              </Html>
+              <SeismicReportBlock key={element.id} element={element} onContextMenu={handleHtmlBlockContextMenu} />
             ))}
 
           {page.elements
@@ -1769,15 +2767,27 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
             .map((element) => {
               const rows: string[][] = element.props?.rows || [];
               const colCount = rows[0]?.length || 3;
+              const caption = String(element.props?.caption ?? '').trim();
 
               // Crecimiento automático del BLOQUE (nunca lo encoge solo —
               // encoger es manual, vía resize de columna) al tamaño natural
               // real de la tabla renderizada (ver TableBlock.tsx::onNaturalSize).
-              // Mismo criterio de clamping que el auto-tamaño de texto arriba
-              // (getAutoSizeForPatch): nunca más allá del área de contenido.
+              // El techo vertical usa `CONTENT_BOTTOM` (borde del área de
+              // contenido, antes del pie de página), NUNCA `PAGE_HEIGHT` --
+              // bug real reportado en vivo 2026-09-11 ("el recuadro... se
+              // sobrepone en el footer"): con `PAGE_HEIGHT - element.y - 8`
+              // como techo, una tabla cuyo contenido real es alto (p.ej.
+              // recién después de partirse por desborde, ver
+              // `handleOverflowRows` más abajo) podía crecer hasta el borde
+              // FÍSICO de la hoja -- 30-40px más abajo de donde realmente
+              // empieza el pie de página -- dejando su borde inferior
+              // literalmente encima del footer. `maxTableHeight` (abajo, la
+              // misma medida que usa la detección de desborde) ya usa
+              // `CONTENT_BOTTOM` correctamente; este techo debe coincidir
+              // con ese mismo límite para no contradecirlo.
               const handleNaturalSize = (naturalW: number, naturalH: number) => {
                 const maxW = CONTENT_RIGHT - element.x;
-                const maxH = PAGE_HEIGHT - element.y - 8;
+                const maxH = CONTENT_BOTTOM - element.y;
                 const nextW = Math.min(maxW, Math.max(element.width, naturalW + 8));
                 const nextH = Math.min(maxH, Math.max(element.height, naturalH + 8));
                 if (nextW !== element.width || nextH !== element.height) {
@@ -1789,11 +2799,33 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 updateElement(page.page_number, element.id, { props: { ...element.props, rows: newRows } });
               };
 
+              // Auto-paginación de tabla (mismo principio que el texto):
+              // cuántas filas caben lo mide TableBlock.tsx contra el alto
+              // disponible REAL de esta página (hasta el borde del área de
+              // contenido, no el borde físico de la hoja como el auto-grow
+              // de arriba) -- si sobran filas, se parten en una tabla
+              // continuación al inicio de la página siguiente.
+              const maxTableHeight = CONTENT_BOTTOM - element.y;
+              const handleOverflowRows = (fittingRowCount: number, fittingHeightPx: number, totalHeightPx: number) => {
+                splitOverflowingTable({
+                  pageNumber: page.page_number,
+                  elementId: element.id,
+                  fittingRowCount,
+                  fittingHeightPx,
+                  overflowHeightPx: totalHeightPx - fittingHeightPx,
+                });
+              };
+
               return (
                 <Html
                   key={`${element.id}-table`}
-                  groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }}
-                  divProps={{ style: { pointerEvents: canvasTableEditId === element.id ? 'auto' : 'none' } }}
+                  groupProps={{ x: element.x + 4, y: element.y + 4, rotation: element.rotation || 0, listening: false }}
+                  divProps={{
+                    style: {
+                      pointerEvents: canvasTableEditId === element.id ? 'auto' : 'none',
+                      zIndex: selectedElementIds.includes(element.id) ? 500 : undefined,
+                    },
+                  }}
                 >
                   <div
                     className={
@@ -1805,12 +2837,74 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                     <TableBlock
                       {...element.props}
                       containerWidth={element.width - 8}
-                      selected={selectedElementId === element.id}
+                      maxTableWidth={CONTENT_RIGHT - element.x - 8}
+                      elementId={element.id}
+                      // Fragmentos de una tabla partida entre páginas
+                      // comparten `linkedGroupId` y por eso YA quedan
+                      // juntos en `selectedElementIds` al hacer clic en
+                      // cualquiera de los dos (ver selectElement en
+                      // useEditorStore.ts) -- este prop usaba la variante
+                      // SINGULAR (`selectedElementId`), así que solo el
+                      // fragmento realmente clickeado mostraba su barra de
+                      // herramientas/resaltado propio, el otro parecía
+                      // "no seleccionado" hasta que se arrastraba (recién
+                      // ahí `updateElement` sí los movía juntos). Bug real
+                      // reportado en vivo 2026-09-10.
+                      selected={selectedElementIds.includes(element.id)}
                       editing={canvasTableEditId === element.id}
                       onExitEdit={() => setCanvasTableEditId(null)}
                       onUpdateCells={setRows}
+                      onUpdateCellBackgrounds={(backgrounds) => {
+                        updateElement(page.page_number, element.id, { props: { ...element.props, cellBackgrounds: backgrounds } });
+                      }}
+                      onUpdateRowBackgrounds={(backgrounds) => {
+                        updateElement(page.page_number, element.id, { props: { ...element.props, rowBackgrounds: backgrounds } });
+                      }}
+                      onUpdateColumnBackgrounds={(backgrounds) => {
+                        updateElement(page.page_number, element.id, { props: { ...element.props, columnBackgrounds: backgrounds } });
+                      }}
+                      onUpdateMergedCells={(mergedCells) => {
+                        updateElement(page.page_number, element.id, { props: { ...element.props, mergedCells } });
+                      }}
+                      onMergeCells={({ rows: nextRows, cellBackgrounds, mergedCells }) => {
+                        updateElement(page.page_number, element.id, {
+                          props: { ...element.props, rows: nextRows, cellBackgrounds, mergedCells },
+                        });
+                      }}
+                      onPasteCellFormat={({ rows: nextRows, cellBackgrounds, cellAligns }) => {
+                        updateElement(page.page_number, element.id, {
+                          props: { ...element.props, rows: nextRows, cellBackgrounds, cellAligns },
+                        });
+                      }}
+                      onSplitCell={(next) => {
+                        const patch: Record<string, unknown> = {};
+                        Object.entries(next).forEach(([key, value]) => {
+                          if (value !== undefined) patch[key] = value;
+                        });
+                        updateElement(page.page_number, element.id, {
+                          props: { ...element.props, ...patch },
+                        });
+                      }}
+                      onSmartPasteGrid={(next) => {
+                        const patch: Record<string, unknown> = {};
+                        Object.entries(next).forEach(([key, value]) => {
+                          if (value !== undefined) patch[key] = value;
+                        });
+                        updateElement(page.page_number, element.id, {
+                          props: { ...element.props, ...patch },
+                        });
+                      }}
                       onUpdateColWidths={(widths) => {
                         updateElement(page.page_number, element.id, { props: { ...element.props, colWidths: widths } });
+                      }}
+                      onUpdateRowHeights={(heights) => {
+                        updateElement(page.page_number, element.id, { props: { ...element.props, rowHeights: heights } });
+                      }}
+                      onUpdateCellAligns={(aligns) => {
+                        updateElement(page.page_number, element.id, { props: { ...element.props, cellAligns: aligns } });
+                      }}
+                      onUpdateCellNumberFormats={(formats) => {
+                        updateElement(page.page_number, element.id, { props: { ...element.props, cellNumberFormats: formats } });
                       }}
                       onAddRow={() => {
                         setRows([...rows, Array(colCount).fill('')]);
@@ -1839,7 +2933,40 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                         updateElement(page.page_number, element.id, { props: { ...element.props, ...patch } });
                       }}
                       onNaturalSize={handleNaturalSize}
+                      maxTableHeight={maxTableHeight}
+                      onOverflowRows={handleOverflowRows}
+                      onTitleMouseDown={(event) => {
+                        if (element.locked) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const stage = layerRef.current?.getStage();
+                        const node = layerRef.current?.findOne(`#${element.id}`);
+                        if (!stage || !node) return;
+                        stage.setPointersPositions(event.nativeEvent);
+                        node.startDrag();
+                      }}
+                      onCreateChartFromTable={() => setChartFromTableRequest({ tableElementId: element.id })}
                     />
+                    {caption && (
+                      <div
+                        className="report-media-caption"
+                        style={{
+                          width: '100%',
+                          alignSelf: 'center',
+                          marginTop: 6,
+                          textAlign: 'center',
+                          fontFamily: 'Arial, sans-serif',
+                          fontSize: 12,
+                          lineHeight: 1.25,
+                          fontStyle: 'italic',
+                          color: '#4F81BD',
+                          whiteSpace: 'normal',
+                          overflowWrap: 'break-word',
+                        }}
+                      >
+                    {caption}
+                    </div>
+                    )}
                   </div>
                 </Html>
               );
@@ -1847,1746 +2974,170 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
 
           {page.elements
             .filter((element) => element.type === 'header')
-            .map((element) => {
-              const p = element.props || {};
-              // ADR-046 (revisado): empresa/unidad/usuario NUNCA se leen de
-              // props (ya no existen ahí) — se calculan en vivo desde la
-              // sesión activa en cada render, así el bloque no puede quedar
-              // desactualizado ni ser editado a mano.
-              const session = getSession();
-              const chromeParts = [session?.company, resolveMiningUnitName(session), session?.fullName || session?.username]
-                .filter((v): v is string => Boolean(v && v.trim()));
-              const chromeLabel = chromeParts.length > 0 ? chromeParts.join('  •  ').toUpperCase() : 'EMPRESA MINERA';
-              return (
-                <Html key={`${element.id}-header`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                  <div
-                    className="report-canvas-html-shield"
-                    style={{
-                      width: element.width - 8, height: element.height - 8,
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      borderBottom: '2px solid #0f172a', boxSizing: 'border-box', padding: '0 4px', gap: 12,
-                    }}>
-                    {/* Alineado al margen izquierdo — empresa + unidad + usuario conectado, fijo (no editable) */}
-                    <span style={{
-                      fontFamily: PLATFORM_CHROME_FONT, fontSize: PLATFORM_CHROME_FONT_SIZE, fontWeight: 900,
-                      letterSpacing: 0.4, color: PLATFORM_CHROME_COLOR, whiteSpace: 'nowrap', overflow: 'hidden',
-                      textOverflow: 'ellipsis', minWidth: 0,
-                    }}>
-                      {chromeLabel}
-                    </span>
-                    {/* Lado derecho — logotipo corporativo (SVG, tenant_logo) */}
-                    {p.showLogo !== false && (
-                      <div style={{ height: '100%', flexShrink: 0, display: 'flex', alignItems: 'center' }}>
-                        <HeaderLogoImg tenantId={p.tenantId || tenantId || session?.tenantId} />
-                      </div>
-                    )}
-                  </div>
-                </Html>
-              );
-            })}
+            .map((element) => (
+              <HeaderBlock key={element.id} element={element} tenantId={tenantId} />
+            ))}
 
           {page.elements
             .filter((element) => element.type === 'footer')
-            .map((element) => {
-              const p = element.props || {};
-              return (
-                <Html key={`${element.id}-footer`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                  <div
-                    className="report-canvas-html-shield"
-                    style={{
-                      width: element.width - 8, height: element.height - 8,
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      borderTop: '1px solid #cbd5e1', boxSizing: 'border-box', padding: '0 4px', gap: 12,
-                    }}>
-                    {/* Extremo izquierdo — literal fijo, no editable */}
-                    <span style={{
-                      fontFamily: PLATFORM_CHROME_FONT, fontSize: PLATFORM_CHROME_FONT_SIZE, fontWeight: 900,
-                      letterSpacing: 0.4, color: PLATFORM_CHROME_COLOR, whiteSpace: 'nowrap',
-                    }}>
-                      BEEMETRY
-                    </span>
-                    {/* Extremo derecho — Página X / Total, siempre calculado en
-                       render (nunca literal editable, ver defaultPropsByType). */}
-                    {p.showPageNumber !== false && (
-                      <span style={{
-                        fontFamily: PLATFORM_CHROME_FONT, fontSize: PLATFORM_CHROME_FONT_SIZE, fontWeight: 900,
-                        letterSpacing: 0.4, color: PLATFORM_CHROME_COLOR, whiteSpace: 'nowrap', flexShrink: 0,
-                      }}>
-                        PÁGINA {page.page_number} / {totalPages || page.page_number}
-                      </span>
-                    )}
-                  </div>
-                </Html>
-              );
-            })}
+            .map((element) => (
+              <FooterBlock key={element.id} element={element} pageNumber={page.page_number} totalPages={totalPages} />
+            ))}
 
           {page.elements
             .filter((element) => element.type === 'cover')
-            .map((element) => {
-              const p = element.props || {};
-              const session = getSession();
-              // Empresa/unidad/autor jamás se leen de props — se calculan en
-              // vivo desde la sesión activa (mismo criterio que el
-              // encabezado, ver arriba), así no pueden quedar desactualizados
-              // ni ser editados/borrados a mano desde el panel de propiedades.
-              const chromeCompany = session?.company;
-              const chromeUnit = resolveMiningUnitName(session);
-              const chromeAuthor = session?.fullName || session?.username;
-              // 5 diseños reales por audiencia (Gerencia/Control Interno/
-              // Auditoría Interna/Campo/Normativo) — antes las 5 opciones del
-              // ribbon insertaban el mismo diseño único (hallazgo QA
-              // 2026-07-27, ver ADR-048). `p.bgColor`/`p.textColor`/
-              // `p.classification`/`p.title` explícitos del usuario SIEMPRE
-              // ganan sobre la plantilla — esto solo rellena lo que el
-              // usuario no personalizó.
-              const tpl = findCoverTemplate(p.coverTemplate);
-              return (
-                <Html key={`${element.id}-cover`} groupProps={{ x: element.x, y: element.y, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                  <div
-                    className="report-canvas-html-shield"
-                    onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                    style={{
-                      width: element.width, height: element.height, overflow: 'hidden',
-                      position: 'relative', display: 'flex', flexDirection: 'column',
-                      boxSizing: 'border-box', color: p.textColor || tpl.textColor,
-                      fontFamily: tpl.bodyFontFamily || 'inherit',
-                      // ADR-048 (revisado): la carátula ya NO admite una foto
-                      // como fondo propio (generaba un mosaico repetido y, al
-                      // ser un bloque bloqueado, esa foto no se podía mover ni
-                      // redimensionar). La foto de la unidad minera ahora es
-                      // un bloque `image` independiente y libre (ver más abajo,
-                      // filtro type==='image', insertado centrado sobre esta
-                      // misma página vía "Insertar Imagen Empresa"). El color
-                      // de fondo es configurable (props.bgColor); si no se
-                      // definió ninguno se usa el fondo de la plantilla elegida.
-                      background: p.bgColor || tpl.background,
-                    }}>
-                    {/* Franja de clasificación — todo el ancho de la hoja */}
-                    <div style={{ background: tpl.classificationBg, color: tpl.classificationColor, fontSize: 12, fontWeight: 800, letterSpacing: 2, textAlign: 'center', padding: '10px 0', textTransform: 'uppercase' }}>
-                      {p.classification || tpl.classificationLabel}
-                    </div>
-                    {/* Logotipo de la empresa — esquina superior derecha */}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '20px 40px 0' }}>
-                      <div style={{ background: '#ffffff', borderRadius: 8, padding: '8px 14px', display: 'flex', alignItems: 'center', minHeight: 40 }}>
-                        <HeaderLogoImg tenantId={p.tenantId || tenantId || session?.tenantId} />
-                      </div>
-                    </div>
-                    {/* Título + empresa + unidad — anclado al pie de este
-                       bloque (no centrado verticalmente): deja libre toda la
-                       franja superior para la foto de la unidad minera, que
-                       se inserta ahí arriba del texto (pedido explícito: "la
-                       imagen mas arriba y el texto debajo de la imagen"). */}
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', padding: '24px 56px', textAlign: 'center' }}>
-                      <h1 style={{ fontSize: 44, fontWeight: 900, margin: '0 0 16px', lineHeight: 1.15, textShadow: '0 2px 16px rgba(0,0,0,0.45)', fontFamily: tpl.titleFontFamily }}>
-                        {p.title || tpl.titleFallback}
-                      </h1>
-                      {(chromeCompany || chromeUnit) && (
-                        <div style={{ width: 64, height: 3, borderRadius: 2, background: tpl.accentColor, margin: '0 0 16px', opacity: 0.9 }} />
-                      )}
-                      {chromeCompany && <div style={{ fontSize: 22, fontWeight: 700, textShadow: '0 1px 8px rgba(0,0,0,0.4)' }}>{chromeCompany}</div>}
-                      {chromeUnit && <div style={{ fontSize: 16, opacity: 0.9, marginTop: 4, letterSpacing: 0.5 }}>{chromeUnit}</div>}
-                    </div>
-                    {/* Metadatos + marca Beemetry — franja inferior */}
-                    <div style={{
-                      borderTop: `1px solid ${tpl.accentColor}55`, padding: '18px 40px',
-                      display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', justifyContent: 'space-between',
-                      background: tpl.footerBg,
-                    }}>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, fontSize: 12 }}>
-                        {p.docCode && <span><b>Código:</b> {p.docCode}</span>}
-                        {chromeAuthor && <span><b>Autor:</b> {chromeAuthor}</span>}
-                        {p.date && <span><b>Fecha:</b> {p.date}</span>}
-                      </div>
-                      {/* "Logotipo" de plataforma (wordmark) — pedido explícito
-                         del negocio ("tampoco vemos el logotipo... de BEEMETRY"),
-                         mismo tratamiento tipográfico que header/footer. */}
-                      <span style={{
-                        fontFamily: PLATFORM_CHROME_FONT, fontSize: 13, fontWeight: 900,
-                        letterSpacing: 1.2, opacity: 0.95,
-                      }}>
-                        BEEMETRY
-                      </span>
-                    </div>
-                  </div>
-                </Html>
-              );
-            })}
-
-          {/* Imágenes libres, wrapMode 'behind' ("Detrás del texto") --
-             declaradas aquí, ANTES que chart/kpi/tabla/sensor, para que de
-             verdad queden detrás de cualquier otro bloque que las
-             sobreponga (antes esto solo garantizaba estar detrás de
-             sensor/sensor_multi_chart/texto por casualidad de orden, nunca
-             lo decidía `wrapMode`). Las demás imágenes (todo wrapMode que
-             no sea 'behind') se renderizan más abajo, cerca del texto --
-             ver ese bloque para el porqué. */}
+            .map((element) => (
+              <CoverBlock key={element.id} element={element} tenantId={tenantId} onContextMenu={handleHtmlBlockContextMenu} />
+            ))}
           {page.elements
-            .filter((element) => element.type === 'image' && element.wrapMode === 'behind')
-            .map((element) => renderImageElement(element))}
-
-          {/* Videos insertados, wrapMode 'behind' -- mismo motivo que las
-             imágenes 'behind' arriba: renderizados temprano para que de
-             verdad queden detrás de chart/kpi/tabla/sensor. El resto de
-             videos (todo wrapMode que no sea 'behind') se renderiza más
-             abajo junto a las imágenes no-'behind'. */}
+            .filter((element) => element.type === 'image')
+            .map((element) => (
+              <ImageBlock key={element.id} element={element} onContextMenu={handleHtmlBlockContextMenu} />
+            ))}
           {page.elements
-            .filter((element) => element.type === 'video' && element.wrapMode === 'behind')
-            .map((element) => renderVideoElement(element))}
+            .filter((element) => element.type === 'video')
+            .map((element) => (
+              <VideoBlock
+                key={element.id}
+                element={element}
+                onContextMenu={handleHtmlBlockContextMenu}
+                isInteracting={canvasVideoInteractId === element.id}
+              />
+            ))}
 
           {page.elements
             .filter((element) => element.type === 'toc')
-            .map((element) => {
-              const p = element.props || {};
-              // ADR-011/019 (revisado): antes esta vista embebida tenía su
-              // propia heurística (primera línea de CADA bloque de texto,
-              // sin distinguir encabezados) — divergía de generateTocData()
-              // en TableOfContents.tsx, que sí filtra por headingStyle real.
-              // Unificado a una sola fuente de verdad para la numeración.
-              // Actualización: cada bloque toc (original o de continuación,
-              // ver useEditorStore.ts::syncTocPages) solo muestra SU tramo de
-              // entradas, nunca la lista completa repetida en cada página.
-              const isContinuation = typeof p.tocContinuationIndex === 'number';
-              const tocEntries = tocSliceForElementId(useEditorStore.getState().doc, element.id);
-              return (
-                <Html key={`${element.id}-toc`} groupProps={{ x: element.x + 4, y: element.y + 4, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                  <div
-                    className="report-canvas-html-shield"
-                    onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                    style={{
-                      width: element.width - 8, height: element.height - 8, overflow: 'auto',
-                      border: '1px solid #e2e8f0', borderRadius: 6, background: '#ffffff', boxSizing: 'border-box', padding: 18,
-                    }}>
-                    <h2 style={{ fontSize: 18, fontWeight: 800, color: '#0f172a', margin: '0 0 12px', borderBottom: '2px solid #0f172a', paddingBottom: 6 }}>
-                      {p.title || 'Tabla de Contenidos'}{isContinuation ? ' (continuación)' : ''}
-                    </h2>
-                    {tocEntries.length === 0 ? (
-                      <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
-                        Aplique estilos Título, Heading 1-6 a bloques de texto para generar el índice automáticamente.
-                      </div>
-                    ) : (
-                      <ol style={{ margin: 0, padding: 0, listStyle: 'none' }}>
-                        {tocEntries.map((item, i) => {
-                          // Estilo corporativo premium por nivel — misma escala
-                          // tipográfica que HEADING_STYLES (RibbonToolbar.tsx),
-                          // reducida a tamaño de línea de índice: cada nivel se
-                          // distingue claramente del siguiente (tamaño, peso,
-                          // color, cursiva en los más profundos), igual que la
-                          // Tabla de Contenidos automática de Word.
-                          const levelStyle: Record<number, { fontSize: number; fontWeight: number; color: string; fontStyle?: string }> = {
-                            1: { fontSize: 14,   fontWeight: 700, color: '#0f172a' },
-                            2: { fontSize: 13,   fontWeight: 700, color: '#1e40af' },
-                            3: { fontSize: 12.5, fontWeight: 600, color: '#334155' },
-                            4: { fontSize: 12,   fontWeight: 500, color: '#475569' },
-                            5: { fontSize: 11.5, fontWeight: 500, color: '#64748b', fontStyle: 'italic' },
-                            6: { fontSize: 11,   fontWeight: 400, color: '#94a3b8', fontStyle: 'italic' },
-                          };
-                          const st = levelStyle[item.level] || levelStyle[6];
-                          return (
-                            <li key={`${item.id}-${i}`} style={{
-                              display: 'flex', alignItems: 'baseline', gap: 6,
-                              padding: '3px 0', paddingLeft: (item.level - 1) * 16,
-                            }}>
-                              <span style={{ fontWeight: 700, color: '#0f172a', fontSize: 12 }}>{item.number}</span>
-                              <span style={{ fontSize: st.fontSize, fontWeight: st.fontWeight, color: st.color, fontStyle: st.fontStyle }}>{item.text}</span>
-                              <span style={{ flex: 1, borderBottom: '1px dotted #cbd5e1', margin: '0 2px', transform: 'translateY(-3px)' }} />
-                              <span style={{ fontWeight: 700, color: '#0f172a', fontSize: 12 }}>{item.pageNumber}</span>
-                            </li>
-                          );
-                        })}
-                      </ol>
-                    )}
-                  </div>
-                </Html>
-              );
-            })}
+            .map((element) => (
+              <TocBlock key={element.id} element={element} onContextMenu={handleHtmlBlockContextMenu} />
+            ))}
 
           {page.elements
             .filter((element) => element.type === 'sensor')
             .map((element) => (
-              <Html key={`${element.id}-sensor`} groupProps={{ x: element.x, y: element.y, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                <div
-                  className="report-canvas-html-shield"
-                  onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                  style={{ width: element.width, height: element.height }}
-                >
-                  <SensorWidget
-                    sensorId={element.props?.sensorId}
-                    type={element.props?.sensorType}
-                    title={element.props?.title || 'Telemetría Real-time'}
-                    connected={element.props?.connected !== false}
-                    width={element.width}
-                    height={element.height}
-                  />
-                </div>
-              </Html>
+              <SensorBlock key={element.id} element={element} onContextMenu={handleHtmlBlockContextMenu} />
             ))}
 
           {page.elements
             .filter((element) => element.type === 'sensor_multi_chart')
-            .map((element) => {
-              const renderedHeight = Math.max(
-                Number(element.height) || 0,
-                sensorDashboardMinHeight(element.props || {}, Number(element.width) || 0)
-              );
-              return (
-                <Html key={`${element.id}-sensor-multi-chart`} groupProps={{ x: element.x, y: element.y, listening: false }} divProps={{ style: { pointerEvents: 'none' } }}>
-                  <div
-                    className="report-canvas-html-shield"
-                    onContextMenu={(e) => handleHtmlBlockContextMenu(element.id, e)}
-                    style={{ width: element.width, height: renderedHeight }}
-                  >
-                    <SensorMultiChartWidget
-                      title={element.props?.title || 'Gráfico de sensores'}
-                      selections={element.props?.selections}
-                      chartType={element.props?.chartType}
-                      chartTypes={element.props?.chartTypes}
-                      comboConfig={element.props?.comboConfig}
-                      from={element.props?.from}
-                      to={element.props?.to}
-                      width={element.width}
-                      height={renderedHeight}
-                    />
-                  </div>
-                </Html>
-              );
-            })}
-
-          {/* Imágenes y videos SIN wrapMode 'behind' (cuadrado/estrecho/
-             transparente/arriba y abajo/delante del texto/en línea/sin
-             ajuste) -- declarados aquí, DESPUÉS de chart/kpi/tabla/sensor/
-             sensor_multi_chart, para que "Ajustar texto" pueda de verdad
-             traer una imagen o video al frente de un gráfico de sensores
-             que la sobreponga. Antes el bloque de imágenes se declaraba
-             ANTES que sensor/sensor_multi_chart incondicionalmente, así que
-             ningún valor de `wrapMode` lograba subir una imagen por encima
-             de un gráfico de sensores superpuesto -- reportado en vivo como
-             que la imagen "se pierde" al tocar las opciones de Ajustar
-             texto (en realidad seguía ahí, solo tapada). */}
-          {page.elements
-            .filter((element) => element.type === 'image' && element.wrapMode !== 'behind')
-            .map((element) => renderImageElement(element))}
-          {page.elements
-            .filter((element) => element.type === 'video' && element.wrapMode !== 'behind')
-            .map((element) => renderVideoElement(element))}
+            .map((element) => (
+              <SensorMultiChartBlock key={element.id} element={element} tenantId={tenantId} onContextMenu={handleHtmlBlockContextMenu} />
+            ))}
 
           {page.elements
             .filter((element) => element.type === 'text')
-            .map((element) => {
-              const textProps = getTextProps(element);
-              const mergedProps = { ...(element.props || {}) };
-              const isEditorOpen = openTextEditorId === element.id;
-              const isElementSelected = selectedElementId === element.id;
-              const isCurrentDictationTarget = isDictating && dictationTargetRef.current === element.id;
-              // Mientras se edita, el texto/tamaño "reales" son los del
-              // estado local (lo último tecleado) — el store puede estar
-              // hasta 600ms desactualizado por el debounce de Fase 2.
-              const isLiveEditingThis = isEditorOpen && liveEdit?.id === element.id;
-              const liveText = isLiveEditingThis ? liveEdit.text : textProps.text;
-              const liveWidth = isLiveEditingThis ? liveEdit.width : element.width;
-              const liveHeight = isLiveEditingThis ? liveEdit.height : element.height;
-              const liveSpans = isLiveEditingThis ? liveEdit.spans : textProps.spans;
-              const textBaseStyle: BaseTextStyle = {
-                bold: textProps.bold,
-                italic: textProps.italic,
-                underline: textProps.underline,
-                color: textProps.fontColor,
-                fontSize: textProps.fontSize,
-                fontFamily: textProps.fontFamily,
-                // Resaltado BASE del bloque (ribbon fijo, sin selección
-                // activa) — los spans por selección (barra flotante) lo
-                // sobreescriben solo en su rango, igual que con `color`.
-                // Distinto de props.backgroundColor (el fondo de TODO el
-                // cuadro/caja de texto, no del texto en sí).
-                highlightColor: textProps.highlightColor,
-                headingStyle: textProps.headingStyle,
-              };
-
-              const getAutoSizeForPatch = (patch: Partial<TextProps>) => {
-                const nextProps = { ...textProps, ...patch };
-                const maxWidth = CONTENT_RIGHT - element.x;
-                // El ancho NUNCA se encoge por debajo del que ya tiene el
-                // bloque (mínimo = element.width, no un piso fijo de 120px)
-                // — un bloque creado a todo el ancho de la columna (ribbon o
-                // doble clic, ver createElement/onDblClick) debe SEGUIR
-                // ocupando todo el ancho aunque el texto tecleado sea corto;
-                // solo la ALTURA debe auto-ajustarse línea a línea, como un
-                // párrafo normal de Word, no como una etiqueta que se ciñe
-                // al contenido. Sigue pudiendo crecer más allá si una
-                // palabra sin cortes es más ancha que el bloque (maxWidth).
-                const minWidthForPatch = Math.min(maxWidth, Math.max(120, element.width));
-                // Mientras se escribe (y también al cerrar, ver
-                // closeAndProcess — isEditorOpen sigue true en ese momento),
-                // el límite de alto es el borde FÍSICO de la hoja, no el
-                // margen de contenido antes del pie de página: con el límite
-                // angosto anterior, un cuadro ubicado en la mitad inferior
-                // de la página dejaba de crecer apenas se acercaba al pie, y
-                // como el textarea tenía overflow:hidden, las líneas
-                // siguientes que el usuario seguía escribiendo quedaban
-                // ocultas (el texto SÍ se guardaba, pero no se veía) — "no
-                // avanza a la siguiente línea". El límite ajustado al área
-                // de contenido solo se usa para el <Text> estático (no
-                // editando) que nunca debería llegar a necesitarlo, porque
-                // ya se guardó con el tamaño físico de hoja.
-                const maxHeight = isEditorOpen
-                  ? PAGE_HEIGHT - element.y - 8
-                  : CONTENT_BOTTOM - element.y;
-
-                return getAutoSizedTextBox(
-                  nextProps.text,
-                  nextProps.fontSize,
-                  nextProps.fontFamily,
-                  nextProps.bold,
-                  nextProps.italic,
-                  nextProps.lineHeight,
-                  minWidthForPatch,
-                  56,
-                  maxWidth,
-                  maxHeight,
-                  isEditorOpen,
-                );
-              };
-
-              // Usado por dictado/corrección/mejora con IA — acciones
-              // infrecuentes (no por tecla), así que confirman al store DE
-              // INMEDIATO como antes. También sincronizan `liveEdit` para
-              // que el textarea controlado (que ya no lee del store mientras
-              // se escribe, ver handleLiveTyping) muestre el resultado sin
-              // parpadeo de vuelta al valor viejo.
-              const updateTextProps = (patch: Partial<TextProps>) => {
-                const nextText = patch.text !== undefined ? String(patch.text) : textProps.text;
-                // Dictado/corrección IA pueden reemplazar el texto entero —
-                // recolocar los spans de formato al nuevo string (diff de
-                // prefijo/sufijo común, ver lib/textSpans.ts) para que negrita/
-                // color/etc. aplicados antes no se pierdan ni queden mal
-                // ubicados tras el cambio.
-                const nextSpans = patch.text !== undefined
-                  ? remapSpansForTextChange(liveText, nextText, liveSpans)
-                  : liveSpans;
-                if (liveEditCommitTimerRef.current) {
-                  clearTimeout(liveEditCommitTimerRef.current);
-                  liveEditCommitTimerRef.current = null;
-                }
-                if (isComposingRef.current) {
-                  updateElement(page.page_number, element.id, {
-                    props: { ...mergedProps, ...patch, spans: nextSpans },
-                  });
-                  setLiveEdit({ id: element.id, text: nextText, width: liveEdit?.width ?? element.width, height: liveEdit?.height ?? element.height, spans: nextSpans });
-                  return;
-                }
-                const autoSize = getAutoSizeForPatch(patch);
-                // Anti-parpadeo (guardia estilo LastReplaceText de sdkjs): si
-                // la medición no cambió el tamaño del cuadro, no tocar
-                // width/height — evita re-layouts de Konva sin efecto visual.
-                const sizeUnchanged =
-                  autoSize.width === element.width && autoSize.height === element.height;
-                updateElement(page.page_number, element.id, {
-                  props: {
-                    ...mergedProps,
-                    ...patch,
-                    spans: nextSpans,
-                  },
-                  ...(sizeUnchanged ? {} : { width: autoSize.width, height: autoSize.height }),
-                });
-                setLiveEdit({ id: element.id, text: nextText, width: autoSize.width, height: autoSize.height, spans: nextSpans });
-              };
-
-              // Fase 2 — el manejador real de cada tecla. NO escribe al store
-              // Zustand de inmediato (eso re-renderiza toda la app suscrita
-              // al documento en cada pulsación): actualiza solo el estado
-              // LOCAL de esta página (medición ya barata gracias al caché de
-              // Fase 1) y confirma al store recién tras una pausa de
-              // escritura de 600ms — el equivalente a los "flags de sucio"
-              // de sdkjs, pero implementado como debounce simple.
-              const handleLiveTyping = (newText: string) => {
-                // Recoloca los spans de formato al string recién tecleado
-                // ANTES de tocar el store — así negrita/color aplicados a
-                // una porción del texto no "saltan" de lugar cuando el
-                // usuario sigue escribiendo antes/después/en medio de ella.
-                const nextSpans = remapSpansForTextChange(liveText, newText, liveSpans);
-                if (isComposingRef.current) {
-                  setLiveEdit({ id: element.id, text: newText, width: liveEdit?.width ?? element.width, height: liveEdit?.height ?? element.height, spans: nextSpans });
-                  return;
-                }
-                const autoSize = getAutoSizeForPatch({ text: newText });
-                setLiveEdit({ id: element.id, text: newText, width: autoSize.width, height: autoSize.height, spans: nextSpans });
-
-                if (liveEditCommitTimerRef.current) clearTimeout(liveEditCommitTimerRef.current);
-                liveEditCommitTimerRef.current = setTimeout(() => {
-                  liveEditCommitTimerRef.current = null;
-                  // Se relee el elemento DESDE el store en el momento de
-                  // confirmar (no desde el cierre/closure de este render)
-                  // para nunca pisar props cambiadas por otra vía mientras
-                  // el usuario escribía.
-                  const state = useEditorStore.getState();
-                  const livePage = state.doc.pages.find((p) => p.page_number === page.page_number);
-                  const liveElement = livePage?.elements.find((e) => e.id === element.id);
-                  if (!liveElement) return;
-                  const finalAutoSize = getAutoSizeForPatch({ text: newText });
-                  const sizeUnchanged =
-                    finalAutoSize.width === liveElement.width && finalAutoSize.height === liveElement.height;
-                  updateElement(page.page_number, element.id, {
-                    props: { ...(liveElement.props || {}), text: newText, spans: nextSpans },
-                    ...(sizeUnchanged ? {} : { width: finalAutoSize.width, height: finalAutoSize.height }),
-                  });
-                }, 600);
-              };
-
-              const closeAndProcess = () => {
-                // Por si el editor se cierra a mitad de una composición IME
-                // (blur sin compositionend) — que no quede la guardia pegada.
-                isComposingRef.current = false;
-                if (liveEditCommitTimerRef.current) {
-                  clearTimeout(liveEditCommitTimerRef.current);
-                  liveEditCommitTimerRef.current = null;
-                }
-                // El texto vigente es el del estado local (lo último
-                // tecleado), no `mergedProps.text` — ese pudo quedar
-                // desactualizado si aún no se disparaba la confirmación
-                // diferida de handleLiveTyping.
-                const finalText = liveEdit?.id === element.id ? liveEdit.text : textProps.text;
-                const finalSpans = liveEdit?.id === element.id ? liveEdit.spans : textProps.spans;
-                const autoSize = getAutoSizeForPatch({ text: finalText });
-                updateElement(page.page_number, element.id, {
-                  width: autoSize.width,
-                  height: autoSize.height,
-                  props: {
-                    ...mergedProps,
-                    text: finalText,
-                    spans: finalSpans,
-                  },
-                });
-                activeTextareaRef.current = null;
-                stopDictation();
-                setOpenTextEditorId(null);
-                selectElement(undefined);
-              };
-
-              // Formato por selección (negrita/cursiva/subrayado/color/
-              // tamaño/fuente aplicados SOLO al rango que el usuario marcó
-              // con el mouse/teclado dentro del textarea) — pedido explícito:
-              // "necesito que lo que seleccione con el cursor del mouse se
-              // pueda cambiar sin afectar al resto del texto". Requiere una
-              // selección real (start !== end), igual que Word: con el
-              // cursor colapsado no hay nada que "solo esa porción" cambiar.
-              // Captura el rango seleccionado en el textarea. Necesario para
-              // el picker de color: abrir su popover y elegir un swatch son
-              // varios clics que, pese al preventDefault, podían colapsar la
-              // selección — se "congela" el rango al abrir el picker y se usa
-              // ese al aplicar. Para negrita/cursiva basta el rango vivo.
-              const captureSelection = () => {
-                const ta = activeTextareaRef.current;
-                if (!ta) return;
-                selectionRangeRef.current = { start: ta.selectionStart ?? 0, end: ta.selectionEnd ?? 0 };
-              };
-
-              // Devuelve `true` si había una selección real y se aplicó el
-              // formato; `false` si no (cursor colapsado) — usado tanto por
-              // la barra flotante propia como por el puente con el ribbon
-              // (activeTextFormatBridge.ts): si no hay selección, el ribbon
-              // cae a su comportamiento histórico de "todo el bloque".
-              const applyFormatToSelection = (patch: Partial<BaseTextStyle>, options?: { toggle?: boolean }): boolean => {
-                const ta = activeTextareaRef.current;
-                if (!ta) return false;
-                // Preferir el rango congelado (picker de color); si no hay,
-                // el rango vivo del textarea (botones directos).
-                const captured = selectionRangeRef.current;
-                const start = captured ? captured.start : (ta.selectionStart ?? 0);
-                const end = captured ? captured.end : (ta.selectionEnd ?? 0);
-                selectionRangeRef.current = null;
-                if (start === end) return false;
-                const nextSpans = applyStyleToRange(liveText, liveSpans, textBaseStyle, start, end, patch, options);
-                setLiveEdit({ id: element.id, text: liveText, width: liveWidth, height: liveHeight, spans: nextSpans });
-                updateElement(page.page_number, element.id, {
-                  props: { ...mergedProps, text: liveText, spans: nextSpans },
-                });
-                // El clic en el botón de formato le quita el foco al
-                // textarea — se lo devolvemos y restauramos la selección
-                // para que el usuario pueda seguir aplicando formatos
-                // encadenados (p.ej. negrita y luego color) sin tener que
-                // volver a seleccionar el texto cada vez.
-                requestAnimationFrame(() => {
-                  ta.focus();
-                  ta.setSelectionRange(start, end);
-                });
-                return true;
-              };
-
-              // Registrar esta función como el handler activo del puente
-              // ribbon↔selección MIENTRAS este bloque está en edición — el
-              // ribbon (App.tsx) intenta primero este camino; si no hay
-              // selección real, cae a aplicar sobre todo el bloque (código
-              // ya existente en App.tsx, sin cambios).
-              if (isEditorOpen) {
-                activeFormatBridgeRef.current = applyFormatToSelection;
-              }
-
-              // Fuente de la selección actual, para el cuadro indicador junto
-              // al selector de fuente: recorre cada carácter del rango
-              // marcado y compara su estilo efectivo (span que lo cubre, o el
-              // base del bloque — ver getEffectiveStyleAt). Si todos los
-              // caracteres comparten la misma fuente, se muestra su nombre;
-              // si hay dos o más fuentes distintas en la selección, se
-              // devuelve '' (el cuadro queda en blanco, pero el selector de
-              // al lado sigue permitiendo aplicar una fuente nueva a toda la
-              // selección, igual que en Word). selectionTick fuerza que esto
-              // se recalcule cuando la selección cambia solo con el mouse
-              // (evento que no toca ningún estado de React por sí solo).
-              const getSelectionFontFamily = (): string => {
-                void selectionTick;
-                const ta = activeTextareaRef.current;
-                if (!ta) return '';
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
-                if (start >= end) return '';
-                let common: string | null = null;
-                for (let offset = start; offset < end; offset += 1) {
-                  const effective = getEffectiveStyleAt(liveSpans, textBaseStyle, offset);
-                  if (common === null) {
-                    common = effective.fontFamily;
-                  } else if (common !== effective.fontFamily) {
-                    return '';
-                  }
-                }
-                return common ?? '';
-              };
-              const selectionFontFamily = isEditorOpen ? getSelectionFontFamily() : '';
-              const handleSelectionMaybeChanged = () => setSelectionTick((tick) => tick + 1);
-
-              // Tamaño de fuente ACTUAL de la selección (no el del bloque):
-              // los botones A-/A+ deben partir de lo que YA tiene lo
-              // seleccionado (si ya se achicó una vez, el siguiente clic
-              // sigue achicando esa porción) en vez de siempre recalcular
-              // desde textProps.fontSize (el tamaño base del bloque) — con
-              // eso, clics repetidos sobre una selección que ya tenía un
-              // tamaño propio no hacían nada (siempre volvían a
-              // "base - 2"). Ante una selección con tamaños mezclados se usa
-              // el del primer carácter, igual que el resto de los toggles.
-              const getSelectionFontSize = (): number => {
-                void selectionTick;
-                const ta = activeTextareaRef.current;
-                if (!ta) return textProps.fontSize;
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
-                if (start >= end) return textProps.fontSize;
-                return getEffectiveStyleAt(liveSpans, textBaseStyle, start).fontSize;
-              };
-
-              // Color de TEXTO actual de la selección — el swatch de la
-              // paleta de color mostraba siempre textProps.fontColor (el
-              // del BLOQUE), nunca el de lo realmente seleccionado. Con
-              // cursor colapsado (nada marcado) se sigue mostrando el color
-              // del bloque, como "color ambiente" de referencia.
-              const getSelectionColor = (): string => {
-                void selectionTick;
-                const ta = activeTextareaRef.current;
-                if (!ta) return textProps.fontColor;
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
-                if (start >= end) return textProps.fontColor;
-                return getEffectiveStyleAt(liveSpans, textBaseStyle, start).color;
-              };
-
-              // Color de RESALTADO (fondo detrás del texto, tipo marcador)
-              // de la selección actual — 'transparent' si no hay ninguno
-              // aplicado o si no hay selección real.
-              const getSelectionHighlightColor = (): string => {
-                void selectionTick;
-                const ta = activeTextareaRef.current;
-                if (!ta) return 'transparent';
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
-                if (start >= end) return 'transparent';
-                return getEffectiveStyleAt(liveSpans, textBaseStyle, start).highlightColor || 'transparent';
-              };
-
-              // Estilo de encabezado ('title'|'h1'..'h6') de la selección,
-              // solo si TODO el rango marcado comparte el mismo — igual
-              // criterio que getSelectionFontFamily. '' = sin selección,
-              // selección sin encabezado, o encabezados mezclados (el
-              // <select> simplemente queda en "Normal").
-              const getSelectionHeadingStyle = (): string => {
-                void selectionTick;
-                const ta = activeTextareaRef.current;
-                if (!ta) return '';
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
-                if (start >= end) return '';
-                let common: string | null = null;
-                for (let offset = start; offset < end; offset += 1) {
-                  const effective = getEffectiveStyleAt(liveSpans, textBaseStyle, offset).headingStyle || '';
-                  if (common === null) {
-                    common = effective;
-                  } else if (common !== effective) {
-                    return '';
-                  }
-                }
-                return common ?? '';
-              };
-
-              // Aplica un estilo de encabezado a la selección: además de
-              // marcarla para la Tabla de Contenidos (headingStyle, ver
-              // TableOfContents.tsx), replica las propiedades de CARÁCTER
-              // del estilo (fuente/tamaño/negrita/cursiva/subrayado/color) —
-              // NO alineación ni interlineado, esas son de párrafo y no
-              // tienen sentido para una porción de texto suelta dentro de
-              // un bloque. '' (Normal) limpia el encabezado y vuelve al
-              // estilo de cuerpo normal, igual que "Normal" en el ribbon.
-              const applyHeadingStyleToSelection = (headingId: string) => {
-                const preset = findHeadingStyle(headingId || 'normal') ?? findHeadingStyle('normal')!;
-                // toggle:false — bold/italic/underline aquí son valores
-                // LITERALES del preset (p.ej. h2 exige italic:false), no
-                // un alternar tipo botón; ver comentario en applyStyleToRange.
-                applyFormatToSelection({
-                  headingStyle: headingId || '',
-                  fontFamily: preset.fontFamily,
-                  fontSize: preset.fontSize,
-                  bold: preset.fontWeight >= 600,
-                  italic: preset.italic,
-                  underline: preset.underline,
-                  color: preset.color,
-                }, { toggle: false });
-              };
-
-              // "Cambiar MAYÚSCULAS/minúsculas" al estilo Word (Mayús+F3):
-              // cicla entre MAYÚSCULAS → minúsculas → Cada Palabra En
-              // Mayúscula → MAYÚSCULAS... el siguiente estado se decide por
-              // el contenido ACTUAL de la selección (no hay que recordar en
-              // qué paso del ciclo iba). A diferencia del resto de los
-              // controles de esta barra, esto muta el TEXTO en sí, no un
-              // atributo de estilo — se re-mapean los spans igual que en
-              // dictado/corrección (remapSpansForTextChange) para que el
-              // formato ya aplicado no se pierda ni se desplace.
-              const applyCaseToSelection = (): boolean => {
-                const ta = activeTextareaRef.current;
-                if (!ta) return false;
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
-                if (start === end) return false;
-                const original = liveText.slice(start, end);
-                const isUpper = original === original.toUpperCase() && original !== original.toLowerCase();
-                const isLower = original === original.toLowerCase() && original !== original.toUpperCase();
-                let transformed: string;
-                if (isUpper) {
-                  transformed = original.toLowerCase();
-                } else if (isLower) {
-                  transformed = original.replace(/\b\p{L}/gu, (c) => c.toUpperCase());
-                } else {
-                  transformed = original.toUpperCase();
-                }
-                const nextText = liveText.slice(0, start) + transformed + liveText.slice(end);
-                const nextSpans = remapSpansForTextChange(liveText, nextText, liveSpans);
-                setLiveEdit({ id: element.id, text: nextText, width: liveWidth, height: liveHeight, spans: nextSpans });
-                updateElement(page.page_number, element.id, {
-                  props: { ...mergedProps, text: nextText, spans: nextSpans },
-                });
-                requestAnimationFrame(() => {
-                  ta.focus();
-                  ta.setSelectionRange(start, start + transformed.length);
-                });
-                return true;
-              };
-
-              // Puente ribbon↔selección para el botón "Aa" (ver
-              // lib/activeTextFormatBridge.ts, tryApplyCaseToActiveTextSelection)
-              // — mismo criterio que activeFormatBridgeRef para negrita/color/
-              // tamaño: mientras el editor de ESTE bloque está abierto, el
-              // ribbon fijo intenta primero aplicar el ciclo de mayúsculas a
-              // la selección; si no hay selección real, cae a "todo el
-              // bloque" (App.tsx).
-              if (isEditorOpen) {
-                activeCaseBridgeRef.current = applyCaseToSelection;
-              }
-
-              // Inserta una referencia cruzada (ADR-019) en el cursor —a
-              // diferencia de negrita/mayúsculas, NO exige una selección con
-              // texto: con el cursor colapsado simplemente inserta el
-              // placeholder ahí (mismo criterio que "insertar campo" en
-              // Word). Si hay texto seleccionado, lo reemplaza (igual que
-              // tipear encima de una selección). El placeholder ('#') nunca
-              // se edita a mano: solo existe para que el span `.ref` tenga
-              // un rango real donde anclarse; lo que se VE se sustituye en
-              // cada render por el número resuelto (ver
-              // textSpans.ts::buildStyledSegments, resolveTextRef arriba).
-              const applyRefInsertToSelection = (targetId: string): boolean => {
-                const ta = activeTextareaRef.current;
-                if (!ta) return false;
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
-                const placeholder = '#';
-                const nextText = liveText.slice(0, start) + placeholder + liveText.slice(end);
-                const remapped = remapSpansForTextChange(liveText, nextText, liveSpans);
-                const refSpan: TextStyleSpan = { start, end: start + placeholder.length, ref: { targetId } };
-                const nextSpans = [...remapped, refSpan].sort((a, b) => a.start - b.start);
-                setLiveEdit({ id: element.id, text: nextText, width: liveWidth, height: liveHeight, spans: nextSpans });
-                updateElement(page.page_number, element.id, {
-                  props: { ...mergedProps, text: nextText, spans: nextSpans },
-                });
-                const caretAfter = start + placeholder.length;
-                requestAnimationFrame(() => {
-                  ta.focus();
-                  ta.setSelectionRange(caretAfter, caretAfter);
-                });
-                return true;
-              };
-
-              if (isEditorOpen) {
-                activeRefInsertBridgeRef.current = applyRefInsertToSelection;
-              }
-
-              const selectionFontColor = isEditorOpen ? getSelectionColor() : textProps.fontColor;
-              const selectionHighlightColor = isEditorOpen ? getSelectionHighlightColor() : 'transparent';
-              const selectionHeadingStyle = isEditorOpen ? getSelectionHeadingStyle() : '';
-
-              // Rango [start,end) de la selección REAL viva del textarea, o
-              // null si no hay nada marcado. Bug real reportado: al agrandar
-              // el tamaño de un rango seleccionado con A+/A-, el área de
-              // selección "se perdía" — no encogía ni crecía junto con el
-              // texto. Causa real: el <textarea> invisible (que es quien
-              // dueño de la selección NATIVA del navegador, el rectángulo
-              // azul/celeste que el usuario ve) SIEMPRE usa un único
-              // fontSize uniforme (el del bloque, textProps.fontSize) para
-              // TODO su contenido — un textarea no puede tener tamaños de
-              // fuente mixtos por carácter. El overlay "fantasma" de abajo
-              // SÍ pinta cada span a su propio tamaño real (por eso
-              // highlightColor por ejemplo SÍ escala bien, ver
-              // getSelectionHighlightColor). Cuando la selección tiene un
-              // tamaño de fuente distinto al del bloque, el textarea sigue
-              // ajustando líneas (wrap) según el tamaño PEQUEÑO/uniforme
-              // mientras el overlay ajusta líneas según el tamaño real
-              // (grande) de ese span — los dos layouts divergen y el
-              // rectángulo de selección nativo del navegador queda
-              // desalineado/diminuto respecto al texto grande que se ve.
-              // Fix: no depender de la selección nativa del navegador para
-              // la señal visual — pintar un indicador de selección PROPIO
-              // dentro del mismo overlay que ya calcula el tamaño real por
-              // span (ver el render del "ghost overlay" más abajo), así
-              // hereda automáticamente el tamaño correcto. La selección
-              // nativa se oculta vía CSS (.text-editor-area-seamless::selection
-              // { background: transparent }, ver styles.css).
-              const getLiveSelectionRange = (): [number, number] | null => {
-                void selectionTick;
-                const ta = activeTextareaRef.current;
-                if (!ta) return null;
-                const start = ta.selectionStart ?? 0;
-                const end = ta.selectionEnd ?? 0;
-                if (start === end) return null;
-                return [Math.min(start, end), Math.max(start, end)];
-              };
-
-              const startDictation = async (): Promise<boolean> => {
-                const speechCtor = getSpeechCtor();
-                if (!speechCtor) {
-                  setSpeechError('Tu navegador no soporta dictado por voz.');
-                  return false;
-                }
-
-                const runningOnLocalhost =
-                  typeof window !== 'undefined' &&
-                  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-                const secureContext = typeof window !== 'undefined' ? window.isSecureContext : false;
-
-                if (!secureContext && !runningOnLocalhost) {
-                  setSpeechError('El dictado por voz requiere HTTPS o localhost.');
-                  return false;
-                }
-
-                if (typeof navigator !== 'undefined' && (navigator as any).permissions?.query) {
-                  try {
-                    const permission = await (navigator as any).permissions.query({ name: 'microphone' });
-                    if (permission.state === 'denied') {
-                      setSpeechError('Micrófono bloqueado. Habilita permisos de audio para usar escritura por voz.');
-                      return false;
-                    }
-                  } catch {}
-                }
-
-                stopDictation();
-                setSpeechError(null);
-
-                const recognition = new speechCtor();
-                const baseText = liveText;
-                const separator = baseText.trim().length > 0 ? '\n' : '';
-                let accumulatedFinal = '';
-                const minAcceptedConfidence = 0.46;
-
-                recognition.lang = 'es-PE';
-                recognition.continuous = true;
-                // Antes en `false`: el motor de voz solo entregaba un
-                // resultado tras detectar una PAUSA en el habla (silencio),
-                // así que no aparecía NADA en pantalla durante varios
-                // segundos mientras el usuario seguía hablando — de ahí la
-                // diferencia de velocidad reportada frente al panel
-                // VoiceDictation (interimResults: true desde el inicio, ver
-                // VoiceDictation.tsx). Con `true`, el navegador emite
-                // resultados parciales en cuasi tiempo real; se muestran de
-                // inmediato como vista previa local (interimDictation, ver
-                // más abajo) SIN commitear al store en cada uno — solo la
-                // frase FINAL se confirma vía updateTextProps.
-                recognition.interimResults = true;
-                recognition.maxAlternatives = 3;
-
-                recognition.onresult = (e: any) => {
-                  let discardedLowConfidence = false;
-                  let latestInterim = '';
-                  for (let index = e.resultIndex; index < e.results.length; index += 1) {
-                    const result = e.results[index];
-                    if (!result?.isFinal) {
-                      const interimAlternative = pickBestTranscriptAlternative(result);
-                      if (interimAlternative.transcript) {
-                        latestInterim = `${latestInterim}${latestInterim ? ' ' : ''}${interimAlternative.transcript}`;
-                      }
-                      continue;
-                    }
-
-                    const bestAlternative = pickBestTranscriptAlternative(result);
-                    if (!bestAlternative.transcript) {
-                      continue;
-                    }
-
-                    const normalizedTranscript = normalizeDictationText(bestAlternative.transcript);
-
-                    if (isLikelyLowQualityTranscript(normalizedTranscript)) {
-                      continue;
-                    }
-
-                    if (bestAlternative.confidence > 0 && bestAlternative.confidence < minAcceptedConfidence) {
-                      discardedLowConfidence = true;
-                      continue;
-                    }
-
-                    accumulatedFinal += `${normalizedTranscript} `;
-                  }
-
-                  setInterimDictation(latestInterim);
-
-                  const spokenText = accumulatedFinal.trim();
-                  if (spokenText) {
-                    const nextText = `${baseText}${separator}${spokenText}`;
-                    updateTextProps({ text: nextText });
-                  }
-
-                  if (discardedLowConfidence) {
-                    setSpeechError('Se filtró audio con baja confianza para reducir errores de transcripción.');
-                  } else {
-                    setSpeechError(null);
-                  }
-                };
-
-                recognition.onerror = (event: any) => {
-                  const reason = String(event?.error || 'unknown');
-                  if (reason === 'not-allowed' || reason === 'service-not-allowed') {
-                    setSpeechError('Permiso denegado para micrófono. Debes habilitarlo en el navegador.');
-                  } else if (reason === 'no-speech') {
-                    setSpeechError('No se detectó voz. Intenta nuevamente hablando más cerca del micrófono.');
-                  } else if (reason === 'audio-capture') {
-                    setSpeechError('No se detecta micrófono disponible en el equipo.');
-                  } else {
-                    setSpeechError('No se pudo capturar audio. Revisa permisos de micrófono.');
-                  }
-                  setIsDictating(false);
-                  setInterimDictation('');
-                };
-
-                recognition.onend = () => {
-                  recognitionRef.current = null;
-                  dictationTargetRef.current = null;
-                  setIsDictating(false);
-                  setInterimDictation('');
-                };
-
-                recognitionRef.current = recognition;
-                dictationTargetRef.current = element.id;
-                setIsDictating(true);
-                try {
-                  recognition.start();
-                  return true;
-                } catch {
-                  setIsDictating(false);
-                  setSpeechError('No se pudo iniciar dictado. Intenta otra vez.');
-                  return false;
-                }
-              };
-
-              const toggleDictation = async (event: React.MouseEvent) => {
-                event.preventDefault();
-                event.stopPropagation();
-
-                if (isCurrentDictationTarget) {
-                  stopDictation();
-                  setSpeechError(null);
-                  return;
-                }
-
-                if (isDictating && dictationTargetRef.current !== element.id) {
-                  stopDictation();
-                }
-
-                await startDictation();
-              };
-
-              const runQuickCorrection = async () => {
-                const payload = textForSpellOrRewrite(liveText);
-                if (!payload) {
-                  setCorrectionInfo('Escribe o pega el texto a corregir (no uses solo el texto de ayuda vacío).');
-                  setTimeout(() => setCorrectionInfo(null), 4000);
-                  return;
-                }
-                setCorrectionInfo('Servidor: corrección rápida…');
-                try {
-                  const data = await measurePerfAsync('ia_correction', () => textCorrectQuick(payload));
-                  if (data?.error) {
-                    if (data.error === 'empty_text') {
-                      setCorrectionInfo('No hay texto válido para corregir.');
-                    } else {
-                      setCorrectionInfo(typeof data.error === 'string' ? data.error : 'Error en servidor.');
-                    }
-                    setTimeout(() => setCorrectionInfo(null), 4000);
-                    return;
-                  }
-                  const correctedText = String(data?.text ?? payload);
-                  updateTextProps({ text: correctedText });
-                  if (correctedText !== payload) {
-                    setCorrectionInfo('Se aplicaron correcciones rápidas (backend).');
-                  } else {
-                    setCorrectionInfo('No se detectaron correcciones rápidas pendientes.');
-                  }
-                } catch (e: any) {
-                  const msg = e?.response?.data?.error || e?.message || '';
-                  setCorrectionInfo(msg ? `Error: ${msg}` : 'No se pudo contactar al servidor.');
-                } finally {
-                  setTimeout(() => setCorrectionInfo(null), 4000);
-                }
-              };
-
-              const runAdvancedCorrection = async () => {
-                const sourceText = textForSpellOrRewrite(liveText);
-                if (!sourceText) {
-                  setAdvancedSuggestions([]);
-                  setCorrectionInfo('No hay texto para analizar (escribe contenido real, no solo la ayuda).');
-                  return;
-                }
-
-                setIsAnalyzingSpelling(true);
-                setCorrectionInfo('Servidor: análisis ortográfico y gramatical…');
-
-                try {
-                  const data = await measurePerfAsync('ia_correction', () => textCorrectAdvanced(sourceText, {
-                    language: 'es-PE',
-                    level: 'picky',
-                  }));
-                  if (data?.error) {
-                    setAdvancedSuggestions([]);
-                    setCorrectionInfo(
-                      data.error === 'languagetool_unavailable'
-                        ? 'LanguageTool no disponible en el servidor.'
-                        : data.error === 'empty_text'
-                          ? 'No hay texto válido para analizar.'
-                          : String(data.error),
-                    );
-                    return;
-                  }
-                  const raw = Array.isArray(data?.suggestions) ? data.suggestions : [];
-                  const suggestions: AdvancedSuggestion[] = raw
-                    .map((row: any) => ({
-                      offset: Number(row?.offset ?? 0),
-                      length: Number(row?.length ?? 0),
-                      message: String(row?.message ?? 'Posible corrección'),
-                      replacements: Array.isArray(row?.replacements)
-                        ? row.replacements.map((r: unknown) => String(r ?? '').trim()).filter(Boolean).slice(0, 5)
-                        : [],
-                      context: String(row?.context ?? ''),
-                    }))
-                    .filter((item: AdvancedSuggestion) => item.length > 0);
-
-                  setAdvancedSuggestions(suggestions);
-                  if (suggestions.length > 0) {
-                    setCorrectionInfo(`Se detectaron ${suggestions.length} sugerencias (backend).`);
-                  } else {
-                    setCorrectionInfo('No se detectaron errores ortográficos/gramaticales relevantes.');
-                  }
-                } catch (e: any) {
-                  setAdvancedSuggestions([]);
-                  const msg = e?.response?.data?.error || e?.message || '';
-                  setCorrectionInfo(msg ? `Corrector avanzado: ${msg}` : 'No se pudo ejecutar el corrector avanzado.');
-                } finally {
-                  setIsAnalyzingSpelling(false);
-                }
-              };
-
-              const applyAdvancedSuggestion = (suggestion: AdvancedSuggestion, replacement: string) => {
-                const currentText = String(liveText || '');
-                if (!replacement.trim()) {
-                  return;
-                }
-
-                const before = currentText.slice(0, suggestion.offset);
-                const after = currentText.slice(suggestion.offset + suggestion.length);
-                const nextText = `${before}${replacement}${after}`;
-                updateTextProps({ text: nextText });
-
-                setAdvancedSuggestions((prev) => prev.filter((item) => item !== suggestion));
-                setCorrectionInfo('Se aplicó una sugerencia ortográfica.');
-              };
-
-              const handleTextShortcuts = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-                const withModifier = event.ctrlKey || event.metaKey;
-                if (!withModifier) {
-                  return;
-                }
-
-                const key = event.key.toLowerCase();
-
-                if (key === 'b') {
-                  event.preventDefault();
-                  updateTextProps({ bold: !textProps.bold });
-                  return;
-                }
-
-                if (key === 'i') {
-                  event.preventDefault();
-                  updateTextProps({ italic: !textProps.italic });
-                  return;
-                }
-
-                if (key === 'u') {
-                  event.preventDefault();
-                  updateTextProps({ underline: !textProps.underline });
-                  return;
-                }
-
-                if (event.shiftKey && key === '7') {
-                  event.preventDefault();
-                  updateTextProps({ listType: 'bullet', text: applyListToText(textProps.text, 'bullet') });
-                  return;
-                }
-
-                if (event.shiftKey && key === '8') {
-                  event.preventDefault();
-                  updateTextProps({ listType: 'number', text: applyListToText(textProps.text, 'number') });
-                  return;
-                }
-
-                if (event.shiftKey && key === '0') {
-                  event.preventDefault();
-                  updateTextProps({ listType: 'none', text: stripListMarkers(textProps.text) });
-                }
-              };
-
-              // ADR-049 (revisado) — ajuste de texto alrededor de objetos,
-              // réplica de las 7 opciones de "Opciones de diseño" de Word:
-              //   square/tight/through → excluyen el rectángulo del objeto
-              //     (izquierda/derecha), con margen decreciente (12/4/0px —
-              //     sin polígono de silueta, 'through' se resuelve igual que
-              //     'tight' para un rectángulo, pero se expone aparte por
-              //     fidelidad con el menú de Word),
-              //   topbottom → excluye la franja vertical completa,
-              //   behind/infront/inline/none → no excluyen nada (el objeto
-              //     flota libremente; behind/infront solo cambian el z-order
-              //     via el div wrapper, ver filtro type==='image' más abajo).
-              // Si no hay solapes, se usa el <Text> único de Konva de
-              // siempre (más barato) en vez de partir el párrafo en líneas.
-              const TEXT_PAD = 8;
-              const WRAP_GAP_BY_MODE: Record<string, number> = { square: 12, tight: 4, through: 0, topbottom: 12 };
-              const wrapExclusions: WrapExclusion[] = page.elements
-                .filter((o) =>
-                  o.id !== element.id &&
-                  (o.wrapMode === 'square' || o.wrapMode === 'tight' || o.wrapMode === 'through' || o.wrapMode === 'topbottom') &&
-                  o.x < element.x + element.width && o.x + o.width > element.x &&
-                  o.y < element.y + element.height && o.y + o.height > element.y)
-                .map((o) => {
-                  const gap = WRAP_GAP_BY_MODE[o.wrapMode as string] ?? 12;
-                  const exclusionMode = o.wrapMode === 'topbottom' ? 'topbottom' : 'square';
-                  return {
-                    x0: o.x - gap - (element.x + TEXT_PAD),
-                    x1: o.x + o.width + gap - (element.x + TEXT_PAD),
-                    yTop: o.y - gap - (element.y + TEXT_PAD),
-                    yBot: o.y + o.height + gap - (element.y + TEXT_PAD),
-                    mode: exclusionMode as 'square' | 'topbottom',
-                  };
-                });
-              const wrappedLayout = !isEditorOpen && wrapExclusions.length > 0
-                ? computeWrappedTextLines(
-                    textProps.text,
-                    textBaseStyle,
-                    textProps.lineHeight,
-                    Math.max(120, element.width - TEXT_PAD * 2),
-                    wrapExclusions,
-                    textProps.spans,
-                  )
-                : null;
-
-              return [
-                wrappedLayout
-                  ? wrappedLayout.segments.map((seg, segIndex) => (
-                      <Text
-                        key={`${element.id}-render-seg-${segIndex}`}
-                        x={element.x + TEXT_PAD + seg.x}
-                        y={element.y + TEXT_PAD + seg.y}
-                        text={seg.text}
-                        fontFamily={seg.style.fontFamily}
-                        fontSize={seg.style.fontSize}
-                        fill={seg.style.color}
-                        lineHeight={textProps.lineHeight}
-                        fontStyle={`${seg.style.bold ? 'bold ' : ''}${seg.style.italic ? 'italic' : ''}`.trim() || 'normal'}
-                        textDecoration={seg.style.underline ? 'underline' : ''}
-                        wrap="none"
-                        listening={false}
-                        hitStrokeWidth={0}
-                      />
-                    ))
-                  : (!isEditorOpen && textProps.spans.length > 0) ? (
-                      // Formato por selección (spans): al menos un tramo del
-                      // texto tiene un estilo distinto al del bloque — ya no
-                      // se puede pintar con un solo <Text> de Konva
-                      // (estilo uniforme). Se renderiza como HTML real
-                      // (mismo mecanismo que tablas/imágenes/KPIs de este
-                      // editor) para que negrita/color/tamaño/fuente por
-                      // tramo se vean exactamente igual que en el overlay de
-                      // edición — WYSIWYG entre "editando" y "estático".
-                      <Html
-                        key={`${element.id}-render-rich`}
-                        groupProps={{ x: element.x + 8, y: element.y + 8, listening: false }}
-                        divProps={{ style: { pointerEvents: 'none' } }}
-                      >
-                        <div
-                          style={{
-                            width: Math.max(120, element.width - 16),
-                            minHeight: Math.max(40, element.height - 16),
-                            fontFamily: textProps.fontFamily,
-                            fontSize: `${textProps.fontSize}px`,
-                            color: textProps.fontColor,
-                            textAlign: textProps.textAlign as any,
-                            lineHeight: textProps.lineHeight,
-                            fontWeight: textProps.bold ? 700 : 400,
-                            fontStyle: textProps.italic ? 'italic' : 'normal',
-                            textDecoration: textProps.underline ? 'underline' : 'none',
-                            whiteSpace: 'pre-wrap',
-                            wordWrap: 'break-word',
-                          }}
-                        >
-                          {buildStyledSegments(textProps.text, textProps.spans, textBaseStyle, resolveTextRef).map((seg, segIndex) => (
-                            <span key={segIndex} style={styleToCss(seg.style) as any}>{seg.text}</span>
-                          ))}
-                        </div>
-                      </Html>
-                    ) : (
-                    <Text
-                      key={`${element.id}-render`}
-                      x={element.x + 8}
-                      y={element.y + 8}
-                      width={Math.max(120, element.width - 16)}
-                      height={Math.max(40, element.height - 16)}
-                      text={textProps.text}
-                      fontFamily={textProps.fontFamily}
-                      fontSize={textProps.fontSize}
-                      fill={textProps.fontColor}
-                      align={textProps.textAlign}
-                      lineHeight={textProps.lineHeight}
-                      fontStyle={`${textProps.bold ? 'bold ' : ''}${textProps.italic ? 'italic' : ''}`.trim() || 'normal'}
-                      textDecoration={textProps.underline ? 'underline' : ''}
-                      listening={false}
-                      hitStrokeWidth={0}
-                      visible={!isEditorOpen}
-                    />
-                    ),
-                !isEditorOpen && isElementSelected ? (
-                    <Html key={`${element.id}-floating-toolbar`} groupProps={{ x: element.x, y: element.y - 48 }}>
-                      <FloatingContextualToolbar
-                        element={element}
-                        onUpdate={(patch) => updateElement(page.page_number, element.id, patch)}
-                        onRemove={() => removeElement(page.page_number, element.id)}
-                        onOpenInspector={() => {
-                          // Signal to App.jsx to ensure right panel is visible
-                          window.dispatchEvent(new CustomEvent('mining-studio-open-inspector'));
-                        }}
-                        onAction={(action) => {
-                          if (action === 'edit' && element.type === 'text') {
-                            setOpenTextEditorId(element.id);
-                          }
-                          if (action === 'replace' && element.type === 'image') {
-                            onRequestImageReplace?.(page.page_number, element.id, 'file');
-                          }
-                          // Dictado y corrección — accesibles con un solo
-                          // clic desde la selección (sin doble clic previo).
-                          // Se abre el editor a la vez para que el usuario
-                          // vea el resultado (indicador de dictado, lista de
-                          // sugerencias) en el mismo lienzo.
-                          if (action === 'dictate' && element.type === 'text') {
-                            setOpenTextEditorId(element.id);
-                            if (isCurrentDictationTarget) {
-                              stopDictation();
-                              setSpeechError(null);
-                            } else {
-                              if (isDictating && dictationTargetRef.current !== element.id) {
-                                stopDictation();
-                              }
-                              void startDictation();
-                            }
-                          }
-                          if (action === 'spellcheck-quick' && element.type === 'text') {
-                            setOpenTextEditorId(element.id);
-                            void runQuickCorrection();
-                          }
-                          if (action === 'spellcheck-advanced' && element.type === 'text') {
-                            setOpenTextEditorId(element.id);
-                            void runAdvancedCorrection();
-                          }
-                        }}
-                      />
-                    </Html>
-                  ) : null,
-                isEditorOpen ? (
-                    <Html key={`${element.id}-text`} groupProps={{ x: element.x + 8, y: element.y + 8 }}>
-                      <div
-                        className="text-editor-seamless-container"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        {/* Formato por selección — negrita/cursiva/subrayado/
-                           color/tamaño/fuente SOLO al texto que el usuario
-                           tenga seleccionado en el textarea de abajo (ver
-                           applyFormatToSelection). Requiere una selección
-                           real; con el cursor colapsado no hace nada, igual
-                           que en Word. */}
-                        <div
-                          className="text-editor-format-row"
-                          onMouseDown={(event) => {
-                            // preventDefault evita que el mousedown le quite el
-                            // foco/selección al textarea al hacer clic en los
-                            // BOTONES de esta barra (Negrita/Cursiva/A-/A+/etc,
-                            // ver applyFormatToSelection). Pero en Chrome/Edge
-                            // ese mismo preventDefault en el mousedown de un
-                            // <select> NATIVO bloquea que el navegador abra su
-                            // lista de opciones — bug real reportado: "Estilo"
-                            // y "Fuente" quedaban fijos, ningún clic los abría.
-                            // Los <select> (Estilo, Fuente) manejan su propio
-                            // mousedown (ver más abajo, captureSelection) para
-                            // seguir capturando la selección antes de perder
-                            // foco, sin bloquear su apertura nativa.
-                            if ((event.target as HTMLElement).tagName === 'SELECT') return;
-                            event.preventDefault();
-                          }}
-                        >
-                          {/* Estilo de documento (Título/Heading 1-6) sobre la
-                             SELECCIÓN — no todo el bloque. Marca el rango con
-                             headingStyle (ver lib/textSpans.ts) para que la
-                             Tabla de Contenidos lo detecte igual que un
-                             bloque entero (TableOfContents.tsx ya escanea
-                             ambos). "Normal" (valor "") es la opción por
-                             defecto: sin encabezado, no aparece en el TOC. */}
-                          <select
-                            className="text-editor-format-select text-editor-format-heading-select"
-                            title="Estilo de documento de la selección (para la Tabla de Contenidos)"
-                            value={selectionHeadingStyle}
-                            onMouseDown={captureSelection}
-                            onChange={(event) => {
-                              applyHeadingStyleToSelection(event.target.value);
-                              handleSelectionMaybeChanged();
-                            }}
-                          >
-                            <option value="">Normal</option>
-                            {SELECTION_HEADING_OPTIONS.map((h) => (
-                              <option key={h.id} value={h.id}>{h.label}</option>
-                            ))}
-                          </select>
-                          <div className="text-editor-format-divider" />
-                          <button type="button" title="Negrita en la selección" onClick={() => applyFormatToSelection({ bold: true })}>
-                            <Bold size={12} />
-                          </button>
-                          <button type="button" title="Cursiva en la selección" onClick={() => applyFormatToSelection({ italic: true })}>
-                            <Italic size={12} />
-                          </button>
-                          <button type="button" title="Subrayado en la selección" onClick={() => applyFormatToSelection({ underline: true })}>
-                            <Underline size={12} />
-                          </button>
-                          <button
-                            type="button"
-                            title="Cambiar MAYÚSCULAS/minúsculas/Cada Palabra (como Word)"
-                            onClick={applyCaseToSelection}
-                          >
-                            Aa
-                          </button>
-                          <ColorPalette
-                            value={selectionFontColor}
-                            title="Color del texto de la selección"
-                            onOpen={captureSelection}
-                            onChange={(color) => { applyFormatToSelection({ color }); handleSelectionMaybeChanged(); }}
-                          />
-                          <Highlighter size={13} className="text-editor-format-highlight-icon" />
-                          <ColorPalette
-                            value={selectionHighlightColor}
-                            title="Color de resaltado de fondo de la selección"
-                            allowClear
-                            onOpen={captureSelection}
-                            onChange={(color) => { applyFormatToSelection({ highlightColor: color }); handleSelectionMaybeChanged(); }}
-                            onClear={() => { applyFormatToSelection({ highlightColor: 'transparent' }); handleSelectionMaybeChanged(); }}
-                          />
-                          {/* Cuadro indicador: muestra la fuente de lo que hay
-                             seleccionado con el mouse. En blanco si la
-                             selección mezcla dos o más fuentes distintas (no
-                             hay UNA fuente que mostrar) — igual que Word deja
-                             ese campo vacío ante una selección mixta. Es solo
-                             lectura; el cambio de fuente se hace con el
-                             selector de al lado. */}
-                          <span
-                            className="text-editor-format-current-font"
-                            title={
-                              selectionFontFamily
-                                ? `Fuente de la selección: ${selectionFontFamily}`
-                                : 'La selección mezcla varias fuentes'
-                            }
-                          >
-                            {selectionFontFamily || '—'}
-                          </span>
-                          <select
-                            className="text-editor-format-select"
-                            title="Cambiar la fuente de la selección"
-                            defaultValue=""
-                            // Bug real: al mover el foco de verdad al <select>
-                            // (mousedown→focus, no solo un evento sintético),
-                            // el navegador COLAPSA ta.selectionStart/End a la
-                            // posición del cursor — para cuando onChange se
-                            // dispara (el usuario ya eligió una opción, el
-                            // foco lleva rato en el select), la selección
-                            // "viva" del textarea ya no existe. captureSelection
-                            // guarda el rango ANTES de ese blur (mousedown
-                            // ocurre primero), y applyFormatToSelection lo usa
-                            // en vez de la selección ya colapsada — mismo
-                            // arreglo que ya tenía el selector de Estilo.
-                            onMouseDown={captureSelection}
-                            onChange={(event) => {
-                              if (!event.target.value) return;
-                              applyFormatToSelection({ fontFamily: event.target.value });
-                              event.target.value = '';
-                              handleSelectionMaybeChanged();
-                            }}
-                          >
-                            <option value="" disabled>Fuente…</option>
-                            {['Arial', 'Inter', 'Times New Roman', 'Georgia', 'Calibri', 'Verdana'].map((f) => (
-                              <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            title="Reducir tamaño de la selección (mínimo 7)"
-                            onClick={() => applyFormatToSelection({ fontSize: Math.max(7, getSelectionFontSize() - 2) })}
-                          >
-                            A-
-                          </button>
-                          <button
-                            type="button"
-                            title="Aumentar tamaño de la selección (máximo 200)"
-                            onClick={() => applyFormatToSelection({ fontSize: Math.min(200, getSelectionFontSize() + 2) })}
-                          >
-                            A+
-                          </button>
-                        </div>
-
-                        {/* Floating mini-toolbar for AI and Speech - non-intrusive */}
-                        <div className="text-editor-mini-actions">
-                          <button
-                            type="button"
-                            className={isCurrentDictationTarget ? 'active' : ''}
-                            title="Dictado por voz"
-                            disabled={!speechSupported}
-                            onClick={toggleDictation}
-                          >
-                            {isCurrentDictationTarget ? <MicOff size={12} /> : <Mic size={12} />}
-                          </button>
-                          <button
-                            type="button"
-                            title="Corregir ortografía"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              void runQuickCorrection();
-                            }}
-                          >
-                            <CheckCheck size={12} />
-                          </button>
-                          <button
-                            type="button"
-                            title="Mejorar con IA"
-                            className={isImproving ? 'loading' : ''}
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              runAIImprovement(String(liveText || ''), (patch) => updateTextProps(patch));
-                            }}
-                          >
-                            <Wand2 size={12} />
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-close-seamless"
-                            onClick={closeAndProcess}
-                          >
-                            <Save size={12} />
-                          </button>
-                        </div>
-
-                        <div className="text-editor-rich-wrap" style={{ position: 'relative', width: `${Math.max(120, liveWidth - 16)}px`, height: `${Math.max(40, liveHeight - 16)}px` }}>
-                          {/* Overlay "fantasma": pinta el texto con el formato
-                             real (por span) DEBAJO del textarea. El textarea
-                             de encima queda con texto invisible (solo se ve
-                             su caret) para que el usuario siga escribiendo/
-                             seleccionando con el comportamiento nativo del
-                             navegador (IME, doble-clic para elegir palabra,
-                             flechas, etc.) mientras VE el resultado con
-                             formato mixto en tiempo real — la técnica clásica
-                             de "textarea con resaltado" (usada por editores
-                             de código embebidos), sin reescribir toda la
-                             máquina de tecleo/IME ya afinada en Fase 1/2. */}
-                          <div
-                            aria-hidden
-                            ref={ghostWrapRef}
-                            style={{
-                              position: 'absolute',
-                              top: 0,
-                              left: 0,
-                              width: '100%',
-                              height: '100%',
-                              fontFamily: textProps.fontFamily,
-                              fontSize: `${textProps.fontSize}px`,
-                              color: textProps.fontColor,
-                              textAlign: textProps.textAlign as any,
-                              lineHeight: textProps.lineHeight,
-                              fontWeight: textProps.bold ? 700 : 400,
-                              fontStyle: textProps.italic ? 'italic' : 'normal',
-                              textDecoration: textProps.underline ? 'underline' : 'none',
-                              whiteSpace: 'pre-wrap',
-                              wordWrap: 'break-word',
-                              pointerEvents: 'none',
-                            }}
-                          >
-                            {(() => {
-                              const selRange = getLiveSelectionRange();
-                              let offset = 0;
-                              // Deliberadamente SIN resolver de referencias (ADR-019)
-                              // aqui: `offset` abajo asume `seg.text.length` ==
-                              // caracteres reales de `liveText` para ubicar la
-                              // selección viva; sustituir el texto de un span
-                              // `.ref` por su numero resuelto (largo distinto al
-                              // placeholder) desalinearia ese conteo mientras se
-                              // edita. El placeholder se ve tal cual solo durante
-                              // la edición activa de ESTE bloque; el render
-                              // estático (arriba) y el visor de lectura sí resuelven.
-                              return buildStyledSegments(liveText, liveSpans, textBaseStyle).map((seg, segIndex) => {
-                                const segStart = offset;
-                                const segEnd = offset + seg.text.length;
-                                offset = segEnd;
-                                const css = styleToCss(seg.style) as any;
-                                // Sin cruce con la selección viva: un solo
-                                // <span>, camino histórico sin cambios.
-                                if (!selRange || selRange[1] <= segStart || selRange[0] >= segEnd) {
-                                  return <span key={segIndex} style={css}>{seg.text}</span>;
-                                }
-                                // La porción seleccionada se parte en hasta 3
-                                // trozos (antes/dentro/después) para pintar un
-                                // indicador de selección PROPIO — ver el
-                                // comentario de getLiveSelectionRange arriba:
-                                // a diferencia de la selección nativa del
-                                // navegador (atada al tamaño uniforme del
-                                // <textarea>), este indicador nace del mismo
-                                // cálculo de segmentos que ya usa el tamaño de
-                                // fuente real por span, así que crece/encoge
-                                // correctamente junto con A+/A-.
-                                const [selStart, selEnd] = selRange;
-                                const parts: { text: string; selected: boolean }[] = [];
-                                const midStart = Math.max(segStart, selStart) - segStart;
-                                const midEnd = Math.min(segEnd, selEnd) - segStart;
-                                if (midStart > 0) parts.push({ text: seg.text.slice(0, midStart), selected: false });
-                                parts.push({ text: seg.text.slice(midStart, midEnd), selected: true });
-                                if (midEnd < seg.text.length) parts.push({ text: seg.text.slice(midEnd), selected: false });
-                                return parts.map((part, partIndex) => {
-                                  if (!part.text) return null;
-                                  const partStyle = part.selected
-                                    ? css.backgroundColor
-                                      ? { ...css, outline: '2px solid rgba(37,99,235,0.65)', outlineOffset: -1 }
-                                      : { ...css, backgroundColor: 'rgba(37,99,235,0.35)' }
-                                    : css;
-                                  return <span key={`${segIndex}-${partIndex}`} style={partStyle}>{part.text}</span>;
-                                });
-                              });
-                            })()}
-                            {liveText === '' && <span style={{ opacity: 0 }}>&nbsp;</span>}
-                            {isCurrentDictationTarget && interimDictation && (
-                              <span style={{ opacity: 0.5, fontStyle: 'italic' }}>
-                                {(liveText.trim().length > 0 ? ' ' : '') + interimDictation}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Cursor visual propio — ver comentario de `caretRect`
-                             más arriba. Reemplaza al caret nativo del textarea
-                             (que se oculta con caretColor:transparent más abajo
-                             mientras este esté activo) para que SIEMPRE coincida
-                             con el texto que el usuario realmente ve, sin
-                             importar alineación/negrita/tamaño de fuente. */}
-                          {caretRect && (
-                            <div
-                              aria-hidden
-                              style={{
-                                position: 'absolute',
-                                left: caretRect.left,
-                                top: caretRect.top,
-                                width: 2,
-                                height: caretRect.height,
-                                background: textProps.fontColor,
-                                pointerEvents: 'none',
-                                animation: 'reportstudio-caret-blink 1s step-end infinite',
-                              }}
-                            />
-                          )}
-
-                          <textarea
-                            ref={activeTextareaRef}
-                            className="text-editor-area-seamless"
-                            style={{
-                              position: 'absolute',
-                              top: 0,
-                              left: 0,
-                              fontFamily: textProps.fontFamily,
-                              fontSize: `${textProps.fontSize}px`,
-                              // Texto invisible — el overlay de arriba es lo
-                              // que realmente se ve. El caret nativo del
-                              // textarea se oculta (transparent) cuando el
-                              // cursor visual propio (`caretRect`) está
-                              // disponible — mostrar los dos a la vez
-                              // duplicaría el cursor y, peor, el nativo
-                              // quedaría desalineado del texto real (bug
-                              // reportado 2026-07-27, ver caretRect arriba).
-                              // Si por algún motivo no se pudo calcular
-                              // (caretRect null), cae al caret nativo como
-                              // respaldo — sigue siendo mejor que ningún
-                              // cursor visible.
-                              color: 'transparent',
-                              caretColor: caretRect ? 'transparent' : textProps.fontColor,
-                              textAlign: textProps.textAlign as any,
-                              lineHeight: textProps.lineHeight,
-                              fontWeight: textProps.bold ? 700 : 400,
-                              fontStyle: textProps.italic ? 'italic' : 'normal',
-                              textDecoration: textProps.underline ? 'underline' : 'none',
-                              whiteSpace: 'pre-wrap',
-                              wordWrap: 'break-word',
-                              width: '100%',
-                              height: '100%',
-                              background: 'transparent',
-                              outline: 'none',
-                              border: 'none',
-                              resize: 'none',
-                              padding: 0,
-                              margin: 0,
-                              display: 'block',
-                              // Antes 'hidden': si el cálculo de auto-tamaño se
-                              // quedaba corto por cualquier motivo, el texto
-                              // ya escrito quedaba oculto sin avisar — nunca
-                              // debe perderse de vista lo que el usuario
-                              // escribió, aunque el cuadro visual del lienzo
-                              // aún no se haya puesto al día.
-                              overflow: 'visible'
-                            }}
-                            autoFocus
-                            value={liveText}
-                            placeholder="Empieza a escribir..."
-                            onBlur={(event) => {
-                              // Bug real: hacer clic en un <select> NATIVO
-                              // (Estilo/Fuente) mueve el foco del navegador
-                              // del textarea hacia el select — eso SIEMPRE
-                              // dispara onBlur del textarea, sin importar el
-                              // preventDefault del mousedown. Cerrar el editor
-                              // en cualquier blur significaba que abrir esos
-                              // selects cerraba TODO el bloque de edición
-                              // (textarea + barra flotante) antes de poder
-                              // elegir una opción. Ahora solo se cierra si el
-                              // foco sale COMPLETAMENTE del editor (afuera de
-                              // .text-editor-seamless-container, que incluye
-                              // la barra de formato y sus selects/popovers de
-                              // color) — igual que Word no cierra el cursor
-                              // de edición al usar su propia barra flotante.
-                              const next = event.relatedTarget as Node | null;
-                              const container = event.currentTarget.closest('.text-editor-seamless-container');
-                              if (next && container?.contains(next)) {
-                                return;
-                              }
-                              closeAndProcess();
-                            }}
-                            onChange={(event) => handleLiveTyping(event.target.value)}
-                            onCompositionStart={() => {
-                              isComposingRef.current = true;
-                            }}
-                            onCompositionEnd={(event) => {
-                              // Fin de composición IME (á, ñ compuesta, CJK):
-                              // recién aquí se mide y redimensiona con el
-                              // carácter definitivo (ver guardia en
-                              // updateTextProps).
-                              isComposingRef.current = false;
-                              updateTextProps({ text: event.currentTarget.value });
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Escape') {
-                                closeAndProcess();
-                              }
-                              handleTextShortcuts(event);
-                            }}
-                            // Marcar/mover la selección con el mouse (arrastre,
-                            // doble clic para elegir palabra) o con flechas +
-                            // Shift no dispara onChange — sin estos tres, el
-                            // cuadro indicador de fuente de la barra de
-                            // formato quedaba desactualizado hasta la próxima
-                            // tecla que sí modificara el texto.
-                            onSelect={handleSelectionMaybeChanged}
-                            onMouseUp={handleSelectionMaybeChanged}
-                            onKeyUp={handleSelectionMaybeChanged}
-                            spellCheck={true}
-                            lang={spellcheckLang}
-                            // Higiene sdkjs (text_input.js:211-215): impedir que
-                            // el navegador/SO mute el texto por su cuenta bajo
-                            // el modelo — el corrector propio de la plataforma
-                            // (LanguageTool) es el único autorizado a corregir.
-                            autoCorrect="off"
-                            autoCapitalize="off"
-                            autoComplete="off"
-                          />
-                        </div>
-
-                        {advancedSuggestions.length > 0 && (
-                          <div className="text-advanced-list">
-                            {advancedSuggestions.slice(0, 6).map((suggestion, index) => (
-                              <div key={`${suggestion.offset}-${suggestion.length}-${index}`} className="text-advanced-item">
-                                <div className="text-advanced-message">{suggestion.message}</div>
-                                {suggestion.context && <div className="text-advanced-context">{suggestion.context}</div>}
-                                <div className="text-advanced-actions">
-                                  {suggestion.replacements.length > 0 ? (
-                                    suggestion.replacements.map((replacement, replacementIndex) => (
-                                      <button
-                                        key={`${replacement}-${replacementIndex}`}
-                                        type="button"
-                                        onClick={(event) => {
-                                          event.preventDefault();
-                                          event.stopPropagation();
-                                          applyAdvancedSuggestion(suggestion, replacement);
-                                        }}
-                                      >
-                                        {replacement}
-                                      </button>
-                                    ))
-                                  ) : (
-                                    <span className="text-editor-hint">Sin sugerencias automáticas.</span>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {speechError && <div className="text-editor-error">{speechError}</div>}
-                        {correctionInfo && <div className="text-editor-info">{correctionInfo}</div>}
-                      </div>
-                    </Html>
-                  ) : null,
-              ];
-            })}
+            .map((element) => (
+              <TextBlock
+                key={element.id}
+                element={element}
+                page={page}
+                selectedElementId={selectedElementId}
+                CONTENT_LEFT={CONTENT_LEFT}
+                CONTENT_RIGHT={CONTENT_RIGHT}
+                CONTENT_TOP={CONTENT_TOP}
+                CONTENT_BOTTOM={CONTENT_BOTTOM}
+                PAGE_WIDTH={PAGE_WIDTH}
+                PAGE_HEIGHT={PAGE_HEIGHT}
+                onRequestImageReplace={onRequestImageReplace}
+                selectElement={selectElement}
+                updateElement={updateElement}
+                addElement={addElement}
+                removeElement={removeElement}
+                splitOverflowingText={splitOverflowingText}
+                pasteTextAcrossPages={pasteTextAcrossPages}
+                openTextEditorId={openTextEditorId}
+                setOpenTextEditorId={setOpenTextEditorId}
+                liveEdit={liveEdit}
+                setLiveEdit={setLiveEdit}
+                pendingTypingStyle={pendingTypingStyle}
+                setPendingTypingStyle={setPendingTypingStyle}
+                selectionTick={selectionTick}
+                setSelectionTick={setSelectionTick}
+                caretRect={caretRect}
+                isDictating={isDictating}
+                setIsDictating={setIsDictating}
+                speechError={speechError}
+                setSpeechError={setSpeechError}
+                interimDictation={interimDictation}
+                setInterimDictation={setInterimDictation}
+                recognitionRef={recognitionRef}
+                dictationTargetRef={dictationTargetRef}
+                stopDictation={stopDictation}
+                correctionInfo={correctionInfo}
+                setCorrectionInfo={setCorrectionInfo}
+                isImproving={isImproving}
+                runAIImprovement={runAIImprovement}
+                advancedSuggestions={advancedSuggestions}
+                setAdvancedSuggestions={setAdvancedSuggestions}
+                isAnalyzingSpelling={isAnalyzingSpelling}
+                setIsAnalyzingSpelling={setIsAnalyzingSpelling}
+                inlineSpellIssues={inlineSpellIssues}
+                setInlineSpellIssues={setInlineSpellIssues}
+                spellMenu={spellMenu}
+                setSpellMenu={setSpellMenu}
+                spellMenuRef={spellMenuRef}
+                splitBlockMenu={splitBlockMenu}
+                setSplitBlockMenu={setSplitBlockMenu}
+                slashRefMenu={slashRefMenu}
+                setSlashRefMenu={setSlashRefMenu}
+                copiedTextFormat={copiedTextFormat}
+                setCopiedTextFormat={setCopiedTextFormat}
+                isComposingRef={isComposingRef}
+                activeTextareaRef={activeTextareaRef}
+                textSplitInProgressRef={textSplitInProgressRef}
+                selectionRangeRef={selectionRangeRef}
+                activeFormatBridgeRef={activeFormatBridgeRef}
+                activeCaseBridgeRef={activeCaseBridgeRef}
+                activeRefInsertBridgeRef={activeRefInsertBridgeRef}
+                ghostWrapRef={ghostWrapRef}
+                textMouseAnchorRef={textMouseAnchorRef}
+                textSelectionFrameRef={textSelectionFrameRef}
+                liveEditCommitTimerRef={liveEditCommitTimerRef}
+                wrapAutoHeightRef={wrapAutoHeightRef}
+                getIndexFromClickPoint={getIndexFromClickPoint}
+                resolveTextRef={resolveTextRef}
+              />
+            ))}
+
+          {/* Formas con "Delante del texto" (ADR-049, pedido explícito
+              2026-09-04: "que realmente funcionen"). El loop principal de
+              arriba (ordenado por zIndex) solo decide el orden ENTRE formas
+              y sus propios recuadros de selección -- texto/imagen/tabla/
+              gráfico/etc. se pintan en sus propios pases FIJOS más abajo en
+              este mismo Layer, siempre en el mismo orden relativo sin
+              importar zIndex, así que subir el zIndex de una forma nunca
+              bastaba para que se viera "delante" de un bloque de texto. Acá
+              se redibuja SOLO la parte visual (sin escucha de eventos -- el
+              Rect real que se arrastra/selecciona sigue en su lugar de
+              siempre en el loop principal, intacto) al final de TODOS los
+              pases de contenido, para que la opción realmente se vea
+              delante de todo lo demás de la página. */}
+          {page.elements
+            .filter((element) => element.type === 'shape' && normalizeWrapMode(element.wrapMode) === 'infront')
+            .map((element) => (
+              <ShapeVisual key={`${element.id}-front`} element={element} />
+            ))}
+
+          {/* Anclas de comentario: capa translúcida encima del objeto
+              comentado, pero sin interceptar selección, arrastre ni edición. */}
+          {linkedComments.filter((comment) => comment.id === hoveredCommentId).map((comment) => {
+            const target = page.elements.find((element) => element.id === comment.elementId);
+            if (!target) return null;
+            return (
+              <Rect
+                key={`comment-highlight-${comment.id}`}
+                x={target.x}
+                y={target.y}
+                width={target.width}
+                height={target.height}
+                fill="rgba(192, 38, 211, 0.14)"
+                stroke="#c026d3"
+                strokeWidth={1.5}
+                dash={[5, 4]}
+                cornerRadius={3}
+                listening={false}
+              />
+            );
+          })}
 
           <Transformer
             ref={transformerRef}
@@ -3594,6 +3145,21 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
             resizeEnabled
             keepRatio={false}
             centeredScaling={false}
+            boundBoxFunc={(oldBox: any, newBox: any) => {
+              const selected = page.elements.find((item) => item.id === selectedElementId);
+              if (!selected || selected.locked) return oldBox;
+              const minWidth = selected.type === 'text' ? 120 : 60;
+              const minHeight = selected.type === 'text' ? 28 : 40;
+              const x = Math.min(Math.max(newBox.x, CONTENT_LEFT), CONTENT_RIGHT - minWidth);
+              const y = Math.min(Math.max(newBox.y, CONTENT_TOP), CONTENT_BOTTOM - minHeight);
+              return {
+                ...newBox,
+                x,
+                y,
+                width: Math.min(Math.max(minWidth, newBox.width), CONTENT_RIGHT - x),
+                height: Math.min(Math.max(minHeight, newBox.height), CONTENT_BOTTOM - y),
+              };
+            }}
             anchorSize={14}
             anchorCornerRadius={4}
             anchorStroke="#1d4ed8"
@@ -3614,6 +3180,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
           />
         </Layer>
       </Stage>
+      </div>
 
       {contextMenu && (() => {
         const menuElement = page.elements.find((el) => el.id === contextMenu.elementId);
@@ -3661,16 +3228,6 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               <button
                 type="button"
                 onClick={() => {
-                  // El índice ya recalcula sus entradas leyendo el documento
-                  // completo en cada render de ESTA página — pero si el
-                  // heading que cambió vive en OTRA página, esa página ajena
-                  // se re-renderiza a sí misma sin tocar la página del índice
-                  // (React.memo por identidad de `page`), así que el índice
-                  // puede quedar desactualizado hasta que algo más toque su
-                  // propia página. "Actualizar" fuerza exactamente eso: toca
-                  // el propio bloque toc (referencia nueva de página) para
-                  // garantizar el recálculo con el documento más reciente,
-                  // igual que F9 en Word actualiza un campo de TDC.
                   updateElement(page.page_number, menuElement.id, {
                     props: { ...menuElement.props, _refreshedAt: Date.now() },
                   });
@@ -3687,7 +3244,7 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
                 Actualizar índice
               </button>
             )}
-            {['image', 'chart', 'table', 'kpi', 'sensor', 'map'].includes(menuElement.type) && (
+            {['image', 'chart', 'table', 'kpi', 'sensor', 'map', 'shape', 'wordart'].includes(menuElement.type) && (
               <div
                 onMouseEnter={() => setContextWrapSubmenuOpen(true)}
                 onMouseLeave={() => setContextWrapSubmenuOpen(false)}
@@ -3812,6 +3369,20 @@ const PageCanvas = React.memo(function PageCanvas({ page, viewportScale = 1, tot
               Eliminar bloque
             </button>
           </div>
+        );
+      })()}
+
+      {chartFromTableRequest && (() => {
+        const tableElement = page.elements.find((el) => el.id === chartFromTableRequest.tableElementId);
+        if (!tableElement) return null;
+        const rows: string[][] = Array.isArray(tableElement.props?.rows) ? tableElement.props.rows : [];
+        return (
+          <CreateChartFromTableModal
+            rows={rows}
+            hasHeader={!!tableElement.props?.hasHeader}
+            onCreate={(config) => addChartFromTable(tableElement.id, config)}
+            onClose={() => setChartFromTableRequest(null)}
+          />
         );
       })()}
     </div>

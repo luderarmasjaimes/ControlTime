@@ -1,8 +1,71 @@
 # ADR-166 — Decomiso de InsightFace como motor biométrico secundario; adopción de SeetaFace6Open
 
-**Status**: accepted (decisión de producto/licencia); implementación de wiring pendiente
+> **Actualización 2026-09-14 — wiring de retiro completado, y una SEGUNDA
+> exposición de licencia encontrada y cerrada que este ADR no había
+> detectado.** A pedido explícito del developer de ejecutar el "Trabajo de
+> implementación pendiente" que este ADR dejaba fuera de alcance:
+>
+> 1. **Login/registro (el uso que este ADR sí identificó)**: retirada la
+>    llamada auxiliar de `face_analysis.cpp` a `/face_embedding`
+>    (`fetchFaceEmbeddingFromAiEngine`, función completa eliminada de
+>    `ai_engine_client.hpp/cpp`) tanto del fallback de `analyzeFaceImage()`
+>    como de la rama `storedIsEmbedding` de `buildFaceLoginProbe()`. El
+>    registro (`main.cpp::handleRegister`) ya no intenta InsightFace ANTES
+>    de `analyzeFaceImage()` — antes lo hacía, saltándose por completo el
+>    despacho por `gBiometricProvider` (SeetaFace6/DeepFace) que
+>    `analyzeFaceImage()` ya implementaba correctamente; ahora pasa directo
+>    por ese despacho real. La rama `insightface_onnx` de
+>    `loginFaceTargetedPg()` (`auth_storage_pg.cpp`) se eliminó — esas
+>    cuentas ahora caen naturalmente en la rama `else` ya existente
+>    ("proveedor débil, reinscriba su biometría"), exactamente el
+>    comportamiento que el punto 4 de la Decisión original autorizaba.
+>    `gFaceEmbeddingCosineThreshold`/`BEEMETRY_FACE_EMBEDDING_COSINE_THRESHOLD`
+>    (config, env, `docker-compose.yml`/`.prod.yml`) retirados por no tener
+>    ya ningún consumidor.
+> 2. **Hallazgo nuevo, no identificado en la redacción original de este ADR
+>    (2026-09-11): el motor de avatares (`ai_engine/eye_analyzer.py`) usaba
+>    InsightFace/`buffalo_l` para DOS chequeos internos de control de
+>    calidad** — `_avatar_identity_similarity()` (similitud de identidad
+>    entre la foto fuente y el avatar generado) y una rama de
+>    `_avatar_output_quality_reason()` (bbox de respaldo cuando MediaPipe no
+>    detecta nada). Ninguno de los dos se expone al usuario como decisión de
+>    autenticación, pero **ambos ejecutan el mismo modelo con la misma
+>    licencia "solo uso académico"** que motivó este ADR — su alcance
+>    original ("se decomisiona InsightFace como motor biométrico
+>    secundario") quedaba, en la práctica, incompleto mientras esto siguiera
+>    corriendo. Ambas funciones en `eye_analyzer.py` ya estaban diseñadas
+>    para degradar con gracia a "sin señal"/`None` cuando el motor no está
+>    disponible (`_get_analyzer()` en `face_embedding_insight.py` captura
+>    cualquier excepción de import/carga) — no requirieron código nuevo, solo
+>    dejar de instalar el paquete.
+> 3. **Retirado**: `insightface>=0.7.3,<0.8` de `ai_engine/requirements.txt`;
+>    `ENV INSIGHTFACE_ROOT`/`RUN mkdir -p /app/.insightface` de
+>    `ai_engine/Dockerfile.ai`; el volumen `insightface_models` (declaración
+>    y montaje) de `docker-compose.prod.yml`/`docker-compose.scale.yml`.
+>    `ai_engine/face_embedding_insight.py` y la ruta Flask `/face_embedding`
+>    (`eye_analyzer.py`) **no se eliminaron** — quedan como código inerte,
+>    fallando siempre a `ModuleNotFoundError` capturado, ya que nada las
+>    invoca ni las necesita; retirarlas del todo es cosmético, no de
+>    licencia, y se deja fuera de esta pasada para no tocar más superficie
+>    de `eye_analyzer.py` de la necesaria.
+> 4. **Cuentas de desarrollo verificadas**: 16 cuentas con
+>    `face_template_provider = 'insightface_onnx'` en la base real
+>    (tenants Alpayana/El Brocal, usernames de prueba tipo `larmas1`/
+>    `ADASDS`/`ghggsah@`) — confirmado que ya no tienen camino de login
+>    (caen en `rejected_weak_provider`), tal como autorizaba el punto 4 de
+>    la Decisión original. No se borraron ni reinscribieron filas — queda a
+>    criterio de quien las use la próxima vez que intenten loguearse.
+> 5. **Verificado**: `docker build -f backend/Dockerfile.verify backend`
+>    compila limpio con Catch2 100% passed tras retirar los símbolos de
+>    arriba.
+>
+> `specs/008-biometria-facial-login/spec.md` actualizado (objetivo, NFR,
+> lista de proveedores seleccionables) para no seguir citando InsightFace
+> como motor vigente. El texto original de este ADR, abajo, no se edita.
 
-**Fecha**: 2026-09-11
+**Status**: implemented — decisión de producto/licencia y wiring de código completados
+
+**Fecha**: 2026-09-11 (decisión); wiring 2026-09-14
 
 **Ámbito**: ia, seguridad, biometría, plataforma
 

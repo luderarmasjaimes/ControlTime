@@ -75,16 +75,16 @@ describe('livenessChallenge', () => {
         const keys = new Set([
             challengeInstructionKey('turn_left'),
             challengeInstructionKey('turn_right'),
-            challengeInstructionKey('shift_left'),
-            challengeInstructionKey('shift_right'),
+            challengeInstructionKey('look_down'),
+            challengeInstructionKey('look_up'),
             challengeInstructionKey('move_closer'),
             challengeInstructionKey('move_away'),
         ])
         expect(keys.size).toBe(6)
         expect(challengeInstructionKey('turn_left')).toBe('liveness.challenge.turnLeft')
         expect(challengeInstructionKey('turn_right')).toBe('liveness.challenge.turnRight')
-        expect(challengeInstructionKey('shift_left')).toBe('liveness.challenge.shiftLeft')
-        expect(challengeInstructionKey('shift_right')).toBe('liveness.challenge.shiftRight')
+        expect(challengeInstructionKey('look_down')).toBe('liveness.challenge.lookDown')
+        expect(challengeInstructionKey('look_up')).toBe('liveness.challenge.lookUp')
         expect(challengeInstructionKey('move_closer')).toBe('liveness.challenge.moveCloser')
         expect(challengeInstructionKey('move_away')).toBe('liveness.challenge.moveAway')
     })

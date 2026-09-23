@@ -1,5 +1,7 @@
 # ADR-088 — Seed de empresas (TimeTelemetry, Beemetry, distribuidoras) y usuarios de prueba multiperfil
 
+> **Actualización 2026-09-23 (ADR-210) — verificación cerrada.** El script de seed de distribuidoras/usuarios demo (`51_seed_companies_distribuidores_demo.sql`) figura registrado en `schema_migrations` y sus efectos (52 empresas, 71 tenants, 143 usuarios) están en la BD viva. Estado vigente: **implemented, verificado**. Nota: por ADR-211 este seed pasa a la carpeta de seeds solo-desarrollo.
+
 **Status**: implemented (script SQL escrito y verificado por revisión; pendiente de correr contra un contenedor real — ver Fase 6 del plan de implementación)
 **Fecha**: 2026-08-05
 **Autores**: EC

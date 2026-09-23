@@ -1,5 +1,22 @@
 # ADR-134 — Fix crítico: escalada de privilegios vía autoregistro en empresa existente
 
+> **Actualización 2026-09-14 — confirmación FORMAL POR ESCRITO del arquitecto
+> del proyecto, cierra la decisión pendiente #6 del corte gerencial
+> (informe 30-ago, reiterada sin respuesta registrada en el informe del
+> 13-sep).** La actualización del 2026-09-11 (abajo) ya documentaba la
+> decisión técnica de no auditar/notificar retroactivamente, pero el corte
+> gerencial la seguía listando como pendiente por faltar su registro escrito
+> formal, distinto de la decisión de desarrollo original. El arquitecto del
+> proyecto confirma por escrito, en estos términos: la plataforma está en
+> **etapa de desarrollo**, y **ningún cliente** está usando la plataforma en
+> ambiente de **certificación, pruebas, ni producción** a la fecha de esta
+> confirmación. Se ratifica sin cambios el criterio ya fijado el 2026-09-11:
+> no corresponde auditoría de log ni notificación retroactiva por este
+> hallazgo, y este criterio sigue aplicando únicamente a este hallazgo, en
+> esta etapa del proyecto — no exime de auditoría retroactiva a hallazgos
+> críticos futuros una vez existan clientes reales en certificación, pruebas
+> o producción. No queda ninguna acción pendiente sobre este ADR.
+>
 > **Actualización 2026-09-11 — pendiente de notificación/auditoría retroactiva
 > cerrado por decisión explícita del developer/Gerencia.** El informe de
 > estado del 2026-08-30 había dejado abierta la pregunta de si correspondía

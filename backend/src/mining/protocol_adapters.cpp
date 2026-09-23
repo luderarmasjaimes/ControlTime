@@ -51,6 +51,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -87,6 +88,18 @@ std::atomic<std::uint64_t> g_opcua_polls{0}, g_opcua_ingested{0}, g_opcua_errors
 std::thread g_mqtt_thread;
 std::thread g_poll_thread;
 std::string g_db_url;
+
+// Downlink: puntero al cliente mosquitto vivo, protegido por mutex --
+// mqttThread() lo setea tras mosquitto_new() y lo limpia antes de
+// mosquitto_destroy(). publishMqttCommand() (llamado desde hilos de HTTP,
+// no desde mqttThread) lo lee bajo el mismo lock. mosquitto_publish() en sí
+// es seguro de llamar desde otro hilo mientras mosquitto_loop_forever()
+// corre en el suyo (documentado en libmosquitto) -- el mutex acá protege
+// solo la lectura/escritura del puntero, no la llamada en sí.
+std::mutex g_mqtt_client_mutex;
+#if HAS_MQTT
+struct mosquitto* g_mqtt_client{nullptr};
+#endif
 
 // Entrega al pipeline canónico. Devuelve true si el ingestor la aceptó
 // (sensor_code registrado y cola con espacio).
@@ -205,11 +218,21 @@ void mqttThread() {
     int port = 1883;
     try { port = std::stoi(envOr("BEEMETRY_MQTT_PORT", "1883")); } catch (...) {}
 
+    {
+        std::lock_guard<std::mutex> lock(g_mqtt_client_mutex);
+        g_mqtt_client = m;
+    }
+
     // connect_async + loop_forever: reintenta indefinidamente si el broker
     // aún no está arriba al arrancar (orden de contenedores no garantizado).
     mosquitto_connect_async(m, host.c_str(), port, 30);
     std::cout << "[MQTT] adaptador iniciado → " << host << ":" << port << std::endl;
     mosquitto_loop_forever(m, -1, 1);  // retorna tras mosquitto_disconnect en stop
+
+    {
+        std::lock_guard<std::mutex> lock(g_mqtt_client_mutex);
+        g_mqtt_client = nullptr;
+    }
     mosquitto_destroy(m);
     mosquitto_lib_cleanup();
 }
@@ -450,16 +473,45 @@ void pollThread() {
                     due.push_back(&s);
                 }
         }
-        for (auto* s : due) {
-            if (!g_running.load()) break;
-            if (s->protocol == "modbus_tcp") {
+        // Sondeo en paralelo de las fuentes vencidas de ESTE ciclo -- antes
+        // secuencial en un solo hilo: si varias fuentes vencen a la vez y
+        // alguna está inalcanzable, su timeout individual (Modbus ~3s,
+        // OPC UA ~5s por defecto) se sumaba al de las demás, demorando el
+        // sondeo de dispositivos SÍ alcanzables. Cada pollModbusSource()/
+        // pollOpcuaSource() abre y cierra su propia conexión local
+        // (modbus_t*/UA_Client* con vida acotada a la llamada, sin estado de
+        // conexión compartido entre fuentes) -- seguro de despachar en
+        // paralelo. Los contadores que tocan (g_modbus_*/g_opcua_*) son
+        // atómicos, e ingestCanonical()->TelemetryIngestor::ingestLine() ya
+        // se llama concurrentemente HOY desde mqttThread (hilo separado);
+        // su cola interna va protegida por mutex (ver telemetry_ingest.cpp),
+        // así que tolera este llamador paralelo adicional sin cambios ahí.
+        //
+        // IMPORTANTE: `due` guarda punteros crudos a elementos de g_sources.
+        // Se espera (wait) a que TODO el lote termine antes de volver al
+        // tope del while -- así ningún refreshSources() (que reemplaza
+        // g_sources completo bajo g_sources_mtx) puede correr mientras un
+        // hilo de este lote todavía dereferencia esos punteros. Despachar
+        // "fire and forget" sin este wait sería inseguro por esto mismo.
+        if (!due.empty()) {
+            std::vector<std::future<void>> pending;
+            pending.reserve(due.size());
+            for (auto* s : due) {
+                if (!g_running.load()) break;
+                pending.push_back(std::async(std::launch::async, [s] {
+                    if (s->protocol == "modbus_tcp") {
 #if HAS_MODBUS
-                if (g_modbus_enabled.load()) pollModbusSource(*s);
+                        if (g_modbus_enabled.load()) pollModbusSource(*s);
 #endif
-            } else if (s->protocol == "opcua") {
+                    } else if (s->protocol == "opcua") {
 #if HAS_OPCUA
-                if (g_opcua_enabled.load()) pollOpcuaSource(*s);
+                        if (g_opcua_enabled.load()) pollOpcuaSource(*s);
 #endif
+                    }
+                }));
+            }
+            for (auto& f : pending) {
+                if (f.valid()) f.wait();
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -499,6 +551,21 @@ void stopAdapters() {
     // El hilo MQTT vive en mosquitto_loop_forever; el proceso termina con el
     // contenedor (mismo patrón que los demás hilos de fondo del backend).
     if (g_mqtt_thread.joinable()) g_mqtt_thread.detach();
+}
+
+bool publishMqttCommand(const std::string& topic, const std::string& jsonPayload) {
+#if HAS_MQTT
+    if (!g_mqtt_connected.load()) return false;
+    std::lock_guard<std::mutex> lock(g_mqtt_client_mutex);
+    if (!g_mqtt_client) return false;
+    const int rc = mosquitto_publish(g_mqtt_client, nullptr, topic.c_str(),
+                                     static_cast<int>(jsonPayload.size()),
+                                     jsonPayload.data(), /*qos=*/1, /*retain=*/false);
+    return rc == MOSQ_ERR_SUCCESS;
+#else
+    (void)topic; (void)jsonPayload;
+    return false;
+#endif
 }
 
 AdapterStats adapterStats() {

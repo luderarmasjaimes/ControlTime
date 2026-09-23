@@ -1,0 +1,28 @@
+# OCR de PDFs (PaddleOCR PP-StructureV2) -- servicio aislado a propósito,
+# mismo motivo que avatar_engine/silentface_engine (ver Dockerfile): evita
+# meter paddlepaddle (con su propia matriz de versiones CUDA/cuDNN) en el
+# mismo proceso que TensorFlow (DeepFace) en ai_engine -- ADR-141.
+#
+# CPU-only a propósito, sin wheel CUDA fijada (a diferencia de avatar_engine/
+# silentface_engine, que sí fijan torch==...+cu128): no hay evidencia de una
+# wheel de paddlepaddle-gpu compatible con la GPU real de este host (RTX 5060
+# Laptop, Blackwell, sm_120) -- este mismo repo ya documentó en
+# docker-compose.yml que TensorFlow 2.15.1 en esa GPU solo corre vía JIT de
+# PTX con una variable de entorno especial, y que subir a TF 2.18 para
+# alinear cuDNN rompió por falta de kernels CUDA para Blackwell
+# (CUDA_ERROR_INVALID_PTX real, confirmado en runtime). Instalar acá una
+# wheel GPU no verificada arriesgaría la misma falla silenciosa. Server.py
+# deja OCR_ENGINE_USE_GPU=1 como interruptor para cuando alguien confirme una
+# wheel compatible; por defecto CPU (aceptable: esto es una operación de
+# importación bajo demanda con indicador de progreso en el frontend, no un
+# camino caliente como el verify-frame de login de silentface_engine).
+flask
+waitress
+numpy>=1.24,<2
+opencv-python-headless==4.11.0.86
+requests
+PyMuPDF>=1.24,<2
+beautifulsoup4>=4.12,<5
+lxml>=5,<6
+paddlepaddle==2.6.2
+paddleocr==2.7.3

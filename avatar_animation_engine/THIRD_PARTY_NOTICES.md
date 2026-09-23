@@ -23,6 +23,24 @@ proyecto. Investigación de licencias completa en ADR-150; resumen operativo:
 
 Ninguno de estos componentes depende de InsightFace.
 
+## Piper TTS (ADR-202, implementado)
+
+- Código: [`OHF-Voice/piper1-gpl`](https://github.com/OHF-Voice/piper1-gpl),
+  paquete PyPI `piper-tts==1.8.0`. Licencia **GPL-3.0-or-later** (embebe su
+  propio `espeak-ng` para fonemización). Invocado únicamente vía su entry
+  point de consola `piper` como **subproceso** (`backends/sadtalker_backend.py::
+  _synthesize_tts_wav`) -- nunca `import piper` en el código de este
+  servicio, mismo criterio de aislamiento ya aplicado antes a espeak-ng
+  directo (que reemplaza) y documentado en el `Dockerfile`.
+- Voz: `es_MX-claude-high` (VITS, 22050Hz), de
+  [`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices)
+  (repo HF, rama `main`). Licencia **Apache 2.0** según su propio
+  `MODEL_CARD` (dataset:
+  [`HirCoir/Piper-TTS-Spanish`](https://huggingface.co/spaces/HirCoir/Piper-TTS-Spanish)),
+  sin restricción de uso comercial. Descargada bajo demanda al primer
+  arranque (`_ensure_piper_voice`), no horneada en la imagen -- mismo patrón
+  que los checkpoints de SadTalker arriba.
+
 ## LivePortrait / LatentSync (Fases B/C, NO implementados)
 
 Documentados en ADR-150 como bloqueados por licencia hasta parchar su

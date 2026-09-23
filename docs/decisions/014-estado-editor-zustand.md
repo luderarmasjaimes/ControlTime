@@ -1,6 +1,37 @@
 # ADR-014 — Estado del editor: Zustand store único (`useEditorStore`)
 
-**Status**: implemented (verificado 2026-07-06: `useEditorStore.ts` usa `create` de `zustand`)
+> **Actualización 2026-09-12 (aclaración de la regla dura, no una decisión
+> nueva)**: una auditoría de conformidad (2026-09-11) encontró
+> `useDragPreviewStore` — un SEGUNDO store Zustand, además de
+> `useEditorStore` — que guarda la posición visual del fantasma de arrastre
+> mientras el usuario reordena diapositivas (`DragPreviewOverlay.tsx`,
+> formalizado en [ADR-174](174-capacidades-avanzadas-editor-store-navegacion-diapositivas.md)).
+> Tomada aislada, la frase "un solo store para el editor" de la regla dura
+> de abajo se leería como que lo prohíbe. Pero esa misma regla, completa,
+> ya dice "no múltiples stores **paralelos que dupliquen el documento**" —
+> y `useDragPreviewStore` no lo hace: no contiene `doc` ni ninguna
+> proyección de él, solo `{x, y, visible}` de un fantasma efímero que se
+> descarta al soltar el mouse, nunca se persiste (ni offline ni al
+> servidor) y nunca se lee como fuente de verdad de nada del documento —
+> existe únicamente para que la posición del fantasma no dispare
+> re-renders del árbol completo del editor en cada `pointermove` del
+> arrastre.
+>
+> **Análisis**: el riesgo real que esta regla dura buscaba prevenir es
+> "verdades divergentes" sobre el documento (dos stores que puedan
+> desincronizarse sobre qué dice un informe) — no la existencia de
+> cualquier `create()` de Zustand adicional en el código. Un store de
+> estado de UI puramente efímero, sin ninguna superficie de datos de
+> negocio, no crea ese riesgo.
+>
+> **Solución adoptada**: se aclara la regla dura de abajo (sin retirarla,
+> sin crear un ADR nuevo — es la MISMA regla, solo escrita sin
+> ambigüedad) agregando el criterio explícito que ya cumplía
+> `useDragPreviewStore` de facto, para que futuras piezas de estado de UI
+> efímero no tengan que releer el código existente para saber si están
+> permitidas.
+
+**Status**: implemented (verificado 2026-07-06: `useEditorStore.ts` usa `create` de `zustand`); regla dura aclarada 2026-09-12, ver arriba
 **Fecha**: 2026-06-24
 **Autores**: EC
 **Ámbito**: reports
@@ -25,8 +56,9 @@ El estado del editor vive en un **único store Zustand** (`useEditorStore`). El 
 - **Servidor (autoritativo)**: documento persistido, `report_content_revision`, workflow, auditoría, metadatos de ciclo de vida (ADR-021).
 
 ### Reglas duras
-- Un solo store para el editor; no múltiples stores paralelos que dupliquen el documento.
+- Un solo store para **el documento y la sesión de edición** (`useEditorStore`); no múltiples stores paralelos que dupliquen el documento, su selección, o cualquier dato que el servidor deba poder auditar/versionar.
 - El store no es la autoridad de versionado/workflow: refleja lo que el servidor confirma.
+- **Excepción explícita (aclarada 2026-09-12)**: un store Zustand adicional SÍ está permitido cuando cumple las tres condiciones a la vez — (1) nunca contiene `doc` ni una proyección/copia de su contenido, (2) nunca se persiste (ni caché offline ADR-022/045/127, ni servidor), y (3) su ciclo de vida está acotado a una sola interacción transitoria de UI (ej. un gesto de arrastrar-soltar), descartado al terminar esa interacción. `useDragPreviewStore` (ADR-174) es el caso que motivó esta aclaración y el primero en cumplirla. Cualquier store nuevo que NO cumpla las tres condiciones sigue prohibido por la regla anterior sin excepción.
 
 ## Consecuencias
 
@@ -51,3 +83,4 @@ No escala a la complejidad del editor (selección global, undo, offline). Rechaz
 ## Referencias
 - `Referencias/frontend/src/components/ReportStudioV2/store/useEditorStore.js`
 - ADR-015 (versionado server), ADR-021 (metadatos), ADR-022 (offline)
+- ADR-174 (`useDragPreviewStore` — caso real de la excepción aclarada 2026-09-12)

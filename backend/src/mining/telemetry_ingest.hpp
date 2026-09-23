@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -58,6 +59,19 @@ struct TelemetryRow {
     std::int64_t kafka_offset{-1};
 };
 
+// Filtro de sanidad de valor (Fase 1 del plan de telemetría 2026-09-17,
+// docs/development/PLAN_IMPLEMENTACION_TELEMETRIA_SENSORES_GATEWAYS_2026-09-17.md):
+// rechaza NaN/Inf antes de encolar/persistir. Equivalente al nodo "Filtro
+// NAN" presente en las 70 rule chains de ThingsBoard legado (confirmado
+// real, ver docs/INVESTIGACION_REPLICA_BD_PRODUCCION_THINGSBOARD_2026-09-16.md)
+// -- sin este filtro, un RTC desincronizado o ruido eléctrico en el sensor
+// puede escribir NaN/Inf en telemetry_raw/telemetry_fact, contaminando el
+// motor de fórmulas y los reportes que leen esas tablas aguas abajo.
+// Función libre (no método) para poder llamarse también desde
+// handleHttpTelemetryMulti (device_alarm_routes.cpp), que inserta directo a
+// telemetry_fact sin pasar por TelemetryIngestor.
+bool isSaneTelemetryValue(double v);
+
 class TelemetryIngestor {
 public:
     enum class Mode { Direct, Kafka };
@@ -65,6 +79,7 @@ public:
     struct Stats {
         std::uint64_t received{0};      // líneas válidas (encoladas o producidas)
         std::uint64_t inserted{0};      // filas confirmadas en BD
+        std::uint64_t rejected_bad_value{0};  // NaN/Inf descartados antes de encolar
         std::uint64_t dropped_full{0};  // descartadas por cola llena
         std::uint64_t dropped_unknown{0};  // sensor_code no reconocido
         std::uint64_t flushes{0};
@@ -108,6 +123,16 @@ public:
     bool resolveSensor(const std::string& code,
                        std::string& sensor_id,
                        std::string& tenant_id) const;
+
+    // Recarga la caché de sensores desde BD (mismo query que start()).
+    // Necesario porque un dispositivo registrado vía POST
+    // /api/mining/devices/register después de start() no existía todavía
+    // cuando se hizo la carga inicial -- sin este refresh, sus lecturas se
+    // rechazan como "sensor desconocido" hasta el próximo reinicio del
+    // proceso (encontrado en vivo probando SensorManagementView: un sensor
+    // recién registrado no podía "probar conexión"). Seguro de llamar
+    // concurrentemente con resolveSensor() -- ver cache_mtx_.
+    void refreshSensorCache() { loadSensorCache(); }
 
     // Encola una fila ya resuelta. false si la cola está llena (se descarta).
     bool enqueue(TelemetryRow&& row);
@@ -170,7 +195,12 @@ private:
     int flush_ms_{200};
     std::size_t max_queue_{200000};
 
-    // Caché de sensores: inmutable tras start() (lecturas concurrentes seguras).
+    // Caché de sensores: ya NO es inmutable tras start() (ver
+    // refreshSensorCache()) -- protegida por cache_mtx_, un
+    // shared_mutex porque el caso común es lectura concurrente desde el hot
+    // path (resolveSensor(), un lock compartido barato) y el reload es
+    // infrecuente (solo tras registrar un dispositivo nuevo).
+    mutable std::shared_mutex cache_mtx_;
     std::unordered_map<std::string, std::pair<std::string, std::string>> sensor_cache_;
 
     mutable std::mutex q_mtx_;
@@ -187,6 +217,7 @@ private:
     // Métricas
     std::atomic<std::uint64_t> m_received_{0};
     std::atomic<std::uint64_t> m_inserted_{0};
+    std::atomic<std::uint64_t> m_rejected_bad_value_{0};
     std::atomic<std::uint64_t> m_dropped_full_{0};
     std::atomic<std::uint64_t> m_dropped_unknown_{0};
     std::atomic<std::uint64_t> m_flushes_{0};

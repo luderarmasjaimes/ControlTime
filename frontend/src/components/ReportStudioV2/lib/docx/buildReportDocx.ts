@@ -1,13 +1,14 @@
 import {
-  AlignmentType, Document, Footer, FrameAnchorType, FrameWrap, Header, HeadingLevel,
-  ImageRun, OverlapType, PageNumber, PageOrientation, Packer, Paragraph, SectionType,
-  ShadingType, Table, TableAnchorType, TableCell, TableOfContents, TableRow, TabStopType,
-  TextRun, WidthType, BorderStyle,
+  AlignmentType, Bookmark, Document, ExternalHyperlink, Footer, FrameAnchorType, FrameWrap, Header, HeadingLevel,
+  ImageRun, InternalHyperlink, LeaderType, LineRuleType, OverlapType, PageNumber, PageOrientation, Packer, Paragraph, SectionType,
+  ShadingType, Table, TableAnchorType, TableCell, TableRow, TabStopType,
+  TextRun, WidthType, BorderStyle, VerticalAlign,
   type IFrameOptions, type ISectionOptions, type FileChild,
 } from 'docx';
 import type { ReportDocument, ReportElement, ReportPage, DocumentMeta } from '../../store/useEditorStore';
-import { resolvePagePaperSetup } from '../../store/useEditorStore';
+import { resolvePagePaperSetup, tocSliceForElementId } from '../../store/useEditorStore';
 import { resolveHeadingRefLabel } from '../../components/document/TableOfContents';
+import { resolveAnnexRefLabel } from '../../components/document/AnnexList';
 import { getReportLayoutMetrics } from '../reportLayoutMetrics';
 import { HEADING_STYLES, findHeadingStyle } from '../headingStyles';
 import { sanitizeSpans, buildStyledSegments, type BaseTextStyle, type StyledSegment } from '../textSpans';
@@ -15,6 +16,10 @@ import { findCoverTemplate } from '../coverTemplates';
 import { resolveMiningUnitName } from '../sessionChrome';
 import { htmlCellToRuns } from './htmlCellToRuns';
 import { cssColorToHex, firstFontFamily, pxFontToHalfPt, pxToTwip } from './docxUnits';
+import { computeTableFormulas, getEffectiveCellValues } from '../tableFormulas';
+import { computeConditionalStyles } from '../tableConditionalFormat';
+import { formatNumberForDisplay } from '../tableNumberFormat';
+import { semanticStatusStyle } from '../semanticStatus';
 
 /** Sesión mínima que necesita este builder (misma forma que `getSession()` de `authStorage.ts`) — inyectada por el caller para que este módulo no dependa directamente del storage del navegador y sea testeable con datos sintéticos. */
 export interface DocxSessionChrome {
@@ -53,6 +58,17 @@ const HEADING_LEVEL_BY_STYLE: Record<string, (typeof HeadingLevel)[keyof typeof 
   h5: HeadingLevel.HEADING_5,
   h6: HeadingLevel.HEADING_6,
 };
+
+/** Nombre de bookmark de Word válido para `el.id` -- un bookmark solo puede
+ * empezar con una letra y contener letras/dígitos/guion bajo (nada de
+ * guiones ni otros símbolos, que sí trae `el.id` tal cual), con un tope de
+ * 40 caracteres. Se usa como ancla para que las entradas del índice
+ * (`buildTocSectionChildren`) puedan saltar aquí con un hipervínculo
+ * interno real -- ver ese comentario para el porqué de no usar un campo
+ * `{ TOC }` nativo de Word. */
+function bookmarkNameFor(elementId: string): string {
+  return `h_${elementId.replace(/[^A-Za-z0-9_]/g, '_')}`.slice(0, 40);
+}
 
 const ALIGN_BY_CSS: Record<string, (typeof AlignmentType)[keyof typeof AlignmentType]> = {
   left: AlignmentType.LEFT,
@@ -118,46 +134,172 @@ function highlightFromColor(value: string | undefined): string | undefined {
  * en runs de Word, partiendo saltos de línea manuales (`\n`, el bloque de
  * texto usa `white-space:pre-wrap`) en `Break()` reales — todo dentro de UN
  * solo párrafo (ver nota sobre frames multi-párrafo en el reporte). */
-function segmentsToRuns(segments: StyledSegment[]): TextRun[] {
-  const out: TextRun[] = [];
+/** Reemplaza los TAB de sangria de listas multinivel (SCRUM-31, ver
+ * lib/listFormatting.ts) por espacios -- un TAB literal dentro del
+ * `text` de un TextRun de la libreria `docx` no produce de forma
+ * confiable un salto de tabulacion real en Word (a diferencia de `\n`,
+ * que sí se maneja aparte como `break`, esto no tiene un equivalente
+ * "sangria" dedicado sin definir tabStops por parrafo). Espacios simples
+ * dan una sangria visualmente equivalente sin depender de como cada
+ * version de la libreria interprete un TAB crudo. */
+function tabsToIndentSpaces(line: string): string {
+  let depth = 0;
+  while (depth < line.length && line[depth] === '\t') depth += 1;
+  return depth === 0 ? line : '    '.repeat(depth) + line.slice(depth);
+}
+
+// Mismo whitelist de esquema que ya usa htmlCellToRuns.ts (tabla) -- acá se
+// vuelve a validar por defensa en profundidad (el `href` de un span YA se
+// valida al importarlo, ver lib/richPaste.ts::SAFE_LINK_SCHEME), nunca
+// confiar en que todo dato que llegue a este builder pasó por esa ruta.
+const SAFE_LINK_SCHEME = /^(https?:|mailto:)/i;
+
+function segmentsToRuns(segments: StyledSegment[]): (TextRun | ExternalHyperlink)[] {
+  const out: (TextRun | ExternalHyperlink)[] = [];
   let pendingBreaks = 0;
+  // Runs consecutivos con el mismo `href` (p.ej. negrita parcial dentro de
+  // un mismo enlace) se agrupan en UN solo ExternalHyperlink con varios
+  // hijos -- mismo criterio que reportDocxBuilder.js::htmlCellToRuns (Pipeline
+  // B) para no producir varios hipervínculos adyacentes por el mismo enlace.
+  let linkGroup: { href: string; children: TextRun[] } | null = null;
+  const flushLinkGroup = () => {
+    if (linkGroup) out.push(new ExternalHyperlink({ link: linkGroup.href, children: linkGroup.children }));
+    linkGroup = null;
+  };
   segments.forEach((seg) => {
+    const href = seg.href && SAFE_LINK_SCHEME.test(seg.href) ? seg.href : undefined;
+    if (href !== linkGroup?.href) flushLinkGroup();
     const lines = seg.text.split('\n');
-    lines.forEach((line, i) => {
+    lines.forEach((rawLine, i) => {
       if (i > 0) pendingBreaks += 1;
+      const line = tabsToIndentSpaces(rawLine);
       if (line.length === 0) return;
-      out.push(new TextRun({
+      const run = new TextRun({
         text: line,
         break: pendingBreaks || undefined,
         bold: seg.style.bold || undefined,
         italics: seg.style.italic || undefined,
         underline: seg.style.underline ? {} : undefined,
+        strike: seg.style.strikethrough || undefined,
         color: cssColorToHex(seg.style.color, '0F172A'),
         font: firstFontFamily(seg.style.fontFamily),
         size: pxFontToHalfPt(seg.style.fontSize),
         highlight: highlightFromColor(seg.style.highlightColor) as any,
-      }));
+      });
+      if (href) {
+        if (!linkGroup) linkGroup = { href, children: [] };
+        linkGroup.children.push(run);
+      } else {
+        out.push(run);
+      }
       pendingBreaks = 0;
     });
   });
+  flushLinkGroup();
   if (pendingBreaks > 0) out.push(new TextRun({ text: '', break: pendingBreaks }));
   return out.length > 0 ? out : [new TextRun({ text: '' })];
 }
 
-function buildTextElement(el: ReportElement, resolveRef: (targetId: string) => string | undefined): Paragraph {
+// Interlineado (`props.lineHeight`, mismo multiplicador CSS que ya usa
+// TextBlock.tsx en pantalla) -- faltaba por completo en este builder (y en
+// reportDocxBuilder.js, pipeline servidor, mismo fix ahí): ningún `Paragraph`
+// fijaba nunca `spacing.line`, así que el interlineado configurado en el
+// lienzo se perdía siempre en el .docx exportado. Word mide "auto" en
+// 240-avos de línea (240 = sencillo).
+const DEFAULT_LINE_HEIGHT = 1.35;
+function lineSpacingProps(props: Record<string, any>) {
+  const lineHeight = Number(props.lineHeight) > 0 ? Number(props.lineHeight) : DEFAULT_LINE_HEIGHT;
+  return { line: Math.round(lineHeight * 240), lineRule: LineRuleType.AUTO };
+}
+// `props.backgroundColor` (fondo de TODO el bloque -- distinto de
+// `span.highlightColor`) faltaba por completo en este builder (mismo gap
+// que reportDocxBuilder.js, pipeline servidor). `ReadOnlyViewer.tsx` ya lo
+// pinta en pantalla/PDF; ningún `Paragraph` de acá llevaba `shading`.
+function blockShadingProps(props: Record<string, any>) {
+  const bg = props.backgroundColor;
+  if (!bg || bg === 'transparent') return undefined;
+  return { type: ShadingType.CLEAR, color: 'auto', fill: cssColorToHex(bg, 'FFFFFF') };
+}
+
+/** Recorta+reubica `spans` (offsets absolutos del texto ORIGINAL) a
+ * coordenadas LOCALES de un recorte -- mismo criterio que su equivalente en
+ * reportDocxBuilder.js (pipeline servidor, usado ahí para listas nativas;
+ * acá para columnas de texto). */
+function rebaseSpans(spans: import('../textSpans').TextStyleSpan[], contentStart: number, contentLength: number) {
+  return spans
+    .map((s) => ({ ...s, start: s.start - contentStart, end: s.end - contentStart }))
+    .filter((s) => s.end > 0 && s.start < contentLength)
+    .map((s) => ({ ...s, start: Math.max(0, s.start), end: Math.min(contentLength, s.end) }));
+}
+
+// Columnas tipo periódico (`props.columnCount`) -- mismo criterio y misma
+// limitación que reportDocxBuilder.js (pipeline servidor): `docx` no expone
+// columnas reales a nivel de un solo párrafo, se aproxima partiendo el
+// texto (nunca a mitad de palabra) en N cuadros lado a lado.
+function splitTextIntoColumnChunks(text: string, columnCount: number) {
+  const targetLen = Math.max(1, Math.ceil(text.length / columnCount));
+  const parts = text.split(/(\s+)/);
+  const chunks: { text: string; start: number; end: number }[] = [];
+  let current = '';
+  let currentStart = 0;
+  let offset = 0;
+  parts.forEach((part) => {
+    if (current.length >= targetLen && chunks.length < columnCount - 1 && /^\s+$/.test(part)) {
+      chunks.push({ text: current, start: currentStart, end: offset });
+      current = '';
+      currentStart = offset + part.length;
+    } else {
+      current += part;
+    }
+    offset += part.length;
+  });
+  chunks.push({ text: current, start: currentStart, end: text.length });
+  while (chunks.length < columnCount) chunks.push({ text: '', start: text.length, end: text.length });
+  return chunks;
+}
+const COLUMN_GAP_PX = 16;
+function buildColumnParagraphs(
+  el: ReportElement, props: Record<string, any>, text: string,
+  spans: import('../textSpans').TextStyleSpan[], base: BaseTextStyle,
+  resolveRef: (targetId: string) => string | undefined, columnCount: number,
+): Paragraph[] {
+  const chunks = splitTextIntoColumnChunks(text, columnCount);
+  const colWidthPx = Math.max(20, (el.width - COLUMN_GAP_PX * (columnCount - 1)) / columnCount);
+  return chunks.map((chunk, i) => {
+    const rebased = rebaseSpans(spans, chunk.start, chunk.text.length);
+    const segments = buildStyledSegments(chunk.text, rebased, base, resolveRef);
+    const runs = segmentsToRuns(segments);
+    const frame = elementFrame(el, { xPx: el.x + i * (colWidthPx + COLUMN_GAP_PX), widthPx: colWidthPx });
+    // Bookmark SOLO en la primera columna -- un `id` duplicado en varios
+    // bookmarks rompería Word (nombres únicos obligatorios); una referencia
+    // cruzada a este bloque sigue apuntando al mismo `el.id` de siempre.
+    const children = i === 0 ? [new Bookmark({ id: bookmarkNameFor(el.id), children: runs })] : runs;
+    return new Paragraph({
+      frame, alignment: alignmentFromCss(props.textAlign),
+      spacing: lineSpacingProps(props), shading: blockShadingProps(props),
+      children,
+    });
+  });
+}
+
+function buildTextElement(el: ReportElement, resolveRef: (targetId: string) => string | undefined): Paragraph[] {
   const props = el.props || {};
   const text = String(props.text || '');
   const base: BaseTextStyle = {
     bold: !!props.bold,
     italic: !!props.italic,
     underline: !!props.underline,
+    strikethrough: false,
     color: props.fontColor || '#0f172a',
     fontSize: props.fontSize || 14,
     fontFamily: props.fontFamily || 'Arial',
     highlightColor: props.highlightColor || 'transparent',
     headingStyle: props.headingStyle,
+    textAlign: props.textAlign || 'left',
   };
   const spans = sanitizeSpans(props.spans, text.length);
+  const columnCount = Math.max(1, Math.min(4, Number(props.columnCount) || 1));
+  if (columnCount > 1) return buildColumnParagraphs(el, props, text, spans, base, resolveRef, columnCount);
   const segments = buildStyledSegments(text, spans, base, resolveRef);
   // Encabezado de TODO el bloque (botón del ribbon) -> nivel real de Word
   // (aparece en el Panel de navegación y en el escaneo de un TOC nativo).
@@ -165,26 +307,83 @@ function buildTextElement(el: ReportElement, resolveRef: (targetId: string) => s
   // color/negrita visual (ya vienen en `segments[].style`) pero no fuerzan
   // el nivel de párrafo completo -- ver nota sobre TOC estático más abajo.
   const wholeBlockLevel = props.headingStyle ? HEADING_LEVEL_BY_STYLE[props.headingStyle] : undefined;
-  return new Paragraph({
+  const runs = segmentsToRuns(segments);
+  // Bookmark SIEMPRE (no solo cuando hay heading de bloque completo): una
+  // entrada del índice puede venir de un heading aplicado solo a una
+  // PORCIÓN de texto (span) -- su `elementId` sigue siendo el de ESTE
+  // párrafo (ver TocHeading en TableOfContents.tsx), así que el ancla tiene
+  // que existir igual para que el hipervínculo del índice no rompa.
+  return [new Paragraph({
     frame: elementFrame(el),
     heading: wholeBlockLevel,
     alignment: alignmentFromCss(props.textAlign),
-    children: segmentsToRuns(segments),
-  });
+    spacing: lineSpacingProps(props),
+    shading: blockShadingProps(props),
+    children: [new Bookmark({ id: bookmarkNameFor(el.id), children: runs })],
+  })];
 }
 
-function buildTableElement(el: ReportElement): Table {
+/** Igual que `metricsForPage` (useEditorStore.ts, no exportado) -- métricas
+ * de lienzo resolviendo primero el tamaño/orientación PROPIOS de la página
+ * antes de caer al valor del documento. Se reimplementa acá porque el
+ * original es un `const` privado del módulo del store. */
+function layoutMetricsForPage(page: ReportPage, meta: DocumentMeta): ReturnType<typeof getReportLayoutMetrics> {
+  const effective = resolvePagePaperSetup(page, meta);
+  return getReportLayoutMetrics(
+    meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
+    effective.paperSize,
+    effective.orientation,
+    meta?.marginLeft,
+    meta?.marginRight,
+    meta?.marginTop,
+    meta?.marginBottom,
+  );
+}
+
+function buildTableElement(el: ReportElement, page: ReportPage, meta: DocumentMeta): Table {
   const props = el.props || {};
-  const rows: unknown[][] = Array.isArray(props.rows) ? props.rows : [];
+  const rows: string[][] = Array.isArray(props.rows) ? props.rows : [];
   if (rows.length === 0) return new Table({ rows: [new TableRow({ children: [new TableCell({ children: [new Paragraph('')] })] })] });
   const hasHeader = props.hasHeader !== false;
   const fontSize = Number(props.fontSize) || 14;
   const cellPaddingTwip = pxToTwip(Number(props.cellPadding) || 10);
   const colCount = Math.max(1, ...rows.map((r) => (Array.isArray(r) ? r.length : 0)));
-  const totalWidthTwip = pxToTwip(el.width);
+
+  // Mismo motor de fórmulas/formato condicional que el lienzo
+  // (TableBlock.tsx) -- Word debe ver el RESULTADO calculado, nunca la
+  // fórmula cruda ("=D2*E2"), y los mismos colores (escalas, reglas de
+  // umbral, estados semánticos "Alto"/"Bajo"…) que el usuario ve en el
+  // editor. Bug real reportado 2026-09-04: el export no traía ninguno de
+  // los dos.
+  const formulaResults = computeTableFormulas(rows);
+  const effectiveValues = getEffectiveCellValues(rows, formulaResults);
+  const conditionalStyles = computeConditionalStyles(
+    effectiveValues,
+    Array.isArray(props.conditionalFormats) ? props.conditionalFormats : undefined,
+    hasHeader,
+    Array.isArray(props.colorScales) ? props.colorScales : undefined,
+  );
+  const cellNumberFormats: (string | null)[][] = Array.isArray(props.cellNumberFormats) ? props.cellNumberFormats : [];
+  const cellBackgrounds: (string | null)[][] = Array.isArray(props.cellBackgrounds) ? props.cellBackgrounds : [];
+  const rowBackgrounds: (string | null)[] = Array.isArray(props.rowBackgrounds) ? props.rowBackgrounds : [];
+  const columnBackgrounds: (string | null)[] = Array.isArray(props.columnBackgrounds) ? props.columnBackgrounds : [];
+
+  // Ancho de columnas: Word respeta el ancho DECLARADO de cada TableCell por
+  // encima del ancho de la Table completa -- si la suma de columnas no cabe
+  // en lo que queda de página a la derecha de `el.x`, el sobrante queda
+  // recortado contra el borde de la hoja en vez de reflowar (bug real
+  // reportado: "se ve cortado en el ancho de la tabla"). Se escala TODA la
+  // tabla proporcionalmente para que quepa siempre, mismo criterio que el
+  // resto de bloques de este documento (nunca deben salirse de su página).
   const providedWidths: number[] = Array.isArray(props.colWidths) ? props.colWidths : [];
-  const colWidths = Array.from({ length: colCount }, (_, i) =>
-    providedWidths[i] ? pxToTwip(providedWidths[i]) : Math.round(totalWidthTwip / colCount));
+  const rawColWidthsPx = Array.from({ length: colCount }, (_, i) => providedWidths[i] || el.width / colCount);
+  const metrics = layoutMetricsForPage(page, meta);
+  const availableWidthPx = Math.max(40, metrics.CONTENT_RIGHT - el.x);
+  const rawSumPx = rawColWidthsPx.reduce((sum, w) => sum + w, 0);
+  const scale = rawSumPx > availableWidthPx ? availableWidthPx / rawSumPx : 1;
+  const colWidths = rawColWidthsPx.map((w) => pxToTwip(w * scale));
+  const tableWidthTwip = colWidths.reduce((sum, w) => sum + w, 0);
+
   const borderColor = cssColorToHex(props.borderColor, 'E2E8F0');
   const borderWidthPx = Number(props.borderWidth) || 1;
   const borderStyleWord = props.borderStyle === 'dashed' ? BorderStyle.DASHED
@@ -194,27 +393,50 @@ function buildTableElement(el: ReportElement): Table {
   const cellBorder = { style: borderStyleWord, size: Math.max(2, borderWidthPx * 4), color: borderColor };
   const cellBorders = { top: cellBorder, bottom: cellBorder, left: cellBorder, right: cellBorder };
   const align = props.cellAlign === 'center' ? AlignmentType.CENTER : props.cellAlign === 'right' ? AlignmentType.RIGHT : AlignmentType.LEFT;
+  const vAlign = props.cellVAlign === 'middle' ? VerticalAlign.CENTER : props.cellVAlign === 'bottom' ? VerticalAlign.BOTTOM : VerticalAlign.TOP;
 
   const tableRows = rows.map((row, ri) => {
     const isHeaderRow = ri === 0 && hasHeader;
     const isBanded = !isHeaderRow && props.bandedRows && ri % 2 === (hasHeader ? 1 : 0);
-    const shading = isHeaderRow
-      ? { type: ShadingType.CLEAR, color: 'auto', fill: cssColorToHex(props.headerBg, 'F8FAFC') }
-      : isBanded
-        ? { type: ShadingType.CLEAR, color: 'auto', fill: cssColorToHex(props.bandColor, 'F1F5F9') }
-        : undefined;
     const cells = Array.from({ length: colCount }, (_, ci) => {
       const raw = Array.isArray(row) ? row[ci] : '';
-      const runs = htmlCellToRuns(String(raw ?? ''), {
-        fontSizePx: fontSize,
-        color: isHeaderRow ? (props.headerTextColor || '#1e293b') : undefined,
-        bold: isHeaderRow ? props.headerBold !== false : false,
-      });
+      const conditionalStyle = conditionalStyles[ri]?.[ci] ?? null;
+      // Mismo orden de precedencia que el <td> del lienzo (TableBlock.tsx):
+      // formato condicional > pintado manual de celda/fila/columna > estado
+      // semántico automático > cabecera/bandas > transparente.
+      const sem = !isHeaderRow ? semanticStatusStyle(effectiveValues[ri]?.[ci]?.text ?? String(raw ?? ''), false) : null;
+      const bgSource = conditionalStyle?.backgroundColor
+        || cellBackgrounds[ri]?.[ci]
+        || rowBackgrounds[ri]
+        || columnBackgrounds[ci]
+        || (isHeaderRow ? (props.headerBg || '#F8FAFC') : sem ? sem.bg : isBanded ? (props.bandColor || '#F1F5F9') : undefined);
+      const shading = bgSource
+        ? { type: ShadingType.CLEAR, color: 'auto', fill: cssColorToHex(bgSource, 'FFFFFF') }
+        : undefined;
+      const textColorSource = conditionalStyle?.textColor
+        || (isHeaderRow ? (props.headerTextColor || '#1e293b') : sem ? sem.color : props.textColor);
+
+      const formulaResult = formulaResults[ri]?.[ci];
+      const runs = formulaResult
+        ? [new TextRun({
+            text: formulaResult.isError
+              ? formulaResult.display
+              : formatNumberForDisplay(formulaResult.numericValue as number, cellNumberFormats[ri]?.[ci] ?? null),
+            size: pxFontToHalfPt(fontSize),
+            bold: isHeaderRow ? props.headerBold !== false : false,
+            color: cssColorToHex(textColorSource, isHeaderRow ? '1E293B' : '0F172A'),
+          })]
+        : htmlCellToRuns(String(raw ?? ''), {
+            fontSizePx: fontSize,
+            color: textColorSource,
+            bold: isHeaderRow ? props.headerBold !== false : false,
+          });
       return new TableCell({
         width: { size: colWidths[ci], type: WidthType.DXA },
         shading,
         borders: cellBorders,
         margins: { top: cellPaddingTwip, bottom: cellPaddingTwip, left: cellPaddingTwip, right: cellPaddingTwip },
+        verticalAlign: vAlign,
         children: [new Paragraph({ alignment: align, children: runs })],
       });
     });
@@ -223,7 +445,7 @@ function buildTableElement(el: ReportElement): Table {
 
   return new Table({
     rows: tableRows,
-    width: { size: totalWidthTwip, type: WidthType.DXA },
+    width: { size: tableWidthTwip, type: WidthType.DXA },
     float: {
       horizontalAnchor: TableAnchorType.PAGE,
       absoluteHorizontalPosition: pxToTwip(el.x),
@@ -243,6 +465,25 @@ function buildImageParagraph(el: ReportElement, png: DocxImageAsset): Paragraph 
       transformation: { width: Math.max(1, Math.round(el.width)), height: Math.max(1, Math.round(el.height)) },
     })],
   });
+}
+const IMAGE_CAPTION_HEIGHT_PX = 18;
+// `props.caption` (bloque `image`) -- ReadOnlyViewer.tsx SIEMPRE la pinta
+// debajo de la imagen (fuente del anexo/referencia cruzada, AnnexList.tsx),
+// pero este builder nunca la incluía (mismo gap que reportDocxBuilder.js,
+// pipeline servidor). Mismo color/cursiva que el visor de pantalla.
+function buildImageWithCaption(el: ReportElement, png: DocxImageAsset, caption: unknown): Paragraph[] {
+  const trimmed = String(caption || '').trim();
+  if (!trimmed) return [buildImageParagraph(el, png)];
+  const captionHeight = Math.min(IMAGE_CAPTION_HEIGHT_PX, Math.max(0, el.height - 20));
+  const imageHeight = Math.max(1, el.height - captionHeight);
+  const imagePara = buildImageParagraph({ ...el, height: imageHeight }, png);
+  if (captionHeight <= 0) return [imagePara];
+  const captionPara = new Paragraph({
+    frame: elementFrame(el, { yPx: el.y + imageHeight, heightPx: captionHeight }),
+    alignment: AlignmentType.CENTER,
+    children: [new TextRun({ text: trimmed, italics: true, color: '4F81BD', size: pxFontToHalfPt(9) })],
+  });
+  return [imagePara, captionPara];
 }
 
 /** Tarjeta nativa (texto real, editable, SIN captura de pantalla) para
@@ -441,36 +682,66 @@ function pageHasToc(page: ReportPage): boolean {
   return (page.elements || []).some((el) => el.type === 'toc');
 }
 
+const TOC_LEVEL_STYLE: Record<number, { size: number; bold: boolean; color: string }> = {
+  1: { size: pxFontToHalfPt(14), bold: true, color: '0f172a' },
+  2: { size: pxFontToHalfPt(13), bold: true, color: '1e40af' },
+  3: { size: pxFontToHalfPt(12.5), bold: false, color: '334155' },
+  4: { size: pxFontToHalfPt(12), bold: false, color: '475569' },
+  5: { size: pxFontToHalfPt(11.5), bold: false, color: '64748b' },
+  6: { size: pxFontToHalfPt(11), bold: false, color: '94a3b8' },
+};
+
 /**
- * Índice NATIVO de Word: un campo `TOC` real (`{ TOC \o "1-6" \h \z \u }`),
- * NO una lista estática de párrafos como la versión anterior de este
- * builder. Diferencia práctica: esta versión SÍ es lo que un usuario espera
- * de "el índice no funciona" -- entradas con hipervínculo real (Ctrl+clic
- * salta al encabezado), y se recalcula sola con clic derecho → "Actualizar
- * campo" (o automáticamente al abrir, ver `features.updateFields` en
- * `buildReportDocx()`) si el usuario reordena o edita títulos en Word.
- * Escanea los párrafos con estilo `HeadingN` reales que ya emite
- * `buildTextElement()` para encabezados de bloque completo -- funciona
- * porque viven en flujo normal de Word en esta página (ver `pageHasToc`),
- * no dentro de un frame absoluto (un campo TOC no puede anclarse a un
- * frame: `TableOfContents` no es un `Paragraph`, no tiene la propiedad
- * `frame`). Los encabezados aplicados solo a una PORCIÓN de texto (spans)
- * no generan un párrafo `HeadingN` propio y por lo tanto no aparecen en
- * este campo -- limitación conocida, documentada en el reporte de
- * verificación (afecta un caso de uso secundario/avanzado, no el flujo
- * principal del ribbon "Título/H1/H2/H3"). */
-function buildTocSectionChildren(el: ReportElement): FileChild[] {
+ * Índice del DOCX -- párrafos ya renderizados con hipervínculo interno REAL
+ * a cada encabezado (`InternalHyperlink` + `Bookmark`, ver
+ * `bookmarkNameFor`/`buildTextElement`), NO un campo `{ TOC }` nativo de
+ * Word como la versión anterior de este builder.
+ *
+ * Por qué el cambio: un campo TOC nativo solo se puebla cuando Word
+ * RECALCULA el campo (clic derecho → Actualizar campo, F9, o al abrir SI
+ * Word decide honrar `features.updateFields` -- no siempre lo hace,
+ * depende de la config de "Actualizar vínculos automáticos al abrir" del
+ * usuario). Sin ese recálculo, Word muestra literalmente su propio
+ * placeholder "No table of contents entries found." -- confirmado en vivo
+ * abriendo un .docx recién exportado. Mismo problema de fondo que tuvo el
+ * índice del PDF (ver pdf-export-service/server.js): en vez de depender de
+ * que el lector recalcule algo, se hornea el contenido y el enlace
+ * directamente en el archivo, con los MISMOS datos (`tocSliceForElementId`)
+ * que ya muestra `ReadOnlyViewer.tsx` en pantalla y en el PDF -- funciona
+ * apenas se abre el archivo, en cualquier versión/configuración de Word,
+ * LibreOffice, Google Docs, etc. Trade-off aceptado: si el usuario reordena
+ * o renombra títulos DENTRO de Word (fuera de la plataforma), este índice
+ * ya no se autoactualiza solo -- caso de uso secundario frente al flujo
+ * principal (editar en la plataforma, exportar de nuevo).
+ */
+function buildTocSectionChildren(doc: ReportDocument, el: ReportElement, contentWidthTwip: number): FileChild[] {
   const props = el.props || {};
   const titleText = String(props.title || 'Tabla de Contenidos') + (typeof props.tocContinuationIndex === 'number' ? ' (continuación)' : '');
   const titlePara = new Paragraph({
     children: [new TextRun({ text: titleText, bold: true, size: pxFontToHalfPt(18) })],
     spacing: { after: 200 },
   });
-  const toc = new TableOfContents('Índice', {
-    hyperlink: true,
-    headingStyleRange: '1-6',
+  const entries = tocSliceForElementId(doc, el.id);
+  if (entries.length === 0) {
+    return [titlePara, new Paragraph({ children: [new TextRun({ text: 'Sin entradas de índice.', italics: true, size: pxFontToHalfPt(12), color: '94a3b8' })] })];
+  }
+  const entryParas = entries.map((item) => {
+    const style = TOC_LEVEL_STYLE[item.level] || TOC_LEVEL_STYLE[6];
+    return new Paragraph({
+      indent: { left: pxToTwip((item.level - 1) * 16) },
+      tabStops: [{ type: TabStopType.RIGHT, position: contentWidthTwip, leader: LeaderType.DOT }],
+      spacing: { after: 60 },
+      children: [
+        new TextRun({ text: `${item.number}  `, bold: true, size: pxFontToHalfPt(12) }),
+        new InternalHyperlink({
+          anchor: bookmarkNameFor(item.elementId),
+          children: [new TextRun({ text: item.text, bold: style.bold, size: style.size, color: style.color, style: 'Hyperlink' })],
+        }),
+        new TextRun({ text: `\t${item.pageNumber}`, bold: true, size: pxFontToHalfPt(12) }),
+      ],
+    });
   });
-  return [titlePara, toc];
+  return [titlePara, ...entryParas];
 }
 
 function buildCoverElement(
@@ -580,14 +851,41 @@ function buildPageSection(
   sorted.forEach((el) => {
     switch (el.type) {
       case 'text':
-        children.push(buildTextElement(el, resolveRef));
+        children.push(...buildTextElement(el, resolveRef));
         break;
       case 'table':
-        children.push(buildTableElement(el));
+        children.push(buildTableElement(el, page, doc.meta));
         break;
       case 'image': {
         const png = opts.imageAssets.get(el.id);
+        if (png) children.push(...buildImageWithCaption(el, png, el.props?.caption));
+        break;
+      }
+      // ShapeBlock.tsx (rectángulo/círculo/diamante/estrella/línea, usado
+      // para diagramas de bloque) -- faltaba por completo (caía a
+      // `default`, se perdía en silencio del export). Capturado como
+      // raster (RASTER_ONLY_TYPES en captureRasterAssets.ts) igual que un
+      // gráfico -- sin caption, a diferencia de `buildRasterWidget`.
+      case 'shape': {
+        const png = opts.rasterAssets.get(el.id);
         if (png) children.push(buildImageParagraph(el, png));
+        else children.push(new Paragraph({
+          frame: elementFrame(el),
+          alignment: AlignmentType.CENTER,
+          children: [new TextRun({ text: '[Figura — no se pudo capturar para esta exportación]', italics: true, color: '94A3B8', size: pxFontToHalfPt(10) })],
+        }));
+        break;
+      }
+      // WordArt -- mismo criterio que 'shape': raster, `docx` no expone
+      // relleno degradado/contorno de texto por `TextRun`.
+      case 'wordart': {
+        const png = opts.rasterAssets.get(el.id);
+        if (png) children.push(buildImageParagraph(el, png));
+        else children.push(new Paragraph({
+          frame: elementFrame(el),
+          alignment: AlignmentType.CENTER,
+          children: [new TextRun({ text: '[WordArt — no se pudo capturar para esta exportación]', italics: true, color: '94A3B8', size: pxFontToHalfPt(10) })],
+        }));
         break;
       }
       case 'kpi':
@@ -613,14 +911,19 @@ function buildPageSection(
       case 'footer':
         footerPart = buildFooterPart(pxToTwip(el.width), el.props?.showPageNumber !== false);
         break;
-      case 'toc':
-        // El campo TOC nativo (no un Paragraph con `frame`) se agrega
+      case 'toc': {
+        // Los párrafos del índice (no un Paragraph con `frame`) se agregan
         // directo a `children` en flujo normal -- ver `isTocPage` abajo,
         // que además cambia los márgenes de TODA la sección para que ese
         // flujo se vea correcto (el editor garantiza que un bloque `toc`
-        // nunca comparte página con otro contenido).
-        children.push(...buildTocSectionChildren(el));
+        // nunca comparte página con otro contenido). El ancho de contenido
+        // real (página menos los márgenes izq/der de esta sección, ver
+        // `margin` más abajo) define dónde cae el número de página del
+        // lado derecho de cada entrada.
+        const tocContentWidthTwip = size.width - pxToTwip(36) - pxToTwip(36);
+        children.push(...buildTocSectionChildren(doc, el, tocContentWidthTwip));
         break;
+      }
       case 'cover':
         children.push(...buildCoverElement(el, session, opts.rasterAssets));
         break;
@@ -690,7 +993,8 @@ function sourceDocumentCustomProperties(doc: ReportDocument): { name: string; va
 }
 
 export async function buildReportDocx(doc: ReportDocument, opts: BuildReportDocxOptions): Promise<Blob> {
-  const resolveRef = (targetId: string): string | undefined => resolveHeadingRefLabel(doc, targetId);
+  const resolveRef = (targetId: string): string | undefined =>
+    resolveHeadingRefLabel(doc, targetId) ?? resolveAnnexRefLabel(doc, targetId);
 
   const sections = doc.pages.map((page) => buildPageSection(doc, page, opts.session, opts, resolveRef));
 

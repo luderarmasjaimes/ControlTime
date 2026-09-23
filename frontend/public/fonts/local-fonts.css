@@ -1,0 +1,123 @@
+/* Fuentes auto-hospedadas (latin subset) -- ver comentario en print-report.html
+ * y docs/decisions/184-*.md. Generado 2026-09-13 desde Google Fonts CSS2 API
+ * (mismos archivos .woff2 que Google sirve, solo servidos localmente). */
+
+@font-face {
+  font-family: 'Barlow Semi Condensed';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/wlpigxjLBV1hqnzfr-F8sEYMB0Yybp0mudRfw6-_B2sl.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Barlow Semi Condensed';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/wlpigxjLBV1hqnzfr-F8sEYMB0Yybp0mudRf36y_B2sl.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Barlow Semi Condensed';
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url('/fonts/wlpigxjLBV1hqnzfr-F8sEYMB0Yybp0mudRf-62_B2sl.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url('/fonts/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/QGYvz_MVcBeNP4NJtEtq.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/QGYvz_MVcBeNP4NJtEtq.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url('/fonts/QGYvz_MVcBeNP4NJtEtq.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/LDI2apCSOBg7S-QT7pb0EPOreec.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/LDI2apCSOBg7S-QT7pbYF_Oreec.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/LDI2apCSOBg7S-QT7pa8FvOreec.woff2') format('woff2');
+}

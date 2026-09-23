@@ -51,6 +51,9 @@ json::object authUserToJson(const AuthUser &u) {
   if (!u.avatarCartoonBase64.empty()) {
     jo["avatar_cartoon_base64"] = u.avatarCartoonBase64;
   }
+  if (!u.avatarBodyTemplateSlug.empty()) {
+    jo["avatar_body_template_slug"] = u.avatarBodyTemplateSlug;
+  }
   return jo;
 }
 
@@ -111,7 +114,10 @@ bool jsonToAuthUser(const json::object &obj, AuthUser &out) {
   if (obj.if_contains("role") && obj.at("role").is_string()) {
     out.role = json::value_to<std::string>(obj.at("role"));
   } else {
-    out.role = resolveRoleForUsername(out.username);
+    // ADR-177: ya no hay heurístico de username -- un registro legado en
+    // disco sin "role" cae al rol operativo normal ("operator"), nunca a un
+    // admin implícito.
+    out.role = defaultSelfRegisteredRole();
   }
   out.passwordHash = json::value_to<std::string>(obj.at("password_hash"));
   out.createdAt = json::value_to<std::string>(obj.at("created_at"));
@@ -131,6 +137,12 @@ bool jsonToAuthUser(const json::object &obj, AuthUser &out) {
       obj.at("avatar_cartoon_base64").is_string()) {
     out.avatarCartoonBase64 =
         json::value_to<std::string>(obj.at("avatar_cartoon_base64"));
+  }
+  out.avatarBodyTemplateSlug.clear();
+  if (obj.if_contains("avatar_body_template_slug") &&
+      obj.at("avatar_body_template_slug").is_string()) {
+    out.avatarBodyTemplateSlug =
+        json::value_to<std::string>(obj.at("avatar_body_template_slug"));
   }
   return !out.faceTemplate.empty();
 }
@@ -217,6 +229,22 @@ bool updateUserAvatarCartoonFile(const std::string &dataRoot,
   auto users = loadAuthUsers(dataRoot);
   for (auto &u : users) {
     if (u.id == userId) {
+      u.avatarCartoonBase64 = avatarBase64;
+      saveAuthUsers(dataRoot, users);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool updateUserAvatarBodyTemplateFile(const std::string &dataRoot,
+                                      const std::string &userId,
+                                      const std::string &slug,
+                                      const std::string &avatarBase64) {
+  auto users = loadAuthUsers(dataRoot);
+  for (auto &u : users) {
+    if (u.id == userId) {
+      u.avatarBodyTemplateSlug = slug;
       u.avatarCartoonBase64 = avatarBase64;
       saveAuthUsers(dataRoot, users);
       return true;

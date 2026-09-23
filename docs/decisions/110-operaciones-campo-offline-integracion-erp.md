@@ -1,5 +1,7 @@
 # ADR-110 — Operaciones de campo offline-first e integración gobernada con ERP
 
+> **Actualización 2026-09-23 (ADR-210) — estado cerrado: `deferred`.** El estado `proposed` de este ADR quedó obsoleto tras ADR-178 (2026-09-12), que retira Operaciones de Campo del alcance de este proyecto. Estado vigente: **deferred — fuera de alcance, referencia técnica para una iniciativa futura e independiente**. Su contenido no se edita. Ninguna acción pendiente en este proyecto.
+
 > **Actualización 2026-09-11 — rebaseline aprobado por Gerencia, cierra la
 > decisión pendiente del corte gerencial del 2026-09-10.** Se confirma
 > explícitamente: (1) Operaciones de Campo es un **proyecto derivado**,
@@ -31,6 +33,20 @@
 > product owner, no decisiones que este documento resuelva por adelantado.
 > El estado de ejecución de SPEC-022 sigue en 0% — aprobar el proyecto como
 > derivado no es lo mismo que empezar a construirlo.
+
+> **Actualización 2026-09-12 — fuera de alcance de este proyecto, ver
+> [ADR-178](178-operaciones-campo-fuera-de-alcance-implementacion-futura-independiente.md).**
+> Gerencia decidió que Operaciones de Campo deja de ser un pendiente/riesgo
+> de seguimiento de la plataforma minera Beemetry/AURIXA actual (v36.1,
+> R1-R6) — se retira de `specs/BACKLOG.md`, `specs/REGISTRY.md` y de los
+> reportes gerenciales de este proyecto. El contenido técnico de este ADR
+> (arquitectura, decisiones pendientes) se conserva íntegro como referencia
+> para una futura iniciativa independiente, con su propio proyecto,
+> presupuesto y cronograma. Esta actualización reemplaza, solo para efectos
+> de gobernanza de seguimiento, la del 2026-09-11 (rebaseline como proyecto
+> derivado) — esa aprobación de rebaseline sigue siendo válida como
+> antecedente, pero ya no implica que Operaciones de Campo siga apareciendo
+> en el seguimiento de este proyecto.
 
 **Status**: proposed; pendiente de aprobación de producto y arquitectura
 

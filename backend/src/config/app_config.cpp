@@ -185,6 +185,8 @@ void AppConfig::loadFromEnv() {
     } catch (...) {
         gSeetaFace6TimeoutMs = 20000;
     }
+    gSeetaFace6DeepfaceFallback = toLowerCopy(getenvOr(
+        "BEEMETRY_SEETAFACE6_DEEPFACE_FALLBACK", "false")) == "true";
     gDeepFaceSilentRequired = toLowerCopy(getenvOr(
         "BEEMETRY_DEEPFACE_SILENTFACE_REQUIRED", "true")) == "true";
     gDeepFaceSilentDermalogFallback = toLowerCopy(getenvOr(
@@ -258,6 +260,18 @@ void AppConfig::loadFromEnv() {
             std::stoi(getenvOr("BEEMETRY_DOCX_EXPORT_TIMEOUT_MS", "60000")), 1000, 900000);
     } catch (...) {
         gDocxExportTimeoutMs = 60000;
+    }
+    try {
+        gXlsxExportTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_XLSX_EXPORT_TIMEOUT_MS", "30000")), 1000, 900000);
+    } catch (...) {
+        gXlsxExportTimeoutMs = 30000;
+    }
+    try {
+        gPdfEmailMaxAttachmentMb = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_PDF_EMAIL_MAX_ATTACHMENT_MB", "20")), 1, 100);
+    } catch (...) {
+        gPdfEmailMaxAttachmentMb = 20;
     }
     gTaxRegistryEnabled =
         toLowerCopy(getenvOr("BEEMETRY_TAX_REGISTRY_ENABLED", "false")) == "true";
@@ -368,6 +382,13 @@ void AppConfig::loadFromEnv() {
         gAiEngineCvExtractTimeoutMs = 30000;
     }
     try {
+        gAiEnginePdfOcrTimeoutMs = std::clamp(
+            std::stoi(getenvOr("BEEMETRY_AI_ENGINE_PDF_OCR_TIMEOUT_MS", "600000")), 30000,
+            1200000);
+    } catch (...) {
+        gAiEnginePdfOcrTimeoutMs = 600000;
+    }
+    try {
         gWhatsappCvMaxBytes = static_cast<std::size_t>(std::clamp(
             std::stoll(getenvOr("BEEMETRY_WHATSAPP_CV_MAX_BYTES", "10485760")), 100000LL,
             26214400LL));
@@ -384,13 +405,6 @@ void AppConfig::loadFromEnv() {
     }
     gAvatarDiffusionQaUsernames = http_utils::splitCsvLower(
         getenvOr("AVATAR_DIFFUSION_QA_USERNAMES", ""));
-    try {
-        gFaceEmbeddingCosineThreshold = std::clamp(
-            std::stod(getenvOr("BEEMETRY_FACE_EMBEDDING_COSINE_THRESHOLD", "0.45")), 0.20,
-            0.99);
-    } catch (...) {
-        gFaceEmbeddingCosineThreshold = 0.45;
-    }
     try {
         gFaceSeetaCosineThreshold = std::clamp(
             std::stod(getenvOr("BEEMETRY_FACE_SEETAFACE6_COSINE_THRESHOLD", "0.80")),

@@ -32,7 +32,11 @@ const SUPPORT_AVATAR_EVENT = 'beemetry-support-avatar-request'
 const AUTH_RESET_EVENT = 'beemetry-auth-session-cleared'
 const POLL_INTERVAL_MS = 4000
 const MAX_POLL_ATTEMPTS = 90 // ~6 min, generoso sobre los 200-300s medidos (ADR-150)
-const WIDGET_WIDTH = 220
+// Pedido explícito del usuario (2026-09-20): el avatar móvil/flotante debe
+// verse más pequeño -- mitad del tamaño anterior (220px). Todo lo que se
+// dibuja dentro del widget (video, controles) escala con este único ancho,
+// así que reducirlo acá alcanza -- no hace falta tocar AlphaVideoCanvas.
+const WIDGET_WIDTH = 110
 const WIDGET_MARGIN = 12
 // Hallazgo real, sesión 2026-09-10 (reporte de usuario: "el avatar generando
 // no me deja entrar a Informes/Reportes"): el widget es `position: fixed`
@@ -483,16 +487,16 @@ function AlphaVideoCanvas({ src }: { src: string }) {
                     aria-label={muted ? 'Activar audio' : 'Silenciar'}
                     style={{
                         position: 'absolute',
-                        right: 6,
-                        bottom: 6,
-                        width: 26,
-                        height: 26,
+                        right: 4,
+                        bottom: 4,
+                        width: 20,
+                        height: 20,
                         borderRadius: '50%',
                         border: 'none',
                         background: 'rgba(0,0,0,0.55)',
                         color: '#fff',
                         cursor: 'pointer',
-                        fontSize: 13,
+                        fontSize: 10,
                         lineHeight: 1,
                     }}
                 >
@@ -510,7 +514,7 @@ function AlphaVideoCanvas({ src }: { src: string }) {
                         justifyContent: 'center',
                         cursor: 'pointer',
                         color: '#fff',
-                        fontSize: 34,
+                        fontSize: 18,
                         background: 'rgba(0,0,0,0.15)',
                     }}
                 >
@@ -851,16 +855,16 @@ export function AvatarWidget() {
                     aria-label="Cerrar avatar"
                     style={{
                         position: 'absolute',
-                        top: 4,
-                        right: 4,
-                        width: 22,
-                        height: 22,
+                        top: 3,
+                        right: 3,
+                        width: 17,
+                        height: 17,
                         borderRadius: '50%',
                         border: 'none',
                         background: 'rgba(0,0,0,0.45)',
                         color: '#fff',
                         cursor: 'pointer',
-                        fontSize: 13,
+                        fontSize: 11,
                         lineHeight: 1,
                     }}
                 >

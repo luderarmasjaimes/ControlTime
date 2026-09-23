@@ -227,7 +227,7 @@ function VoiceDictation({
   }
 
   return (
-    <div className={`vd-panel ${isListening ? 'vd-panel--active' : ''}`}>
+    <div className={`vd-panel ${isListening ? 'vd-panel--active' : ''}`} style={{marginTop:'45px',marginLeft:'10px',position:'absolute', height:'40%', padding:'5px',width:'400px', zIndex:'999'}}>
       <div className="vd-header">
         <Mic size={14} />
         <span>Dictado por Voz</span>

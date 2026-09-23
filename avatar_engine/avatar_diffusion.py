@@ -81,6 +81,19 @@ _NEGATIVE_PROMPT = (
     "skin, waxy, mannequin, glasses distortion, asymmetric face, "
     "lopsided features, uneven skin tone, blotchy skin"
 )
+# Intento real probado y DESCARTADO (2026-09-21, foto real con luz dura de
+# un solo lado): sacar "subtle rim light"/"warm cinematic...lighting" del
+# prompt y reforzar el negativo con términos de brillo (shiny/glossy/
+# specular/glare) -- medido contra la MISMA foto real, el brillo de la
+# frente NO cambió (p95 de brillo en la zona: 203 antes, 200 después, ruido
+# de generación, no una mejora real). A strength=0.55/0.68 el img2img+
+# ControlNet-Canny reproduce el mapa de luminancia de la foto de ORIGEN casi
+# sin importar el prompt -- el brillo viene de la luz real de la habitación
+# del usuario (una sola ventana/lámpara lateral), no de las palabras del
+# prompt. Revertido al prompt ya validado (2026-09-03/08) para no arriesgar
+# el resto del catálogo de usuarios por un cambio sin beneficio medido acá.
+# El fix real (si se retoma) va en el PREPROCESAMIENTO de la foto de entrada
+# (suavizar el brillo alto ANTES de mandarlo a difusión), no en el prompt.
 
 
 class ModelLoadError(RuntimeError):
@@ -223,6 +236,44 @@ def _face_limited_edge_weight(gray: np.ndarray, outside_weight: float) -> Option
     return outside_weight + (1.0 - outside_weight) * oval
 
 
+def _soften_highlights_for_init(bgr: np.ndarray, threshold: float = 0.68, strength: float = 0.35) -> np.ndarray:
+    """Atenúa SOLO los brillos muy altos (canal L de Lab) de la imagen que se
+    manda como punto de partida al denoising -- pedido explícito del usuario
+    (2026-09-21, foto real tomada de noche con poca luz: "mucho brillo parece
+    plastificado... la foto origen fue tomado en la noche con un poco menos
+    de luz"): con una sola fuente de luz lateral, el lado iluminado de la
+    cara ya sale sobreexpuesto en la foto de origen, y el prompt de difusión
+    (que pide "cinematic lighting, subtle rim light") lo agrava en vez de
+    corregirlo.
+
+    Intento real probado y DESCARTADO primero (mismo día): aplicar esta
+    misma compresión sobre la imagen ANTES de mandarla a avatar_engine (en
+    ai_engine/eye_analyzer.py), de forma que tanto el init_image como los
+    bordes Canny de ControlNet salieran de la versión YA modificada. Probado
+    contra la foto real de esta sesión: resultado mucho peor, cara irreco-
+    nocible, colores falsos. Causa raíz: la compresión con un "codo" (knee)
+    fijo crea una discontinuidad de gradiente exactamente donde el brillo
+    real de la cara cruza ese umbral -- Canny detecta esa discontinuidad
+    como un borde fuerte que no existe anatómicamente, y ControlNet fuerza
+    al modelo a "respetar" ese borde inventado, partiendo la cara en dos.
+
+    Fix real: los bordes de Canny (`gray`/`edges` más abajo) se calculan
+    SIEMPRE sobre `init_bgr` SIN modificar -- esta función solo toca la copia
+    que se convierte a `init_img` (el latente de partida), nunca la señal de
+    control. Además, la curva usa smoothstep (derivada continua en el punto
+    de transición) en vez de un codo duro, para no introducir textura nueva
+    ni siquiera dentro del canal que sí se atenúa.
+    """
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    l_norm = lab[:, :, 0] / 255.0
+    span = max(1e-6, 1.0 - threshold)
+    t = np.clip((l_norm - threshold) / span, 0.0, 1.0)
+    smooth_t = t * t * (3.0 - 2.0 * t)
+    l_new = l_norm - strength * smooth_t * (l_norm - threshold)
+    lab[:, :, 0] = np.clip(l_new * 255.0, 0, 255)
+    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+
 def stylize_portrait(
     pipe, device: str, work_bgr: np.ndarray, seed_override: Optional[int] = None
 ) -> np.ndarray:
@@ -251,12 +302,22 @@ def stylize_portrait(
     gh = _round8(int(round(th * scale)))
 
     init_bgr = cv2.resize(work_bgr, (gw, gh), interpolation=cv2.INTER_AREA)
-    init_rgb = cv2.cvtColor(init_bgr, cv2.COLOR_BGR2RGB)
-    init_img = Image.fromarray(init_rgb)
 
+    # Bordes de Canny SIEMPRE desde init_bgr SIN modificar -- ver
+    # _soften_highlights_for_init arriba (no tocar esto es justamente lo que
+    # el intento anterior, descartado, no hacía).
     gray = cv2.cvtColor(init_bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
     edges = cv2.Canny(gray, 80, 160)
+
+    highlight_strength = _env_float("AVATAR_DIFFUSION_HIGHLIGHT_SOFTEN", 0.35)
+    init_bgr_diffusion = (
+        _soften_highlights_for_init(init_bgr, strength=highlight_strength)
+        if highlight_strength > 0
+        else init_bgr
+    )
+    init_rgb = cv2.cvtColor(init_bgr_diffusion, cv2.COLOR_BGR2RGB)
+    init_img = Image.fromarray(init_rgb)
 
     face_limited = os.environ.get("AVATAR_DIFFUSION_FACE_LIMITED_CONTROL", "").strip().lower() in (
         "1", "true", "yes",

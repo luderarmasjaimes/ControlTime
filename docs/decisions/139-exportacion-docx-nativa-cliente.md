@@ -1,5 +1,21 @@
 # ADR-139 — Exportación a DOCX nativo (OpenXML), pipeline 100% cliente
 
+> **Actualización 2026-09-12 (verificación de conformidad, sin cambios de
+> contrato)**: una auditoría (2026-09-11) confirmó que `RASTER_ONLY_TYPES`
+> en `lib/docx/captureRasterAssets.ts` sigue siendo exactamente
+> `chart` / `sensor_multi_chart` / `cover` — el contrato de fidelidad de
+> este ADR ("solo estos tipos se capturan como imagen, el resto es OOXML
+> nativo") no cambió. Las adiciones recientes al pipeline (tamaño/
+> orientación de página por sección, resueltas en `resolvePagePaperSetup`;
+> resolución de referencias cruzadas vía `resolveHeadingRefLabel`) son
+> consistentes con [ADR-052](052-navegacion-zoom-tamano-pagina.md) y
+> [ADR-019](019-resolucion-diferida-numeracion-toc-refs.md) respectivamente
+> — no una desviación de esta decisión. Ver [ADR-172](172-motor-tablas-excel-formulas-formato-condicional.md)
+> para el detalle de cómo se exportan hoy las celdas-fórmula del motor de
+> tablas (el valor calculado, nunca la fórmula cruda — también consistente
+> con el espíritu de este ADR de "contenido nativo editable, no un
+> facsímil").
+
 **Status**: implemented, verificado E2E en vivo (2026-09-02)
 **Fecha**: 2026-09-01 (código sin ADR encontrado en auditoría 2026-09-02)
 **Autores**: EC

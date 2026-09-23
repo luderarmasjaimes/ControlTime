@@ -146,26 +146,56 @@ def _ensure_repo_symlinks() -> None:
     os.symlink(target, link_path, target_is_directory=True)
 
 
+# Voz neuronal (VITS) es_MX "claude", calidad "high" -- reemplazo de espeak-ng
+# (ADR-202: usuario reportó el saludo de bienvenida con audio robótico,
+# esperable de un sintetizador por formantes de 1995). Licencia del modelo:
+# Apache 2.0 (ver MODEL_CARD en el propio repo HF -- dataset
+# https://huggingface.co/spaces/HirCoir/Piper-TTS-Spanish), sin restricción
+# de uso comercial, mismo criterio que el resto de pesos de este servicio
+# (SadTalker/GFPGAN/facexlib, ver THIRD_PARTY_NOTICES.md).
+_PIPER_VOICE_NAME = "es_MX-claude-high"
+_PIPER_VOICE_HF_BASE = (
+    "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/claude/high"
+)
+PIPER_MODEL_CACHE = os.environ.get("AVATAR_ANIMATION_PIPER_MODEL_CACHE", "/app/.model_cache/piper")
+PIPER_VOICE_ONNX = os.path.join(PIPER_MODEL_CACHE, f"{_PIPER_VOICE_NAME}.onnx")
+PIPER_VOICE_CONFIG = f"{PIPER_VOICE_ONNX}.json"
+
+
+def _ensure_piper_voice() -> None:
+    _download_if_missing(
+        f"{_PIPER_VOICE_HF_BASE}/{_PIPER_VOICE_NAME}.onnx", PIPER_MODEL_CACHE, f"{_PIPER_VOICE_NAME}.onnx"
+    )
+    _download_if_missing(
+        f"{_PIPER_VOICE_HF_BASE}/{_PIPER_VOICE_NAME}.onnx.json",
+        PIPER_MODEL_CACHE,
+        f"{_PIPER_VOICE_NAME}.onnx.json",
+    )
+
+
 def _synthesize_tts_wav(text: str) -> bytes:
-    """TTS local/offline vía espeak-ng, invocado como subproceso (GPL-3.0 del
-    binario NO alcanza a este servicio por eso -- ver Dockerfile/
-    THIRD_PARTY_NOTICES.md). Usado por las funcionalidades pre-renderizadas
-    (bienvenida/onboarding/informes/KPIs, integración a producto ADR-150)
-    cuando el llamador manda texto en vez de un WAV ya grabado -- evita
-    reabrir la discusión de licencia de audio que ya se resolvió para la
-    corrida de evaluación 2026-09-07 (TTS local, no un clip con copyright
-    de terceros)."""
+    """TTS local/offline vía Piper (VITS neuronal sobre onnxruntime, ADR-202),
+    invocado por su entry point de consola `piper` como subproceso -- igual
+    que espeak-ng antes, nunca `import piper` en este código: su licencia
+    GPL-3.0-or-later no alcanza a este servicio por el mismo criterio de
+    aislamiento por subproceso ya aplicado en todo este pipeline (ver
+    Dockerfile/THIRD_PARTY_NOTICES.md). Usado por las funcionalidades
+    pre-renderizadas (bienvenida/onboarding/informes/KPIs, integración a
+    producto ADR-150) cuando el llamador manda texto en vez de un WAV ya
+    grabado."""
+    _ensure_piper_voice()
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         out_path = tmp.name
     try:
         proc = subprocess.run(
-            ["espeak-ng", "-v", "es", "-s", "150", "-w", out_path, text],
+            ["piper", "--model", PIPER_VOICE_ONNX, "--config", PIPER_VOICE_CONFIG, "--output-file", out_path],
+            input=text.encode("utf-8"),
             capture_output=True,
-            timeout=30,
+            timeout=60,
         )
         if proc.returncode != 0 or not os.path.isfile(out_path):
             raise RuntimeError(
-                f"espeak-ng falló rc={proc.returncode} stderr={proc.stderr[-2000:]}"
+                f"piper falló rc={proc.returncode} stderr={proc.stderr[-2000:]}"
             )
         with open(out_path, "rb") as fh:
             return fh.read()
@@ -227,6 +257,11 @@ class SadTalkerBackend(AnimationBackend):
             raise ModelLoadError(f"inference.py no encontrado en {SADTALKER_HOME}")
 
         _ensure_checkpoints()
+        # Precarga de la voz Piper (ADR-202) en vez de dejarla para la
+        # primera request con texto: mismo criterio que _ensure_checkpoints
+        # arriba -- si falta la descarga, el healthcheck la fuerza ANTES de
+        # abrir el puerto, no a mitad de un saludo de bienvenida real.
+        _ensure_piper_voice()
 
         # Smoke check liviano: importar el CLI en un subproceso con --help
         # confirma que las dependencias (kornia/facexlib/basicsr/etc, ver el

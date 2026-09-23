@@ -5,6 +5,29 @@
 **Autores**: EC
 **Ámbito**: core-iot, plataforma
 
+> **Actualización 2026-09-13 — bug real de rendimiento encontrado y
+> corregido en el camino de polling (`evaluateRulesOnce`), al intentar
+> ejecutar el demo en vivo de gate R5 de SPEC-016**: la consulta de "valor
+> actual" para reglas con `sensor_id` real
+> (`SELECT ... FROM telemetry_fact tf JOIN dim_sensor ... ORDER BY
+> tf.captured_at DESC LIMIT 1`) no tenía cota de tiempo. Con
+> `chunk_time_interval=1h` (ADR-131/`db_scripts/74`), `telemetry_fact` ya
+> acumuló ~10.900 chunks — medido en vivo contra la BD real: **esa consulta
+> no completaba ni con un `statement_timeout` de 10s** (tampoco el `EXPLAIN`
+> sin `ANALYZE`), y esta conexión no tenía ningún `statement_timeout`
+> configurado, así que en producción el hilo del evaluador podía quedar
+> bloqueado indefinidamente en una sola regla. Acotada a los últimos 15
+> minutos (margen amplio frente al ciclo de evaluación de 10s por defecto),
+> la misma consulta completa en <1ms. Esto dejaba, en la práctica, sin
+> función real la "red de seguridad" de polling que este mismo ADR describe
+> para cualquier regla con `sensor_id` real — el mismo patrón exacto (sin
+> cota de tiempo sobre `telemetry_fact`) apareció también en el endpoint
+> `/api/mining/telemetry/summary` del dashboard (confirmado colgado 45s+
+> reales) y en `simulation_status_routes.cpp`. Ver
+> [ADR-186](186-bug-real-timescaledb-chunk-scan-sin-cota-tiempo.md) para el
+> hallazgo completo, la causa raíz (`chunk_time_interval=1h` acumulando
+> ~10.900 chunks) y los 3 fixes reales con medición antes/después.
+
 > Nota de numeración: SPEC-016 (`specs/016-alertas-umbrales-sensores/`) su
 > propio Definition of Done cita "ADR-016-1..5" como plantilla genérica de
 > spec — ese número (016) ya está tomado en el log global por

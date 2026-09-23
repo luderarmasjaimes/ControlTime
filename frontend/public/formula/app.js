@@ -51,152 +51,279 @@ async function getJSON(path){
   return r.json();
 }
 
+// ── Cookie de doble envío CSRF (mismo patrón que authApi.ts::csrfHeaders(),
+// necesario porque este editor corre en un iframe propio sin acceso al
+// Bearer en memoria del SPA -- se autentica por la cookie `beemetry_access_token`
+// que el navegador ya manda sola, y las mutaciones exigen X-CSRF-Token). ──
+function readCookie(name){
+  const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/[.$?*|{}()[\]\\/+^]/g,'\\$&') + '=([^;]*)'));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function csrfHeaders(){
+  const csrf = readCookie('beemetry_csrf_token');
+  return csrf ? { 'X-CSRF-Token': csrf } : {};
+}
+// GET/POST/PUT contra el backend REAL (/api/mining/...), no el sidecar
+// (apiBase/formula-api). credentials por defecto de fetch ya es
+// 'same-origin' (manda la cookie de sesión sola).
+async function getJSONMain(path){
+  const r = await fetch(path);
+  if(!r.ok) throw new Error(r.status + ' ' + r.statusText);
+  return r.json();
+}
+async function postJSONMain(path, obj, method){
+  const r = await fetch(path, {
+    method: method || 'POST',
+    headers: Object.assign({'Content-Type':'application/json'}, csrfHeaders()),
+    body: JSON.stringify(obj),
+  });
+  if(!r.ok){
+    const txt = await r.text().catch(()=>r.statusText||'error');
+    throw new Error(`${r.status} ${r.statusText}: ${txt}`);
+  }
+  try{ return await r.json(); }catch(e){ return null; }
+}
+
+// Parámetros numéricos usables en una expresión para ESTE sensor: solo los
+// que el sensor ya tiene configurados Y (si el admin ya catalogó el tipo,
+// sensor_type_parameter_def, ADR-188) están habilitados para su tipo. Sin
+// catálogo cargado todavía para el tipo, no bloquea -- ofrece lo que el
+// sensor ya tiene configurado. Compartida por el panel de variables (paleta
+// de la izquierda) y el formulario de "Guardar fórmula".
+async function loadAllowedParamsForSensor(sensorId, sensorType){
+  let sensorParams = [];
+  try{
+    const p = await getJSONMain('/api/mining/devices/' + encodeURIComponent(sensorId) + '/parameters');
+    sensorParams = (p.parameters || []).filter(x => x.data_type === 'numeric').map(x => x.param_key);
+  }catch(e){ sensorParams = []; }
+
+  let enabledForType = null;
+  try{
+    const cat = await getJSONMain('/api/mining/sensor-types');
+    const typeEntry = (cat.sensor_types || []).find(t => t.type_code === sensorType);
+    if(typeEntry && typeEntry.parameters && typeEntry.parameters.length){
+      enabledForType = typeEntry.parameters.filter(p => p.is_enabled).map(p => p.param_key);
+    }
+  }catch(e){ enabledForType = null; }
+
+  if(enabledForType){
+    return sensorParams.filter(k => enabledForType.includes(k));
+  }
+  return sensorParams;
+}
+
 // ═══════════════════════════════════════════════════════════════
-// CONTEXT SELECTORS — Empresa / Mina / Sensor / Variable
+// CONTEXT SELECTORS — Tipo de sensor → Sensor real (agrupado por zona)
+// ADR-188: ya no se pide empresa/unidad minera (vienen del login/sesión).
+// Reusa GET /api/mining/telemetry/wizard/catalog, el mismo endpoint real
+// que alimenta ZoneSensorPicker.tsx en el SPA (tipo→zona→sensor, sin
+// selectores de contexto -- resolveAllowedSensorTenant ya sabe el tenant
+// por la cookie de sesión).
 // ═══════════════════════════════════════════════════════════════
 (function initContextSelectors(){
-  const CTX_KEY = 'formula_ctx';
+  const CTX_KEY = 'formula_ctx_v2';
 
-  function saveCtx(obj){
-    try{ localStorage.setItem(CTX_KEY, JSON.stringify(obj)); }catch(e){}
+  // ADR-195: saveCtx ahora MERGEA sobre lo persistido en vez de reemplazarlo
+  // entero -- necesario porque ctx creció un tercer campo (formula_id) que
+  // puede haber sido puesto por otra pantalla (deep-link desde "Fórmulas de
+  // Sensores", ver FormulaOverviewView.tsx) antes de que este selector
+  // termine de inicializar sus combos de tipo/sensor. Cada llamada sigue
+  // pasando explícitamente los campos que sí quiere tocar.
+  function saveCtx(patch){
+    try{
+      const merged = Object.assign(loadCtx(), patch);
+      localStorage.setItem(CTX_KEY, JSON.stringify(merged));
+    }catch(e){}
   }
   function loadCtx(){
     try{ return JSON.parse(localStorage.getItem(CTX_KEY) || '{}'); }catch(e){ return {}; }
   }
 
-  let allEmpresas = [], allMinas = [], allSensores = [];
-  let ctx = loadCtx(); // { empresa_id, mina_id, sensor_id }
+  let allTypes = [], allSensors = [], allFormulas = [];
+  let ctx = loadCtx(); // { sensor_type, sensor_id, formula_id }
 
-  const selEmpresa = document.getElementById('ctxEmpresa');
-  const selMina    = document.getElementById('ctxMina');
+  const selTipo    = document.getElementById('ctxTipoSensor');
   const selSensor  = document.getElementById('ctxSensor');
+  const selFormula = document.getElementById('ctxFormula');
   const infoBox    = document.getElementById('ctxSensorInfo');
 
-  function poblateEmpresas(){
-    selEmpresa.innerHTML = '<option value="">— seleccione empresa —</option>';
-    allEmpresas.forEach(e => {
+  function poblateTipos(){
+    selTipo.innerHTML = '<option value="">— tipo de sensor —</option>';
+    allTypes.forEach(t => {
       const o = document.createElement('option');
-      o.value = e.id;
-      o.textContent = e.nombre;
-      if(ctx.empresa_id && parseInt(ctx.empresa_id) === e.id) o.selected = true;
-      selEmpresa.appendChild(o);
+      o.value = t.type;
+      o.textContent = t.type + ' (' + t.count + ')';
+      if(ctx.sensor_type && ctx.sensor_type === t.type) o.selected = true;
+      selTipo.appendChild(o);
     });
-    if(!selEmpresa.value && allEmpresas.length > 0){
-      const activos = allEmpresas.find(e => String(e.nombre || '').toLowerCase() === 'activos mineros');
-      selEmpresa.value = String((activos || allEmpresas[0]).id);
-    }
-    onEmpresaChange(false);
+    onTipoChange(false);
   }
 
-  function poblate(select, items, savedId, emptyText){
-    select.innerHTML = '<option value="">' + emptyText + '</option>';
-    items.forEach(it => {
-      const o = document.createElement('option');
-      o.value = it.id;
-      o.textContent = it.nombre || it.codigo;
-      if(savedId && parseInt(savedId) === it.id) o.selected = true;
-      select.appendChild(o);
-    });
-  }
-
-  function onEmpresaChange(resetChild){
-    const eId = parseInt(selEmpresa.value);
-    if(!eId){
-      selMina.innerHTML = '<option value="">— seleccione empresa —</option>';
-      selMina.disabled = true;
-      onMinaChange(true);
-      return;
-    }
-    const minas = allMinas.filter(m => m.empresa_id === eId);
-    selMina.disabled = false;
-    const savedMina = resetChild ? null : ctx.mina_id;
-    poblate(selMina, minas, savedMina, '— seleccione mina —');
-    onMinaChange(resetChild);
-    saveCtx({ empresa_id: eId, mina_id: parseInt(selMina.value)||null, sensor_id: parseInt(selSensor.value)||null });
-  }
-
-  async function onMinaChange(resetChild){
-    const mId = parseInt(selMina.value);
+  // Agrupa por zona (mismo criterio que ZoneSensorPicker.tsx::buildGroups())
+  // para poder ubicar el sensor por zona/área en vez de una lista plana.
+  async function onTipoChange(resetChild){
+    const tipo = selTipo.value;
     selSensor.innerHTML = '<option value="">— cargando sensores… —</option>';
     selSensor.disabled = true;
     updateSensorInfo(null);
-    if(!mId){
-      selSensor.innerHTML = '<option value="">— seleccione mina —</option>';
+    if(!tipo){
+      selSensor.innerHTML = '<option value="">— seleccione tipo —</option>';
+      // Solo persiste el "vaciado" si es una acción real del usuario
+      // (resetChild=true, viene del listener de 'change'). En la pasada
+      // silenciosa de inicialización (resetChild=false) esto NO debe pisar
+      // un ctx ya guardado (ej. un deep-link con sensor_id/formula_id pero
+      // sensor_type aún desconocido para este combo) -- antes de ADR-195
+      // este era justamente el caso que borraba el contexto apenas cargaba
+      // la página.
+      if(resetChild) saveCtx({ sensor_type: null, sensor_id: null, formula_id: null });
       return;
     }
     try{
-      allSensores = await getJSON('/api/sensores?mina_id=' + mId);
-    }catch(e){ allSensores = []; }
+      const data = await getJSONMain('/api/mining/telemetry/wizard/catalog?sensor_type=' + encodeURIComponent(tipo));
+      allSensors = data.sensors || [];
+    }catch(e){ allSensors = []; }
     selSensor.disabled = false;
-    const savedSensor = resetChild ? null : ctx.sensor_id;
-    poblate(selSensor, allSensores, savedSensor, '— seleccione sensor —');
+    selSensor.innerHTML = '';
+    if(allSensors.length === 0){
+      selSensor.innerHTML = '<option value="">— sin sensores de este tipo —</option>';
+    } else {
+      const empty = document.createElement('option');
+      empty.value = ''; empty.textContent = '— seleccione sensor —';
+      selSensor.appendChild(empty);
+      const byZone = new Map();
+      allSensors.forEach(s => {
+        const zoneKey = s.zone_name || 'Sin zona asignada';
+        if(!byZone.has(zoneKey)) byZone.set(zoneKey, []);
+        byZone.get(zoneKey).push(s);
+      });
+      [...byZone.keys()].sort().forEach(zoneName => {
+        const grp = document.createElement('optgroup');
+        grp.label = zoneName;
+        byZone.get(zoneName).forEach(s => {
+          const o = document.createElement('option');
+          o.value = s.id;
+          o.textContent = (s.name || s.code) + (s.connection_status ? ' [' + s.connection_status + ']' : '');
+          if(!resetChild && ctx.sensor_id === s.id) o.selected = true;
+          grp.appendChild(o);
+        });
+        selSensor.appendChild(grp);
+      });
+    }
     onSensorChange();
-    saveCtx({ empresa_id: parseInt(selEmpresa.value)||null, mina_id: mId, sensor_id: parseInt(selSensor.value)||null });
+    saveCtx({ sensor_type: tipo, sensor_id: selSensor.value || null });
   }
 
+  // ADR-195: cada sensor puede tener varias fórmulas -- cada una con su
+  // propio diagrama. Al elegir/restaurar un sensor se recarga el combo de
+  // fórmulas (GET .../{id}/formulas, mismo endpoint que ya usa
+  // SensorManagementView). formula_id solo se conserva si el sensor
+  // seleccionado es el MISMO que ya estaba en ctx (restauración de sesión o
+  // deep-link) -- si el usuario cambia de sensor, la fórmula elegida deja de
+  // tener sentido y se limpia.
   function onSensorChange(){
-    const sId = parseInt(selSensor.value);
-    const sensor = allSensores.find(s => s.id === sId);
+    const sId = selSensor.value;
+    const sensor = allSensors.find(s => s.id === sId);
     updateSensorInfo(sensor);
-    saveCtx({ empresa_id: parseInt(selEmpresa.value)||null, mina_id: parseInt(selMina.value)||null, sensor_id: sId||null });
+    const prev = loadCtx();
+    const keepFormulaId = (sId && prev.sensor_id === sId) ? (prev.formula_id || null) : null;
+    saveCtx({ sensor_type: selTipo.value || null, sensor_id: sId || null, formula_id: keepFormulaId });
+    ctx = loadCtx();
+    loadFormulasForSensor(sId, keepFormulaId);
+  }
+
+  async function loadFormulasForSensor(sId, preselectFormulaId){
+    if(!selFormula) return;
+    if(!sId){
+      selFormula.innerHTML = '<option value="">— fórmula —</option>';
+      selFormula.disabled = true;
+      allFormulas = [];
+      return;
+    }
+    selFormula.innerHTML = '<option value="">— cargando fórmulas… —</option>';
+    selFormula.disabled = true;
+    try{
+      const data = await getJSONMain('/api/mining/devices/' + encodeURIComponent(sId) + '/formulas');
+      allFormulas = data.formulas || [];
+    }catch(e){ allFormulas = []; }
+    selFormula.disabled = false;
+    selFormula.innerHTML = '';
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = allFormulas.length ? '— seleccione fórmula —' : '— sin fórmulas —';
+    selFormula.appendChild(empty);
+    allFormulas.forEach(f => {
+      const o = document.createElement('option');
+      o.value = f.formula_id;
+      o.textContent = f.formula_name;
+      if(preselectFormulaId && String(preselectFormulaId) === String(f.formula_id)) o.selected = true;
+      selFormula.appendChild(o);
+    });
+  }
+
+  function onFormulaChange(){
+    saveCtx({ formula_id: selFormula.value || null });
+    window.dispatchEvent(new Event('formulaCtxChange'));
   }
 
   function updateSensorInfo(sensor){
     if(!sensor){ infoBox.style.display = 'none'; return; }
     infoBox.style.display = 'block';
-    const ub = sensor.ubicacion ? '<br>📍 ' + sensor.ubicacion : '';
-    const prof = sensor.profundidad_m !== null && sensor.profundidad_m !== undefined ? '<br>⬇ Profundidad: ' + sensor.profundidad_m + ' m' : '';
-    const fab = sensor.fabricante ? ' · ' + sensor.fabricante : '';
-    const mod = sensor.modelo ? ' (' + sensor.modelo + ')' : '';
     infoBox.innerHTML =
-      '<b>' + sensor.nombre + '</b>' + fab + mod + ub + prof +
-      '<br>Variable: <span class="si-var">' + sensor.variable_nombre + '</span>' +
-      '&nbsp;Unidad: <span class="si-unit">' + (sensor.unidad || '—') + '</span>';
+      '<b>' + (sensor.name || sensor.code) + '</b> · ' + sensor.code +
+      '<br>Zona: <span class="si-var">' + (sensor.zone_name || 'Sin zona') + '</span>' +
+      '&nbsp;Unidad: <span class="si-unit">' + (sensor.unit || '—') + '</span>';
   }
 
   // Wire events — dispatch formulaCtxChange so canvas reloads the right diagram
-  selEmpresa.addEventListener('change', () => { onEmpresaChange(true); window.dispatchEvent(new Event('formulaCtxChange')); });
-  selMina.addEventListener('change',    async () => { await onMinaChange(true); window.dispatchEvent(new Event('formulaCtxChange')); });
-  selSensor.addEventListener('change',  () => onSensorChange());
+  selTipo.addEventListener('change',   async () => { await onTipoChange(true); window.dispatchEvent(new Event('formulaCtxChange')); });
+  selSensor.addEventListener('change', () => { onSensorChange(); window.dispatchEvent(new Event('formulaCtxChange')); });
+  if(selFormula) selFormula.addEventListener('change', onFormulaChange);
 
   // Initial load
   async function init(){
     try{
-      const data = await getJSON('/api/catalogos');
-      allEmpresas = data.empresas || [];
-      allMinas    = data.minas    || [];
-    }catch(e){ allEmpresas = []; allMinas = []; }
-    poblateEmpresas();
+      const data = await getJSONMain('/api/mining/telemetry/wizard/catalog');
+      allTypes = data.sensor_types || [];
+    }catch(e){ allTypes = []; }
+    poblateTipos();
+    // Deep-link (FormulaOverviewView "Ver en Cálculo"): sensor_type no se
+    // conoce de ese lado, así que poblateTipos()/onTipoChange no pudieron
+    // preseleccionar nada arriba -- igual el diagrama carga bien porque
+    // getDiagramId() lee formula_id directo de localStorage, pero acá se
+    // puebla al menos el combo de fórmulas para que la UI quede coherente.
+    if(!ctx.sensor_type && ctx.sensor_id){
+      loadFormulasForSensor(ctx.sensor_id, ctx.formula_id);
+    }
   }
   init();
 
   // Expose ctx accessor so other code can read current selection
   window.getFormulaCtx = () => ({
-    empresa_id: parseInt(selEmpresa.value) || null,
-    mina_id:    parseInt(selMina.value)    || null,
-    sensor_id:  parseInt(selSensor.value)  || null,
-    sensor:     allSensores.find(s => s.id === parseInt(selSensor.value)) || null
+    sensor_type: selTipo.value || null,
+    sensor_id:   selSensor.value || null,
+    sensor:      allSensors.find(s => s.id === selSensor.value) || null
   });
 })();
 
-// ── Multi-tenant diagram isolation ────────────────────────────────────────
-// Each empresa+mina pair is an independent diagram workspace.
-// Base id: 'empX_minaY'. Optional suffix (localStorage) starts a new empty canvas
-// without deleting rows stored under the base id in the database.
-const FORMULA_DIAGRAM_VARIANTS = 'formula_diagram_variants';
+// ── Diagrama por FÓRMULA real ─────────────────────────────────────────────
+// ADR-195: la identidad de cada diagrama pasa de 'sensor_<uuid>' (ADR-188,
+// un diagrama por sensor) a 'formula_<formula_id>' -- un sensor puede tener
+// varias fórmulas (ALT/MCA/MPA de un mismo piezómetro, por ejemplo) y con el
+// esquema viejo todas compartían un único diagrama, ambiguo. El diagrama se
+// autogenera y se REGENERA automáticamente desde el backend cada vez que la
+// fórmula cambia (crear/editar/aplicar plantilla) -- ver
+// sensor_formula_diagram.hpp. Se retira el hack de "variantes" (múltiples
+// diagramas manuales por sensor, botón "Nuevo Diagrama"): ya no hace falta,
+// cada fórmula tiene el suyo de forma natural. Ese botón ahora dispara una
+// regeneración explícita (ver el listener de #nuevoDiagrama más abajo).
 function diagramContextKey(ctx) {
-  if(!ctx || !ctx.empresa_id || !ctx.mina_id) return null;
-  return 'emp' + ctx.empresa_id + '_mina' + ctx.mina_id;
+  if(!ctx || !ctx.formula_id) return null;
+  return 'formula_' + ctx.formula_id;
 }
 function getDiagramId() {
   try {
-    const ctx = JSON.parse(localStorage.getItem('formula_ctx') || '{}');
-    const base = diagramContextKey(ctx);
-    if(!base) return null;
-    const map = JSON.parse(localStorage.getItem(FORMULA_DIAGRAM_VARIANTS) || '{}');
-    const suffix = map[base];
-    if(suffix) return base + '_' + suffix;
-    return base;
+    const ctx = JSON.parse(localStorage.getItem('formula_ctx_v2') || '{}');
+    return diagramContextKey(ctx);
   } catch(e) { return null; }
 }
 
@@ -618,7 +745,7 @@ document.getElementById('addBlock').addEventListener('click', async () => {
   const btn = document.getElementById('addBlock');
   const diagramId = getDiagramId();
   if(!diagramId){
-    showToast('Seleccione empresa y mina antes de crear bloques', true);
+    showToast('Seleccione un tipo de sensor y un sensor antes de crear bloques', true);
     return;
   }
   let newBlockId = null;
@@ -663,7 +790,7 @@ document.getElementById('addDecision').addEventListener('click', async () => {
   const btn = document.getElementById('addDecision');
   const diagramId = getDiagramId();
   if(!diagramId){
-    showToast('Seleccione empresa y mina antes de crear bloques de condición', true);
+    showToast('Seleccione un tipo de sensor y un sensor antes de crear bloques de condición', true);
     return;
   }
   let newBlockId = null;
@@ -697,37 +824,33 @@ document.getElementById('connectMode').addEventListener('click', ()=>{
   connectMode = !connectMode; connectionStart = null; document.getElementById('connectMode').style.background = connectMode ? '#ffd' : '';
 });
 
+// ADR-195: "Nuevo Diagrama" pasó a ser "Regenerar diagrama" -- reconstruye
+// desde cero el diagrama de la fórmula seleccionada a partir de su
+// expresión/umbrales reales (sensor_formula_def), vía el mismo endpoint que
+// dispara automáticamente crear/editar una fórmula. Reemplaza TODO lo que
+// hubiera en el lienzo para esa fórmula (se pierden ediciones manuales de
+// layout) -- por eso el confirm().
 document.getElementById('nuevoDiagrama').addEventListener('click', async () => {
-  if(!confirm('Se abrirá un lienzo vacío para esta empresa y mina.\n\nNo se borran en el servidor los bloques del diagrama guardado (identificador emp…_mina…). ¿Continuar?')) return;
-  const ctx = JSON.parse(localStorage.getItem('formula_ctx') || '{}');
-  const base = diagramContextKey(ctx);
-  if(!base){
-    alert('Seleccione empresa y mina antes de iniciar un diagrama nuevo.');
+  const ctx = JSON.parse(localStorage.getItem('formula_ctx_v2') || '{}');
+  if(!ctx.sensor_id || !ctx.formula_id){
+    alert('Seleccione una fórmula antes de regenerar su diagrama.');
     return;
   }
+  if(!confirm('Se reconstruye el diagrama desde la fórmula real (entradas, cálculo y umbrales de warning/error de sensor_formula_def).\n\nSe pierde cualquier edición manual de layout hecha en este lienzo. ¿Continuar?')) return;
   const btn = document.getElementById('nuevoDiagrama');
   btn.disabled = true;
-  btn.textContent = 'Preparando...';
+  btn.textContent = 'Regenerando...';
   try{
-    const map = JSON.parse(localStorage.getItem(FORMULA_DIAGRAM_VARIANTS) || '{}');
-    map[base] = 'd' + Date.now();
-    localStorage.setItem(FORMULA_DIAGRAM_VARIANTS, JSON.stringify(map));
-    state.blocks = [];
-    state.connections = [];
-    selected = null;
-    connectMode = false;
-    connectionStart = null;
-    hideProps();
+    await postJSONMain('/api/mining/devices/' + encodeURIComponent(ctx.sensor_id) +
+      '/formulas/' + encodeURIComponent(ctx.formula_id) + '/diagram/regenerate', {});
     await refreshState();
-    draw();
-    renderConnectionsList();
-    if(threeMgr) threeMgr.updateBlocks(state.blocks);
+    showToast('Diagrama regenerado desde la fórmula');
   } catch(e){
-    alert('Error al preparar el lienzo: ' + e.message);
+    alert('Error al regenerar el diagrama: ' + e.message);
     await refreshState();
   }
   btn.disabled = false;
-  btn.textContent = '🗑 Nuevo Diagrama';
+  btn.textContent = '🔄 Regenerar diagrama';
 });
 
 document.getElementById('deleteBlock').addEventListener('click', ()=>{
@@ -1023,6 +1146,16 @@ function normalizeMeta(m){
   return {};
 }
 
+// ADR-195: una fórmula creada antes de este cambio (o cuyo diagrama se borró
+// a mano) todavía no tiene filas guardadas bajo diagram_id='formula_<id>'.
+// En vez de dejar el lienzo vacío esperando un clic manual en "Regenerar
+// diagrama", se dispara la generación automáticamente la PRIMERA vez que se
+// detecta vacío en esta carga de página -- el Set evita loop si el backend
+// no pudiera generar nada (ej. fórmula borrada entre medio). El botón manual
+// sigue disponible para resincronizar después de una edición fuera del
+// lienzo o para forzar una reconstrucción.
+const autoRegeneratedDiagrams = new Set();
+
 async function refreshState(){
   const diagramId = getDiagramId();
   if(!diagramId){
@@ -1037,6 +1170,21 @@ async function refreshState(){
   }
   try{
     const res = await getJSON('/api/state?diagram_id=' + encodeURIComponent(diagramId));
+    if((res.blocks || []).length === 0 && diagramId.indexOf('formula_') === 0 && !autoRegeneratedDiagrams.has(diagramId)){
+      autoRegeneratedDiagrams.add(diagramId);
+      const ctx = JSON.parse(localStorage.getItem('formula_ctx_v2') || '{}');
+      if(ctx.sensor_id && ctx.formula_id){
+        try{
+          showToast('Generando diagrama desde la fórmula...');
+          await postJSONMain('/api/mining/devices/' + encodeURIComponent(ctx.sensor_id) +
+            '/formulas/' + encodeURIComponent(ctx.formula_id) + '/diagram/regenerate', {});
+          await refreshState();
+          return;
+        }catch(e){
+          showToast('No se pudo generar el diagrama automáticamente — use "Regenerar diagrama": ' + e.message, true);
+        }
+      }
+    }
     state.blocks = res.blocks.map(b => ({
       ...b,
       x: parseFloat(b.x),
@@ -1140,16 +1288,25 @@ function renderConnectionsList(){
   el.addEventListener('click', el._delegatedHandler);
 }
 
-// Load and display variables (data dictionary) in left sidebar
+// Load and display variables (data dictionary) in left sidebar -- ADR-188:
+// ya no es una lista genérica fija (`/api/variables`, "temperatura",
+// "humedad", etc. sin relación con nada real). Ahora son 'value' (la
+// telemetría del sensor seleccionado) + los parámetros de ESE sensor que
+// además estén habilitados por el catálogo de su tipo
+// (loadAllowedParamsForSensor, sensor_type_parameter_def). Se refresca en
+// cada cambio de sensor (window 'formulaCtxChange').
 async function loadVariables(){
   try{
-    const vars = await getJSON('/api/variables');
     const list = document.getElementById('variablesList');
-    list.innerHTML = '';
-    if(!vars || vars.length === 0){
-      list.innerHTML = '<p style="color:#95a5a6; font-size:13px; padding:10px; text-align:center;">No hay variables</p>';
+    const fctx = window.getFormulaCtx ? window.getFormulaCtx() : null;
+    if(!fctx || !fctx.sensor_id){
+      list.innerHTML = '<p style="color:#95a5a6; font-size:13px; padding:10px; text-align:center;">Seleccione un sensor para ver sus variables</p>';
       return;
     }
+    const allowedKeys = await loadAllowedParamsForSensor(fctx.sensor_id, fctx.sensor_type);
+    const vars = [{ name: 'value', type: 'numeric', unit: (fctx.sensor && fctx.sensor.unit) || '', description: 'Última telemetría real del sensor' }]
+      .concat(allowedKeys.map(k => ({ name: k, type: 'numeric', unit: '', description: 'Parámetro configurado del sensor' })));
+    list.innerHTML = '';
     vars.forEach(v => {
       const item = document.createElement('div');
       item.className = 'variable-item';
@@ -1423,14 +1580,14 @@ document.getElementById('authToken').value = localStorage.getItem('AUTH_TOKEN') 
 // Start connection
 wsManager.connect();
 
-// Initial load — load existing blocks/connections from DB immediately (scoped to empresa+mina context)
+// Initial load — load existing blocks/connections from DB immediately (scoped to the selected sensor)
 draw();
 loadVariables();
 loadOperators();
 refreshState(); // populate canvas from DB on page open (returns blank if no context selected)
 
-// When empresa or mina selector changes, reload the diagram for the new context
-window.addEventListener('formulaCtxChange', () => { refreshState(); });
+// When the selected sensor changes, reload the diagram and the variable palette
+window.addEventListener('formulaCtxChange', () => { refreshState(); loadVariables(); });
 
 // Rules UI: load rules for block
 async function loadRulesFor(blockId){
@@ -1882,332 +2039,102 @@ refreshState = async function(){ await origRefreshState(); if(threeMgr) threeMgr
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BÚSQUEDA AVANZADA DE HISTORIAL DE FÓRMULAS
+// GUARDAR FÓRMULA — ADR-188: persiste la lógica del diagrama como fórmula
+// real del sensor seleccionado (sensor_formula_def, ADR-187) en vez del
+// campo `rules.expr` del sidecar (nunca se evaluaba). En cuanto se guarda,
+// el evaluador real de 10s (sensor_formula_evaluator.cpp) empieza a
+// calcularla contra telemetría real. Las variables disponibles se limitan a
+// los parámetros habilitados por un admin de plataforma para el TIPO de
+// este sensor (sensor_type_parameter_def, `formula.edit`) — si el tipo aún
+// no tiene catálogo cargado, se ofrecen los parámetros ya configurados en
+// el propio sensor como fallback (no bloquea el flujo antes de que un admin
+// cargue el catálogo).
 // ═══════════════════════════════════════════════════════════════════════════
-
 (function(){
-  // ── state ────────────────────────────────────────────────────────────────
-  let _catalogos = [];       // cache de catálogos cargados
-  let _allResults = [];      // todos los resultados de la búsqueda actual
-  let _curPage   = 1;
-  let _perPage   = 25;
-  let _totalPages = 1;
-  let _searching  = false;
+  const btn = document.getElementById('btnGuardarFormula');
+  if(!btn) return;
 
-  // ── DOM refs ─────────────────────────────────────────────────────────────
-  const overlay      = document.getElementById('buscarModalOverlay');
-  const modal        = document.getElementById('buscarModal');
-  const closeBtn     = document.getElementById('buscarModalClose');
-  const openBtn      = document.getElementById('btnBuscarHistorial');
-  const buscarBtn    = document.getElementById('buscarBtn');
-  const limpiarBtn   = document.getElementById('buscarLimpiarBtn');
-  const statusEl     = document.getElementById('buscarStatus');
-  const resultsEl    = document.getElementById('buscarResults');
-  const selEmpresa   = document.getElementById('bSelEmpresa');
-  const selMina      = document.getElementById('bSelMina');
-  const selVariable  = document.getElementById('bSelVariable');
-  const iniFecha     = document.getElementById('bFechaInicio');
-  const finFecha     = document.getElementById('bFechaFin');
-  const selLimit     = document.getElementById('bSelLimit');
-
-  // ── Load catalogos for dropdowns ─────────────────────────────────────────
-  async function loadCatalogos(){
-    if(_catalogos.length > 0) return;
-    try{
-      _catalogos = await getJSON('/api/analysis/catalogos');
-      // Populate empresa dropdown (unique)
-      const empresas = [];
-      const seen = new Set();
-      _catalogos.forEach(c => {
-        if(!seen.has(c.empresa_id)){
-          seen.add(c.empresa_id);
-          empresas.push({ id: c.empresa_id, nombre: c.empresa_nombre });
-        }
-      });
-      empresas.sort((a,b) => a.nombre.localeCompare(b.nombre));
-      empresas.forEach(e => {
-        const opt = document.createElement('option');
-        opt.value = e.id;
-        opt.textContent = e.nombre;
-        selEmpresa.appendChild(opt);
-      });
-      // Populate variable dropdown (unique)
-      const variables = [];
-      const seenV = new Set();
-      _catalogos.forEach(c => {
-        if(!seenV.has(c.variable_id)){
-          seenV.add(c.variable_id);
-          variables.push({ id: c.variable_id, nombre: c.variable_nombre, unidad: c.unidad });
-        }
-      });
-      variables.forEach(v => {
-        const opt = document.createElement('option');
-        opt.value = v.id;
-        opt.textContent = v.nombre + (v.unidad ? ' [' + v.unidad + ']' : '');
-        selVariable.appendChild(opt);
-      });
-      // Initial mina population (all)
-      populateMinas('');
-    }catch(e){
-      console.error('Error cargando catalogos para búsqueda:', e);
-    }
+  function slugify(s){
+    return String(s || '').toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g,'')
+      .replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'canal';
   }
 
-  function populateMinas(empresaId){
-    // Save current selection
-    const prev = selMina.value;
-    selMina.innerHTML = '<option value="">— Todas las minas —</option>';
-    const minas = _catalogos.filter(c => !empresaId || String(c.empresa_id) === String(empresaId));
-    const seenM = new Set();
-    minas.forEach(c => {
-      if(!seenM.has(c.mina_id)){
-        seenM.add(c.mina_id);
-        const opt = document.createElement('option');
-        opt.value = c.mina_id;
-        opt.textContent = c.mina_nombre + ' (' + c.zona_tipo + ')';
-        selMina.appendChild(opt);
+  function openForm(allowedParams, ctx){
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:99998;display:flex;align-items:center;justify-content:center;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#fff;padding:24px 28px;border-radius:12px;max-width:460px;width:92%;box-shadow:0 8px 32px rgba(0,0,0,.3);font-family:Poppins,sans-serif;';
+    const varsHint = ['value'].concat(allowedParams).join(', ');
+    box.innerHTML = `
+      <h3 style="margin:0 0 4px;color:#1e3a5f;font-size:16px;">Guardar fórmula — ${ctx.sensor ? (ctx.sensor.name || ctx.sensor.code) : ctx.sensor_id}</h3>
+      <p style="margin:0 0 14px;font-size:11px;color:#7f8c8d;">Variables disponibles: <code>${varsHint}</code>${allowedParams.length===0 ? ' (sin parámetros habilitados para este tipo todavía — pedir a un admin que los active)' : ''}</p>
+      <label style="display:block;font-size:11px;font-weight:700;color:#1e3a5f;margin-bottom:3px;">Nombre de la fórmula</label>
+      <input id="gfName" style="width:100%;padding:7px 9px;margin-bottom:10px;border:1px solid #dfe4ea;border-radius:6px;font-size:13px;" placeholder="Ej: Vibración calibrada" />
+      <label style="display:block;font-size:11px;font-weight:700;color:#1e3a5f;margin-bottom:3px;">Código de canal de salida</label>
+      <input id="gfChannel" style="width:100%;padding:7px 9px;margin-bottom:10px;border:1px solid #dfe4ea;border-radius:6px;font-size:13px;" placeholder="se genera del nombre si se deja vacío" />
+      <label style="display:block;font-size:11px;font-weight:700;color:#1e3a5f;margin-bottom:3px;">Expresión (tinyexpr)</label>
+      <input id="gfExpr" style="width:100%;padding:7px 9px;margin-bottom:10px;border:1px solid #dfe4ea;border-radius:6px;font-size:13px;font-family:monospace;" placeholder="Ej: value * factor_calibracion" />
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+        <div><label style="display:block;font-size:10px;color:#7f8c8d;">Warning bajo</label><input id="gfWLow" type="number" step="any" style="width:100%;padding:6px 8px;border:1px solid #dfe4ea;border-radius:6px;"/></div>
+        <div><label style="display:block;font-size:10px;color:#7f8c8d;">Warning alto</label><input id="gfWHigh" type="number" step="any" style="width:100%;padding:6px 8px;border:1px solid #dfe4ea;border-radius:6px;"/></div>
+        <div><label style="display:block;font-size:10px;color:#7f8c8d;">Error bajo</label><input id="gfELow" type="number" step="any" style="width:100%;padding:6px 8px;border:1px solid #dfe4ea;border-radius:6px;"/></div>
+        <div><label style="display:block;font-size:10px;color:#7f8c8d;">Error alto</label><input id="gfEHigh" type="number" step="any" style="width:100%;padding:6px 8px;border:1px solid #dfe4ea;border-radius:6px;"/></div>
+      </div>
+      <div style="text-align:right;">
+        <button id="gfCancel" style="padding:8px 18px;margin-right:10px;border:2px solid #7f8c8d;background:#fff;color:#7f8c8d;border-radius:6px;font-weight:600;cursor:pointer;">Cancelar</button>
+        <button id="gfSave" style="padding:8px 18px;background:#16543a;color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Guardar</button>
+      </div>`;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    box.querySelector('#gfCancel').onclick = close;
+    box.querySelector('#gfSave').onclick = async () => {
+      const name = box.querySelector('#gfName').value.trim();
+      const expression = box.querySelector('#gfExpr').value.trim();
+      const channel = box.querySelector('#gfChannel').value.trim() || slugify(name);
+      if(!name || !expression){
+        showToast('Nombre y expresión son requeridos', true);
+        return;
       }
-    });
-    if(prev) selMina.value = prev;
+      const numOrUndef = (id) => {
+        const v = box.querySelector(id).value;
+        return v === '' ? undefined : Number(v);
+      };
+      const saveBtn = box.querySelector('#gfSave');
+      saveBtn.disabled = true; saveBtn.textContent = 'Guardando...';
+      try{
+        await postJSONMain('/api/mining/devices/' + encodeURIComponent(ctx.sensor_id) + '/formulas', {
+          formula_name: name,
+          expression: expression,
+          output_channel_code: channel,
+          warning_low: numOrUndef('#gfWLow'),
+          warning_high: numOrUndef('#gfWHigh'),
+          error_low: numOrUndef('#gfELow'),
+          error_high: numOrUndef('#gfEHigh'),
+        });
+        close();
+        showToast('Fórmula guardada — el evaluador real (10s) empezará a calcularla');
+      }catch(e){
+        saveBtn.disabled = false; saveBtn.textContent = 'Guardar';
+        showToast('Error al guardar la fórmula: ' + e.message, true);
+      }
+    };
   }
 
-  selEmpresa.addEventListener('change', () => populateMinas(selEmpresa.value));
-
-  // ── Open / close modal ────────────────────────────────────────────────────
-  openBtn.addEventListener('click', async () => {
-    overlay.classList.add('open');
-    await loadCatalogos();
-  });
-
-  function closeModal(){
-    overlay.classList.remove('open');
-  }
-
-  closeBtn.addEventListener('click', closeModal);
-  overlay.addEventListener('click', e => { if(e.target === overlay) closeModal(); });
-
-  // ── Limpiar filtros ────────────────────────────────────────────────────────
-  limpiarBtn.addEventListener('click', () => {
-    selEmpresa.value  = '';
-    populateMinas('');
-    selMina.value     = '';
-    selVariable.value = '';
-    iniFecha.value    = '';
-    finFecha.value    = '';
-    selLimit.value    = '25';
-    statusEl.textContent = '';
-    resultsEl.innerHTML = '<div id="buscarEmpty">Use los filtros y presione Buscar para ver el historial guardado.</div>';
-    _allResults = [];
-    _curPage = 1;
-  });
-
-  // ── Build query URL ────────────────────────────────────────────────────────
-  function buildUrl(page){
-    const limit  = parseInt(selLimit.value) || 25;
-    let url = '/api/analysis/sesiones?limit=' + limit + '&page=' + page;
-    if(selEmpresa.value)  url += '&empresa_id='  + encodeURIComponent(selEmpresa.value);
-    if(selMina.value)     url += '&mina_id='     + encodeURIComponent(selMina.value);
-    if(selVariable.value) url += '&variable_id=' + encodeURIComponent(selVariable.value);
-    if(iniFecha.value)    url += '&fecha_inicio=' + encodeURIComponent(iniFecha.value + ':00');
-    if(finFecha.value)    url += '&fecha_fin='    + encodeURIComponent(finFecha.value + ':00');
-    return url;
-  }
-
-  // ── Execute search ─────────────────────────────────────────────────────────
-  async function doSearch(page){
-    if(_searching) return;
-    _searching = true;
-    buscarBtn.disabled = true;
-    buscarBtn.textContent = '⏳ Buscando...';
-    statusEl.textContent = 'Consultando...';
-
-    try{
-      const data = await getJSON(buildUrl(page));
-      _allResults  = data.sesiones || [];
-      _curPage     = data.page     || 1;
-      _perPage     = data.per_page || 25;
-      _totalPages  = data.total_pages || 1;
-      const total  = data.total || 0;
-
-      statusEl.textContent = total > 0
-        ? total + ' registro(s) encontrados — página ' + _curPage + ' de ' + _totalPages
-        : 'No se encontraron registros con los filtros aplicados.';
-
-      renderResults();
-    }catch(e){
-      console.error('Error en búsqueda:', e);
-      statusEl.textContent = '❌ Error: ' + e.message;
-      resultsEl.innerHTML = '<div id="buscarEmpty" style="color:#e74c3c;">Error al buscar: ' + escapeHtml(e.message) + '</div>';
-    }finally{
-      _searching = false;
-      buscarBtn.disabled = false;
-      buscarBtn.textContent = '🔍 Buscar';
-    }
-  }
-
-  buscarBtn.addEventListener('click', () => doSearch(1));
-
-  // ── Render results table ───────────────────────────────────────────────────
-  function renderResults(){
-    if(_allResults.length === 0){
-      resultsEl.innerHTML = '<div id="buscarEmpty">No se encontraron registros con los filtros aplicados.</div>';
+  btn.addEventListener('click', async () => {
+    const ctx = window.getFormulaCtx ? window.getFormulaCtx() : null;
+    if(!ctx || !ctx.sensor_id){
+      showToast('Seleccione un tipo de sensor y un sensor antes de guardar una fórmula', true);
       return;
     }
-
-    const rows = _allResults.map(r => {
-      const accionChip = r.accion === 'CREO' ? '<span class="chip-acc">CREÓ</span>' :
-                         r.accion === 'MODIFICO' ? '<span class="chip-acc">MODIFICÓ</span>' :
-                         '<span class="chip-acc">' + escapeHtml(r.accion || '—') + '</span>';
-      const siPct = r.total_lecturas > 0 ? ((r.total_si / r.total_lecturas) * 100).toFixed(1) : '0.0';
-      const gps = (r.gps_lat && r.gps_lon) ? r.gps_lat.toFixed(4) + ', ' + r.gps_lon.toFixed(4) : '—';
-      const lugar = r.gps_lugar || '—';
-      return `<tr class="bRow" data-id="${r.id}" data-usuario="${escapeHtml(r.usuario_nombre || '')}" title="Doble clic para cargar este diagrama en el editor">
-        <td style="font-weight:700;color:#7c3aed;">#${r.id}</td>
-        <td>${escapeHtml(r.usuario_nombre || '—')}</td>
-        <td>${accionChip}</td>
-        <td>${escapeHtml(r.empresa_nombre || '—')}</td>
-        <td>${escapeHtml(r.mina_nombre || '—')}</td>
-        <td>${escapeHtml(r.variable_nombre || '—')}</td>
-        <td>${escapeHtml(r.fecha_inicio || '—')}</td>
-        <td>${escapeHtml(r.fecha_fin || '—')}</td>
-        <td style="text-align:right;">${r.total_lecturas.toLocaleString()}</td>
-        <td style="text-align:right;"><span class="chip-si">${r.total_si.toLocaleString()}</span></td>
-        <td style="text-align:right;"><span class="chip-no">${r.total_no.toLocaleString()}</span></td>
-        <td style="text-align:right;font-weight:700;color:#e8921e;">${Number(r.pct_alertas || 0).toFixed(2)}%</td>
-        <td>${escapeHtml(lugar)}</td>
-        <td style="font-size:11px;color:#7f8c8d;">${escapeHtml(r.created_at || '—')}</td>
-      </tr>`;
-    }).join('');
-
-    const pagination = renderPagination();
-
-    resultsEl.innerHTML = `
-      <div class="bTableWrap">
-        <table class="bTable">
-          <thead>
-            <tr>
-              <th>#ID</th>
-              <th>Usuario</th>
-              <th>Acción</th>
-              <th>Empresa</th>
-              <th>Mina</th>
-              <th>Variable</th>
-              <th>F. Inicio</th>
-              <th>F. Fin</th>
-              <th>Lecturas</th>
-              <th>Alertas (SI)</th>
-              <th>Normal (NO)</th>
-              <th>% Alertas</th>
-              <th>Ubicación GPS</th>
-              <th>Guardado</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      ${pagination}`;
-
-    // Wire pagination buttons
-    resultsEl.querySelectorAll('.pg-btn[data-page]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const pg = parseInt(btn.getAttribute('data-page'));
-        if(!isNaN(pg)) doSearch(pg);
-      });
-    });
-
-    // Wire double-click on rows to load session into editor
-    resultsEl.querySelectorAll('tr.bRow').forEach(tr => {
-      tr.addEventListener('dblclick', () => handleRowDblClick(tr));
-    });
-  }
-
-  async function handleRowDblClick(tr){
-    const sessId   = tr.getAttribute('data-id');
-    const usuario  = tr.getAttribute('data-usuario');
-    const msg = '¿Cargar la sesión #' + sessId + ' (' + usuario + ') en el editor de diagramas?\n\n' +
-                'Esto reemplazará el diagrama actual con el snapshot guardado en esa sesión.';
-    if(!confirm(msg)) return;
-
-    // Show loading overlay on the modal
-    const loadDiv = document.createElement('div');
-    loadDiv.id = 'bRestoreLoading';
-    loadDiv.style.cssText = 'position:absolute;inset:0;background:rgba(255,255,255,.82);' +
-      'display:flex;align-items:center;justify-content:center;z-index:10;border-radius:12px;' +
-      'font-size:15px;font-weight:600;color:#7c3aed;gap:10px;';
-    loadDiv.innerHTML = '<span style="font-size:22px;">⏳</span> Cargando sesión #' + sessId + '…';
-    modal.style.position = 'relative';
-    modal.appendChild(loadDiv);
-
+    btn.disabled = true;
     try{
-      const resp = await fetch(apiBase + '/api/analysis/sesiones/' + sessId + '/restaurar', { method: 'POST' });
-      const data = await resp.json();
-      if(!resp.ok || !data.ok) throw new Error(data.error || 'Error al restaurar');
-
-      // Restaurar escribe en diagram_id emp{e}_mina{m}; quitar variante de lienzo vacío para ver el diagrama
-      try{
-        const ctx = JSON.parse(localStorage.getItem('formula_ctx') || '{}');
-        const base = diagramContextKey(ctx);
-        if(base){
-          const map = JSON.parse(localStorage.getItem(FORMULA_DIAGRAM_VARIANTS) || '{}');
-          if(map[base]){ delete map[base]; localStorage.setItem(FORMULA_DIAGRAM_VARIANTS, JSON.stringify(map)); }
-        }
-      }catch(_){ /* ignore */ }
-
-      // Close modal and refresh the canvas editor
-      closeModal();
-      await refreshState();
-
-      // Show success toast
-      const toast = document.createElement('div');
-      toast.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);' +
-        'background:#1a7f4b;color:#fff;padding:12px 28px;border-radius:24px;font-size:14px;' +
-        'font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,.3);transition:opacity .4s;' +
-        'display:flex;align-items:center;gap:8px;';
-      toast.innerHTML = '<span style="font-size:18px;">✅</span> Sesión #' + sessId +
-        ' cargada en el editor — listo para editar';
-      document.body.appendChild(toast);
-      setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 450); }, 3500);
-
-    }catch(e){
-      console.error('Error restaurando sesión:', e);
-      alert('❌ Error al cargar la sesión: ' + e.message);
-    }finally{
-      const ld = document.getElementById('bRestoreLoading');
-      if(ld) ld.remove();
+      const allowed = await loadAllowedParamsForSensor(ctx.sensor_id, ctx.sensor_type);
+      openForm(allowed, ctx);
+    } finally {
+      btn.disabled = false;
     }
-  }
+  });
+})();
 
-  function renderPagination(){
-    if(_totalPages <= 1) return '';
-    const maxVisible = 7;
-    let pages = [];
-    if(_totalPages <= maxVisible){
-      for(let i = 1; i <= _totalPages; i++) pages.push(i);
-    } else {
-      pages = [1];
-      const start = Math.max(2, _curPage - 2);
-      const end   = Math.min(_totalPages - 1, _curPage + 2);
-      if(start > 2) pages.push('...');
-      for(let i = start; i <= end; i++) pages.push(i);
-      if(end < _totalPages - 1) pages.push('...');
-      pages.push(_totalPages);
-    }
-
-    const btns = pages.map(p => {
-      if(p === '...') return '<span class="pg-btn" disabled style="cursor:default;">…</span>';
-      const active = p === _curPage ? ' active' : '';
-      return `<button class="pg-btn${active}" data-page="${p}">${p}</button>`;
-    }).join('');
-
-    const prevDisabled = _curPage <= 1 ? ' disabled' : '';
-    const nextDisabled = _curPage >= _totalPages ? ' disabled' : '';
-
-    return `<div id="buscarPagination">
-      <button class="pg-btn"${prevDisabled} data-page="${_curPage - 1}">‹ Ant</button>
-      ${btns}
-      <button class="pg-btn"${nextDisabled} data-page="${_curPage + 1}">Sig ›</button>
-      <span id="buscarPgInfo">Página ${_curPage} de ${_totalPages}</span>
-    </div>`;
-  }
-
-})(); // end IIFE Búsqueda Avanzada

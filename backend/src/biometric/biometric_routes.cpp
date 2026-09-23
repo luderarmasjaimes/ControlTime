@@ -23,6 +23,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 
 #include <boost/json.hpp>
@@ -117,6 +121,92 @@ static void logStageResetRealtime(const std::string &sessionId,
             << " reason=" << reason
             << " challenge_attempt=" << challengeAttempt << "/" << challengeMaxAttempts
             << std::endl;
+}
+
+/**
+ * Hallazgo real 2026-09-16 (pedido explícito del usuario): prueba de
+ * esfuerzo de 5 minutos sobre un solo tipo de reto (primero shift_right,
+ * ahora look_down/look_up, ver BEEMETRY_DIAG_FORCE_CHALLENGE en
+ * liveness_challenge.cpp) para diagnosticar en detalle por qué falla --
+ * necesita, por cada frame evaluado: los valores EXACTOS con los que
+ * evaluateLivenessChallenge decide satisfied (headYawRatio/interEyePx/
+ * faceOvalCx/faceOvalCy + baseline + el ratio derivado), Y la imagen real
+ * que le llegó al motor para poder revisarla a ojo. Completamente gateado
+ * por BEEMETRY_DIAG_CHALLENGE_LOG_DIR (vacía = no-op, cero costo en
+ * producción normal). No usa el logger JSON existente a propósito: esto es
+ * para análisis offline (un script Python leyendo el .jsonl + las
+ * imágenes), no para operación en vivo.
+ *
+ * Corrección 2026-09-16 (autodetectada revisando la primera corrida): el
+ * `type` se recibe ahora como parámetro explícito, capturado por el llamador
+ * ANTES de invocar evaluateLivenessChallenge -- antes se derivaba acá adentro
+ * de `ch.queue[ch.index]` DESPUÉS de evaluar, y en el frame exacto en que un
+ * reto se cumple `advanceOrCompleteChallenge` ya adelantó `index` más allá
+ * del tamaño de la cola (cola de 1 elemento), así que el evento "success" se
+ * logueaba con type="none" y ratio=0 -- el dato más importante de toda la
+ * prueba (el frame ganador) quedaba en blanco.
+ */
+static void diagLogChallengeFrame(const std::string &sessionId,
+                                  const std::string &event,
+                                  const std::string &type,
+                                  const biometric::LivenessChallengeState &ch,
+                                  double headYawRatio, double interEyePx,
+                                  double faceOvalCx, double faceOvalCy,
+                                  const cv::Mat &frame,
+                                  std::size_t uploadedBytes) {
+  const char *dirEnv = std::getenv("BEEMETRY_DIAG_CHALLENGE_LOG_DIR");
+  if (!dirEnv || !*dirEnv) return;
+  try {
+    const std::filesystem::path dir(dirEnv);
+    const std::filesystem::path framesDir = dir / "frames";
+    std::filesystem::create_directories(framesDir);
+
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+
+    double ratio = 0.0;
+    if (type == "turn_left" || type == "turn_right") {
+      ratio = headYawRatio;
+    } else if (type == "move_closer" || type == "move_away") {
+      ratio = ch.baselineInterEyePx > 1e-6 ? interEyePx / ch.baselineInterEyePx : 0.0;
+    } else if (type == "look_down" || type == "look_up") {
+      ratio = ch.baselineInterEyePx > 1e-6
+                  ? (faceOvalCy - ch.baselineFaceCenterY) / ch.baselineInterEyePx
+                  : 0.0;
+    }
+
+    const std::string frameFile = std::to_string(nowMs) + "_" + sessionId.substr(0, 8) +
+                                  "_" + event + ".jpg";
+    if (!frame.empty()) {
+      cv::imwrite((framesDir / frameFile).string(), frame);
+    }
+
+    std::ofstream log(dir / "challenge_log.jsonl", std::ios::app);
+    json::object row{
+        {"ts_ms", nowMs},
+        {"session", sessionId},
+        {"event", event},
+        {"type", type},
+        {"attempt", ch.attempt},
+        {"head_yaw_ratio", headYawRatio},
+        {"inter_eye_px", interEyePx},
+        {"face_oval_cx", faceOvalCx},
+        {"face_oval_cy", faceOvalCy},
+        {"baseline_inter_eye_px", ch.baselineInterEyePx},
+        {"baseline_face_center_y", ch.baselineFaceCenterY},
+        {"ratio", ratio},
+        {"complete", ch.complete},
+        {"exhausted", ch.exhausted},
+        {"frame_w", frame.cols},
+        {"frame_h", frame.rows},
+        {"uploaded_bytes", static_cast<long long>(uploadedBytes)},
+        {"frame_file", frame.empty() ? "" : frameFile},
+    };
+    log << json::serialize(row) << "\n";
+  } catch (const std::exception &ex) {
+    std::cerr << "[DIAG_CHALLENGE] log_failed: " << ex.what() << std::endl;
+  }
 }
 
 static http::response<http::string_body>
@@ -238,10 +328,10 @@ handleProcessFrame(const http::request<http::string_body> &req,
 
     // computeEmbedding=false: este endpoint alimenta la vista previa en vivo
     // (checklist ICAO + óvalo) -- nunca lee eval.face.faceTemplate, así que
-    // calcular el embedding InsightFace en cada frame (~0.5-0.7s de red+ONNX
-    // por frame, medido en runtime) era trabajo puro desperdiciado. El
-    // template real se calcula donde de verdad se usa: registro
-    // (handleRegister) y login facial (handleLoginFace), en main.cpp.
+    // calcular la plantilla completa (SeetaFace6/DeepFace, red+inferencia,
+    // ~0.5-0.7s por frame medido en runtime) en cada frame era trabajo puro
+    // desperdiciado. El template real se calcula donde de verdad se usa:
+    // registro (handleRegister) y login facial (handleLoginFace), en main.cpp.
     auto eval = runBiometricVerifyForImageBase64(base64, sessionId, false);
 
     bool eyesOpen = true;
@@ -518,9 +608,50 @@ handleProcessFrame(const http::request<http::string_body> &req,
       // cámara.
       if (icaoReadsLocked) {
         if (activeChallengeRequired) {
+          const bool wasCompleteBeforeEval = st.challenge.complete;
+          // Capturado ANTES de evaluar: si el reto se cumple en este mismo
+          // frame, advanceOrCompleteChallenge adelanta st.challenge.index más
+          // allá del tamaño de la cola (cola de 1), así que leerlo DESPUÉS
+          // daría "none" justo en el frame que más importa (ver comentario
+          // largo en diagLogChallengeFrame).
+          const std::string preEvalType =
+              (!st.challenge.queue.empty() && st.challenge.index >= 0 &&
+               static_cast<std::size_t>(st.challenge.index) < st.challenge.queue.size())
+                  ? st.challenge.queue[static_cast<std::size_t>(st.challenge.index)]
+                  : std::string("none");
           if (!st.challenge.complete) {
             evaluateLivenessChallenge(st.challenge, st.headYawRatio, st.interEyePx,
-                                      st.faceOvalCx, now);
+                                      st.faceOvalCy, now);
+          }
+          const bool justCompleted = !wasCompleteBeforeEval && st.challenge.complete;
+          if (!st.challenge.queue.empty() || justCompleted) {
+            diagLogChallengeFrame(sessionId, justCompleted ? "success" : "frame",
+                                  preEvalType, st.challenge, st.headYawRatio,
+                                  st.interEyePx, st.faceOvalCx, st.faceOvalCy,
+                                  frame, frameRaw.size());
+          }
+          // Hallazgo real 2026-09-16 (pedido explícito del usuario): prueba de
+          // esfuerzo continua -- no se debe cerrar la prueba en el primer
+          // reto exitoso. Gateado por BEEMETRY_DIAG_CHALLENGE_LOOP=1 (no-op
+          // si no está definida): en vez de dejar challenge.complete=true (lo
+          // que dispararía el registro/login real del lado del cliente), se
+          // vuelve entera la captura a la etapa 1 -- mismo reset exacto que
+          // "challenge_exhausted" más abajo -- así la persona simplemente
+          // vuelve a mirar de frente (~1s) y se le arma un reto nuevo del
+          // mismo tipo (forzado por BEEMETRY_DIAG_FORCE_CHALLENGE),
+          // indefinidamente, mientras la ventana de prueba siga activa.
+          if (justCompleted) {
+            const char *loopEnv = std::getenv("BEEMETRY_DIAG_CHALLENGE_LOOP");
+            if (loopEnv && *loopEnv && *loopEnv != '0') {
+              st.captureCount = 0;
+              st.captureInvalidStreak = 0;
+              st.captureGlassesInvalidStreak = 0;
+              capturedImages.clear();
+              st.qualityGateReached = false;
+              st.challenge = LivenessChallengeState{};
+              st.naturalBlink = NaturalBlinkState{};
+              st.lastResetReason = "diag_loop";
+            }
           }
           // Pedido explícito del usuario 2026-09-07: el control de parpadeo
           // CONTINÚA durante TODA la etapa 2, incluso después de completar
@@ -625,14 +756,41 @@ handleProcessFrame(const http::request<http::string_body> &req,
         // del reto (mismos umbrales que usa evaluateLivenessChallenge para
         // considerar el gesto en curso) -- un giro/acercamiento activo no
         // puede por sí solo disparar el reinicio completo de la captura.
+        // Hallazgo real 2026-09-20 (usuario real, 2 sesiones seguidas: "Se
+        // detectaron lentes puestos", colgado en resets pese al fix de pitch
+        // del 2026-09-16): usar los umbrales de CUMPLIMIENTO del reto acá
+        // (0.20 yaw, 0.35 pitch) no alcanzaba -- un caso real mostró una
+        // inclinación incidental (agachar la cabeza al acercarse) que nunca
+        // llegó a cruzar 0.35 pero igual confundió al detector de lentes por
+        // escorzo de cejas/párpados. Umbrales dedicados, más estrictos, para
+        // esta pregunta distinta ("¿sigue de verdad quieto?" en vez de
+        // "¿cumplió el gesto?") -- ver kLivenessPostLockYawStabilityMax/
+        // PitchStabilityMax/DistanceStabilityBand en biometric_types.hpp.
         const bool headNearFrontal =
-            std::abs(st.headYawRatio) < kLivenessHeadYawTurnThreshold;
+            std::abs(st.headYawRatio) < kLivenessPostLockYawStabilityMax;
         const double baselineIED = st.challenge.baselineInterEyePx;
         const bool distanceStable =
             baselineIED <= 1e-6 ||
-            (st.interEyePx / baselineIED >= kLivenessMoveAwayRatio &&
-             st.interEyePx / baselineIED <= kLivenessMoveCloserRatio);
-        if (!noGlasses && headNearFrontal && distanceStable) {
+            std::abs(st.interEyePx / baselineIED - 1.0) <
+                kLivenessPostLockDistanceStabilityBand;
+        const bool pitchNearBaseline =
+            baselineIED <= 1e-6 ||
+            std::abs((st.faceOvalCy - st.challenge.baselineFaceCenterY) / baselineIED) <
+                kLivenessPostLockPitchStabilityMax;
+        // Segundo caso real de la misma tanda: un giro rápido con una
+        // pérdida MOMENTÁNEA de tracking (face_oval_points raw size=0) justo
+        // antes del frame que disparó el reset -- la geometría recién
+        // reobtenida no es confiable todavía para ninguno de los 3 chequeos
+        // de arriba. Frames de gracia tras cualquier pérdida de detección
+        // antes de volver a confiar en la posición reportada.
+        if (!st.detected || !st.hasFaceOval) {
+          st.postLockDropoutGraceFrames = kPostLockDropoutGraceFrames;
+        } else if (st.postLockDropoutGraceFrames > 0) {
+          st.postLockDropoutGraceFrames--;
+        }
+        const bool trackingStable = st.postLockDropoutGraceFrames <= 0;
+        if (!noGlasses && headNearFrontal && distanceStable && pitchNearBaseline &&
+            trackingStable) {
           st.postLockGlassesStreak++;
           if (st.postLockGlassesStreak >= kIcaoGlassesInvalidFramesBeforeReset) {
             const int attemptAtReset = st.challenge.attempt;

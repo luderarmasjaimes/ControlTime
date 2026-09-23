@@ -1,5 +1,7 @@
 # ADR-109 — Catálogo por zonas y analítica multiserie de sensores
 
+> **Actualización 2026-09-23 (ADR-210) — verificación integrada cerrada.** ADR-182 (2026-09-13) generó y verificó export real PDF (378 págs.) y PPTX (378 diapositivas) de los 20 tipos de gráfico contra el stack completo, y SPEC-021 cerró 10/10. Estado vigente: **implemented, verificado**.
+
 > **Actualización 2026-09-02 (auditoría de trazabilidad, ver `README.md`)**:
 > tres hallazgos sobre el pendiente "aceptación integrada" de este ADR — el
 > texto original no se edita, ver abajo.

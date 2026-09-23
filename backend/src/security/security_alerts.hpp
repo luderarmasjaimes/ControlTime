@@ -24,7 +24,7 @@ namespace security {
  * disparó la alerta.
  *
  * @param eventType Tipo de evento corto (ej. "csp_violation",
- *        "cross_site_cookie_blocked", "auth_register_role_downgraded").
+ *        "cross_site_cookie_blocked").
  * @param detail Texto libre con el contexto (IP, usuario, empresa, etc.).
  */
 void sendSecurityAlert(const std::string &eventType, const std::string &detail);

@@ -18,6 +18,7 @@ import {
   isChallengeSequenceComplete,
 } from '../../../../auth/livenessChallenge';
 import { useI18n } from '../../../../i18n/I18nProvider';
+import { getBestEffortLocation, type GeoLocationSample } from '../../../../auth/geolocation';
 
 import { log } from '../../../../lib/logger';
 
@@ -63,6 +64,10 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isVerifyingRef = useRef(false);
   const cameraCancelledRef = useRef(false);
+  // Ubicación best-effort (igual que AuthGateway.tsx): se dispara junto con
+  // la cámara, no en handleAutoVerify, para que el permiso del navegador no
+  // agregue latencia al momento de validar.
+  const pendingLocationRef = useRef<Promise<GeoLocationSample | null> | null>(null);
 
   const [serverOval, setServerOval] = useState<{ cx: number; cy: number; w: number; h: number; angle_deg?: number } | null>(null);
   const { t } = useI18n();
@@ -123,11 +128,15 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
         templateLen: Array.isArray(template) ? template.length : 'not_array'
       });
 
+      const location = pendingLocationRef.current
+        ? await pendingLocationRef.current.catch(() => null)
+        : null;
       const result = await loginWithFace({
         company,
         username: operatorUsername,
         imageBase64: highResBase64,
-        template: template
+        template: template,
+        location
       });
 
       log.info("[MAINTENANCE_BIO_UI] Engine Result Received:", result);
@@ -160,6 +169,7 @@ function MaintenanceBiometricModal({ isOpen, onClose, onSuccess, operatorUsernam
       resetChallengeState();
       bestFrameRef.current.reset();
       await resetBiometricCapture();
+      pendingLocationRef.current = getBestEffortLocation();
 
       if (!videoRef.current) {
         throw new Error('No se pudo inicializar el elemento de video.');

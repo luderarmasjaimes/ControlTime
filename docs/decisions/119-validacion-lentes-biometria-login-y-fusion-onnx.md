@@ -1,6 +1,19 @@
 # ADR-119 — Validación biométrica dejaba pasar con lentes puestos: login sin chequeo ICAO + fusión ONNX solo-veto + carrera de captura
 
-**Status**: implemented, pendiente de verificación en producción con usuarios reales
+> **Actualización 2026-09-12 — verificación con cámara real completada.**
+> Se realizó la prueba manual end-to-end pendiente (registro y login, con y
+> sin lentes) en **2 laptops distintas con cámara web de producción real**,
+> con **2 personas distintas** — cierra el "Pendiente" original de este ADR
+> ("no se pudo probar con cámara real en este entorno"). Esto es
+> **verificación funcional** (el pipeline de captura/ICAO/liveness/login
+> funciona correctamente contra hardware de cámara real, con más de un
+> rostro real) — **no sustituye** la calibración estadística formal
+> (FMR/FNMR sobre una muestra representativa, certificación PAD ISO/IEC
+> 30107-3) que SPEC-008 CA-10 sigue pidiendo: 2 personas no es una muestra
+> estadísticamente representativa para esa métrica. Ver nota equivalente en
+> [ADR-162](162-tracking-facial-local-mediapipe-wasm.md).
+
+**Status**: implemented, verificado funcionalmente con cámara real (2026-09-12); calibración estadística formal (FMR/FNMR) sigue pendiente
 **Fecha**: 2026-08-19
 **Autores**: Luder Armas (reporte) + Claude Sonnet 5 (diagnóstico e implementación)
 **Ámbito**: ia

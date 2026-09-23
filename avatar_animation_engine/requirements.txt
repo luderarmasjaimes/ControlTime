@@ -52,3 +52,13 @@ safetensors
 # reintroduce el conflicto de cuDNN que este servicio evita a propósito.
 mediapipe>=0.10.9,<0.11
 
+# --- TTS local/offline para el guion de bienvenida (ADR-202) ---
+# piper-tts: motor neuronal (VITS) vía onnxruntime -- reemplaza espeak-ng
+# (formant synth, sonido robótico). Wheel manylinux prebuilt (sin toolchain
+# de build), embebe su propio espeak-ng-data para fonemización (ya no hace
+# falta el paquete apt espeak-ng). Licencia GPL-3.0-or-later: invocado SIEMPRE
+# como subproceso vía su entry point `piper` (nunca `import piper` en este
+# código), mismo criterio de aislamiento que ya se aplicaba a espeak-ng -- ver
+# THIRD_PARTY_NOTICES.md.
+piper-tts==1.8.0
+

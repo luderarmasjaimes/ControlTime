@@ -39,6 +39,76 @@ export const FACIAL_STRICT_OVAL_H_PCT = 80
 /** Calidad JPEG para snapshots enviados en login/registro (no el tick ICAO). */
 const FACE_SNAPSHOT_JPEG_QUALITY = 0.88
 
+/**
+ * Zoom digital aplicado a la imagen que se manda a analizar (login/registro),
+ * a pedido explícito del usuario (2026-09-15) tras medir 263 fotos reales
+ * (misma persona, mismo ambiente, solo variando distancia a la cámara) contra
+ * SeetaFace6 en producción:
+ *
+ *   cerca (rostro ~70% del alto del cuadro):   72.9% aprobación, reality 0.832
+ *   normal (~55-60% del alto):                  4.4% aprobación, reality 0.333
+ *   lejos:                                     27.4% aprobación, reality 0.493
+ *
+ * Recortar+agrandar digitalmente las fotos "normal"/"lejos" alrededor del
+ * rostro detectado (mismo bbox, sin volver a fotografiar) para igualar esa
+ * proporción del 70% subió "normal" a 18.7% -- una mejora real (~4x) pero
+ * lejos del 72.9% de estar físicamente cerca, porque el recorte solo agranda
+ * los píxeles que ya había (no repone el detalle de textura de piel que el
+ * sensor sí capta cuando la persona está más cerca de verdad). No sustituye
+ * la guía de acercarse (ver moveCloserHint más abajo en AuthGateway.tsx),
+ * es un complemento para quien no llegue a acercarse del todo.
+ */
+const ZOOM_TARGET_FACE_HEIGHT_RATIO = 0.70
+/** Tope de zoom por si el tracking da un bbox erróneo por un instante --
+ * evita un recorte extremo de una sola vez. */
+const ZOOM_MAX_FACTOR = 2.2
+
+/**
+ * Ventana de recorte (en coordenadas del video fuente) centrada en el rostro
+ * para que, tras escalar a tw:th, el rostro ocupe ZOOM_TARGET_FACE_HEIGHT_RATIO
+ * del alto -- o null si el rostro ya ocupa esa proporción o más (no hace
+ * falta zoom, evita recortar de más a alguien que ya está cerca).
+ *
+ * A diferencia del hallazgo real 2026-09-15 en CropImage._get_new_box
+ * (backend, MiniFASNet): ahí clampear el scale pedido dejaba SIEMPRE el
+ * mismo recorte insuficiente porque solo reduce el zoom sin mover la
+ * ventana. Acá, si el recorte ideal se sale del cuadro, se DESPLAZA (no se
+ * reduce el zoom) para que el rostro quede lo más cerca posible del target
+ * real dentro de los límites del frame.
+ */
+function computeZoomCropRegion(
+    faceBox: FaceBox,
+    vw: number,
+    vh: number,
+    dstAspect: number
+): { sx: number; sy: number; sw: number; sh: number } | null {
+    if (vw < 32 || vh < 32 || faceBox.height < 8 || faceBox.width < 8) {
+        return null
+    }
+    const currentRatio = faceBox.height / vh
+    if (currentRatio >= ZOOM_TARGET_FACE_HEIGHT_RATIO) {
+        return null
+    }
+    let sh = faceBox.height / ZOOM_TARGET_FACE_HEIGHT_RATIO
+    const minSh = vh / ZOOM_MAX_FACTOR
+    if (sh < minSh) sh = minSh
+    if (sh > vh) sh = vh
+    let sw = sh * dstAspect
+    if (sw > vw) {
+        sw = vw
+        sh = sw / dstAspect
+    }
+    const cx = faceBox.x + faceBox.width / 2
+    const cy = faceBox.y + faceBox.height / 2
+    let sx = cx - sw / 2
+    let sy = cy - sh / 2
+    if (sx < 0) sx = 0
+    if (sy < 0) sy = 0
+    if (sx + sw > vw) sx = vw - sw
+    if (sy + sh > vh) sy = vh - sh
+    return { sx: Math.max(0, sx), sy: Math.max(0, sy), sw, sh }
+}
+
 export interface OvalVideoMetrics {
     cx: number;
     cy: number;
@@ -457,10 +527,31 @@ export function frameToTemplate(videoElement: HTMLVideoElement, faceBox: FaceBox
 
 /**
  * JPEG base64 del rostro para login/registro: 640×480 con máscara de óvalo.
+ *
+ * Aplica zoom digital (ver ZOOM_TARGET_FACE_HEIGHT_RATIO arriba) cuando el
+ * rostro trackeado ocupa menos del target del alto del cuadro -- mejora
+ * medida en pruebas reales (+4x en aprobación a distancia "normal"), aunque
+ * no reemplaza estar físicamente cerca. Sin faceBox (tracking no disponible
+ * todavía) cae al frame completo de siempre.
  */
 export function frameToJpegBase64(videoElement: HTMLVideoElement, faceBox: FaceBox | null | undefined, jpegQuality = FACE_SNAPSHOT_JPEG_QUALITY): string {
     const tw = FACIAL_ICAO.CAMERA.width.ideal
     const th = FACIAL_ICAO.CAMERA.height.ideal
+    const vw = videoElement.videoWidth || tw
+    const vh = videoElement.videoHeight || th
+    const zoomRegion = faceBox ? computeZoomCropRegion(faceBox, vw, vh, tw / th) : null
+    if (zoomRegion) {
+        const canvas = document.createElement('canvas')
+        canvas.width = tw
+        canvas.height = th
+        const ctx = canvas.getContext('2d')!
+        ctx.drawImage(
+            videoElement,
+            zoomRegion.sx, zoomRegion.sy, zoomRegion.sw, zoomRegion.sh,
+            0, 0, tw, th
+        )
+        return canvas.toDataURL('image/jpeg', jpegQuality).split(',')[1]
+    }
     return buildFullFrameJpegBase64FromVideo(videoElement, tw, th, jpegQuality)
 }
 

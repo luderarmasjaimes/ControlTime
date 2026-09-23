@@ -88,19 +88,29 @@ function CompanyManagementView() {
     [companies, selectedId],
   );
 
-  useEffect(() => {
-    if (selectedCompany) {
-      setEditForm({
-        ruc: selectedCompany.ruc || '',
-        country: selectedCompany.country_code || 'PE',
-        domicilio_fiscal: selectedCompany.domicilio_fiscal || '',
-        latitude: selectedCompany.latitude ?? null,
-        longitude: selectedCompany.longitude ?? null,
-        location_zoom: selectedCompany.location_zoom ?? null,
-        company_type: selectedCompany.company_type || 'mining_client',
-      });
-    }
-  }, [selectedCompany]);
+  // ADR-190: antes esto era un useEffect(..., [selectedCompany]) -- corría
+  // un ciclo de render+paint DESPUÉS de que CompanyLocationPicker ya se
+  // había montado con key={selectedCompany.company_id}, así que el picker
+  // leía latitude/longitude todavía en su valor viejo (o null) al montar y
+  // nunca los volvía a tomar (solo posiciona el mapa una vez). Resultado:
+  // los campos de Latitud/Longitud quedaban vacíos tras seleccionar una
+  // empresa. Ajustar el estado DURANTE el render (patrón oficial de React
+  // para "resetear estado cuando cambia una prop") corrige editForm en el
+  // mismo pase de render en el que cambia selectedCompany, antes de que se
+  // monte el picker con los valores nuevos.
+  const [syncedCompanyId, setSyncedCompanyId] = useState('');
+  if (selectedCompany && selectedCompany.company_id !== syncedCompanyId) {
+    setSyncedCompanyId(selectedCompany.company_id);
+    setEditForm({
+      ruc: selectedCompany.ruc || '',
+      country: selectedCompany.country_code || 'PE',
+      domicilio_fiscal: selectedCompany.domicilio_fiscal || '',
+      latitude: selectedCompany.latitude ?? null,
+      longitude: selectedCompany.longitude ?? null,
+      location_zoom: selectedCompany.location_zoom ?? null,
+      company_type: selectedCompany.company_type || 'mining_client',
+    });
+  }
 
   const checkRegistry = async (ruc: string, country: string, target: 'create' | 'edit') => {
     const digits = ruc.replace(/\D/g, '');
@@ -432,18 +442,20 @@ function CompanyManagementView() {
                         </select>
                       </div>
                     </div>
-                    {canManage && (
-                      // key=company_id: fuerza remount del mapa (y su centro
-                      // inicial) al cambiar de empresa seleccionada -- el
-                      // picker solo posiciona el mapa una vez al montar.
-                      <CompanyLocationPicker
-                        key={selectedCompany.company_id}
-                        latitude={editForm.latitude}
-                        longitude={editForm.longitude}
-                        zoom={editForm.location_zoom}
-                        onChange={(lat, lng, zoom) => setEditForm({ ...editForm, latitude: lat, longitude: lng, location_zoom: zoom })}
-                      />
-                    )}
+                    {/* key=company_id: fuerza remount del mapa (y su centro
+                        inicial) al cambiar de empresa seleccionada -- el
+                        picker solo posiciona el mapa una vez al montar.
+                        Visible para cualquiera con acceso a esta pantalla
+                        (empresas.view); solo quien tiene empresas.manage
+                        puede buscar/arrastrar/tipear coordenadas (ADR-190). */}
+                    <CompanyLocationPicker
+                      key={selectedCompany.company_id}
+                      latitude={editForm.latitude}
+                      longitude={editForm.longitude}
+                      zoom={editForm.location_zoom}
+                      onChange={(lat, lng, zoom) => setEditForm({ ...editForm, latitude: lat, longitude: lng, location_zoom: zoom })}
+                      readOnly={!canManage}
+                    />
                     {canManage && (
                       <button type="button" disabled={saving} onClick={submitEdit}
                         className="w-full py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[10px] font-black uppercase tracking-widest transition-all shadow-lg flex items-center justify-center gap-2">

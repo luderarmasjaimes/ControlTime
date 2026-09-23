@@ -1,3 +1,28 @@
+> **Actualización 2026-09-14 — esta guía estaba desactualizada, causó
+> confusión real en una migración en curso.** El inventario de servicios de
+> §2 (fechado 2026-08-12) no incluía `avatar_engine`, `silentface_engine` ni
+> `avatar_animation_engine` (agregados entre ADR-141/143/150, 2026-09-02 a
+> 09-11) — al migrar a una laptop nueva usando esta guía como referencia,
+> las imágenes de esos 3 servicios llegaron vía `export-stack.ps1` (que sí
+> los descubre automáticamente desde `docker-compose.yml`, ver comentario en
+> ese script) pero **el archivo `docker-compose.yml` real de la laptop
+> nueva no tenía sus bloques de servicio** — porque `export-stack.ps1`/
+> `import-stack.ps1` (ADR-111) **nunca transfieren el propio
+> `docker-compose.yml`**: ese archivo viaja con el repositorio de git, no
+> con el paquete de export de Docker. Diagnóstico correcto ante este
+> síntoma ("hay imágenes nuevas sin servicio que las use"): la laptop
+> destino tiene una copia vieja/incompleta de `docker-compose.yml`, no un
+> problema de reconstruir configuración desde los ADR. **La fuente
+> autoritativa es siempre el `docker-compose.yml` real del repositorio de
+> origen** (`git pull`/`git clone` actualizado) — nunca reconstruir a mano
+> bloques de GPU (`deploy.resources.reservations.devices`) ni
+> `healthcheck.start_period` a partir de lo que describen los ADR: ambos
+> tienen valores no obvios y específicos (p. ej. `avatar_engine` exige
+> `start_period: 900s` porque el primer arranque descarga ~5GB de pesos
+> antes de responder `/health`; sin ese valor, Docker lo marca `unhealthy`
+> prematuramente). Se agregan las 3 filas faltantes a §2 y sus rutas de
+> host a §3, abajo.
+
 # Guía de migración — nueva instalación completa (cambio de laptop)
 
 Análisis del estado real del repo (`docker-compose.yml`, `.env.example`,
@@ -84,7 +109,10 @@ funciona" y replicarlo tal cual en la laptop nueva (sección 8).
 | `formula_engine` | Motor de fórmulas (editor embebido `/formula`) | build `./formula_engine` | — | sin puerto al host, proxificado por nginx |
 | `web` (`beemetry-api`) | **Backend C++** (API + mining gateway TLS) | build `./backend` | usa `./data`, `./certs`, `./dermalog-sdk`, `./biometric-models`, `./IMAGENES` (bind mounts) | puertos `127.0.0.1:8082` y `8443` público |
 | `tileserver` | Sirve MBTiles | `ghcr.io/consbio/mbtileserver` | bind `./data:/tilesets:ro` | `:8000` |
-| `ai_engine` (`beemetry-ai-vision`) | Biometría facial (SeetaFace6 + DeepFace + InsightFace) | build `./ai_engine/Dockerfile.ai` | vol. `insightface_models` + binds de modelos | build **compila SeetaFace6 desde fuente**; GPU opcional |
+| `ai_engine` (`beemetry-ai-vision`) | Biometría facial (SeetaFace6 + DeepFace; InsightFace retirado, ADR-166/188) | build `./ai_engine/Dockerfile.ai` | vol. `insightface_models` (legado, vacío desde el retiro) + binds de modelos | build **compila SeetaFace6 desde fuente**; GPU opcional |
+| `silentface_engine` (`beemetry-silentface-engine`) *(agregado, ADR-143)* | Anti-spoofing (liveness) — separado de `ai_engine` por conflicto de cuDNN torch/TensorFlow | build `./silentface_engine` | binds `biometric-models/deepface_silentface/{detection,anti_spoof}` | GPU opcional (cae a CPU si no hay), `:5002` interno |
+| `avatar_engine` (`beemetry-avatar-engine`) *(agregado, ADR-141)* | Avatar por difusión local (SD1.5 + ControlNet-Canny) | build `./avatar_engine` | vol. `diffusion_avatar_cache` (~5GB, pesos HF) | **GPU obligatoria por defecto** (`AVATAR_ENGINE_REQUIRE_GPU=1`, no arranca sin CUDA visible); `healthcheck.start_period=900s` (descarga ~5GB en el primer arranque); reserva ~4.7GB VRAM de forma permanente mientras está arriba |
+| `avatar_animation_engine` (`beemetry-avatar-animation-engine`) *(agregado, ADR-150)* | Avatar animado (reenactment/lip-sync, SadTalker) | build `./avatar_animation_engine` | vol. `avatar_animation_cache` + `avatar_animation_model_cache` | **Gateado por perfil Compose** (`profiles: ["avatar-animation"]`) — no arranca con `docker compose up` normal; requiere GPU y **no cabe corriendo junto a `avatar_engine`** (comparten la misma GPU con VRAM limitada) — apagar uno para levantar el otro |
 | `ollama` (`beemetry-llm`) | LLM local (reescritura de texto / chatbot) | `ollama/ollama` | vol. `ollama_data` | descarga `gemma2:2b` + `qwen2.5:7b` al primer arranque (~requiere internet) |
 | `frontend` (`beemetry-web`) | SPA + nginx (proxy inverso) | build `./frontend` | — | `:5173` |
 | `pdf_export` | Chromium headless (export PDF/PPTX/MP4) | build `./pdf-export-service` | comparte `./data` | |
@@ -113,8 +141,9 @@ Dockers":
 | `certs/server.key`, `certs/server.crt` | ~5 KB | Clave privada TLS del mining gateway (`:8443`) | Copiar, o regenerar con `scripts/gen-mining-gateway-cert.sh` si los sensores externos toleran un cert nuevo |
 | `dermalog-sdk/` | **2.3 GB** | SDK comercial licenciado (WIBU), binarios de terceros | Copiar carpeta completa, **o** volver a descargar de support.dermalog.com con la cuenta de licencia — confirmar si la licencia está atada a esta laptop |
 | `biometric-models/seetaface6/` | 302 MB | Pesos de modelo, no versionados | Copiar carpeta |
-| `biometric-models/deepface/`, `biometric-models/deepface_silentface/` | — | **No existen ni en esta laptop** (ver §8) | Generar/descargar antes del primer arranque en la laptop nueva, siguiendo `docs/integration/DEEPFACE_SILENTFACE_LOCAL_DOCKER.md` |
+| `biometric-models/deepface/`, `biometric-models/deepface_silentface/{detection,anti_spoof}` | — | Requerido por `ai_engine` (DeepFace) y por `silentface_engine` (anti-spoofing, ADR-143) — ver §8 | Generar/descargar antes del primer arranque en la laptop nueva, siguiendo `docs/integration/DEEPFACE_SILENTFACE_LOCAL_DOCKER.md` |
 | `ai_engine/models/glasses_classifier.onnx` (+ `_meta.json`) | 8.5 MB | Modelo entrenado localmente, el build de `ai_engine` **falla sin este archivo** | Copiar |
+| *(agregado 2026-09-14)* Volumen `diffusion_avatar_cache` (`avatar_engine`, ~5GB) y `avatar_animation_cache`/`avatar_animation_model_cache` (`avatar_animation_engine`) | ~5GB+ | Son **volúmenes Docker con nombre**, no archivos sueltos del host — `export-stack.ps1` los cubre automáticamente **solo si la versión del script en la laptop origen ya tiene el fix del 2026-09-11** (ver comentario en la cabecera del script) | Si el export es de antes de esa fecha, o si se prefiere no esperar la descarga de ~5GB de nuevo: exportar el volumen a mano con el mismo patrón de `docker run --rm -v <vol>:/from ...` de §5, o simplemente dejar que `avatar_engine` los regenere en el primer arranque (más lento, no requiere copiar nada) |
 | `data/` | 2.4 GB | Datos operativos (tiles, ECW de prueba, auth, demo) | Ver desglose abajo — no todo es necesario |
 | `RP/` | — | Scripts con credenciales de TimeTelemetry/Odoo en texto plano | Copiar solo si se sigue usando esa integración; regenerar credenciales si se puede |
 | `ai_engine_probe_logs/` | — | Logs de depuración | No crítico, se puede omitir |

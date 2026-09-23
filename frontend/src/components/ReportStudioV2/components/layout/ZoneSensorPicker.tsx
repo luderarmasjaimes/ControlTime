@@ -149,7 +149,7 @@ function ZoneSensorPicker({ sensors, selections, onChange }: ZoneSensorPickerPro
         const zoneSelectedCount = zoneRows.filter((r) => selectedIds.has(r.id)).length;
         const zoneAllSelected = zoneSelectedCount === zoneRows.length;
         return (
-          <details key={String(zone.zoneId)} open className="wizard-zone-group">
+          <details key={String(zone.zoneId)} open={zone.devices.length <= 3} className="wizard-zone-group">
             <summary
               style={{
                 display: 'flex',

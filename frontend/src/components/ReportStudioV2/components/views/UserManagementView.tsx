@@ -402,6 +402,10 @@ function UserManagementView() {
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const isVerifyingRef = useRef(false);
     const cameraCancelledRef = useRef(false);
+    // Ubicación best-effort (igual que AuthGateway.tsx): se dispara junto con
+    // la cámara, no en verifyAction, para que el permiso del navegador no
+    // agregue latencia al momento de validar.
+    const pendingLocationRef = useRef<Promise<any> | null>(null);
     const [serverOval, setServerOval] = useState<any>(null);
     const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
     const { challengeUiState, challengesPassedRef, challengeStartedRef, syncChallengeFromServer, resetChallengeState } =
@@ -427,6 +431,8 @@ function UserManagementView() {
       bestFrameRef.current.reset();
             const { resetBiometricCapture } = await import('../../../../auth/authApi');
             await resetBiometricCapture();
+            const { getBestEffortLocation } = await import('../../../../auth/geolocation');
+            pendingLocationRef.current = getBestEffortLocation();
             if (!videoRef.current) {
               throw new Error('No se pudo inicializar el elemento de video.');
             }
@@ -564,7 +570,8 @@ function UserManagementView() {
           ? bestFrame.payload.imageBase64
           : buildFullFrameJpegBase64FromVideo(videoRef.current!, FACIAL_ICAO.CAMERA.width.ideal, FACIAL_ICAO.CAMERA.height.ideal, 0.9);
         const tmp = bestFrame ? bestFrame.payload.template : frameToTemplate(videoRef.current!, null);
-        const res = await loginWithFace({ company, username: operatorUsername, imageBase64: img, template: tmp });
+        const location = pendingLocationRef.current ? await pendingLocationRef.current.catch(() => null) : null;
+        const res = await loginWithFace({ company, username: operatorUsername, imageBase64: img, template: tmp, location });
         if (res.status === 'authenticated' || res.ok || res.success) onSuccess(res);
         else { setBioError(res.message || "Falla biometria"); isVerifyingRef.current = false; }
       } catch (e) { setBioError((e as Error).message); isVerifyingRef.current = false; }

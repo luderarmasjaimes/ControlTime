@@ -14,8 +14,9 @@ struct PdfExportResult {
   std::string userPassword;
 };
 
-/** @brief Exporta un informe a PDF vía el sidecar Chromium headless (ADR-016): construye la URL interna `print-report.html?id=...&token=...`, pide al sidecar que la renderice — con marca de agua (`watermarkText`, ADR-080) — y devuelve los bytes del PDF. Requiere `PDF_EXPORT_URL` configurado; si el sidecar no responde o no está habilitado, `ok=false` con `error` descriptivo. @param encrypt Si es `true` (default, ADR-080) el sidecar cifra el PDF con una contraseña aleatoria (`result.userPassword`). Si es `false` (ADR-138, enlaces de acceso directo) el PDF sale SIN cifrar y `result.userPassword` queda vacío — el caller es responsable de que solo se llegue a este modo con un token de enlace ya validado. */
+/** @brief Exporta un informe a PDF vía el sidecar Chromium headless (ADR-016): construye la URL interna `print-report.html?id=...&token=...`, pide al sidecar que la renderice — con marca de agua (`watermarkText`, ADR-080) — y devuelve los bytes del PDF. Requiere `PDF_EXPORT_URL` configurado; si el sidecar no responde o no está habilitado, `ok=false` con `error` descriptivo. @param encrypt Si es `true` (default, ADR-080) el sidecar cifra el PDF con una contraseña aleatoria (`result.userPassword`). Si es `false` (ADR-138, enlaces de acceso directo) el PDF sale SIN cifrar y `result.userPassword` queda vacío — el caller es responsable de que solo se llegue a este modo con un token de enlace ya validado. @param noWatermark (ADR-204, default `false`) si es `true` manda `"watermark": false` explícito al sidecar en vez del texto de `watermarkText` -- el caller es responsable de haber verificado el permission code `informes.export_sin_marca_agua` ANTES de pasar `true` acá. */
 PdfExportResult exportReportPdf(const std::string &reportId, const std::string &sessionToken,
-                                const std::string &watermarkText, bool encrypt = true);
+                                const std::string &watermarkText, bool encrypt = true,
+                                bool noWatermark = false);
 
 }  // namespace reports

@@ -29,14 +29,21 @@
 | **T15** | `main.cpp`: `registerRoutes`, `startRpOdooSync`, bloque de métricas | — | Sonnet | ✅ |
 | **T16** | Build del backend, corregir errores de compilación | — | Sonnet | ✅ build verificado 2026-08-18 |
 | **T17** | **Test CA-1**: backfill vs scripts de referencia | CA-1 | QA | ✅ 2108 equipos, 0 errores, dato de referencia PZ18-R4.5 verificado campo a campo |
-| **T18** | **Test CA-2..CA-9**: resto de criterios de aceptación | CA-2..9 | QA | ✅ (CA-4/escritura solo con peer falso, no productivo — ver ADR-103) |
+| **T18** | **Test CA-2..CA-9**: resto de criterios de aceptación | CA-2..9 | QA | ✅ (CA-4/integración con Odoo solo probada con peer falso, no productiva — ver ADR-103) |
 | **T19-doc** | `RP_TIMETELEMETRY_API_GUIDE.md` + `rp-test-harness.html` para integradores externos | — | Sonnet | ✅ Verificado en navegador real, cross-origin, contra backend con peer real |
 | **T20** | 2 bugs reales encontrados en vivo contra TimeTelemetry (watermark con TZ, `execute_kw` args sin envolver el dominio) — corregidos | CA-2 | Sonnet | ✅ Ver ADR-103 §Verificación en vivo |
 
 > Nota de cierre 2026-08-18: T17 y la lectura/incremental de T18 sí se
 > ejecutaron con el peer real. La única evidencia productiva pendiente es
-> CA-4 (`create/write` en Odoo), que requiere una ventana autorizada; las
-> credenciales siguen fuera del repositorio.
+> CA-4 (integración con Odoo — `create`/`write`), que requiere una ventana
+> autorizada; las credenciales siguen fuera del repositorio.
+>
+> **Decisión de planificación 2026-09-12**: CA-4 (integración con Odoo,
+> antes referida como "escritura Odoo") se reprograma a la **Etapa 2 del
+> proyecto**, posterior a la implementación de reportabilidad (SPEC-007) —
+> no compite por ventana ni por equipo con el trabajo de R4 en curso. No es
+> un bloqueador de ningún gate de la Etapa 1 (R1-R6, cronograma v36.1); T18
+> se mantiene abierto pero fuera de la prioridad de cierre inmediata.
 
 ---
 
@@ -53,8 +60,9 @@ T12 ─► T13 ─► T14 ──────────────────
 - [x] T1–T15 implementadas.
 - [x] T16 — build limpio.
 - [x] T17 — backfill y referencia real verificados.
-- [ ] T18 — cierre parcial: CA-4 escritura productiva sigue pendiente de
-  autorización; el resto tiene evidencia real o de contrato.
+- [ ] T18 — cierre parcial: CA-4 (integración con Odoo, `create`/`write`
+  productivo) sigue pendiente de autorización, reprogramada a Etapa 2
+  (posterior a SPEC-007); el resto tiene evidencia real o de contrato.
 
 ## Modelo de IA usado (Art. 7)
 | Task | Modelo | Justificación |

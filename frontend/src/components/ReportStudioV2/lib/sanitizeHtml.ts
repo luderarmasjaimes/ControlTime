@@ -23,11 +23,16 @@
  * `javascript:`/`vbscript:`/`data:` (salvo `data:image/` en `src`).
  */
 
-// Etiquetas de formato permitidas (las que genera el editor de celdas).
+// Etiquetas de formato permitidas (las que genera el editor de celdas, más
+// encabezados/cita -- agregados para el pegado enriquecido de texto desde
+// Word/Google Docs en lib/richPaste.ts, que si no las perdía todas aquí
+// antes de poder detectarlas). Ninguna es ejecutable, así que ampliar esta
+// lista no debilita la defensa contra XSS que este archivo existe para dar.
 const ALLOWED_TAGS = new Set([
     'B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'SUB', 'SUP',
     'SPAN', 'DIV', 'P', 'BR', 'FONT', 'A', 'UL', 'OL', 'LI',
     'SMALL', 'MARK', 'CODE',
+    'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE',
 ]);
 
 // Atributos permitidos por etiqueta (además de estos, `style` se filtra

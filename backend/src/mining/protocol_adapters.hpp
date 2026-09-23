@@ -59,6 +59,16 @@ struct AdapterStats {
 void startAdapters(const std::string& db_url);
 void stopAdapters();
 
+// Downlink MQTT (comandos AL dispositivo, no ingesta) -- ver device_command_
+// routes en device_alarm_routes.cpp. Publica `jsonPayload` en `topic` con
+// QoS 1, sin retener. Devuelve false si el adaptador MQTT no está habilitado
+// (BEEMETRY_MQTT_ENABLED) o no hay conexión activa al broker en este
+// momento -- el llamador debe dejar el comando en estado 'failed' en ese
+// caso, nunca asumir entrega. Thread-safe: libmosquitto soporta llamar
+// mosquitto_publish() desde un hilo distinto al de mosquitto_loop_forever()
+// (éste corre en su propio hilo dedicado, ver mqttThread()).
+bool publishMqttCommand(const std::string& topic, const std::string& jsonPayload);
+
 AdapterStats adapterStats();
 
 } // namespace protocols

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -25,6 +26,10 @@
 #endif
 
 namespace mining {
+
+bool isSaneTelemetryValue(double v) {
+    return std::isfinite(v);
+}
 
 #if HAVE_RDKAFKA
 namespace {
@@ -207,19 +212,27 @@ void TelemetryIngestor::loadSensorCache() {
         return;
     }
     const int n = PQntuples(res.get());
-    sensor_cache_.reserve(static_cast<std::size_t>(n) *
-                          config::telemetry::kSensorCacheReserveFactor);
+    // Se arma en un mapa local y se hace swap al final bajo lock exclusivo
+    // -- así el lock se sostiene solo por el swap (barato), no por las ~n
+    // filas de PQgetvalue/emplace, y una llamada concurrente a
+    // resolveSensor() nunca ve un mapa a medio construir.
+    std::unordered_map<std::string, std::pair<std::string, std::string>> fresh;
+    fresh.reserve(static_cast<std::size_t>(n) *
+                  config::telemetry::kSensorCacheReserveFactor);
     for (int i = 0; i < n; ++i) {
-        sensor_cache_.emplace(
+        fresh.emplace(
             PQgetvalue(res.get(), i, 0),
             std::make_pair(std::string(PQgetvalue(res.get(), i, 1)),
                            std::string(PQgetvalue(res.get(), i, 2))));
     }
+    std::unique_lock lock(cache_mtx_);
+    sensor_cache_.swap(fresh);
 }
 
 bool TelemetryIngestor::resolveSensor(const std::string& code,
                                       std::string& sensor_id,
                                       std::string& tenant_id) const {
+    std::shared_lock lock(cache_mtx_);
     auto it = sensor_cache_.find(code);
     if (it == sensor_cache_.end()) return false;
     sensor_id = it->second.first;
@@ -228,6 +241,10 @@ bool TelemetryIngestor::resolveSensor(const std::string& code,
 }
 
 bool TelemetryIngestor::enqueue(TelemetryRow&& row) {
+    if (!isSaneTelemetryValue(row.value_numeric)) {
+        m_rejected_bad_value_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
 #if HAVE_RDKAFKA
     // En modo Kafka el flusher_ (drena queue_ -> COPY) no se arranca — solo
     // corre consumer_thread_ (Kafka -> COPY). Encolar aquí sin producir a
@@ -271,6 +288,10 @@ bool TelemetryIngestor::ingestLine(const std::string& line) {
     try {
         row.value_numeric = std::stod(valStr);
     } catch (...) {
+        return false;
+    }
+    if (!isSaneTelemetryValue(row.value_numeric)) {
+        m_rejected_bad_value_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (p2 != std::string::npos) {
@@ -796,8 +817,18 @@ void TelemetryIngestor::consumerLoop(std::size_t worker_index) {
                     try { r.captured_at_epoch_ms = std::stoll(s.substr(dd + 1)); }
                     catch (...) { r.captured_at_epoch_ms = 0; }
                 }
-                batch.push_back(std::move(r));
-                m_consumed_.fetch_add(1, std::memory_order_relaxed);
+                // Defensa en profundidad: el productor (enqueue()/ingestLine())
+                // ya filtra NaN/Inf antes de producir, pero un mensaje ya
+                // sentado en el tópico ANTES de este cambio, o escrito por un
+                // productor distinto a este binario, todavía puede traer un
+                // valor no finito -- este es el último punto antes de
+                // copyBatch()/persistencia en modo Kafka.
+                if (!isSaneTelemetryValue(r.value_numeric)) {
+                    m_rejected_bad_value_.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    batch.push_back(std::move(r));
+                    m_consumed_.fetch_add(1, std::memory_order_relaxed);
+                }
             } else {
                 m_malformed_.fetch_add(1, std::memory_order_relaxed);
             }
@@ -867,12 +898,16 @@ TelemetryIngestor::Stats TelemetryIngestor::stats() const {
     Stats s;
     s.received = m_received_.load(std::memory_order_relaxed);
     s.inserted = m_inserted_.load(std::memory_order_relaxed);
+    s.rejected_bad_value = m_rejected_bad_value_.load(std::memory_order_relaxed);
     s.dropped_full = m_dropped_full_.load(std::memory_order_relaxed);
     s.dropped_unknown = m_dropped_unknown_.load(std::memory_order_relaxed);
     s.flushes = m_flushes_.load(std::memory_order_relaxed);
     s.flush_errors = m_flush_errors_.load(std::memory_order_relaxed);
     s.batch_max = m_batch_max_.load(std::memory_order_relaxed);
-    s.sensors_cached = sensor_cache_.size();
+    {
+        std::shared_lock lock(cache_mtx_);
+        s.sensors_cached = sensor_cache_.size();
+    }
     s.produced = m_produced_.load(std::memory_order_relaxed);
     s.delivered = m_delivered_.load(std::memory_order_relaxed);
     s.produce_errors = m_produce_errors_.load(std::memory_order_relaxed);

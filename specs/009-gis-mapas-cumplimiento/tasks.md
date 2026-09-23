@@ -5,7 +5,7 @@
 | **Plan** | `specs/009-gis-mapas-cumplimiento/plan.md` |
 | **Sprint·Release** | S5-S6 · R3 |
 | **Responsables** | BE1 (routes/C++), BE3 (DBA/GIS), FE1 (mapa frontend), QA |
-| **Última revisión** | 2026-08-03 (optimización de zoom, escala de marcadores y proxy WMS seguro) |
+| **Última revisión** | 2026-09-12 (T11 cerrado — highlight de zona activa implementado y probado; anterior: 2026-08-03, optimización de zoom, escala de marcadores y proxy WMS seguro) |
 
 ## Backlog de tareas
 
@@ -21,7 +21,7 @@
 | **T8** | `map_routes.cpp` — registro de rutas en router | CA-1..5 | BE1 | Haiku | ☑ |
 | **T9** | Carga de GeoJSON inicial desde `OFFICIAL_ZONES_GEOJSON` env | CA-2,CA-5 | SYS | Haiku | ☑ |
 | **T10** | Frontend: render Leaflet/MapboxGL con markers + zones | CA-1,CA-2 | FE1 | Sonnet/ChatGPT | ☑ |
-| **T11** | Frontend: highlight zona al hacer check-point | CA-3 | FE1 | Sonnet | ☐ |
+| **T11** | Frontend: highlight zona al hacer check-point | CA-3 | FE1 | Sonnet | ☑ *(2026-09-12: implementado y probado — el endpoint real evolucionó de "check-point" a `GET /api/map/compliance-intersections` (`handleComplianceIntersections`, calcula intersecciones de TODOS los marcadores del tenant contra TODAS las zonas, más amplio que el punto único original); `MapViewer.tsx` ya lo consumía para el panel agregado, pero ninguna zona se resaltaba en el mapa mismo — se agregó `officialZoneIdOf`/`activeZoneIds` para que la zona con un marcador real adentro se dibuje con borde 2x más grueso y más del doble de relleno. Test unitario nuevo: `MapViewer.zoneHighlight.test.ts`, 6/6 passed.)* |
 | **T12** | **Test CA-1**: GET markers → lista con lat/lng | CA-1 | QA | — | ☑ |
 | **T13** | **Test CA-2**: GET official-zones → GeoJSON válido | CA-2 | QA | — | ☑ |
 | **T14** | **Test CA-3**: check-point dentro de zona → `inside:true` | CA-3 | QA | — | ☑ |
@@ -48,6 +48,6 @@ T17 (futuro/Etapa 2)
 - [x] T1-T9, T12-T16 completadas.
 - [x] CA-1..5 demostrados.
 - [x] T10 Frontend Leaflet: render de markers + zonas oficiales — verificado 2026-08-30 (`MapViewer.tsx` consume `/api/map/official-zones`, `L.polygon`/`L.marker` reales con clustering, offline cache y WS diffs; `TerritorialCompliancePanel.tsx` consume intersecciones por zona). T18/T19 (ya ☑) son funcionalidad estrictamente más avanzada que dependía de esto.
-- [ ] T11 Frontend: highlight de zona al llamar check-point — **pendiente**, verificado por grep que ningún componente del frontend llama al endpoint `handleCheckPoint`/`check-point` todavía (el backend y su test T14 sí funcionan).
+- [x] T11 Frontend: highlight de zona al llamar check-point — cerrado 2026-09-12 (ver tabla arriba: el endpoint evolucionó a `compliance-intersections`, ya consumido; se agregó el resaltado visual real de la zona en el mapa, con test unitario).
 - [ ] PostGIS migration (T17) — Etapa 2.
 - [x] ADR-009-1..3 registrados.

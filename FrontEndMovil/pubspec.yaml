@@ -1,0 +1,79 @@
+name: frontend_movil
+description: "Beemetry/AURIXA — cliente móvil Android para la plataforma minera. Proyecto independiente (ver docs/decisions/0001)."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Estado
+  flutter_riverpod: ^2.6.1
+
+  # Navegación
+  go_router: ^14.8.1
+
+  # Red / auth
+  dio: ^5.7.0
+  dio_cookie_manager: ^3.1.1
+  cookie_jar: ^4.0.8
+  path_provider: ^2.1.5
+  web_socket_channel: ^3.0.1
+  http: ^1.2.2
+  uuid: ^4.5.1
+
+  # Sesión / almacenamiento
+  flutter_secure_storage: ^9.2.2
+  shared_preferences: ^2.3.3
+
+  # Mapas
+  flutter_map: ^7.0.2
+  flutter_map_marker_cluster: ^1.4.0
+  latlong2: ^0.9.1
+
+  # Gráficos
+  fl_chart: ^0.69.2
+
+  # Video (CCTV / HLS)
+  video_player: ^2.9.2
+
+  # Cámara / biometría
+  camera: ^0.11.0+2
+  google_mlkit_face_detection: ^0.13.0
+  image: ^4.3.0
+  geolocator: ^13.0.2
+  flutter_tts: ^4.2.0
+
+  # Puentes WebView (ADR-0005: informes/fórmulas)
+  webview_flutter: ^4.10.0
+
+  # Diseño
+  google_fonts: ^6.2.1
+  flutter_svg: ^2.0.16
+  intl: ^0.20.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+
+  # Nota (ADR-0006): 4 familias tipográficas vía google_fonts (Inter, Outfit,
+  # Barlow Semi Condensed, Rajdhani) — se cargan en runtime desde el paquete
+  # google_fonts, no se empaquetan como asset local.
+  # Nota (i18n): los diccionarios es/en/fr/pt viven como mapas Dart const en
+  # lib/core/i18n/dictionaries/ (mismo patrón que I18nProvider.tsx del
+  # frontend web: objeto en memoria, no JSON cargado en runtime), con
+  # fallback a español por clave — ver lib/core/i18n/translations.dart.

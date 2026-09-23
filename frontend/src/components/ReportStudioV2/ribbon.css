@@ -10,6 +10,12 @@
   user-select: none;
   transition: all 0.2s ease;
 }
+@media print {
+  .ocultar-al-imprimir {
+    display: none !important;
+  }
+}
+
 .ribbon-toolbar--collapsed .ribbon-body{display:none}
 .ribbon-tab-strip{display:flex;align-items:center;gap:0;padding:0 8px;border-bottom:1px solid rgba(100,116,139,.2);min-height:28px}
 .ribbon-tab {
@@ -141,8 +147,19 @@
 .ribbon-style-chip{padding:3px 8px;border:1px solid rgba(15,23,42,.15);border-radius:4px;background:#f1f5f9;cursor:pointer;transition:all .12s;white-space:nowrap;min-width:0}
 .ribbon-style-chip:hover{border-color:rgba(34,211,238,.5);background:#e2e8f0}
 .ribbon-style-chip--active{border-color:#0891b2;background:#ffffff;box-shadow:0 0 0 2px rgba(8,145,178,.35)}
-.ribbon-current-style{font-size:9px;color:#94a3b8;margin:0;padding-bottom:6px;border-bottom:1px solid rgba(100,116,139,.2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ribbon-current-style{font-size:9px;color:#94a3b8;margin:0;padding-bottom:6px;border-bottom:1px solid rgba(100,116,139,.2);display:flex;align-items:center;justify-content:space-between;gap:6px}
 .ribbon-current-style b{color:#e2e8f0;font-weight:700}
+.ribbon-current-style-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* Botón "guardar estilo actual" -- ícono solo, discreto (no compite con los
+   chips) pero con contraste suficiente para notarse al lado del texto. */
+.ribbon-style-save-btn{flex:none;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.25);border-radius:4px;background:rgba(255,255,255,.06);color:#cbd5e1;cursor:pointer;padding:0}
+.ribbon-style-save-btn:hover{border-color:#22d3ee;color:#22d3ee}
+/* Envoltorio de un chip personalizado -- posiciona el botón "eliminar" (una
+   x pequeña) en la esquina, visible solo al pasar el mouse para no ensuciar
+   la tira de chips en reposo. */
+.ribbon-style-chip-wrap{position:relative;display:inline-flex}
+.ribbon-style-chip-delete{position:absolute;top:-5px;right:-5px;width:13px;height:13px;border-radius:50%;border:1px solid rgba(15,23,42,.3);background:#fee2e2;color:#991b1b;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity .12s;padding:0}
+.ribbon-style-chip-wrap:hover .ribbon-style-chip-delete{opacity:1}
 .ribbon-zoom-chip{padding:2px 8px;font-size:10px;font-weight:700;color:#22d3ee;background:rgba(34,211,238,.08);border-radius:4px;min-width:36px;text-align:center}
 .ribbon-zoom-chip--btn{border:1px solid rgba(34,211,238,.3);cursor:pointer;transition:background .12s}
 .ribbon-zoom-chip--btn:hover{background:rgba(34,211,238,.18)}
@@ -160,11 +177,20 @@
 .ribbon-cover-option{display:flex;flex-direction:column;padding:6px 10px;border-radius:4px;cursor:pointer;width:100%;text-align:left;background:transparent;border:none;color:#e2e8f0;transition:background .1s}
 .ribbon-cover-option:hover{background:rgba(34,211,238,.08)}
 .ribbon-cover-label{font-size:11px;font-weight:600;color:#f1f5f9}
-.ribbon-cover-desc{font-size:9px;color:#64748b}
+.ribbon-cover-desc{font-size:9px;color:white}
 /* Muestra de color de la caja de resaltado en el desplegable "Bloques Técnicos" */
 .ribbon-callout-swatch{display:inline-block;width:22px;height:14px;border-radius:3px;border:2px solid;margin-bottom:3px;flex:0 0 auto}
 /* Desplegable alto (plantillas de sección: 10 opciones) con scroll */
 .ribbon-cover-dropdown--tall{max-height:320px;overflow-y:auto}
+
+/* Galería de diseños de diapositiva (Diseño > Diseño de Diapositiva) --
+   miniatura 16:9 real de cada diseño (ver SlideLayoutPreview en
+   RibbonToolbar.tsx) en vez de solo texto, para elegir por lo que se VE. */
+.slide-layout-dropdown{position:fixed;z-index:99999;background:#1e293b;border:1px solid rgba(100,116,139,.3);border-radius:8px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.5);display:grid;grid-template-columns:repeat(4,1fr);gap:8px;max-height:420px;max-width:400px;overflow-y:auto}
+.slide-layout-swatch{display:flex;flex-direction:column;align-items:center;gap:4px;padding:4px;background:transparent;border:1px solid transparent;border-radius:6px;cursor:pointer;transition:all .12s}
+.slide-layout-swatch:hover{border-color:#22d3ee;background:rgba(34,211,238,.08)}
+.slide-layout-swatch-preview{position:relative;display:block;width:84px;height:47px;border-radius:4px;overflow:hidden;border:1px solid rgba(148,163,184,.25);flex:0 0 auto}
+.slide-layout-swatch-label{font-size:9px;font-weight:600;color:#e2e8f0;text-align:center;line-height:1.2}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TABLE OF CONTENTS
@@ -429,7 +455,7 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    ETAPA 2 — VERSION COMPARATOR
    ═══════════════════════════════════════════════════════════════════════ */
-.vc-panel{background:#0f172a;border:1px solid rgba(34,211,238,.12);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;max-height:600px}
+.vc-panel{position: absolute;z-index: 999;background:#0f172a;border:1px solid rgba(34,211,238,.12);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;height:93%; width: 27%;margin-top: 47px;margin-left: 10px;}
 .vc-header{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(90deg,rgba(34,211,238,.06),transparent);border-bottom:1px solid rgba(34,211,238,.12);color:#67e8f9;font-size:12px;font-weight:700}
 .vc-header-title{flex:1}
 .vc-changes-badge{padding:2px 8px;font-size:9px;font-weight:700;background:rgba(245,158,11,.12);color:#f59e0b;border-radius:10px}

@@ -1,5 +1,44 @@
 # ADR-022 — Modo offline: cola de operaciones versionada + IndexedDB + conflicto explícito
 
+**Actualización 2026-09-13 (cierre de CA-2/CA-3 de SPEC-014, sin cambiar la
+decisión de arquitectura)**: al revisar en detalle qué faltaba para cerrar
+SPEC-014 (ver `specs/014-modo-offline-reconciliacion/tasks.md`), se
+encontraron 2 brechas reales sobre el mecanismo YA implementado y verificado
+en la actualización de abajo (2026-07-13) — ninguna requirió cambiar el
+diseño, solo cerrarlo:
+
+- **CA-2 ("sin pérdida y sin duplicar")**: el texto del criterio describe
+  una cola de operaciones idempotente por `op_id`, que nunca se construyó
+  (ver nota de arquitectura real en `tasks.md`). Análisis del mecanismo
+  real (snapshot versionado + `expected_version`): un reintento de red del
+  MISMO guardado con el mismo `expected_version` solo puede aplicarse una
+  vez — el primero incrementa `version_number` dentro del `SELECT ... FOR
+  UPDATE`, así que cualquier reintento posterior ve una versión ya
+  desactualizada y recibe `409 version_conflict` en vez de duplicar el
+  guardado. Esto satisface la intención real del criterio (ninguna
+  operación se aplica dos veces, ningún guardado confirmado se pierde
+  silenciosamente) por un mecanismo distinto al literal — se documenta
+  como equivalente verificado, no como criterio reescrito.
+- **CA-3 (bug/gap real corregido)**: la resolución de un conflicto offline
+  (sobrescribir la versión del servidor, o guardarla como informe nuevo)
+  generaba la misma fila genérica de `report_content_revision` que
+  cualquier guardado normal (`change_summary = 'autosave'`) — indistinguible
+  en el historial de versiones de un guardado común, sin cerrar la
+  trazabilidad de Art. 6 (auditoría de acciones sensibles). Fix real:
+  `updateReportPg`/`createReportPg` (`report_service.cpp`) aceptan ahora un
+  `conflictResolution` opcional que, cuando viene presente, reemplaza ese
+  literal por `'offline_conflict_overwrite'` o
+  `'offline_conflict_kept_as_new'` — el frontend (`App.tsx`,
+  `handleSaveReport`) lo envía exactamente en las 2 ramas de resolución de
+  conflicto ya existentes, y el historial de versiones (`summaryLabels`)
+  ya lo traduce a un texto legible. Verificado: build real del backend con
+  CTest (100%, 1/1), deploy real (`beemetry-api` healthy), `npx tsc
+  --noEmit` sin errores y suite de frontend 444/444 sin regresión — no se
+  volvió a disparar un conflicto real end-to-end en esta pasada (el
+  mecanismo de conflicto en sí ya está verificado end-to-end desde
+  2026-07-13, ver abajo; este cambio solo le agrega una etiqueta al mismo
+  camino ya probado).
+
 **Actualización 2026-07-13 (cierre parcial vía ADR-045)**: el modo offline
 diferido aquí se implementó, pero con un diseño distinto al que este ADR
 pedía como condición — usa **SQLite compilado a WASM (sql.js)** en vez de

@@ -22,6 +22,7 @@
 using biometric::buildFaceLoginProbe;
 using biometric::verifyFaceDermalogCli;
 using biometric::fetchDeepFaceSilentAnalysisFromAiEngine;
+using biometric::fetchSeetaFaceAnalysisFromAiEngine;
 
 #if HAS_LIBPQ
 
@@ -35,6 +36,8 @@ static constexpr char kMiningTelemetryDemoTenantId[] =
 
 static const char kAuthUserNotFoundMsg[] = "USUARIO NO EXISTE";
 static const char kAuthWrongPasswordMsg[] = "La contraseña no es correcta.";
+static const char kAuthDbUnavailableMsg[] =
+    "El servicio no está disponible en este momento. Intente nuevamente en unos segundos.";
 static const char kAuthAmbiguousIdentityMsg[] =
     "El identificador coincide con más de un registro en esa empresa. Use un "
     "dato único (por ejemplo el DNI) e intente de nuevo.";
@@ -171,9 +174,82 @@ ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS phone VARCHAR(30) DEFAULT '';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS mobile VARCHAR(30) DEFAULT '';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS email VARCHAR(120) DEFAULT '';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS account_status VARCHAR(20) DEFAULT 'active';
+-- Hallazgo real 2026-09-16 (usuario real: varios DNI dados de baja seguían
+-- rechazando registro nuevo con "ese DNI ya está registrado"): "Eliminar
+-- usuario" (executeUserMaintenancePg, action=delete) es y debe seguir siendo
+-- baja LÓGICA (account_status='deleted'), nunca DELETE de la fila -- se
+-- conserva el registro administrativo/de auditoría de que la cuenta existió.
+-- Pero el UNIQUE(dni) de la columna (auth_users_dni_key, ver CREATE TABLE
+-- arriba) no distinguía eso: una fila dada de baja seguía bloqueando ese DNI
+-- para siempre, en cualquier empresa, sin ninguna forma de liberarlo. Se
+-- reemplaza por un índice único PARCIAL que ignora las filas eliminadas --
+-- mismo criterio ya usado en ux_auth_companies_ruc (WHERE ruc <> '') más
+-- arriba. checkDniExistsPg y el chequeo inline de registerUserPg deben
+-- filtrar exactamente igual (account_status <> 'deleted') para que el
+-- pre-chequeo nunca diverja de lo que esta constraint realmente permite.
+ALTER TABLE auth_users DROP CONSTRAINT IF EXISTS auth_users_dni_key;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_users_dni_active ON auth_users (dni)
+    WHERE account_status IS DISTINCT FROM 'deleted';
+-- Hallazgo real 2026-09-21 (mismo patron que el DNI de arriba, esta vez con
+-- username): tras el fix de ux_auth_users_dni_active, un DNI dado de baja se
+-- podia volver a registrar, pero el registro fallaba igual con "Ese usuario
+-- ya existe en esta empresa" -- el UNIQUE(company_name, username) original
+-- (auth_users_company_name_username_key, ver CREATE TABLE arriba) nunca
+-- recibio el mismo tratamiento y seguia bloqueando el username para siempre,
+-- aunque la cuenta ya estuviera 'deleted'. Mismo reemplazo: indice unico
+-- PARCIAL que ignora las filas eliminadas. checkUsernameExistsPg y el
+-- chequeo inline de registerUserPg deben filtrar exactamente igual
+-- (account_status <> 'deleted') para que el pre-chequeo nunca diverja de lo
+-- que esta constraint realmente permite.
+ALTER TABLE auth_users DROP CONSTRAINT IF EXISTS auth_users_company_name_username_key;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_users_company_username_active ON auth_users (company_name, username)
+    WHERE account_status IS DISTINCT FROM 'deleted';
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS suspension_until TIMESTAMPTZ;
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS face_template JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS avatar_cartoon_base64 TEXT;
+-- db_scripts/113: rediseño de avatar (2026-09-20) -- cuerpo/vestimenta ahora
+-- viene de un catálogo fijo de plantillas (ai_engine/avatar_body_templates.py),
+-- no de la foto real. Mismo criterio que avatar_animation_job.kind más abajo:
+-- catálogo chico y curado, CHECK explícito en vez de tabla aparte. Slug vacío
+-- ('') es el estado real de toda cuenta creada antes de este cambio -- se
+-- trata igual que el default al mostrarlo (ver findCurrentAvatarUser /
+-- handleListAvatarBodyTemplates en auth_routes.cpp), pero la columna en sí no
+-- puede tener NOT NULL DEFAULT distinto de '' sin reescribir cada fila existente.
+ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS avatar_body_template_slug TEXT NOT NULL DEFAULT '';
+-- Bug real probado en vivo (2026-09-21): el DROP CONSTRAINT tiene que ir
+-- ANTES de estos UPDATE, no después -- con el orden original, el UPDATE que
+-- escribe el slug NUEVO corría todavía bajo el CHECK VIEJO (que no lo
+-- conoce) y fallaba, abortando toda la migración silenciosamente (pgExecOk
+-- no loguea el error de Postgres). Confirmado reproduciendo el error exacto
+-- contra la base real antes de este fix.
+ALTER TABLE auth_users DROP CONSTRAINT IF EXISTS auth_users_avatar_body_template_slug_check;
+-- Renombre de los 3 slugs deportivos (pedido explícito del usuario,
+-- 2026-09-20, ver db_scripts/113 para el razonamiento completo). Ya sin
+-- efecto práctico desde db_scripts/114 (esos slugs también se eliminaron),
+-- pero se deja para no romper el historial de migraciones de bases viejas
+-- que todavía no habían corrido db_scripts/113.
+UPDATE auth_users SET avatar_body_template_slug = 'camiseta_franjas' WHERE avatar_body_template_slug = 'uniforme_peru';
+UPDATE auth_users SET avatar_body_template_slug = 'camiseta_blanquiazul' WHERE avatar_body_template_slug = 'uniforme_alianza';
+UPDATE auth_users SET avatar_body_template_slug = 'camiseta_crema' WHERE avatar_body_template_slug = 'uniforme_universitario';
+-- db_scripts/114: catálogo reducido a solo fotos reales (pedido explícito
+-- del usuario, 2026-09-21) -- se elimina TODO el catálogo procedural y las
+-- fotos reales previas salvo camiseta_amarilla_brazos_real, y se agregan 8
+-- prendas nuevas. Cuentas que ya tenían un slug de los eliminados vuelven a
+-- '' (equivalente al default, ver comentario de la columna arriba) en vez
+-- de fallar el CHECK -- mismo criterio que el slug vacío de cuentas nunca
+-- migradas.
+UPDATE auth_users SET avatar_body_template_slug = ''
+    WHERE avatar_body_template_slug NOT IN
+        ('', 'camiseta_amarilla_brazos_real', 'camiseta_diagonal_roja_real',
+         'camiseta_amarilla_verde_real', 'camiseta_celeste_rayas_real',
+         'camiseta_crema_marron_real', 'camiseta_marino_rayas_real',
+         'camiseta_celeste_real', 'chaqueta_electronica_real', 'chaleco_geologo_real');
+ALTER TABLE auth_users ADD CONSTRAINT auth_users_avatar_body_template_slug_check
+    CHECK (avatar_body_template_slug IN
+        ('', 'camiseta_amarilla_brazos_real', 'camiseta_diagonal_roja_real',
+         'camiseta_amarilla_verde_real', 'camiseta_celeste_rayas_real',
+         'camiseta_crema_marron_real', 'camiseta_marino_rayas_real',
+         'camiseta_celeste_real', 'chaqueta_electronica_real', 'chaleco_geologo_real'));
 -- db_scripts/81: MFA/TOTP (ver ese archivo para el razonamiento completo).
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
 ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false;
@@ -331,9 +407,15 @@ bool checkDniExistsPg(const std::string &databaseUrl, const std::string &dni,
     return false;
   }
   const char *params[1] = {dni.c_str()};
+  // Hallazgo real 2026-09-16: mismo filtro que el índice único parcial
+  // ux_auth_users_dni_active (ver ensureAuthSchemaPg) -- una cuenta dada de
+  // baja (account_status='deleted') ya no bloquea su DNI. Sin este filtro
+  // acá, el pre-chequeo seguía diciendo "existe" para un DNI que el propio
+  // INSERT sí iba a aceptar, atascando el registro con un falso rechazo.
   storage::PgResult res{PQexecParams(
-      conn, "SELECT 1 FROM auth_users WHERE dni = $1 LIMIT 1", 1, nullptr,
-      params, nullptr, nullptr, 0)};
+      conn,
+      "SELECT 1 FROM auth_users WHERE dni = $1 AND account_status IS DISTINCT FROM 'deleted' LIMIT 1",
+      1, nullptr, params, nullptr, nullptr, 0)};
   if (!res.okTuples()) {
     error = "failed to validate dni";
     return false;
@@ -367,9 +449,14 @@ bool checkUsernameExistsPg(const std::string &databaseUrl,
     return false;
   }
   const char *params[2] = {company.c_str(), username.c_str()};
+  // Hallazgo real 2026-09-21: mismo filtro que el indice unico parcial
+  // ux_auth_users_company_username_active (ver ensureAuthSchemaPg) -- una
+  // cuenta dada de baja (account_status='deleted') ya no bloquea su username
+  // en esa empresa.
   storage::PgResult res{PQexecParams(
       conn,
-      "SELECT 1 FROM auth_users WHERE company_name = $1 AND username = $2 LIMIT 1",
+      "SELECT 1 FROM auth_users WHERE company_name = $1 AND username = $2 "
+      "AND account_status IS DISTINCT FROM 'deleted' LIMIT 1",
       2, nullptr, params, nullptr, nullptr, 0)};
   if (!res.okTuples()) {
     error = "failed to validate username";
@@ -486,9 +573,13 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
   tpl << ']';
 
   const char *dniParam[1] = {user.dni.c_str()};
-  storage::PgResult checkRes{
-      PQexecParams(conn, "SELECT 1 FROM auth_users WHERE dni = $1 LIMIT 1", 1,
-                   nullptr, dniParam, nullptr, nullptr, 0)};
+  // Mismo filtro que ux_auth_users_dni_active/checkDniExistsPg (ver
+  // ensureAuthSchemaPg, hallazgo real 2026-09-16): una cuenta dada de baja
+  // no debe bloquear su DNI para un registro nuevo.
+  storage::PgResult checkRes{PQexecParams(
+      conn,
+      "SELECT 1 FROM auth_users WHERE dni = $1 AND account_status IS DISTINCT FROM 'deleted' LIMIT 1",
+      1, nullptr, dniParam, nullptr, nullptr, 0)};
   if (!checkRes.okTuples()) {
     error = "failed to validate dni";
     return false;
@@ -509,9 +600,13 @@ bool registerUserPg(const std::string &databaseUrl, const AuthUser &user,
   // con el mismo username en la misma empresa.
   const char *companyUserParams[2] = {user.company.c_str(),
                                       user.username.c_str()};
+  // Mismo filtro que ux_auth_users_company_username_active/
+  // checkUsernameExistsPg (hallazgo real 2026-09-21): una cuenta dada de
+  // baja no debe bloquear su username para un registro nuevo.
   storage::PgResult usernameCheckRes{PQexecParams(
       conn,
-      "SELECT 1 FROM auth_users WHERE company_name = $1 AND username = $2 LIMIT 1",
+      "SELECT 1 FROM auth_users WHERE company_name = $1 AND username = $2 "
+      "AND account_status IS DISTINCT FROM 'deleted' LIMIT 1",
       2, nullptr, companyUserParams, nullptr, nullptr, 0)};
   if (!usernameCheckRes.okTuples()) {
     error = "failed to validate username";
@@ -620,7 +715,57 @@ bool updateUserAvatarCartoonPg(const std::string &databaseUrl,
   return ok;
 }
 
-/** Condición SQL: usuario, DNI o RUC literal; si identity es solo dígitos, también DNI = valor bigint (ceros a la izquierda). */
+/** Rediseño de avatar (2026-09-20): "cambiar de vestimenta" recompone la
+ * miniatura contra otra plantilla (ai_engine /recompose_avatar_body, sin
+ * GPU/difusión) y persiste ambas cosas en una sola sentencia -- el slug
+ * elegido y el thumb ya recompuesto, mismo patrón que
+ * updateUserAvatarCartoonPg pero sin contexto de auditoría: es una
+ * preferencia cosmética del propio usuario sobre su propio avatar, no una
+ * acción administrativa sobre otra cuenta. */
+bool updateUserAvatarBodyTemplatePg(const std::string &databaseUrl,
+                                    const std::string &userId,
+                                    const std::string &slug,
+                                    const std::string &avatarBase64,
+                                    std::string &error) {
+  auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
+  PGconn *conn = __pg_lease.get();
+  if (PQstatus(conn) != CONNECTION_OK) {
+    error = PQerrorMessage(conn);
+    return false;
+  }
+  if (!ensureAuthSchemaPg(conn)) {
+    error = "failed to ensure auth schema";
+    return false;
+  }
+  const char *params[3] = {slug.c_str(), avatarBase64.c_str(), userId.c_str()};
+  storage::PgResult res{PQexecParams(
+      conn,
+      "UPDATE auth_users SET avatar_body_template_slug=$1, avatar_cartoon_base64=$2 "
+      "WHERE id=$3",
+      3, nullptr, params, nullptr, nullptr, 0)};
+  const bool ok = res.okCommand();
+  if (!ok) {
+    error = PQerrorMessage(conn);
+  }
+  return ok;
+}
+
+/**
+ * Condición SQL: usuario, DNI o RUC literal; si identity es solo dígitos,
+ * también DNI = valor bigint (ceros a la izquierda). Excluye cuentas dadas
+ * de baja (account_status='deleted').
+ *
+ * Hallazgo real 2026-09-21: un DNI (o username) liberado por
+ * ux_auth_users_dni_active/ux_auth_users_company_username_active (ver
+ * ensureAuthSchemaPg) puede volver a registrarse mientras la fila vieja
+ * ('deleted') sigue viva para preservar auditoria -- entonces un login
+ * (password o facial) por ese identificador encontraba DOS filas (la vieja
+ * eliminada + la nueva activa) y fallaba con "coincide con más de un
+ * registro", reproducido en vivo justo después de reutilizar un DNI/username
+ * recién liberado. Una cuenta eliminada no debe competir por identidad en
+ * ningún login -- se comporta como si no existiera, igual que ya hacen las
+ * dos constraints de unicidad de arriba.
+ */
 std::string pgSqlAuthIdentityMatch(const std::string &identityKey,
                                    int paramIndex) {
   const std::string p = "$" + std::to_string(paramIndex);
@@ -631,7 +776,7 @@ std::string pgSqlAuthIdentityMatch(const std::string &identityKey,
         "btrim(dni)::bigint = " +
         p + "::bigint)";
   }
-  clause += ")";
+  clause += ") AND account_status IS DISTINCT FROM 'deleted'";
   return clause;
 }
 
@@ -805,7 +950,8 @@ std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
   storage::PgResult res{PQexecParams(
       conn,
       "SELECT id, company_name, first_name, last_name, dni, username, role, "
-      "avatar_cartoon_base64, account_status, email, mobile, phone, id_photo_base64 "
+      "avatar_cartoon_base64, account_status, email, mobile, phone, id_photo_base64, "
+      "avatar_body_template_slug "
       "FROM auth_users WHERE id = $1::uuid LIMIT 1",
       1, nullptr, params, nullptr, nullptr, 0)};
   if (!res.okTuples() || PQntuples(res.get()) != 1) return std::nullopt;
@@ -826,6 +972,7 @@ std::optional<AuthUser> findUserByIdPg(const std::string &databaseUrl,
   if (!PQgetisnull(res.get(), 0, 10)) u.mobile = PQgetvalue(res.get(), 0, 10);
   if (!PQgetisnull(res.get(), 0, 11)) u.phone = PQgetvalue(res.get(), 0, 11);
   if (!PQgetisnull(res.get(), 0, 12)) u.idPhotoBase64 = PQgetvalue(res.get(), 0, 12);
+  if (!PQgetisnull(res.get(), 0, 13)) u.avatarBodyTemplateSlug = PQgetvalue(res.get(), 0, 13);
   return u;
 }
 
@@ -842,9 +989,21 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
                                         const std::string &sourceIp) {
   auto __pg_lease = storage::PgPool::instance().acquire(databaseUrl);
   PGconn *conn = __pg_lease.get();
-  if (PQstatus(conn) != CONNECTION_OK) {
-    error = PQerrorMessage(conn);
+  // Falla de infraestructura (BD/pgbouncer inalcanzable o query rota): el
+  // detalle de libpq (host, IP interna, puerto) va solo al log; al cliente un
+  // mensaje genérico + code "db_unavailable" para que el handler responda 503
+  // y NO lo cuente como intento fallido (si no, un reinicio del stack de ~1
+  // min bloqueaba 5 min las cuentas de quien reintentara con clave correcta).
+  auto dbUnavailable = [&](const std::string &detail) {
+    std::cerr << "[AUTH_PASSWORD] BD no disponible en login: " << detail << std::endl;
+    error = kAuthDbUnavailableMsg;
+    if (errorCodeOut != nullptr) {
+      *errorCodeOut = "db_unavailable";
+    }
     return std::nullopt;
+  };
+  if (PQstatus(conn) != CONNECTION_OK) {
+    return dbUnavailable(PQerrorMessage(conn));
   }
   (void)ensureAuthSchemaPg(conn);
 
@@ -858,11 +1017,8 @@ std::optional<AuthUser> loginPasswordPg(const std::string &databaseUrl,
   storage::PgResult res{
       PQexecParams(conn, sql.c_str(), 2, nullptr, params, nullptr, nullptr, 0)};
   if (!res.okTuples()) {
-    error = res ? PQresultErrorMessage(res.get()) : PQerrorMessage(conn);
-    if (error.empty()) {
-      error = "query failed";
-    }
-    return std::nullopt;
+    std::string detail = res ? PQresultErrorMessage(res.get()) : PQerrorMessage(conn);
+    return dbUnavailable(detail.empty() ? "query failed" : detail);
   }
 
   const int rowCount = PQntuples(res.get());
@@ -982,7 +1138,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
                     const std::vector<double> &clientProbeTemplate,
                     const std::optional<std::vector<unsigned char>> &rawImageBytes,
                     const std::optional<std::string> &base64ForLegacy,
-                    double legacyThreshold, double embeddingThreshold,
+                    double legacyThreshold,
                     std::string &error, std::string *probeProviderOut,
                     const std::string &auditDetailSuffix,
                     std::optional<double> latitude,
@@ -1112,20 +1268,50 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
   // de su tamaño ni de lo que mande el cliente.
   double bestScore = 0.0;
   std::string probeProvider;
-  if (u.faceTemplateProvider == "insightface_onnx") {
-    double useThreshold = legacyThreshold;
-    std::vector<double> probe;
-    if (!buildFaceLoginProbe(clientProbeTemplate, rawImageBytes, base64ForLegacy,
-                               tpl, probe, probeProvider, useThreshold,
-                               legacyThreshold, embeddingThreshold, error)) {
+  if (u.faceTemplateProvider == "seetaface6_local") {
+    // Hallazgo real 2026-09-15: esta rama NO EXISTÍA -- toda cuenta
+    // registrada con SeetaFace6 caía siempre al "else" de abajo
+    // (rejected_weak_provider, "método que ya no se considera seguro"),
+    // aunque el registro sí hubiera pasado por liveness real y guardado un
+    // template válido. Confirmado en vivo: cuenta recién registrada con
+    // SeetaFace6 (analyze_face_legacy_end + db_insert_ok, ver logs
+    // AUTH_REGISTER) rechazada de inmediato en su primer login facial. El
+    // comentario que vivía en la rama de deepface_silentface ("ausencia de
+    // rama para seetaface6_local que este proveedor reemplaza") describía
+    // esta ausencia como aceptada porque deepface_silentface iba a ser el
+    // default -- pero mientras BEEMETRY_BIOMETRIC_PROVIDER=seetaface6 esté
+    // activo (ver .env), el login debe saber comparar lo que el registro sí
+    // sabe producir. Mismo contrato que deepface_silentface: exige imagen
+    // real de cámara (nunca un template mandado por el cliente) porque el
+    // anti-spoofing de SeetaFace6 debe reevaluarse en cada login, no solo en
+    // el registro.
+    if (!rawImageBytes.has_value() || rawImageBytes->empty()) {
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
-                           "probe_build_failed", std::nullopt, std::nullopt, std::nullopt, sourceIp);
+                           "seetaface6_requires_image", std::nullopt, std::nullopt, std::nullopt, sourceIp);
+      error = "Esta cuenta requiere una imagen de cámara real para la "
+              "verificación facial.";
       return std::nullopt;
     }
-    bestScore = cosineSimilarity(probe, tpl);
+    probeProvider = "seetaface6_local";
+    auto probeFace = fetchSeetaFaceAnalysisFromAiEngine(*rawImageBytes, "verify");
+    if (!probeFace.ok || probeFace.faceTemplate.size() != tpl.size()) {
+      std::cout << "[AUTH_FACE] seetaface6_verify_failed company=" << company
+                << " user=" << u.username
+                << " issue=" << (probeFace.issues.empty() ? "unknown" : probeFace.issues.front())
+                << std::endl;
+      appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
+                           "seetaface6_verify_failed: " +
+                               (probeFace.issues.empty() ? "unknown" : probeFace.issues.front()),
+                           std::nullopt, std::nullopt, std::nullopt, sourceIp);
+      error = "No se pudo validar el rostro. Intente de nuevo con mejor "
+              "iluminación y encuadre.";
+      return std::nullopt;
+    }
+    bestScore = cosineSimilarity(probeFace.faceTemplate, tpl);
+    const double useThreshold = config::AppConfig::instance().gFaceSeetaCosineThreshold;
     if (bestScore < useThreshold) {
       std::cout << "[AUTH_FACE] no_match_pg company=" << company
-                << " user=" << u.username << " provider=insightface_onnx"
+                << " user=" << u.username << " provider=seetaface6_local"
                 << " score=" << bestScore << " threshold=" << useThreshold
                 << std::endl;
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
@@ -1140,8 +1326,7 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
     // Silent-Face-Anti-Spoofing). Igual que dermalog_cli, exige imagen real
     // de cámara -- nunca un face_template mandado por el cliente, porque el
     // liveness (MiniFASNet) debe reevaluarse en cada login, no solo en el
-    // registro. Ver hallazgo de seguridad 2026-08-10 (arriba) y la ausencia
-    // de rama para seetaface6_local que este proveedor reemplaza.
+    // registro.
     if (!rawImageBytes.has_value() || rawImageBytes->empty()) {
       appendAuthAuditLogPg(conn, "login_face", company, u.username, false,
                            "deepface_silentface_requires_image", std::nullopt, std::nullopt, std::nullopt, sourceIp);
@@ -1208,8 +1393,8 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
       return std::nullopt;
     }
     // Escala Dermalog: 0-100 (ver manual del SDK, umbral recomendado 75
-    // para FMR 1/1000) -- gFaceEmbeddingCosineThreshold/gFaceLegacyCosineThreshold
-    // son escalas 0-1 de otros motores, no aplican aquí.
+    // para FMR 1/1000) -- gFaceSeetaCosineThreshold/gFaceDeepfaceCosineThreshold/
+    // gFaceLegacyCosineThreshold son escalas 0-1 de otros motores, no aplican aquí.
     constexpr double kDermalogThreshold = 75.0;
     if (bestScore < kDermalogThreshold) {
       std::cout << "[AUTH_FACE] no_match_pg company=" << company
@@ -1224,11 +1409,12 @@ loginFaceTargetedPg(const std::string &databaseUrl, const std::string &company,
       return std::nullopt;
     }
   } else {
-    // legacy / unknown_client_supplied / none / cualquier valor no
-    // reconocido: se rechaza explícitamente en vez de caer a una
-    // comparación que no discrimina identidad de verdad. La cuenta debe
-    // reinscribir su biometría con un motor fuerte (InsightFace o
-    // Dermalog) -- login por contraseña sigue disponible mientras tanto.
+    // legacy / insightface_onnx (retirado, ADR-166/188) / unknown_client_supplied /
+    // none / cualquier valor no reconocido: se rechaza explícitamente en vez
+    // de caer a una comparación que no discrimina identidad de verdad. La
+    // cuenta debe reinscribir su biometría con un motor fuerte (SeetaFace6,
+    // DeepFace/Silent-Face o Dermalog) -- login por contraseña sigue
+    // disponible mientras tanto.
     std::cout << "[AUTH_FACE] rejected_weak_provider company=" << company
               << " user=" << u.username
               << " provider=" << u.faceTemplateProvider << std::endl;
@@ -1672,6 +1858,20 @@ std::optional<AuthUser> findValidRefreshTokenUserPg(const std::string &databaseU
   // sigue renovando la identidad fantasma en vez de autenticar la cuenta
   // nueva. `is_active` (no solo existencia) para que además una baja lógica
   // corte el refresh de inmediato, no solo un DELETE físico.
+  //
+  // `is_active` vs `account_status` (ADR-191, db_scripts/101): este JOIN
+  // exige `is_active` mientras que loginPasswordPg (arriba en este mismo
+  // archivo) exige `account_status`. Hasta 2026-09-16 eran dos columnas
+  // independientes que ningún código mantenía sincronizadas -- una cuenta
+  // podía pasar el login (account_status='active') y morir en el primer
+  // refresh (is_active=false), un logout silencioso sin error visible. Desde
+  // esa migración, `is_active` es una columna GENERATED derivada de
+  // `account_status`: ya no puede desincronizarse (Postgres rechaza
+  // cualquier UPDATE directo a `is_active`), así que este WHERE sigue
+  // exactamente igual pero ahora es correcto por construcción. Si se agrega
+  // un tercer punto de validación de sesión, debe leer `account_status`
+  // (fuente de verdad) o `is_active` (su espejo booleano), nunca inventar
+  // una tercera columna propia.
   const char *params[1] = {tokenHash.c_str()};
   storage::PgResult res{PQexecParams(
       conn,

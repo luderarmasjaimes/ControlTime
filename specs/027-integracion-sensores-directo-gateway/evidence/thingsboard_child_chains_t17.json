@@ -1,0 +1,73 @@
+{
+  "_meta": {
+    "source": "https://board.beemetry.com, extraído 2026-09-16 vía fetch() autenticado (sesión de Steven Vera), solo lectura",
+    "hallazgo_principal": "ADR-189 estimó '7 cadenas hijas no analizadas'. El número real, verificado contra los nodos TbRuleChainInputNode de PiezometerRC-V2, es 8 — listadas abajo con nombre, id, propósito real y recomendación."
+  },
+  "cadenas_hijas": [
+    {
+      "nombre_en_pzv2": "Filtro Freq Alta - Baja",
+      "cadena": "Filtro Frecuencias",
+      "id": "b3a5ba20-804b-11ef-a25d-6fe6eb094222",
+      "nodos": 7,
+      "proposito": "Valida que la frecuencia recibida esté dentro de un rango sano (nodos 'Frecuencias Bajas'/'Frecuencias Altas'), etiqueta el mensaje con un status y lo guarda como timeseries. Es un gate de calidad de dato, no una fórmula de calibración ni una alarma de negocio.",
+      "recomendacion": "Portar como validación de rango en el backend nuevo (antes de aceptar el canal en /api/mining/telemetry/multi) — bajo riesgo, alto valor, no depende de decisión de negocio."
+    },
+    {
+      "nombre_en_pzv2": "Filtro Temp Alta - Baja",
+      "cadena": "Filtro Temperatura",
+      "id": "c77a0130-8052-11ef-a25d-6fe6eb094222",
+      "nodos": 7,
+      "proposito": "Mismo patrón que Filtro Frecuencias, para temperatura.",
+      "recomendacion": "Mismo tratamiento que Filtro Frecuencias."
+    },
+    {
+      "nombre_en_pzv2": "Filtro NAN",
+      "cadena": "Filtro NAN",
+      "id": "c645e300-80cb-11ef-a25d-6fe6eb094222",
+      "nodos": 5,
+      "proposito": "Detecta NaN en Freq/Temp, agrupa el dispositivo en un grupo de 'NaN' para seguimiento, guarda el estado. Gate de calidad de dato.",
+      "recomendacion": "Portar como validación de entrada (rechazar o marcar canal con NaN) — mismo criterio que las dos anteriores."
+    },
+    {
+      "nombre_en_pzv2": "Go to Asentamiento Acumulado",
+      "cadena": "Asentamiento Acumulado",
+      "id": "76b75870-d1bf-11ee-aabb-3781c6b67d4d",
+      "nodos": 17,
+      "proposito": "Cálculo de asentamiento acumulado ESPECÍFICO DE CLIENTE (nodo 'Antapaccay[SettlementCells]' — Minera Antapaccay). Compara contra umbrales de piezómetro ('Umbral Pz') y celda de asentamiento ('Umbral CS'), y ENVÍA ALERTAS vía llamada REST externa (2 nodos 'Api Alerta' + 2 'Enviar alerta (test)').",
+      "recomendacion": "NO portar sin decisión de negocio explícita — es lógica de alarma real, específica de un cliente real (Antapaccay), que llama a un servicio externo de alertas (posiblemente el mismo canal SMS/WhatsApp/email que documenta ADR-137). Requiere saber a qué servicio llama 'Api Alerta' antes de replicarlo — no analizado en esta sesión, fuera de alcance de lectura de nodos."
+    },
+    {
+      "nombre_en_pzv2": "Go to Anexos",
+      "cadena": "Anexos",
+      "id": "c7468eb0-0e4f-11ef-a3e4-0bf9c33f35ce",
+      "nodos": 13,
+      "proposito": "Genera y guarda timeseries 'anexas' (derivadas) según empresa ('What company is?') y tipo de dispositivo ('Is Settlement Cell?'). No es una alarma — es cómputo de métricas adicionales por cliente.",
+      "recomendacion": "Bajo prioridad — no es alarma ni fórmula de calibración de seguridad; es un enriquecimiento de datos específico de cliente. Diferir hasta tener un caso de negocio concreto que lo pida."
+    },
+    {
+      "nombre_en_pzv2": "Go To [CJ] Piezometer Alarms",
+      "cadena": "[CJ] Piezometer Alarms",
+      "id": "dbe96780-df27-11ef-9709-4f1efc44b045",
+      "nodos": 5,
+      "proposito": "Alarma de piezómetro específica del sitio 'CJ' — filtrada por 'Is Cuajone device?' (Cuajone, Southern Peru Copper Corporation). Envía alertas vía REST API externa.",
+      "recomendacion": "Candidato directo a portar a platform_alarm_rules vía formula_output_channel_code (ADR-189 ya lo previó) — pero requiere: (1) identificar el canal de notificación real detrás de 'Send alerts' REST call, (2) decisión de negocio sobre si Cuajone es cliente activo hoy."
+    },
+    {
+      "nombre_en_pzv2": "Go to [HU] Piezometer Alarms",
+      "cadena": "[HU] Piezometer Alarms",
+      "id": "23183140-e5a4-11ef-9709-4f1efc44b045",
+      "nodos": 10,
+      "proposito": "Alarma de piezómetro específica del sitio 'HU' — filtrada por 'Is Huaron device?' (Compañía Minera Huarón). Más compleja que [CJ]: mantiene estado de 'last_alarma' (evita reenviar la misma alarma repetidamente) — mecanismo de deduplicación propio, distinto al índice único parcial que ya usa platform_alarms en la plataforma nueva.",
+      "recomendacion": "Mismo tratamiento que [CJ], nota adicional: la plataforma nueva YA tiene deduplicación (idx_alarms_one_open_per_rule) — no hace falta portar el mecanismo de 'last_alarma', solo el umbral/criterio de negocio."
+    },
+    {
+      "nombre_en_pzv2": "Brocal",
+      "cadena": "AlarmasBrocal",
+      "id": "e3596a00-a949-11f0-9e02-d3e5baadbcb5",
+      "nodos": 23,
+      "proposito": "La más compleja de las 8 — combina alarmas de PIEZÓMETRO y ACELERÓGRAFO en una sola cadena para El Brocal (Sociedad Minera El Brocal, cliente real confirmado en ADR-190). Calcula promedios ('Promedio'), maneja fechas/horas de envío, y tiene 2 llamadas REST de alerta separadas por tipo de sensor.",
+      "recomendacion": "La de mayor esfuerzo de portar — cubre 2 familias de sensor (piezómetro + acelerógrafo) con lógica de agregación (promedio) que no existe hoy en platform_alarm_rules (reglas planas, sin ventana de agregación). Requeriría una decisión de negocio explícita y probablemente una extensión de esquema (no cubierta por SPEC-027 tal como está definida)."
+    }
+  ],
+  "conclusion_t17": "Ninguna de las 8 es genéricamente reusable sin decisión de negocio. 3 son gates de calidad de dato (Filtro Frecuencias/Temperatura/NAN) — bajo riesgo, portables ya. 2 son cómputo/enriquecimiento no crítico (Asentamiento Acumulado, Anexos) — diferir. 3 son alarmas específicas de cliente real ([CJ]=Cuajone, [HU]=Huarón, Brocal=El Brocal) que llaman a un servicio REST externo de notificación no identificado en esta sesión — requieren decisión de Gerencia antes de portar, tal como T18 ya preveía."
+}

@@ -35,3 +35,17 @@ if (typeof HTMLCanvasElement !== 'undefined') {
     return contextStub(this);
   };
 }
+
+// jsdom tampoco implementa ResizeObserver (usado por SensorMultiChartWidget
+// para medir su contenedor antes de montar ECharts, y por el panel de mapa
+// geo — SPEC-021 T8, encontrado al probar el montaje de los 20 tipos de
+// gráfico). Un stub que nunca dispara `callback` es correcto para estos
+// tests: no se verifica reflow real, solo que el componente monta sin
+// lanzar por la ausencia del constructor.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}

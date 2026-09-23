@@ -131,11 +131,172 @@ const catalogHasCompositePreset = (compositeKey: string | null): boolean => {
     return Boolean(region?.sources?.some((s: any) => s.id === sourceId));
 };
 
+/** Severidades que vienen de una alarma activa (`platform_alarms`, ver
+ * status compuesto en map_routes.cpp) en vez de connection_status crudo. */
+const ALARM_SEVERITIES = new Set(['critical', 'warning', 'info']);
+const isAlarmStatus = (status: string): boolean => ALARM_SEVERITIES.has(status);
+
+/** Color por estado -- prioridad: severidad de alarma activa > offline >
+ * tipo de marcador (equipo/personal) > sensor online > desconocido. */
 const markerColor = (marker: any): string => {
-    if (String(marker.status || '').toLowerCase() === 'warning') return '#f59e0b';
+    const status = String(marker.status || '').toLowerCase();
+    if (status === 'critical') return '#ef4444';
+    if (status === 'warning') return '#f59e0b';
+    if (status === 'info') return '#38bdf8';
+    if (status === 'offline') return '#64748b';
     if (marker.type === 'equipment') return '#0ea5e9';
     if (marker.type === 'personnel') return '#10b981';
+    if (marker.type === 'sensor' && status === 'online') return '#10b981';
     return '#a855f7';
+};
+
+/** Glifo corto por tipo de instrumento (sensors.sensor_type, texto libre en
+ * BD) para diferenciar piezómetros/vibrómetros/etc. en el mapa, igual que
+ * en el panel legado de referencia (VW-xxx, PZ-xx, Vibrometro_xxx...). Sin
+ * catálogo cerrado de tipos hoy (ver investigación: no existe
+ * sensor_type_catalog) -- se matchea por patrón sobre sensor_type + name. */
+const SENSOR_GLYPHS: Array<[RegExp, string]> = [
+    [/piez[oó]metro|^pz[- ]|^vw[- ]/i, 'PZ'],
+    [/inclin[oó]metro/i, 'IN'],
+    [/vibr[oó]metro|aceler[oó]grafo|acelerometro/i, 'VB'],
+    [/asentamiento|settlement/i, 'AS'],
+    [/prisma/i, 'PR'],
+    [/pozo|^mw[- ]/i, 'MW'],
+];
+const sensorGlyph = (marker: any): string => {
+    const haystack = `${marker.sensor_type || ''} ${marker.name || ''}`;
+    for (const [re, glyph] of SENSOR_GLYPHS) {
+        if (re.test(haystack)) return glyph;
+    }
+    return marker.type === 'sensor' ? 'S' : '';
+};
+
+/** Por encima de esta cantidad de marcadores visibles (antes de clustering)
+ * o por debajo de este zoom, se mantiene el punto plano en canvas
+ * (circleMarker) -- ícono+etiqueta por DOM (divIcon) solo cuando el volumen
+ * ya está acotado, para no repetir a escala el problema de rendimiento del
+ * panel legado (cada pin ahí es un nodo DOM, ver ADR-026). */
+const LABELED_ICON_MAX_MARKERS = 200;
+const LABELED_ICON_MIN_ZOOM = 15;
+
+/**
+ * Popup interactivo de sensor: al hacer clic se pide el histórico reciente
+ * (`/api/mining/telemetry/wizard/query`, mismo endpoint que ya usa
+ * `SensorManagementView.tsx` para el detalle de un dispositivo -- ver
+ * investigación previa, no se inventó una ruta nueva) y se pinta último
+ * valor + mini-gráfica. No hay push de VALOR de telemetría en esta
+ * plataforma hoy (el WS del mapa solo empuja posición/estado, no el valor
+ * numérico) -- "tiempo real" acá es polling acotado SOLO mientras el popup
+ * de ESE sensor está abierto, no un fetch de fondo para los miles de
+ * sensores no visibles/no clickeados.
+ */
+const TELEMETRY_WIZARD_URL = '/api/mining/telemetry/wizard/query';
+const SENSOR_POPUP_POLL_MS = 12000;
+const SENSOR_POPUP_WINDOW_MS = 6 * 60 * 60 * 1000; // 6h de contexto reciente
+// Fallback si las 6h recientes no traen nada: un sensor con ingesta activa
+// nunca debería necesitar esto, pero se confirmó en vivo (tenant Alpayana,
+// 2026-09-17) que hay sensores con miles de lecturas históricas reales cuya
+// última fila es de días atrás (ingesta no corriendo para ese tenant/demo)
+// -- sin este fallback el popup dice "sin datos" aunque el sensor sí tenga
+// historial real, que es peor que mostrar la última lectura conocida con
+// su antigüedad real (formatRelativeTime ya la deja clara: "hace 2 d").
+const SENSOR_POPUP_FALLBACK_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30d
+
+interface SensorSeriesPoint { t: string; v: number | null; }
+
+const fetchSensorSeries = async (
+    sensorId: string,
+    signal: AbortSignal,
+    windowMs: number = SENSOR_POPUP_WINDOW_MS,
+): Promise<{ meta: any; points: SensorSeriesPoint[] }> => {
+    const to = new Date();
+    const from = new Date(to.getTime() - windowMs);
+    const params = new URLSearchParams({
+        sensor_ids: sensorId,
+        from: from.toISOString(),
+        to: to.toISOString(),
+        agg: 'raw',
+    });
+    const res = await fetch(`${TELEMETRY_WIZARD_URL}?${params.toString()}`, {
+        headers: authHeaders(),
+        signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const meta = Array.isArray(data?.sensors)
+        ? data.sensors.find((s: any) => String(s.id) === String(sensorId)) || null
+        : null;
+    const points: SensorSeriesPoint[] = Array.isArray(data?.series)
+        ? data.series
+            .filter((p: any) => String(p.sensor_id) === String(sensorId))
+            .map((p: any) => ({ t: p.t, v: typeof p.v === 'number' ? p.v : null }))
+            .sort((a: SensorSeriesPoint, b: SensorSeriesPoint) => new Date(a.t).getTime() - new Date(b.t).getTime())
+        : [];
+    return { meta, points };
+};
+
+/** Sparkline SVG a mano, sin librería -- mismo espíritu que MiniSparkSVG de
+ * TelemetryDashboard.tsx, reescrito acá porque ese componente es React y
+ * este popup es HTML crudo de Leaflet. */
+const buildSparklineSvg = (points: SensorSeriesPoint[], width = 168, height = 40): string => {
+    const values = points.map((p) => p.v).filter((v): v is number => Number.isFinite(v as number));
+    if (values.length < 2) {
+        return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
+            `<text x="4" y="${height / 2}" font-size="10" fill="#94a3b8">sin datos recientes</text></svg>`;
+    }
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const span = max - min || 1;
+    const stepX = width / (values.length - 1);
+    const coords = values.map((v, i) => {
+        const x = i * stepX;
+        const y = height - ((v - min) / span) * (height - 6) - 3;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const lastX = (values.length - 1) * stepX;
+    const lastY = height - ((values[values.length - 1] - min) / span) * (height - 6) - 3;
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
+        `<polyline points="${coords}" fill="none" stroke="#38bdf8" stroke-width="1.5" />` +
+        `<circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="2.5" fill="#38bdf8" /></svg>`;
+};
+
+const formatRelativeTime = (iso: string | null | undefined): string => {
+    if (!iso) return 'sin datos';
+    const ms = Date.now() - new Date(iso).getTime();
+    if (!Number.isFinite(ms)) return 'sin datos';
+    if (ms < 60000) return 'hace instantes';
+    if (ms < 3600000) return `hace ${Math.round(ms / 60000)} min`;
+    if (ms < 86400000) return `hace ${Math.round(ms / 3600000)} h`;
+    return `hace ${Math.round(ms / 86400000)} d`;
+};
+
+interface SensorPopupState {
+    loading: boolean;
+    error: string | null;
+    meta: any;
+    points: SensorSeriesPoint[];
+}
+
+const renderSensorPopupHtml = (m: any, state: SensorPopupState): string => {
+    const points = state.points;
+    const last = points[points.length - 1];
+    const unit = state.meta?.unit || m.unit || '';
+    const valueLabel = last && Number.isFinite(last.v as number)
+        ? `${(last.v as number).toFixed(2)}${unit ? ` ${unit}` : ''}`
+        : '—';
+    const statusLine = state.loading
+        ? 'Cargando…'
+        : state.error
+            ? `Sin datos: ${state.error}`
+            : `Última lectura: ${formatRelativeTime(last?.t)}`;
+    return `<div style="padding:4px 2px;min-width:180px">
+        <div style="font-weight:700;font-size:12px">${m.name || 'Sensor'}</div>
+        <div style="font-size:11px;color:#475569;text-transform:capitalize">${m.sensor_type || m.type || 'sensor'} · ${m.status || 'n/a'}</div>
+        <div style="margin-top:6px;font-size:20px;font-weight:700;color:#0f172a">${state.loading ? '…' : valueLabel}</div>
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px">${statusLine}</div>
+        ${buildSparklineSvg(points)}
+        <div style="font-size:10px;color:#64748b;margin-top:4px">${Number(m.lat).toFixed(4)}, ${Number(m.lng).toFixed(4)}</div>
+    </div>`;
 };
 
 const getMarkerTimestamp = (marker: any): number | null => {
@@ -144,14 +305,33 @@ const getMarkerTimestamp = (marker: any): number | null => {
     return Number.isFinite(ms) ? ms : null;
 };
 
-const officialGeoStyle = (feature: any) => {
+/** ID de zona oficial replicando el fallback real del backend
+ * (`map_geo_intersect.cpp::parseOfficialGeoJson`: `properties.id`, si no
+ * `properties.zone_id`) — usado para cruzar cada feature del GeoJSON de
+ * `/api/map/official-zones` contra los ids de `polygons[]` que devuelve
+ * `/api/map/compliance-intersections`, y así saber qué zona resaltar. */
+export const officialZoneIdOf = (feature: any): string | null => {
+    const props = feature?.properties || {};
+    if (props.id != null) return String(props.id);
+    if (props.zone_id != null) return String(props.zone_id);
+    return null;
+};
+
+/** SPEC-009 T11 (check-point → highlight de zona): a diferencia del panel
+ * agregado de `TerritorialCompliancePanel` (cuenta total de marcadores en
+ * zona), esto resalta en el MAPA la zona concreta que contiene al menos un
+ * marcador real ahora mismo — borde el doble de grueso y más del doble de
+ * relleno, para que salte a la vista sin tener que leer el panel de texto. */
+export const officialGeoStyle = (feature: any, activeZoneIds?: Set<string>) => {
     const sev = String(feature?.properties?.severity || 'medium').toLowerCase();
     const color = sev === 'high' ? '#f87171' : sev === 'low' ? '#4ade80' : '#fbbf24';
+    const zoneId = officialZoneIdOf(feature);
+    const isActive = Boolean(zoneId && activeZoneIds?.has(zoneId));
     return {
         color,
-        weight: 2,
+        weight: isActive ? 4 : 2,
         fillColor: color,
-        fillOpacity: 0.2,
+        fillOpacity: isActive ? 0.45 : 0.2,
         dashArray: sev === 'high' ? '6 4' : undefined,
     };
 };
@@ -210,9 +390,19 @@ const MapViewer = ({
     const markerFetchAbortRef = useRef<AbortController | null>(null);
     const acceptedBoundsRef = useRef<MapBoundsLike | null>(null);
     const viewportDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Ver discoverAndFitRealMarkers -- se intenta una sola vez por montaje.
+    const autoDiscoverDoneRef = useRef(false);
     const renderedMarkerLayersRef = useRef(new Map<string, { signature: string; layer: any }>());
     const renderedWarningLayersRef = useRef(new Map<string, { signature: string; layer: any }>());
     const renderedTargetLayersRef = useRef(new Map<string, { signature: string; layer: any }>());
+    // Popup interactivo de sensor: qué sensor tiene el popup abierto ahora
+    // (para reabrirlo si `syncLeafletLayers` recrea su marcador por un
+    // cambio de estado/severidad mientras el usuario lo está mirando) y el
+    // temporizador de polling por sensor mientras su popup sigue abierto.
+    const openSensorPopupIdRef = useRef<string | null>(null);
+    const sensorPopupTimersRef = useRef(
+        new Map<string, { timer: ReturnType<typeof setInterval>; abort: { current: AbortController } }>(),
+    );
     const [baseMap, setBaseMap] = useState('satellite');
     const [allMarkers, setAllMarkers] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
@@ -264,6 +454,65 @@ const MapViewer = ({
         }
     }, [connectivity.state, showExternalWms]);
 
+    const stopSensorPopup = useCallback((sensorId: string) => {
+        const entry = sensorPopupTimersRef.current.get(sensorId);
+        if (!entry) return;
+        clearInterval(entry.timer);
+        entry.abort.current.abort();
+        sensorPopupTimersRef.current.delete(sensorId);
+    }, []);
+
+    /** Arranca (o reinicia) el polling de UN sensor mientras su popup está
+     * abierto -- no hay push de valor de telemetría en esta plataforma (ver
+     * comentario de renderSensorPopupHtml), así que "tiempo real" acá es un
+     * fetch acotado cada SENSOR_POPUP_POLL_MS, solo para el sensor que el
+     * usuario tiene abierto ahora mismo, nunca para los miles no visibles. */
+    const startSensorPopupPolling = useCallback((layer: any, m: any) => {
+        const sensorId = String(m.id);
+        stopSensorPopup(sensorId);
+        const abortHolder = { current: new AbortController() };
+        const run = async () => {
+            abortHolder.current.abort();
+            abortHolder.current = new AbortController();
+            try {
+                let { meta, points } = await fetchSensorSeries(sensorId, abortHolder.current.signal);
+                if (points.length === 0) {
+                    // Ver SENSOR_POPUP_FALLBACK_WINDOW_MS -- las 6h recientes
+                    // no trajeron nada; antes de rendirse, revisa si el
+                    // sensor tiene algo más atrás (ingesta detenida para
+                    // este tenant/demo, no necesariamente sensor sin datos).
+                    const fallback = await fetchSensorSeries(sensorId, abortHolder.current.signal, SENSOR_POPUP_FALLBACK_WINDOW_MS);
+                    meta = fallback.meta || meta;
+                    points = fallback.points;
+                }
+                if (layer.isPopupOpen?.()) {
+                    layer.setPopupContent(renderSensorPopupHtml(m, { loading: false, error: null, meta, points }));
+                }
+            } catch (err: any) {
+                if (err?.name === 'AbortError') return;
+                if (layer.isPopupOpen?.()) {
+                    layer.setPopupContent(
+                        renderSensorPopupHtml(m, { loading: false, error: err?.message || 'fetch_failed', meta: null, points: [] }),
+                    );
+                }
+            }
+        };
+        layer.setPopupContent(renderSensorPopupHtml(m, { loading: true, error: null, meta: null, points: [] }));
+        run();
+        const timer = setInterval(run, SENSOR_POPUP_POLL_MS);
+        sensorPopupTimersRef.current.set(sensorId, { timer, abort: abortHolder });
+    }, [stopSensorPopup]);
+
+    // Corta todo timer de popup vivo al desmontar -- de otra forma un fetch
+    // en vuelo o un setInterval quedaría llamando a un layer ya destruido.
+    useEffect(() => () => {
+        sensorPopupTimersRef.current.forEach((entry) => {
+            clearInterval(entry.timer);
+            entry.abort.current.abort();
+        });
+        sensorPopupTimersRef.current.clear();
+    }, []);
+
     const refreshGeoCompliance = useCallback(async () => {
         if (typeof process !== 'undefined' && (process as any).env?.VITEST) return;
         setGeoComplianceLoading(true);
@@ -284,6 +533,20 @@ const MapViewer = ({
         }
     }, []);
 
+    // SPEC-009 T11: ids de zona con al menos un marcador real adentro ahora
+    // mismo, aplanando `intersections[].polygons[].id` de la respuesta de
+    // `/api/map/compliance-intersections` (ver refreshGeoCompliance arriba).
+    const activeZoneIds = useMemo(() => {
+        const ids = new Set<string>();
+        const intersections: any[] = Array.isArray(geoCompliance?.intersections) ? geoCompliance.intersections : [];
+        for (const it of intersections) {
+            for (const poly of Array.isArray(it?.polygons) ? it.polygons : []) {
+                if (poly?.id != null) ids.add(String(poly.id));
+            }
+        }
+        return ids;
+    }, [geoCompliance]);
+
     const rebuildOfficialGeoLayer = useCallback(async () => {
         const map = mapRef.current;
         if (!map) return;
@@ -297,13 +560,16 @@ const MapViewer = ({
             const res = await fetch(new URL('/api/map/official-zones', window.location.origin).toString());
             const data = await res.json();
             if (!mapRef.current) return;
-            const gj = L.geoJSON(data, { pane: 'ops-official', style: officialGeoStyle } as any);
+            const gj = L.geoJSON(data, {
+                pane: 'ops-official',
+                style: (feature: any) => officialGeoStyle(feature, activeZoneIds),
+            } as any);
             gj.addTo(mapRef.current);
             officialGeoLayerRef.current = gj;
         } catch (err) {
             log.error('official-zones', err);
         }
-    }, [showOfficialGeo]);
+    }, [showOfficialGeo, activeZoneIds]);
 
     useEffect(() => {
         if (mapRef.current) return;
@@ -554,6 +820,51 @@ const MapViewer = ({
         }
     }, [showExternalWms, wmsUrl, wmsLayerName, wmsOpacity, selectedWmsPreset]);
 
+    /**
+     * Descubre marcadores reales del tenant fuera de la vista actual y
+     * re-encuadra el mapa hacia ellos -- protección contra el caso real
+     * encontrado en vivo (2026-09-17, tenant Alpayana): `auth_companies.
+     * latitude/longitude` (ADR-121, centra el mapa al abrir) puede no
+     * coincidir con dónde están realmente los `sensors.lat/lng` (ver
+     * `db_scripts/39_map_geolocation_tenant_scoping.sql`, columnas
+     * agregadas por separado y sin FK entre ambas). Sin esto, un tenant así
+     * ve "0 activos" para siempre -- el fetch siempre pide el viewport
+     * actual (bbox), que nunca contiene los sensores reales, y "Enfocar"
+     * tampoco ayuda porque encuadra sobre lo ya cargado (nada).
+     *
+     * Deliberadamente NO se adivina ni se sobreescribe ninguna coordenada
+     * (mismo principio de ADR-121/190/39: nunca GPS inferido) -- solo se
+     * pide el universo del tenant SIN bbox (el propio backend ya devuelve
+     * el rango completo si se omiten bbox_lat/bbox_lng, ver
+     * `parseBboxParam` en map_routes.cpp) y, si aparece algo, se hace
+     * `fitBounds` a lo que sí existe. Se intenta una sola vez por montaje.
+     */
+    const discoverAndFitRealMarkers = useCallback(async () => {
+        if (typeof process !== 'undefined' && (process as any).env?.VITEST) return;
+        try {
+            const apiUrl = new URL('/api/map/markers', window.location.origin);
+            apiUrl.searchParams.set('limit', '2000');
+            const res = await fetch(apiUrl.toString(), { headers: authHeaders() });
+            if (!res.ok) return;
+            const data = await res.json();
+            const markers = isCompactPayload(data)
+                ? decodeCompactMarkers(data)
+                : Array.isArray(data?.markers) ? data.markers : [];
+            const points = markers
+                .map((m: any) => [Number(m.lat), Number(m.lng)] as [number, number])
+                .filter((p: [number, number]) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+            if (points.length && mapRef.current) {
+                log.debug(
+                    `MapViewer: ${points.length} marcador(es) real(es) fuera de la vista inicial ` +
+                    `(ubicación de empresa/ADR-121 no coincide con sensors.lat/lng) -- reencuadrando`,
+                );
+                mapRef.current.fitBounds(points, { padding: [60, 60], maxZoom: 16 });
+            }
+        } catch (err) {
+            log.error('MapViewer: fallo el descubrimiento de marcadores fuera de vista', err);
+        }
+    }, []);
+
     const fetchMarkers = useCallback(async () => {
         if (typeof process !== 'undefined' && (process as any).env?.VITEST) return;
 
@@ -613,6 +924,16 @@ const MapViewer = ({
             // la conectividad por completo (best-effort, no bloquea el
             // render si IndexedDB falla por cualquier motivo).
             void saveMarkerSnapshot(markers);
+            // Ver discoverAndFitRealMarkers: la vista actual (centrada en la
+            // ubicación de empresa de ADR-121) no trajo NADA -- puede ser que
+            // el tenant simplemente no tenga sensores, o puede ser el
+            // desajuste de datos real encontrado en Alpayana. Se investiga
+            // una sola vez por montaje, nunca en refetches posteriores (para
+            // no pelear con un paneo manual del usuario a una zona vacía).
+            if (markers.length === 0 && !autoDiscoverDoneRef.current) {
+                autoDiscoverDoneRef.current = true;
+                void discoverAndFitRealMarkers();
+            }
         } catch (err) {
             if ((err as any)?.name === 'AbortError') return;
             log.error('Error loading map markers', err);
@@ -623,7 +944,7 @@ const MapViewer = ({
                 setLoading(false);
             }
         }
-    }, [connectivity.state]);
+    }, [connectivity.state, discoverAndFitRealMarkers]);
 
     useEffect(() => {
         fetchMarkers();
@@ -697,7 +1018,7 @@ const MapViewer = ({
                 const ts = getMarkerTimestamp(m);
                 if (ts != null && now - ts > limitMs) return false;
             }
-            if (showWarningsOnly && s !== 'warning') return false;
+            if (showWarningsOnly && !isAlarmStatus(s)) return false;
             if (t === 'equipment' && !showEquipment) return false;
             if (t === 'personnel' && !showPersonnel) return false;
             if (t !== 'equipment' && t !== 'personnel' && !showSensors) return false;
@@ -718,6 +1039,30 @@ const MapViewer = ({
         const desiredWarnings = new Map<string, DesiredLayer>();
         const desiredTargets = new Map<string, DesiredLayer>();
 
+        // Sensores: popup interactivo con último valor + mini-gráfica,
+        // refrescado mientras esté abierto (ver startSensorPopupPolling).
+        // El resto de tipos de marcador (equipo/personal/genéricos) no
+        // tienen telemetría que mostrar -- se quedan con el popup estático
+        // de siempre.
+        const bindInteractivePopup = (layer: any, m: any, staticPopupHtml: string) => {
+            if (m.type !== 'sensor') {
+                layer.bindPopup(staticPopupHtml);
+                return layer;
+            }
+            const sensorId = String(m.id);
+            layer.bindPopup(renderSensorPopupHtml(m, { loading: true, error: null, meta: null, points: [] }));
+            layer.on('popupopen', () => {
+                openSensorPopupIdRef.current = sensorId;
+                startSensorPopupPolling(layer, m);
+            });
+            layer.on('popupclose', () => {
+                if (openSensorPopupIdRef.current === sensorId) openSensorPopupIdRef.current = null;
+                stopSensorPopup(sensorId);
+            });
+            layer.on('remove', () => stopSensorPopup(sensorId));
+            return layer;
+        };
+
         // Normaliza a ClusterableMarker (lat/lng numéricos ya validados) y
         // agrupa por grilla dependiente del zoom actual -- a 10k sensores
         // esto reduce drásticamente cuántos elementos gráficos hay que
@@ -735,20 +1080,21 @@ const MapViewer = ({
             const markerStatus = String(m.status || '').toLowerCase();
             if (markerType === 'equipment') equipmentPoints.push([lat, lng]);
             if (markerType === 'sensor') sensorPoints.push([lat, lng]);
-            if (markerStatus === 'warning') warningPoints.push([lat, lng]);
+            if (isAlarmStatus(markerStatus)) warningPoints.push([lat, lng]);
 
-            if (markerStatus === 'warning') {
+            if (isAlarmStatus(markerStatus)) {
+                const haloColor = markerColor(m);
                 const key = `warning:${markerIdentity(m)}`;
                 desiredWarnings.set(key, {
-                    signature: `${lat}:${lng}`,
+                    signature: `${lat}:${lng}:${haloColor}`,
                     create: () => L.circle([lat, lng], {
-                        radius: 90, color: '#f59e0b', weight: 2,
-                        fillColor: '#f59e0b', fillOpacity: 0.12, pane: 'ops-warning',
+                        radius: 90, color: haloColor, weight: 2,
+                        fillColor: haloColor, fillOpacity: 0.12, pane: 'ops-warning',
                     } as any),
                 });
             }
 
-            if (showTargets && (m.type === 'sensor' || String(m.status || '').toLowerCase() === 'warning')) {
+            if (showTargets && (m.type === 'sensor' || isAlarmStatus(markerStatus))) {
                 const key = `target:${markerIdentity(m)}`;
                 desiredTargets.set(key, {
                     signature: `${lat}:${lng}`,
@@ -792,24 +1138,78 @@ const MapViewer = ({
             const lng = item.lng;
             const color = markerColor(m);
             const key = `marker:${markerIdentity(m)}`;
-            desiredMarkers.set(key, {
-                signature: `${lat}:${lng}:${color}:${m.name || ''}:${m.type || ''}:${m.status || ''}`,
-                create: () => L.circleMarker([lat, lng], {
-                    radius: 7, pane: 'ops-markers', color: '#fff', weight: 2,
-                    fillColor: color, fillOpacity: 0.95,
-                } as any).bindPopup(
-                    `<div style="padding:4px 2px">
-                        <div style="font-weight:700;font-size:12px">${m.name || 'Marcador'}</div>
-                        <div style="font-size:11px;color:#475569;text-transform:capitalize">${m.type || 'sensor'} · ${m.status || 'n/a'}</div>
-                        <div style="font-size:10px;color:#64748b;margin-top:2px">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
-                    </div>`
-                ),
-            });
+            const popupHtml =
+                `<div style="padding:4px 2px">
+                    <div style="font-weight:700;font-size:12px">${m.name || 'Marcador'}</div>
+                    <div style="font-size:11px;color:#475569;text-transform:capitalize">${m.type || 'sensor'} · ${m.status || 'n/a'}</div>
+                    <div style="font-size:10px;color:#64748b;margin-top:2px">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
+                </div>`;
+
+            // Con pocos marcadores visibles y zoom suficiente (nivel "sitio",
+            // no región/país), se usa un pin con glifo+etiqueta permanente
+            // (como el panel legado de referencia: "VW-404", "Vibrometro_...")
+            // -- en ese régimen el conteo ya está acotado por el clustering
+            // en grilla, así que el costo DOM es aceptable. Fuera de ese
+            // régimen se mantiene el punto plano en canvas (circleMarker),
+            // que es lo que permite escalar a 10k sensores sin degradar.
+            const useLabeledIcon =
+                m.type === 'sensor' &&
+                mapZoom >= LABELED_ICON_MIN_ZOOM &&
+                normalizedMarkers.length <= LABELED_ICON_MAX_MARKERS;
+
+            if (useLabeledIcon) {
+                const glyph = sensorGlyph(m);
+                desiredMarkers.set(key, {
+                    signature: `icon:${lat}:${lng}:${color}:${glyph}:${m.name || ''}`,
+                    create: () => bindInteractivePopup(
+                        L.marker([lat, lng], {
+                            pane: 'ops-markers',
+                            icon: L.divIcon({
+                                className: 'map-sensor-pin',
+                                html: `<div style="width:24px;height:24px;border-radius:50% 50% 50% 0;background:${color};border:2px solid #fff;transform:rotate(-45deg);box-shadow:0 1px 3px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;">
+                                        <span style="transform:rotate(45deg);color:#fff;font-size:8px;font-weight:700;line-height:1;">${glyph}</span>
+                                    </div>`,
+                                iconSize: [24, 24],
+                                iconAnchor: [12, 24],
+                            }),
+                        } as any).bindTooltip(m.name || 'Sensor', {
+                            permanent: true, direction: 'top', offset: [0, -22], className: 'map-sensor-label',
+                        }),
+                        m,
+                        popupHtml,
+                    ),
+                });
+            } else {
+                desiredMarkers.set(key, {
+                    signature: `${lat}:${lng}:${color}:${m.name || ''}:${m.type || ''}:${m.status || ''}`,
+                    create: () => bindInteractivePopup(
+                        L.circleMarker([lat, lng], {
+                            radius: 7, pane: 'ops-markers', color: '#fff', weight: 2,
+                            fillColor: color, fillOpacity: 0.95,
+                        } as any),
+                        m,
+                        popupHtml,
+                    ),
+                });
+            }
         });
 
         syncLeafletLayers(markerLayerRef.current, renderedMarkerLayersRef.current, desiredMarkers);
         syncLeafletLayers(warningLayerRef.current, renderedWarningLayersRef.current, desiredWarnings);
         syncLeafletLayers(targetLayerRef.current, renderedTargetLayersRef.current, desiredTargets);
+
+        // Si el sensor que el usuario tiene abierto ahora mismo fue
+        // recreado por el diff de arriba (p.ej. cambió de severidad y por
+        // tanto de color/signature), reabrir su popup en el layer nuevo --
+        // sin esto, el popup se cierra solo bajo la mano del usuario cada
+        // vez que el estado del sensor cambia, que es precisamente el caso
+        // que más le interesa seguir viendo en vivo.
+        if (openSensorPopupIdRef.current) {
+            const entry = renderedMarkerLayersRef.current.get(`marker:${openSensorPopupIdRef.current}`);
+            if (entry && !entry.layer.isPopupOpen?.()) {
+                entry.layer.openPopup();
+            }
+        }
 
         // Rutas de acarreo: une equipos visibles para visualizar flujo operacional.
         if (showHaulRoutes && equipmentPoints.length >= 2) {
@@ -845,7 +1245,7 @@ const MapViewer = ({
                     .addTo(drillingLayerRef.current);
             });
         }
-    }, [visibleMarkers, showTargets, showHaulRoutes, showDrillZones, mapZoom]);
+    }, [visibleMarkers, showTargets, showHaulRoutes, showDrillZones, mapZoom, startSensorPopupPolling, stopSensorPopup]);
 
     useEffect(() => {
         if (!mapRef.current || !geofenceLayerRef.current) return;

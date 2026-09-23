@@ -1,270 +1,74 @@
-# Plataforma de procesamiento satelital en tiempo real (ECW -> MBTiles)
+# Beemetry — Plataforma Minera IoT (antes AURIXA)
 
-Solución base para baja latencia con:
+Software minero empresarial: telemetría en tiempo real, alarmas, mapas/GIS,
+biometría de acceso, generación de informes (ReportStudio) y motor de
+fórmulas por sensor, para operaciones mineras en Perú/LATAM. Backend propio
+en C++ (reemplaza a ThingsBoard, ver ADR-034), frontend React/TypeScript,
+Postgres/TimescaleDB, y una decena de sidecars especializados (biometría,
+avatares, exportación de documentos, motor de fórmulas legado, etc.).
 
-- Backend C++ (`Boost.Asio` + `Boost.Beast` + `OpenCV`) para orquestar conversiones.
-- Pipeline de conversión `ECW -> MBTiles` con `GDAL` y parámetros configurables.
-- Servidor de tiles dedicado (`mbtileserver`) consumido por frontend web.
-- Frontend cartográfico con `Leaflet` y monitoreo de jobs en tiempo real (polling).
-- Despliegue Linux usando `Docker Compose`.
+> Este repositorio también contuvo, en una etapa temprana y ya descartada, un
+> prototipo distinto (conversión satelital ECW→MBTiles). Ese código sigue en
+> `ecw-plugin/`/`scripts/*ecw*` por si algún día se retoma, pero **no forma
+> parte del stack actual** (no está referenciado en `docker-compose.yml`) — no
+> lo uses como punto de partida para entender el proyecto.
 
-## Arquitectura
+## Empieza por acá
 
-1. Cliente carga archivo ECW en carpeta compartida `./data/incoming`.
-2. Backend recibe parámetros de conversión por API.
-3. Backend ejecuta `gdal_translate` + `gdaladdo` y genera MBTiles en `./data/tiles`.
-4. `mbtileserver` publica los MBTiles.
-5. Frontend consume tiles y superpone capas.
+| Documento | Para qué |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | Metodología de desarrollo (ADR + SPEC + Router + RAG + CI) — instalación del portal de IA multi-agente |
+| [`docs/decisions/README.md`](docs/decisions/README.md) | **Fuente de verdad del proyecto**: índice de los ~188 ADR (decisiones de arquitectura), agrupados por ámbito |
+| [`specs/README.md`](specs/README.md) | Metodología SDD (Spec → Plan → Tasks → Implement → Verify) y catálogo de especificaciones (`specs/NNN-*`) |
+| [`docs/GUIA_IMPLEMENTACION_FRONTEND.md`](docs/GUIA_IMPLEMENTACION_FRONTEND.md) | Guía de onboarding para quien vaya a tocar `frontend/`: reglas arquitectónicas, catálogo de ADR frontend-relevantes, gotchas de seguridad ya corregidos |
 
-## Estructura
+> Regla del proyecto (ver `docs/decisions/README.md`, línea 3): **una decisión
+> arquitectónica sin ADR no existe.** Cualquier cambio de arquitectura nuevo
+> se documenta ahí antes/junto con el código, no después.
 
-- `backend/`: API C++ y motor de conversión.
-- `frontend/`: UI Leaflet + panel de control.
-- `data/`: entrada/salida compartida para conversiones y tiles.
-- `docker-compose.yml`: orquestación completa Linux.
+## Estructura del repositorio
 
-## Requisitos
+- `backend/` — API C++ (Boost.Beast/Asio), motor de telemetría, alarmas,
+  fórmulas, autenticación, reportes.
+- `frontend/` — SPA React + TypeScript + Vite (ver la guía de arriba).
+- `db_scripts/` — migraciones SQL numeradas, aplicadas en orden.
+- `formula_engine/` — sidecar del motor de fórmulas legado (ADR-187/188).
+- `ai_engine/`, `avatar_engine/`, `avatar_animation_engine/`, `silentface_engine/` —
+  sidecars de biometría/avatar (Python/C++), cada uno con su propio Dockerfile.
+- `pdf-export-service/` — export server-side de informes (Chromium headless).
+- `specs/` — especificaciones formales (SDD) por funcionalidad.
+- `docs/decisions/` — el log de ADR (canónico, único, cronológico).
+- `docs/` (resto) — guías e informes puntuales (accesibilidad, cortes de
+  proyecto, pruebas de capacidad).
+- `docs_/` (con guion bajo — **no confundir con `docs/`**) — material de
+  gestión/comercial (SOW, cronogramas, informes gerenciales); no es
+  documentación técnica de desarrollo.
+- `db_scripts/`, `docker-compose.yml`, `.env.example` — orquestación completa
+  del stack.
 
-- Docker Desktop con backend Linux.
-- Para desarrollo local C++ con Visual Studio (CMake):
-  - Boost 1.92 (beta de desarrollo) en `C:\boost_1_92_0` para builds nativos Windows.
-  - Los contenedores Linux compilan Boost 1.91.0 estable dentro de Docker; no usan binarios de Windows.
-  - OpenCV en `C:\opencv`
-  - GDAL con soporte ECW (si aplica tu licencia/plugin)
-
-## Levantar en Docker
-
-```bash
-docker-compose up --build
-```
-
-Servicios:
-
-- Frontend: `http://localhost:5173`
-- Backend API: `http://localhost:8081`
-- Tile server: `http://localhost:8000`
-
-## Flujo de uso rápido
-
-1. Coloca tu archivo en `C:\mapas\data\incoming\input.ecw`.
-2. En el frontend:
-  - Define `input_path` como `/data/incoming/input.ecw`.
-  - Define `output_path` como `/data/incoming/raura_mbtiles3.mbtiles`.
-   - Ajusta `min_zoom`, `max_zoom`, `compression`, `quality`.
-   - Ejecuta conversión.
-3. Al terminar, carga el tileset `raura_mbtiles3` en el frontend.
-
-## Smoke test (una orden)
-
-Para validar toda la plataforma (backend + conversión + tileserver + frontend):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
-```
-
-Este script:
-
-- Levanta contenedores con `docker-compose up -d --no-build`.
-- Genera imagen de prueba y la georreferencia.
-- Ejecuta conversión vía API.
-- Verifica publicación de tiles y disponibilidad del frontend.
-
-## API
-
-### `GET /health`
-
-Estado del backend.
-
-### `GET /api/capabilities`
-
-Indica si el runtime tiene soporte ECW disponible:
-
-```json
-{
-  "ecw_supported": false
-}
-```
-
-### `POST /api/convert`
-
-Ejemplo:
-
-```json
-{
-  "input_path": "/data/incoming/imagen.ecw",
-  "output_name": "imagen.mbtiles",
-  "min_zoom": 0,
-  "max_zoom": 18,
-  "compression": "JPEG",
-  "quality": 85,
-  "resampling": "BILINEAR"
-}
-```
-
-Respuesta:
-
-```json
-{
-  "job_id": "d7a1f6...",
-  "status": "queued"
-}
-```
-
-### `GET /api/jobs/{job_id}`
-
-Estado y logs del job.
-
-## Tuning inicial de compresión
-
-- `compression=JPEG` + `quality=80..88` para equilibrio tamaño/calidad.
-- `max_zoom` realista según GSD, evita sobre-muestreo artificial.
-- Pirámides (`gdaladdo`) con `AVERAGE` para visualización rápida.
-- Para datos con bordes nítidos/cartografía, evaluar `PNG` (más pesado).
-
-## Notas ECW
-
-La lectura ECW en GDAL depende del driver/plugin y licenciamiento. Si el contenedor no abre ECW, usa:
-
-- Imagen Docker con GDAL + ECW plugin compatible.
-- Conversión previa a GeoTIFF/COG en un entorno con driver ECW habilitado.
-
-### Montaje de plugin ECW en este proyecto
-
-1. Copia binarios del plugin ECW Linux en `ecw-plugin/`.
-2. Reinicia backend:
+## Levantar el stack
 
 ```bash
-docker-compose up -d --build web
+cp .env.example .env   # completar los secretos marcados como obligatorios
+docker compose up -d --build
 ```
 
-3. Verifica capacidades:
+Son ~20 servicios (backend, frontend, Postgres + réplica + PgBouncer,
+Redpanda, MinIO, MQTT, y los sidecars de IA/biometría/export). Para levantar
+solo el frontend tras un cambio de código:
 
 ```bash
-curl http://localhost:8081/api/capabilities
+docker compose up -d --no-deps --build frontend
 ```
 
-Si devuelve `ecw_supported: true`, ya puedes convertir `input.ecw` directamente.
+(el contenedor de frontend sirve un build estático vía nginx — no tiene
+hot-reload; para desarrollo local con recarga en caliente usa `cd frontend &&
+npm run dev`, puerto 5180).
 
-### Verificación automática del plugin ECW
+## Convenciones
 
-Ejecuta:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-ecw.ps1
-```
-
-Este chequeo valida:
-
-- Presencia de binarios ECW en `ecw-plugin/`.
-- Montaje en `/opt/ecw` dentro del contenedor.
-- Dependencias dinámicas con `ldd`.
-- Drivers detectados por `gdalinfo --formats`.
-- Lectura de `input.ecw` y estado de `/api/capabilities`.
-
-### Prueba final ECW (cuando el SDK ya esté instalado)
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test-ecw-now.ps1
-```
-
-Ejecuta la conversión con rutas fijas:
-
-- Input: `/data/incoming/input.ecw`
-- Output: `/data/incoming/raura_mbtiles3.mbtiles`
-
-y valida que tileserver/frontend respondan correctamente.
-
-## Instalación ECW en Windows (sin admin) y conversión host
-
-Si no tienes plugin ECW en Linux Docker, puedes convertir en host Windows:
-
-1) Instalar GDAL + ECW SDK en tu perfil:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install-ecw-sdk-host.ps1
-```
-
-2) Convertir `input.ecw` -> `raura_mbtiles3.mbtiles` y publicar en tileserver:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\convert-ecw-host.ps1
-```
-
-3) Ejecutar regresión completa (servicios + smoke + ECW host):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\regression-full.ps1
-```
-
-## Autenticación y biometría (Dermalog)
-
-El sistema ahora incluye:
-
-- Login obligatorio con biometría facial o password.
-- Control de acceso por rol (`admin`/`operator`).
-- Centro de auditoría protegido por backend (solo `admin`).
-
-### Dermalog SDK en Docker (Debian)
-
-1. Define ruta del SDK en host Windows:
-
-```powershell
-$env:DERMALOG_SDK_HOST_DIR = 'C:/dermalog/dermalog-face-sdk-deb_6.11.0_amd64'
-```
-
-2. Levanta backend:
-
-```powershell
-docker-compose up -d --build web
-```
-
-3. El contenedor instalará automáticamente los `.deb` desde la carpeta montada y usará el proveedor biométrico `dermalog_cli`.
-
-Ver detalles de contrato del CLI y variables en:
-
-- `backend/DERMALOG_INTEGRATION.md`
-
-## Mejora opcional: DNN para validacion automatica facial
-
-El backend incluye una capa opcional de inferencia OpenCV DNN (ONNX) para reforzar la deteccion automatica de:
-
-- lentes
-- gorro/casco
-- accesorios/oclusiones faciales
-- maquillaje intenso
-- ojos cerrados / boca abierta / rostro no frontal (segun etiquetas del modelo)
-
-### Activacion
-
-1. Copia tu modelo ONNX en `./biometric-models/face_qc.onnx`.
-2. Activa la bandera antes de levantar contenedores:
-
-```powershell
-$env:BIOMETRIC_DNN_ENABLE = "true"
-docker-compose up -d --build web
-```
-
-Variables soportadas en `docker-compose.yml`:
-
-- `BIOMETRIC_DNN_ENABLE` (`true|false`)
-- `BIOMETRIC_DNN_MODEL` (ruta del ONNX dentro del contenedor)
-- `BIOMETRIC_DNN_LABELS` (CSV de clases en orden de salida del modelo)
-- `BIOMETRIC_DNN_THRESHOLD` (umbral de activacion por clase)
-- `BIOMETRIC_MODEL_HOST_DIR` (ruta local montada con el modelo)
-
-Si el modelo no esta disponible o falla la inferencia, el sistema usa automaticamente heuristicas OpenCV como fallback.
-
-### Verificacion automatizada del estado DNN
-
-Puedes verificar activacion/carga del modelo y estado de runtime con:
-
-```powershell
-$securePwd = ConvertTo-SecureString "TU_PASSWORD" -AsPlainText -Force
-$adminCred = New-Object System.Management.Automation.PSCredential("admin", $securePwd)
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-biometric-dnn.ps1 -EnableDnn -AdminUser "admin" -AdminPassword $adminCred
-```
-
-El script consulta el endpoint protegido:
-
-- `GET /api/auth/biometric/status` (requiere token de usuario `admin`)
-
+- Toda decisión de arquitectura nueva → ADR en `docs/decisions/` (numeración
+  contígua, sin huecos, campo `Ámbito` obligatorio).
+- Todo PR referencia el SPEC que implementa (`specs/NNN-*`).
+- Ver `AGENTS.md` para la metodología completa y las herramientas del portal
+  de IA (`ai_platform/`).

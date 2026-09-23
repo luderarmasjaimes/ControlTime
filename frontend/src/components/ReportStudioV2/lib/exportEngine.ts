@@ -1,12 +1,12 @@
 import { log } from '../../../lib/logger';
 import { getSession } from '../../../auth/authStorage';
 import { resolveMiningUnitName } from './sessionChrome';
+import { computeTableFormulas, parseCellNumber, stripCellHtml } from './tableFormulas';
+import { formatNumberForDisplay } from './tableNumberFormat';
 /* ─────────────────────────────────────────────────────────────────────────────
    EXPORT ENGINE — PDF / DOCX / PPTX / PNG (server-side + client fallback)
    Etapa 1: Motor de exportación de alta fidelidad para informes mineros
    ───────────────────────────────────────────────────────────────────────── */
-
-const API_BASE = '/api';
 
 export interface ExportOptions {
   paperSize?: string;
@@ -19,6 +19,10 @@ export interface ExportOptions {
   author?: string;
   template?: string;
   theme?: string;
+  /** Título REAL del informe (currentReportTitle en App.tsx) -- doc.meta.title
+   * nunca se llega a escribir en ningún lado (se comprobó al corregir el
+   * nombre del .pptx exportado), así que generateFilename() ya no lo lee. */
+  title?: string;
 }
 
 export interface ExportResult {
@@ -27,55 +31,14 @@ export interface ExportResult {
   error?: string;
 }
 
-/**
- * Exporta el documento como PDF de alta fidelidad vía servidor.
- * Fallback: si el servidor no responde, NO llama window.print() acá mismo
- * (esta función no tiene acceso al visor de solo lectura .ro-overlay que
- * acota la impresión nativa del navegador al informe — llamarlo aquí
- * imprimiría el editor completo). Devuelve method:'print-fallback' y deja
- * que el caller (App.tsx::handleExportPdf) abra la vista previa de
- * impresión real.
- */
-export async function exportPDF(doc: any, options: ExportOptions = {}): Promise<ExportResult> {
-  const payload = {
-    document: doc,
-    format: 'pdf',
-    paperSize: options.paperSize || 'A4',
-    orientation: options.orientation || 'portrait',
-    margins: options.margins || { top: 20, right: 20, bottom: 20, left: 20 },
-    includeHeaders: options.includeHeaders !== false,
-    includeFooters: options.includeFooters !== false,
-    includePageNumbers: options.includePageNumbers !== false,
-    quality: options.quality || 'high',
-    embedFonts: true,
-    metadata: {
-      title: doc.meta?.title || 'Informe Técnico Minero',
-      author: options.author || 'Beemetry Platform',
-      subject: 'Informe Técnico de Operación Minera',
-      keywords: 'minería, informe, técnico, operación',
-      creator: 'Beemetry Mining Platform v2.0',
-      producer: 'Beemetry Export Engine',
-    },
-  };
-
-  try {
-    const response = await fetch(`${API_BASE}/export/pdf`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      credentials: 'include',
-    });
-
-    if (!response.ok) throw new Error(`Server returned ${response.status}`);
-
-    const blob = await response.blob();
-    downloadBlob(blob, generateFilename(doc, 'pdf'), 'application/pdf');
-    return { success: true, method: 'server' };
-  } catch (err) {
-    log.warn('[EXPORT] Server PDF failed, falling back to print:', err);
-    return { success: true, method: 'print-fallback' };
-  }
-}
+// exportPDF() (POST /api/export/pdf, fetch crudo) vivió acá hasta el
+// 2026-09-12 -- código muerto desde que la entrega de frontend reemplazó su
+// único caller (App.tsx::handleExportPdf) por downloadProtectedPdf()/
+// usePdfExport.ts (ADR-016/080: pipeline real, job asíncrono con fallback
+// síncrono, contraseña y manejo de error correcto vía log.error). Retirada
+// en vez de arreglar su bug real (el catch devolvía success:true incluso
+// ante un fallo genuino del servidor, enmascarándolo) porque ya no la
+// ejecuta nadie -- confirmado por grep en todo `frontend/src`.
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -117,7 +80,7 @@ export async function exportDOCX(doc: any, options: ExportOptions = {}): Promise
     const rasterAssets = await captureRasterAssets(doc, { tenant_id: (session as any)?.tenantId });
 
     const blob = await buildReportDocx(doc, { session: session as any, imageAssets, rasterAssets });
-    downloadBlob(blob, generateFilename(doc, 'docx'), DOCX_MIME);
+    downloadBlob(blob, generateFilename(options.title || doc.meta?.title, 'docx'), DOCX_MIME);
     return { success: true, method: 'client' };
   } catch (err) {
     log.warn('[EXPORT][DOCX] Pipeline cliente de alta fidelidad falló, usando fallback HTML básico:', err);
@@ -199,11 +162,29 @@ function exportDOCXClientFallback(doc: any, options: ExportOptions = {}): Export
           }
         } else if (el.type === 'table' && el.props?.rows) {
           htmlParts.push('<table>');
+          // Una celda con fórmula ("=SUMA(A1:A3)") muestra el resultado
+          // calculado acá también -- sin esto el DOCX de respaldo mostraba
+          // el texto crudo de la fórmula en vez del número. Una celda
+          // numérica normal con formato de % / decimales también se
+          // formatea, igual que en el editor y en ReadOnlyViewer.tsx.
+          const formulaResults = computeTableFormulas(el.props.rows);
+          const cellNumberFormats: (string | null)[][] | undefined = Array.isArray(el.props.cellNumberFormats) ? el.props.cellNumberFormats : undefined;
           el.props.rows.forEach((row: any[], ri: number) => {
             htmlParts.push('<tr>');
-            (row || []).forEach((cell) => {
+            (row || []).forEach((cell, ci: number) => {
               const tag = ri === 0 && el.props.hasHeader ? 'th' : 'td';
-              htmlParts.push(`<${tag}>${escapeHtml(String(cell))}</${tag}>`);
+              const formulaResult = formulaResults[ri]?.[ci];
+              const numberFormat = cellNumberFormats?.[ri]?.[ci] ?? null;
+              let displayValue = String(cell);
+              if (formulaResult) {
+                displayValue = formulaResult.isError
+                  ? formulaResult.display
+                  : formatNumberForDisplay(formulaResult.numericValue as number, numberFormat);
+              } else if (numberFormat) {
+                const plainNumber = parseCellNumber(stripCellHtml(String(cell ?? '')));
+                if (plainNumber !== null) displayValue = formatNumberForDisplay(plainNumber, numberFormat);
+              }
+              htmlParts.push(`<${tag}>${escapeHtml(displayValue)}</${tag}>`);
             });
             htmlParts.push('</tr>');
           });
@@ -246,8 +227,12 @@ function exportDOCXClientFallback(doc: any, options: ExportOptions = {}): Export
             ? el.props.chartTypes
             : [el.props?.chartType].filter(Boolean);
           const chartTypeLabel = typesArr.map((t) => chartTypeLabels[t] || t).join(', ') || '—';
-          const fromLabel = el.props?.from ? new Date(el.props.from).toLocaleString('es-PE') : '—';
-          const toLabel = el.props?.to ? new Date(el.props.to).toLocaleString('es-PE') : '—';
+          const liveMin = Number(el.props?.liveWindowMinutes) || 0;
+          const exportNow = Date.now();
+          const fromIso = liveMin ? new Date(exportNow - liveMin * 60_000).toISOString() : el.props?.from;
+          const toIso = liveMin ? new Date(exportNow).toISOString() : el.props?.to;
+          const fromLabel = fromIso ? new Date(fromIso).toLocaleString('es-PE') : '—';
+          const toLabel = (toIso ? new Date(toIso).toLocaleString('es-PE') : '—') + (liveMin ? ` (en vivo: últimos ${liveMin} min)` : '');
           htmlParts.push(
             `<div style="border:1px dashed #94a3b8;border-radius:6px;padding:10pt;color:#334155;font-size:10pt">` +
               `<strong>${escapeHtml(el.props?.title || 'Gráfico de sensores')}</strong><br>` +
@@ -289,7 +274,7 @@ function exportDOCXClientFallback(doc: any, options: ExportOptions = {}): Export
     htmlParts.push('</body></html>');
 
     const blob = new Blob([htmlParts.join('')], { type: 'application/msword' });
-    downloadBlob(blob, generateFilename(doc, 'doc'), 'application/msword');
+    downloadBlob(blob, generateFilename(options.title || doc.meta?.title, 'doc'), 'application/msword');
     return { success: true, method: 'client-fallback' };
   } catch (err) {
     return { success: false, error: (err as Error).message };
@@ -300,10 +285,10 @@ function escapeHtml(text: unknown): string {
   return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function generateFilename(doc: any, ext: string): string {
-  const title = (doc.meta?.title || 'Informe_Minero').replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ_-]/g, '_').slice(0, 60);
+function generateFilename(title: string | undefined, ext: string): string {
+  const safeTitle = (title || 'Informe_Minero').replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ_-]/g, '_').slice(0, 60);
   const date = new Date().toISOString().slice(0, 10);
-  return `${title}_${date}.${ext}`;
+  return `${safeTitle}_${date}.${ext}`;
 }
 
 function downloadBlob(blob: Blob, filename: string, mimeType: string): void {

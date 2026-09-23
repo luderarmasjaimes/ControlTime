@@ -201,13 +201,19 @@ describe('buildReportDocx', () => {
     expect(footerXml).toMatch(/PAGE/);
     expect(footerXml).toMatch(/NUMPAGES/);
 
-    // ── Campo TOC nativo (instrText "TOC \h \o "1-6"") ─────────────────────
-    expect(documentXml).toMatch(/<w:instrText[^>]*>TOC\b/);
-    expect(documentXml).toContain('fldCharType="begin"');
-    expect(documentXml).toContain('fldCharType="end"');
-    // `features.updateFields` a nivel de documento -- Word recalcula el
-    // campo TOC (y PAGE/NUMPAGES del pie) al abrir, sin que el usuario
-    // tenga que presionar F9 a mano.
+    // ── Índice con hipervínculo interno REAL (no un campo `{ TOC }` nativo,
+    // ver comentario de buildTocSectionChildren: un campo nativo solo se
+    // puebla si Word recalcula, lo que no siempre pasa al abrir) -- cada
+    // entrada es un <w:hyperlink w:anchor="..."> que debe apuntar a un
+    // <w:bookmarkStart> real en el encabezado correspondiente, así que el
+    // enlace funciona desde el instante en que se abre el archivo.
+    const hyperlinkMatch = documentXml.match(/<w:hyperlink[^>]*w:anchor="([^"]+)"/);
+    expect(hyperlinkMatch).not.toBeNull();
+    const tocAnchor = hyperlinkMatch![1];
+    expect(documentXml).toContain(`<w:bookmarkStart w:name="${tocAnchor}"`);
+    // `features.updateFields` a nivel de documento -- Word recalcula los
+    // campos PAGE/NUMPAGES del pie al abrir, sin que el usuario tenga que
+    // presionar F9 a mano (el índice ya no depende de esto).
     const settingsXml = await zip.file('word/settings.xml')!.async('string');
     expect(settingsXml).toMatch(/<w:updateFields/);
   });

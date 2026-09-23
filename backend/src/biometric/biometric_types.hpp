@@ -30,6 +30,17 @@ struct BiometricCaptureRuntimeState {
    * (hallazgo real 2026-09-08: lentes detectados recién después de
    * completar ICAO + reto, sin ninguna ruta que invalidara lo ya "trabado"). */
   int postLockGlassesStreak = 0;
+  /** Hallazgo real 2026-09-20 (usuario real: 2 sesiones seguidas coleccionadas
+   * con "Se detectaron lentes puestos" tras completar el gate + reto, pese al
+   * fix de pitch de kLivenessHeadPitchRatio del 2026-09-16): un caso mostró un
+   * frame con face_oval_points raw size=0 (pérdida momentánea de tracking)
+   * justo antes del frame que disparó el reset -- la geometría recién
+   * reobtenida no es confiable todavía para decidir "está quieto = debe ser
+   * lentes de verdad". Cuenta regresiva de frames de gracia tras CUALQUIER
+   * pérdida de detección (ver handleProcessFrame) durante los cuales el
+   * streak de lentes post-candado no avanza, dándole tiempo a la geometría a
+   * estabilizarse antes de confiar en ella. */
+  int postLockDropoutGraceFrames = 0;
   /** Motivo del último reinicio forzado de la captura a la etapa 1 (vacío si
    * nunca se reinició, o si el último frame fue válido). Sólo informativo
    * para el frontend -- el backend nunca cambia su decisión por esto. */
@@ -208,6 +219,34 @@ static constexpr int kIcaoInvalidFramesBeforeReset = 1;
 static constexpr int kIcaoGlassesInvalidFramesBeforeReset = 2;
 
 /**
+ * Hallazgo real 2026-09-20 (usuario real, 2 sesiones seguidas): el veto
+ * post-candado de "lentes" (ver handleProcessFrame) reusaba los MISMOS
+ * umbrales que evaluateLivenessChallenge exige para dar por CUMPLIDO un
+ * gesto deliberado (0.20 yaw, 0.35 pitch, etc.) -- pero ese umbral está
+ * calibrado para "¿la persona hizo claramente el gesto pedido?", un
+ * propósito distinto de "¿la persona sigue realmente quieta, o hay algún
+ * movimiento incidental en curso?". Confirmado con dos casos reales: uno con
+ * una inclinación vertical incidental (agachar la cabeza al acercarse, sin
+ * que move_closer/move_away fuera el reto activo) que no llegó a cruzar 0.35
+ * pero igual bastó para confundir al detector de lentes por escorzo de
+ * cejas/párpados; otro con un giro rápido que incluyó una pérdida momentánea
+ * de tracking (face_oval_points raw size=0) justo antes del frame que
+ * disparó el reset. Umbrales deliberadamente MÁS estrictos (banda de
+ * "quieto" más chica) que los de arriba: cualquier desvío mayor a esto ya no
+ * cuenta como "seguro que está quieto", así que el frame se descarta del
+ * streak de lentes en vez de sumarlo -- más tolerante con el movimiento
+ * incidental, no menos. PENDIENTE DE VALIDAR con la próxima sesión real.
+ */
+static constexpr double kLivenessPostLockYawStabilityMax = 0.08;
+static constexpr double kLivenessPostLockPitchStabilityMax = 0.10;
+static constexpr double kLivenessPostLockDistanceStabilityBand = 0.10;
+/** Frames de gracia tras CUALQUIER pérdida de detección (ver comentario
+ * arriba) durante los cuales el streak de lentes post-candado no avanza --
+ * a razón de ~175ms/frame (VERIFY_SYNC_MS), 3 frames son ~500ms para que la
+ * geometría se estabilice tras reobtener el rostro. */
+static constexpr int kPostLockDropoutGraceFrames = 3;
+
+/**
  * ADR-149: las 5 lecturas ICAO por sí solas (sin exigir el parpadeo natural
  * todavía) -- true en cuanto captureCount/totalFramesSeen alcanzan sus
  * mínimos, sin importar naturalBlink.observed. Se usa para arrancar el
@@ -227,18 +266,28 @@ inline bool icaoReadsCompleted(const BiometricCaptureRuntimeState &st) {
          st.totalFramesSeen >= kGlassesHistWarmupFrames;
 }
 
-struct AiEngineEmbeddingResult {
-  std::vector<double> embedding;
-  std::string error;
-  bool ok() const { return embedding.size() == kFaceEmbeddingVectorDim && error.empty(); }
-};
-
 struct AiEngineCartoonResult {
   std::string imageBase64;
   /** Maestro PNG 4K; no se incluye en JWT/session/localStorage. */
   std::string imageHdBase64;
+  /** Recorte PNG RGBA de SOLO cabeza (rediseño de avatar 2026-09-20, ver
+   * ADR-203) -- vacío si ai_engine no pudo aislar la cabeza (cae al lienzo
+   * blanco clásico) o si la llamada vino del recompose rápido, que no lo
+   * necesita reenviar. El backend lo persiste en
+   * /data/auth/avatar_heads/{userId}.png para que "cambiar de vestimenta"
+   * sea un recompose sin GPU en vez de una difusión completa. */
+  std::string headCutoutBase64;
   std::string error;
   bool ok() const { return !imageBase64.empty() && error.empty(); }
+};
+
+/** Una plantilla del catálogo de cuerpo/vestimenta (ver
+ * ai_engine/avatar_body_templates.py, ADR-203). */
+struct AvatarBodyTemplateInfo {
+  std::string slug;
+  std::string displayName;
+  /** PNG miniatura en base64 (180x240, sin cabeza -- solo la plantilla). */
+  std::string thumbnailBase64;
 };
 
 /** @brief Lectura de DNI por cámara (PDF417 del DNI antiguo + MRZ de todas

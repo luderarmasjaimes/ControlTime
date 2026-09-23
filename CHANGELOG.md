@@ -4,6 +4,367 @@ Insumo para la decisión de release v0.1. No implica que el equipo ya haya
 decidido cortar la versión — ver `RUNBOOK.md` para lo que falta antes de
 GO-LIVE.
 
+## [Unreleased] — 2026-09-23
+
+### Auditoría integral, cierre de ADR y plan maestro (ADR-210, 211, 212)
+
+Pedido explícito: análisis completo de la plataforma, plan actualizado mes a mes,
+pendientes/riesgos/decisiones de Gerencia y verificación de conflictos ADR↔código.
+Sin cambios de código de producto. Log ADR verificado sin huecos (000-212). Cerrados
+por evidencia los estados de ADR-085/086/088/109/110/116/150. Hallazgos operativos
+documentados: migraciones 115/116 sin aplicar en la BD viva, runner de migraciones
+bloqueado por dos scripts con prefijo 81, 400 cambios sin commit. Avance: 72,5% oficial,
+73,3% auditado, ≈47 tareas de salida a producción. Registro único de decisiones G-1…G-17
+en ADR-212 ([ADR-210](docs/decisions/210-auditoria-integral-2026-09-23-cierre-adr-y-conflictos.md),
+[ADR-211](docs/decisions/211-saneamiento-ledger-migraciones-version-81-duplicada-y-seeds-dev.md),
+[ADR-212](docs/decisions/212-plan-maestro-2026-09-23-pendientes-riesgos-decisiones-gerencia.md)).
+
+## [Unreleased] — 2026-09-20
+
+### Avatar: recorte de solo cabeza + catálogo de cuerpo/vestimenta pre-hecho, avatar flotante 50% más chico
+
+Pedido explícito del usuario: dejar de depender de segmentar hombros/ropa
+fotografiados (fuente documentada de varios incidentes reales previos,
+ADR-157/158) y en su lugar recortar solo la cabeza, componerla sobre una
+plantilla de cuerpo/vestimenta pre-hecha seleccionable, y reducir el avatar
+flotante interactivo a la mitad de su tamaño.
+
+- **Recorte de solo cabeza con mejor calidad de borde**: nuevo segmentador
+  multiclase de MediaPipe (pelo/piel-cara/piel-cuerpo/ropa/otros, TFLite/CPU,
+  sin costo de GPU) reemplaza el casco convexo dilatado a lo bruto que se
+  usaba antes -- corte de cuello siempre por una línea fija (mentón +
+  margen), nunca por una inferencia de "dónde empieza el hombro".
+- **Catálogo de 4 plantillas de cuerpo/vestimenta** dibujadas por código
+  (`polo_azul`, `chaleco_seguridad`, `camisa_gris`, `chaqueta_campo`) -- sin
+  difusión (SD1.5 no puede pintar de forma confiable un cuerpo sin cara) ni
+  arte de terceros (cero licencia nueva que auditar).
+- **"Cambiar de vestimenta" instantáneo**: nuevo selector en el diálogo de
+  avatar HD de la cabecera -- recompone contra otra plantilla sin GPU ni
+  difusión (recorte de cabeza ya persistido en el registro), a diferencia de
+  los 15-40s de una generación completa.
+- **Avatar flotante 50% más chico** (`AvatarWidget.tsx`, pedido explícito).
+
+Verificado con build real: backend (`Dockerfile.verify`, ctest 100%),
+frontend (`tsc`+`vite build` sin errores) y `ai_engine` reconstruido y
+probado en vivo dentro del contenedor real (`/avatar_body_templates` y
+`/recompose_avatar_body` con un recorte sintético, sin datos biométricos
+reales) -- encontró y corrigió un bug real de alineación (hueco entre
+mentón y cuello) antes de darlo por bueno. Pendiente: verificación visual
+con una foto de registro real (sin cámara disponible en esta sesión)
+([ADR-203](docs/decisions/203-avatar-recorte-cabeza-catalogo-cuerpo-vestimenta.md)).
+
+### ReportStudioV2: fidelidad ampliada de la importación de PDF (estilos, encabezados/TOC, listas, márgenes)
+
+Pedido explícito del usuario tras probar la v1: "la máxima fidelidad
+posible" en ubicación de texto/imágenes, índices, listas, márgenes,
+colores y estilos. El importador (ADR-199) ahora extrae del PDF spans de
+estilo real (negrita/cursiva/color/tamaño/fuente por carácter), detecta
+encabezados (vía el esquema real del PDF o por tamaño de fuente relativo)
+que alimentan automáticamente la Tabla de Contenidos del editor, alinea
+párrafos, reconoce listas con su profundidad, intercala imágenes en su
+posición real de lectura (antes quedaban todas al final de cada página), y
+configura el tamaño/orientación/márgenes del documento importado según el
+PDF de origen. Todo esto reutiliza mecanismos que el editor YA tenía
+(`TextStyleSpan`, Tabla de Contenidos, `setPaperSize`/`setOrientation`/
+`setPageMargins`) -- no hubo que tocar código del editor. Verificado en
+vivo (imagen Docker real reconstruida, PDF de prueba con encabezado/
+subtítulo numerado/lista/negrita/alineación real) encontró y corrigió 3
+bugs reales: encabezados numerados ("1. Introducción") que se confundían
+con ítems de lista y quedaban sin detectar, alineación falsa "centrado" en
+párrafos normales (se comparaba contra el borde físico de la hoja en vez
+del área de contenido real), y profundidad de lista siempre en 0 (se
+medía contra el propio bloque del ítem en vez de un margen de página real)
+([ADR-199 §7](docs/decisions/199-importacion-pdf-ocr-avanzado.md)).
+
+### ReportStudioV2: export nativo completo (XLSX, PPTX reconstruido, índice/marcadores reales en PDF, contraseña opcional)
+
+Lleva PPTX y XLSX al mismo estándar nativo que ya tenía DOCX (texto/tablas
+armados directamente desde el JSON del informe, no una captura de pantalla)
+y cierra brechas de navegación/permiso en PDF:
+
+- **PPTX reconstruido desde cero**: cada diapositiva se arma con texto,
+  tablas y tarjetas KPI/sensor NATIVOS y editables en PowerPoint; solo
+  gráficos/portada/imágenes siguen como PNG capturado (mismos 4 tipos que
+  ya usa DOCX). Se retira el mecanismo viejo de overlay sobre una captura de
+  página completa. Efecto colateral real encontrado y corregido: la
+  conversión PPTX→MP4 con narración asumía una imagen de fondo por
+  diapositiva — ahora genera sus propios frames por separado.
+- **XLSX (nuevo formato)**: exporta las tablas ya insertadas en el informe
+  a un libro de Excel real — una hoja por tabla (celdas numéricas reales,
+  texto enriquecido, bordes/colores) más una hoja "Índice" con
+  hipervínculos internos reales a cada una.
+- **PDF con índice real**: panel de marcadores de navegación (Acrobat/
+  Chrome) por cada encabezado del informe, y el bloque de tabla de
+  contenidos visible dentro del documento ahora es clickeable (enlaces
+  internos reales), la misma paridad que ya tenía el campo TOC de Word.
+- **PDF sin contraseña (perfiles avanzados)**: nueva opción de exportación,
+  disponible solo para roles con el permiso dedicado
+  `informes.export_sin_clave` (sembrado a administrador/gerente por
+  defecto) — el resto de los roles sigue recibiendo siempre el PDF cifrado
+  de siempre.
+
+Verificado con build real del backend en Docker (CTest 100%), typecheck
+completo del frontend (0 errores) y pruebas unitarias directas de cada
+pieza nueva del sidecar contra documentos de prueba — sin verificación E2E
+en vivo contra Chromium real todavía
+([ADR-201](docs/decisions/201-xlsx-tablas-pptx-nativo-pdf-indice-real.md)).
+
+## [Unreleased] — 2026-09-19
+
+### ReportStudioV2: importación de PDF con OCR avanzado
+
+Nuevo botón "Importar PDF (OCR)" junto a "Importar Word (.docx)" (ribbon
+Datos → Importación): sidecar nuevo `ocr_engine/` (PaddleOCR
+PP-StructureV2, CPU-only, separado de `ai_engine` por el mismo motivo de
+conflicto de dependencias ML que ya llevó a aislar `avatar_engine`/
+`silentface_engine`), extracción híbrida por página (texto digital real vía
+PyMuPDF cuando existe, OCR completo con layout/tabla/figuras solo en
+páginas escaneadas). Resuelve desde el día 1 dos hallazgos que
+[ADR-173](docs/decisions/173-importacion-word-docx-mammoth.md) había dejado
+pendientes para `.docx`: validación de firma de archivo en las 3 capas y
+resumen post-importación (páginas digitales vs. OCR, confianza promedio).
+Verificado end-to-end en vivo (build real del backend, imagen Docker real
+del sidecar, requests reales): encontró y corrigió un bug real de la
+librería `paddleocr` (`PPStructure(lang='es')` tronaba el proceso con
+`sys.exit` -- su modelo de layout solo soporta en/ch), resuelto separando
+layout/tabla del reconocimiento de texto real en español. Limitación de
+precisión documentada, no un bug: el modelo multilingüe a veces omite
+diacríticos del español (ej. "año"→"ano")
+([ADR-199](docs/decisions/199-importacion-pdf-ocr-avanzado.md)).
+
+## [Unreleased] — 2026-09-14
+
+Catch-up documental: esta sección cubre el trabajo real entre el 2026-09-11
+(última entrada de este archivo antes de esta) y hoy —
+[ADR-168 a ADR-188](docs/decisions/README.md), 21 decisiones en 3 días. Se
+agrega como sección nueva, sin reordenar ni reescribir las entradas
+previas — mismo criterio que ya usaba la sección de abajo.
+
+### Decisiones de negocio y seguridad formalizadas
+
+Aprobación de alcance (no aún operativa) de soporte por WhatsApp/SMS,
+pendiente de cuentas comerciales de Meta y Twilio
+([ADR-168](docs/decisions/168-spec025-soporte-whatsapp-aprobacion-contractual-sms-comercial.md)),
+pentest externo declarado requisito obligatorio antes de producción, sin
+proveedor contratado todavía
+([ADR-169](docs/decisions/169-pentest-externo-seguridad-requisito-obligatorio-produccion.md)),
+y evaluación de capacidad VPS/GPU pendiente de decisión de compra tras
+medir en vivo que un export de 2.104 páginas/6.300 diagramas proyecta ~145
+min y que el headroom de GPU actual es de solo 403 MiB
+([ADR-170](docs/decisions/170-evaluacion-vps-gpu-pendiente-exportacion-documentos-extensos.md)).
+Decomiso completo (no solo mitigación) del vector de autoasignación de rol
+en el registro público que motivó el hallazgo crítico de ADR-134
+([ADR-177](docs/decisions/177-decomiso-autoasignacion-rol-autoregistro-publico.md)).
+Descarte del SDK biométrico comercial Dermalog por licencia con costo
+adicional — decisión de negocio sin impacto en producción, el sistema real
+ya no depende de ese SDK
+([ADR-180](docs/decisions/180-descarte-dermalog-licencia-comercial-costo-adicional.md)).
+
+### Alcance del proyecto y deuda técnica
+
+"Operaciones de Campo" (offline/ERP) declarado explícitamente fuera de
+alcance del proyecto actual, retirado del seguimiento de avance — queda
+solo como referencia técnica para una eventual iniciativa derivada
+([ADR-178](docs/decisions/178-operaciones-campo-fuera-de-alcance-implementacion-futura-independiente.md)).
+Catálogo de pendientes de bajo riesgo (código muerto, configuración sin
+usar, hooks construidos y no conectados) para limpieza futura, sin decisión
+de arquitectura nueva
+([ADR-176](docs/decisions/176-catalogo-pendientes-borrado-mejora-correccion.md)).
+Landing pública pre-login formalizada como superficie de marketing con
+datos deliberadamente ilustrativos hasta que existan clientes reales
+([ADR-171](docs/decisions/171-pagina-publica-marketing-datos-ilustrativos.md)).
+
+### ReportStudioV2: tablas, importación Word, capacidades de editor
+
+Motor de hoja de cálculo embebido en el bloque de tabla (7 fórmulas,
+formato condicional, combinar celdas,
+[ADR-172](docs/decisions/172-motor-tablas-excel-formulas-formato-condicional.md)),
+importación de documentos `.docx` vía `mammoth`
+([ADR-173](docs/decisions/173-importacion-word-docx-mammoth.md)), y un
+lote de capacidades avanzadas del store del editor: undo/redo con
+agrupación temporal, autoFlow, `linkedGroup`, configuración de página, y
+navegación de diapositivas con vista previa de arrastre
+([ADR-174](docs/decisions/174-capacidades-avanzadas-editor-store-navegacion-diapositivas.md)).
+Extracción de `NavBar.tsx` fuera de `App.tsx` (de ~1954 a 354 líneas), sin
+regresión de comportamiento
+([ADR-175](docs/decisions/175-navbar-extraccion-shell-autenticado.md)).
+
+### KPIs en tiempo real: bug de query y escalamiento real
+
+Bug real de query SQL en el endpoint SSE de KPIs corregido, con nuevo hook
+`useLiveKpi.ts` (EventSource nativo, auth por cookie,
+[ADR-179](docs/decisions/179-push-sse-kpis-bug-real-query-y-cliente-frontend.md)).
+Escalamiento a más de 200 conexiones SSE simultáneas resuelto con un pool
+de conexiones Postgres en vez de migrar todo el servidor a Boost.Asio
+asíncrono — verificado con prueba de carga real de 200 conexiones (PASS) y
+prueba real de caída de réplica
+([ADR-181](docs/decisions/181-sse-kpis-pool-conexiones-en-vez-de-asio-strands.md)).
+
+### Exportación de informes: bugs de gráficos, benchmark real y decisión de negocio
+
+Corrección de bugs reales en la exportación de los 20 tipos de gráfico
+soportados (etiquetas de histograma, truncamiento en pie/donut/funnel,
+[ADR-182](docs/decisions/182-verificacion-export-20-tipos-grafico-bugs-histograma-funnel.md)).
+Benchmark real del criterio O3 del SOW (export <5s): tiempo medido real
+~29s, ~5.9x sobre el objetivo contractual
+([ADR-183](docs/decisions/183-benchmark-real-o3-export-pdf-falla-umbral-5s.md)),
+seguido de una pasada de optimización real (fuentes locales,
+`domcontentloaded` en vez de esperar red completa,
+[ADR-184](docs/decisions/184-optimizacion-real-export-o3-fuentes-locales-domcontentloaded.md))
+y, finalmente, la **decisión de negocio** de tolerar el tiempo optimizado en
+vez de seguir invirtiendo en el objetivo literal de <5s — desviación
+reconocida y aceptada explícitamente, pendiente de countersign formal de
+Gerencia General
+([ADR-185](docs/decisions/185-decision-negocio-cierre-o3-export-async-tolerancia-espera.md)).
+
+### Bug real de rendimiento en TimescaleDB
+
+Consulta de "último valor" sin cota de tiempo sobre `telemetry_fact`
+(~10.900 chunks acumulados) que no completaba ni con `statement_timeout` de
+10s, afectando al evaluador de alarmas, al dashboard general y al estado de
+simulación — corregido en los 3 sitios acotando la ventana de tiempo,
+medido antes/después contra el stack real
+([ADR-186](docs/decisions/186-bug-real-timescaledb-chunk-scan-sin-cota-tiempo.md)).
+
+### Motor de fórmulas real y reconstrucción del tab "Cálculo"
+
+Activación del esquema de fórmulas por sensor que estaba diseñado pero
+nunca implementado: parámetros configurables, expresiones `tinyexpr`,
+evaluador en tiempo real (poller 10s), y pantalla real de administración de
+sensores
+([ADR-187](docs/decisions/187-administracion-sensores-motor-formulas-tiempo-real.md)).
+Reconstrucción del tab legado "Cálculo" (antes un catálogo de demostración
+fabricado, empresa/mina ficticias, sin relación con sensores reales) para
+operar sobre datos reales, con un catálogo nuevo de tipos de sensor
+gobernado por un admin de plataforma, y cierre del gap de autorización por
+tenant en las rutas de lienzo del sidecar
+([ADR-188](docs/decisions/188-reconstruccion-tab-calculo-motor-real.md)).
+
+### Retiro completo de InsightFace como motor biométrico secundario
+
+Ejecutado el wiring que ADR-166 (2026-09-11) había dejado pendiente:
+retirada la llamada auxiliar a `/face_embedding` de `face_analysis.cpp` (registro
+y login), la rama `insightface_onnx` de `loginFaceTargetedPg`, y el paquete
+`insightface`/modelo `buffalo_l` de `ai_engine`. **Hallazgo nuevo en esta
+pasada**: el motor de avatares (`eye_analyzer.py`) también corría InsightFace
+para dos chequeos internos de calidad (similitud de identidad del avatar,
+bbox de respaldo) — la misma licencia no comercial que motivó ADR-166
+aplicaba ahí también, sin que el ADR original lo hubiera detectado. Ambos
+casos ya degradaban con gracia a "sin señal" sin motor disponible, así que
+no requirieron código nuevo, solo dejar de instalar el paquete
+([ADR-166, actualización 2026-09-14](docs/decisions/166-decomiso-insightface-secundario-adopcion-seetaface6.md)).
+
+### Gobierno: confirmación formal pendiente de ADR-134 cerrada
+
+El arquitecto del proyecto confirma por escrito la decisión de no auditar/
+notificar retroactivamente el hallazgo crítico de ADR-134: la plataforma
+está en etapa de desarrollo, sin clientes en ambiente de certificación,
+pruebas ni producción. Cierra el ítem 6 de las 8 decisiones solicitadas a
+Gerencia el 30-ago, que seguía sin registro escrito formal pese a la
+decisión técnica ya tomada el 11-sep
+([ADR-134, actualización 2026-09-14](docs/decisions/134-fix-critico-escalada-privilegios-autoregistro-empresa-existente.md)).
+
+### Gobierno: R3 cerrado al 100% — countersign formal del Arquitecto TI sobre O3
+
+El Arquitecto TI confirma por escrito que el tiempo de export medido y
+optimizado (ADR-183/184, ~24-27s en el peor caso) no puede mejorarse hasta
+el objetivo original de 5s sin una inversión de arquitectura no justificada
+hoy, y refuerza el razonamiento de negocio de ADR-185: la exportación no es
+de uso operativo frecuente, porque el informe técnico está pensado para
+vivir dentro de la propia plataforma minera, no para exportarse de forma
+rutinaria. Cierra el ítem 1 de las 8 decisiones solicitadas a Gerencia el
+30-ago (acta formal de cierre de R3) — R3 pasa de 97.1% (68/70) a 100%
+(70/70), avance global de 71.4% a 72.4% (144/199)
+([ADR-185, actualización 2026-09-14](docs/decisions/185-decision-negocio-cierre-o3-export-async-tolerancia-espera.md)).
+
+### Guía de migración a laptop nueva corregida — causa raíz real de una migración bloqueada
+
+`MIGRACION_NUEVA_LAPTOP_2026-08-12.md` no listaba `avatar_engine`,
+`silentface_engine` ni `avatar_animation_engine` (agregados después de su
+fecha, ADR-141/143/150) — al migrar a una laptop nueva usando `export-stack.ps1`/
+`import-stack.ps1` (ADR-111), las imágenes de esos 3 servicios llegaron bien
+(el script las descubre en vivo desde `docker-compose.yml`), pero el
+**`docker-compose.yml` de la laptop nueva estaba desactualizado**, sin sus
+bloques de servicio — esos scripts nunca transfieren el archivo compose en
+sí, solo imágenes/volúmenes/dumps de BD. Diagnóstico correcto: llevar el
+`docker-compose.yml` real y actualizado del repositorio origen, no
+reconstruir bloques de GPU/healthcheck a mano desde los ADR (tienen valores
+no obvios, p. ej. `start_period: 900s` en `avatar_engine` por la descarga
+de ~5GB en el primer arranque). Guía actualizada con las 3 filas de
+servicio faltantes y sus rutas de host/volúmenes.
+
+### Catálogo de plantillas de fórmula de calibración geotécnica (ADR-189)
+
+Investigación profunda de la cadena de reglas ThingsBoard legada
+`PiezometerRC-V2` (78 nodos/100 conexiones, compartida por el developer):
+resultó ser un catálogo fijo de 23 familias de física de calibración de
+instrumentos geotécnicos (Geokon, RST, Soil Instruments, Slope Indicator,
+Casagrande), no un editor de fórmulas libre — documentado en
+`docs/INVESTIGACION_MOTOR_CALCULO_LEGADO_THINGSBOARD_PIEZOMETROS_2026-09-14.md`.
+El motor real (ADR-187) solo admitía una variable de telemetría por sensor,
+insuficiente para reproducir esas 23 familias (todas necesitan mínimo
+Freq+Temp, 4 necesitan además Press). Construido: catálogo de 27 plantillas
+parametrizadas sobre el motor real (`db_scripts/95`), extensión acotada de
+ingesta a canales nombrados solo para sensores multivariados (nueva ruta
+`POST /api/mining/telemetry/multi`, cero regresión para sensores existentes
+de un solo canal), endpoint para aplicar una plantilla a un sensor de una
+sola vez (`POST .../formulas/apply-template`), extensión del sistema real de
+alarmas para poder alarmar sobre un valor calculado en vez de solo telemetría
+cruda, y UI de aplicación en `SensorManagementView.tsx`. Compiló limpio
+(Catch2 100%) y sin errores de TypeScript. Pendiente: aplicar el script SQL
+manualmente y verificar numéricamente contra un sensor real antes de usarse
+en producción — ver ADR-189 para las simplificaciones documentadas y lo que
+deliberadamente no se portó (excepciones hardcodeadas por dispositivo del
+legado).
+
+### Bug real: pantalla en negro al navegar a una sección sin permiso
+
+Reportado en vivo por el developer probando con un usuario de rol `viewer`:
+"Fórmulas de Sensores" ofrecía un botón "Crear la primera fórmula en
+Sensores →" a cualquier usuario, sin filtrar por permiso; al hacer clic,
+`App.tsx` cambiaba a la pestaña `DeviceManagement`, pero esa vista solo se
+monta si `canMaintain` es verdadero — para un `viewer` ninguna rama de
+renderizado coincidía y el área de contenido quedaba completamente vacía
+(fondo oscuro = pantalla en negro), sin ningún error visible ni forma de
+volver salvo recargar. Diagnosticado en vivo con un log
+`[TAB_DIAGNOSTIC]` agregado para la ocasión (confirmó `sessionRole: 'viewer'`
+en el momento exacto del cuelgue). Fix real de raíz: `onOpenSensors` ahora se
+pasa `undefined` a `FormulaOverviewView` cuando el usuario no tiene
+`canMaintain` (ese componente ya ocultaba sus propios botones si la prop no
+llegaba) — un `viewer` ya no ve un botón que lo lleva a un callejón sin
+salida. Queda además, como red de seguridad permanente (mismo criterio que
+`navClickGuard.ts`, incidente de 2026-09-11), un fallback visible + log de
+consola para cualquier otra pestaña gateada por permiso que llegue a
+`activeTab` sin acceso, en vez de una pantalla vacía sin explicación.
+
+### Filtros de búsqueda en Administración de Sensores
+
+A pedido del developer, probando con Alpayana (142 sensores reales, 56 tipos
+distintos): la tabla de sensores no tenía forma de acotar la vista más allá
+de scrollear. Se agregó una barra de filtros combinables (búsqueda de texto
+por código/nombre/etiqueta/serie/ID externo, tipo de sensor, zona, estado) en
+`SensorManagementView.tsx`, con opciones de tipo/zona derivadas en vivo de
+los sensores realmente cargados (no de la lista fija `SENSOR_TYPES` de 7
+valores del formulario de alta, que no cubre los tipos reales de un tenant
+como Alpayana). Filtrado 100% en el navegador (sin llamada nueva al
+backend), con estado vacío específico para "sin resultados del filtro"
+distinto de "sin sensores registrados".
+
+### Bug real: `sensor_input_channel_def` nunca se creó (ADR-189)
+
+Probando en vivo el catálogo de plantillas contra `PZ-VW-02` (piezómetro
+real de Alpayana), aplicar una plantilla "funcionaba" (creaba las 3
+fórmulas) pero enviar una lectura multicanal fallaba con `400
+sensor_not_multichannel`. La tabla `sensor_input_channel_def` se diseñó y se
+usó en todo el backend de ADR-189 pero su `CREATE TABLE` nunca se incluyó en
+el script SQL — el `INSERT` correspondiente fallaba en silencio (resultado
+sin revisar) y el resto de la aplicación de la plantilla seguía de largo
+igual. Fix: nueva migración `db_scripts/96_sensor_input_channel_def.sql` +
+manejo de error real en los 3 pasos de escritura de "Aplicar plantilla" (ya
+no siguen en silencio si algo falla). Verificado en vivo end-to-end tras el
+fix: lectura de prueba real (Freq=8520, Temp=18.5) → el evaluador calculó
+MPA/MCA/ALT reales en el siguiente ciclo (~10s), los tres `status='ok'`.
+
 ## [Unreleased] — 2026-09-11
 
 Catch-up documental: esta sección cubre el trabajo real entre el 2026-08-21

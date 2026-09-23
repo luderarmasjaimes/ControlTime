@@ -23,10 +23,11 @@ struct AuthUser {
   std::string passwordHash;
   std::vector<double> faceTemplate;
   // Motor que generó faceTemplate (db_scripts/53) -- determina cómo se
-  // compara en login/face: insightface_onnx/legacy usan similitud coseno
-  // sobre este vector; dermalog_cli requiere el comparador nativo del SDK
-  // (blob opaco, coseno no es válido); unknown_client_supplied/none se
-  // rechazan explícitamente. Ver buildFaceLoginProbe.
+  // compara en login/face: seetaface6_local/deepface_silentface/legacy usan
+  // similitud coseno sobre este vector; dermalog_cli requiere el comparador
+  // nativo del SDK (blob opaco, coseno no es válido); insightface_onnx
+  // (motor retirado, ADR-166/188)/unknown_client_supplied/none se rechazan
+  // explícitamente. Ver buildFaceLoginProbe.
   std::string faceTemplateProvider = "unknown";
   std::string createdAt;
   std::string ruc;
@@ -35,6 +36,13 @@ struct AuthUser {
   std::string email;
   /** PNG/JPEG en base64 (sin prefijo data:), generado en registro desde recorte óvalo. */
   std::string avatarCartoonBase64;
+  /** Slug de la plantilla de cuerpo/vestimenta elegida (rediseño de avatar
+   * 2026-09-20, db_scripts/113_avatar_body_template.sql) -- catálogo fijo en
+   * ai_engine/avatar_body_templates.py, validado con la misma lista en
+   * auth_routes.cpp (kAvatarBodyTemplateSlugs) antes de persistir. Vacía en
+   * cuentas anteriores a este cambio; el backend trata "" igual que el slug
+   * por defecto al mostrarlo. */
+  std::string avatarBodyTemplateSlug;
   /** JPEG en base64 (sin prefijo data:) de la foto REAL (no caricaturizada)
    * capturada en el registro biométrico -- fuente: capturedBustRectBase64
    * del frontend, mismo frame que ya alimenta avatarCartoonBase64. Usada por

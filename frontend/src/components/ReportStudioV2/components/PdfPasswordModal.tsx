@@ -1,35 +1,44 @@
 import React, { useEffect, useState } from 'react';
-import { KeyRound, Copy, Check, X, Download } from 'lucide-react';
-import QRCode from 'qrcode';
+import { KeyRound, Copy, Check, X, Plus } from 'lucide-react';
+import { fetchPdfShareRecipients, savePdfShareRecipients } from '../lib/api';
 
 interface PdfPasswordModalProps {
   password: string;
+  reportId: string;
   onClose: () => void;
 }
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_RECIPIENTS = 10;
 
 /**
  * ADR-080: muestra UNA sola vez la contraseña con la que quedó cifrado el
  * PDF recién descargado (el servidor no la persiste — si se cierra este
  * modal sin copiarla, hay que volver a exportar para obtener una nueva).
  *
- * El QR es puramente client-side (codifica el mismo texto que ya viaja en
- * X-Pdf-Password) — ningún lector de PDF estándar soporta "abrir sin pedir
- * contraseña" vía QR/enlace, así que esto no reemplaza el diálogo de
- * contraseña del lector: solo evita transcribir a mano una contraseña
- * aleatoria al escanearla desde otro dispositivo (p.ej. el celular donde
- * llegó el correo o WhatsApp con el PDF adjunto).
+ * ADR-204: el PDF (adjunto) + esta misma contraseña ya se enviaron por
+ * correo automáticamente a quien exportó y a la lista de abajo -- esta
+ * sección deja agregar/borrar esos correos adicionales (persistida en
+ * `report_document_settings.pdf_share_recipients_json`, se aplica desde el
+ * PRÓXIMO export, no reenvía nada retroactivamente). El QR que vivía acá
+ * (codificaba la contraseña para copiarla desde el celular) se quitó por
+ * pedido explícito -- no es necesario para este flujo.
  */
-function PdfPasswordModal({ password, onClose }: PdfPasswordModalProps) {
+function PdfPasswordModal({ password, reportId, onClose }: PdfPasswordModalProps) {
   const [copied, setCopied] = useState(false);
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [emails, setEmails] = useState<string[]>([]);
+  const [newEmail, setNewEmail] = useState('');
+  const [recipientsError, setRecipientsError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    QRCode.toDataURL(password, { width: 208, margin: 1 })
-      .then((url) => { if (!cancelled) setQrDataUrl(url); })
-      .catch(() => { /* si falla la generación, la contraseña en texto sigue disponible */ });
+    fetchPdfShareRecipients(reportId)
+      .then((list) => { if (!cancelled) setEmails(list); })
+      .catch(() => { /* lista vacía si falla -- no bloquea ver la contraseña */ });
     return () => { cancelled = true; };
-  }, [password]);
+  }, [reportId]);
 
   const handleCopy = async () => {
     try {
@@ -42,12 +51,44 @@ function PdfPasswordModal({ password, onClose }: PdfPasswordModalProps) {
     }
   };
 
-  const handleDownloadQr = () => {
-    if (!qrDataUrl) return;
-    const a = document.createElement('a');
-    a.href = qrDataUrl;
-    a.download = 'clave-pdf-qr.png';
-    a.click();
+  const handleAddEmail = () => {
+    const value = newEmail.trim().toLowerCase();
+    setRecipientsError(null);
+    if (!value) return;
+    if (!EMAIL_RE.test(value)) {
+      setRecipientsError('Correo inválido.');
+      return;
+    }
+    if (emails.includes(value)) {
+      setRecipientsError('Ese correo ya está en la lista.');
+      return;
+    }
+    if (emails.length >= MAX_RECIPIENTS) {
+      setRecipientsError(`Máximo ${MAX_RECIPIENTS} correos.`);
+      return;
+    }
+    setEmails((prev) => [...prev, value]);
+    setNewEmail('');
+    setDirty(true);
+  };
+
+  const handleRemoveEmail = (email: string) => {
+    setEmails((prev) => prev.filter((e) => e !== email));
+    setDirty(true);
+  };
+
+  const handleSaveRecipients = async () => {
+    setSaving(true);
+    setRecipientsError(null);
+    try {
+      const saved = await savePdfShareRecipients(reportId, emails);
+      setEmails(saved);
+      setDirty(false);
+    } catch {
+      setRecipientsError('No se pudo guardar la lista.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -63,7 +104,8 @@ function PdfPasswordModal({ password, onClose }: PdfPasswordModalProps) {
         <p className="pdf-pw-desc">
           El PDF descargado lleva marca de agua y quedó cifrado con esta contraseña.
           Se necesita para abrirlo — <strong>no se volverá a mostrar</strong>, guárdala en un
-          lugar seguro.
+          lugar seguro. Ya se envió una copia + esta contraseña por correo a tu casilla y a
+          los destinatarios configurados abajo.
         </p>
         <div className="pdf-pw-value-row">
           <code className="pdf-pw-value">{password}</code>
@@ -72,21 +114,46 @@ function PdfPasswordModal({ password, onClose }: PdfPasswordModalProps) {
             {copied ? 'Copiada' : 'Copiar'}
           </button>
         </div>
-        {qrDataUrl && (
-          <div className="pdf-pw-qr-block">
-            <img src={qrDataUrl} alt="QR con la contraseña del PDF" className="pdf-pw-qr-img" width={104} height={104} />
-            <div className="pdf-pw-qr-text">
-              <p>
-                Escaneá este QR desde el celular para copiar la contraseña sin transcribirla
-                a mano — útil al abrir el PDF adjunto desde el correo o WhatsApp. El lector de
-                PDF va a seguir pidiendo la contraseña igual; el QR solo evita tipearla.
-              </p>
-              <button className="pdf-pw-qr-download-btn" onClick={handleDownloadQr} title="Descargar QR como imagen">
-                <Download size={13} /> Descargar QR
-              </button>
-            </div>
+
+        <div className="pdf-pw-recipients">
+          <p className="pdf-pw-recipients-label">Enviar copia a más correos</p>
+          <div className="pdf-pw-recipients-row">
+            <input
+              type="email"
+              className="pdf-pw-recipients-input"
+              placeholder="correo@empresa.com"
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddEmail(); } }}
+            />
+            <button className="pdf-pw-recipients-add-btn" onClick={handleAddEmail} title="Agregar correo">
+              <Plus size={14} /> Agregar
+            </button>
           </div>
-        )}
+          {recipientsError && <p className="pdf-pw-recipients-error">{recipientsError}</p>}
+          {emails.length > 0 && (
+            <div className="pdf-pw-recipients-list">
+              {emails.map((email) => (
+                <span key={email} className="pdf-pw-recipient-chip">
+                  {email}
+                  <button
+                    className="pdf-pw-recipient-chip-remove"
+                    onClick={() => handleRemoveEmail(email)}
+                    title={`Quitar ${email}`}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {dirty && (
+            <button className="pdf-pw-recipients-save-btn" onClick={handleSaveRecipients} disabled={saving}>
+              {saving ? 'Guardando…' : 'Guardar lista'}
+            </button>
+          )}
+        </div>
+
         <button className="pdf-pw-done-btn" onClick={onClose}>Entendido</button>
       </div>
     </div>

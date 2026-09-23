@@ -5,7 +5,7 @@
 | **Plan** | `specs/011-ia-texto-local/plan.md` |
 | **Sprint·Release** | S6, S11 · R3, R5 |
 | **Responsables** | BE1 (routes/proxy), ML (Ollama/LT), SYS (Docker services), QA |
-| **Última revisión** | 2026-06-24 (plan revisado — T1-T14 confirmados ☑ via spec.md + docker-compose) |
+| **Última revisión** | 2026-09-12 (T15 recalculado — verificación de privacidad por configuración; anterior: 2026-06-24, T1-T14 confirmados ☑ via spec.md + docker-compose) |
 
 ## Backlog de tareas
 
@@ -25,7 +25,7 @@
 | **T12** | **Test CA-3**: rewrite párrafo informal → formal en < 1 s (O6) | CA-3 | QA | — | ☑ |
 | **T13** | **Test CA-4**: LT down → 503 (no 500) | CA-4 | QA | — | ☑ |
 | **T14** | **Test CA-5**: sin sesión → 401 | CA-5 | QA | — | ☑ |
-| **T15** | Verificación privacidad: 0 paquetes a IPs externas durante rewrite | priv | QA | — | ☐ |
+| **T15** | Verificación privacidad: 0 paquetes a IPs externas durante rewrite | priv | QA | — | ☑ *(2026-09-12: verificado por inspección de configuración, no captura de tráfico en vivo — `docker-compose.yml` fija `BEEMETRY_LANGUAGETOOL_URL=http://languagetool:8010` y `BEEMETRY_OLLAMA_URL=http://ollama:11434`, ambos nombres de servicio internos de la red Docker del stack, no direcciones externas; por construcción del despliegue, ningún paquete de esta llamada sale a internet. Una captura de tráfico en vivo seguiría siendo la evidencia más fuerte, pero no hay ninguna ruta de código que use una URL externa.)* |
 | **T16** | Integración en editor de informes (007): botón "Corregir/Reescribir" | UX | FE1 | Sonnet | ☑ |
 | **T17** | Modelo especializado minería (fine-tuning Llama3 con corpus minero) | S11 | ML | **Opus** | ☐ |
 
@@ -46,7 +46,7 @@ T17 (Etapa 2/S11)
 
 - [x] T1-T14 completadas.
 - [x] CA-1..5 demostrados.
-- [ ] T15 (verificación privacidad) — **pendiente**.
+- [x] T15 (verificación privacidad) — verificado 2026-09-12 por inspección de configuración (ver tabla arriba).
 - [x] T16 (integración UX) — verificado 2026-08-30: botón "Corregir ortografía" real en `PageCanvas.tsx` (ReportStudioV2) + `textRewriteOnPremise` importado y usado para reescritura, ambos wireados a `textForSpellOrRewrite`.
 - [ ] T17 (fine-tuning) — Etapa 2.
 - [x] ADR-011-1..4 registrados.

@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AURIXA / Beemetry — Celular como sensor de prueba (telemetría en vivo)</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --text: #e6e8ec; --muted: #8a90a0; --accent: #F07E41; --accent2: #ffab73;
+    --ok: #3ecf8e; --err: #ef5350; --warn: #f2c94c; --mono: 'Consolas','Cascadia Mono',monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:10; }
+  header h1 { font-size:14px; margin:0; color:var(--accent); font-weight:600; }
+  header .origin-badge { font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:3px 7px; color:var(--muted); }
+  main { max-width:640px; margin:0 auto; padding:20px 16px 48px; display:flex; flex-direction:column; gap:16px; }
+  section.panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px; }
+  section.panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--accent2); margin:0 0 14px; display:flex; align-items:center; justify-content:space-between; }
+  section.panel h2 .badge { font-size:10px; text-transform:none; letter-spacing:0; padding:2px 6px; border-radius:4px; background:var(--panel2); color:var(--muted); font-weight:400; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  label:first-child { margin-top:0; }
+  input[type=text], input[type=password], input[type=number], select {
+    width:100%; padding:10px 12px; background:var(--panel2); border:1px solid var(--border); border-radius:7px; color:var(--text); font-size:14px; font-family:inherit;
+  }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; min-width:0; }
+  button { cursor:pointer; border:none; border-radius:7px; padding:11px 16px; font-size:14px; font-weight:600; background:var(--accent); color:#1b1200; width:100%; }
+  button:hover { background:var(--accent2); }
+  button.secondary { background:var(--panel2); color:var(--text); border:1px solid var(--border); font-weight:500; }
+  button.secondary:hover { background:#262b36; }
+  button.danger { background:var(--err); color:#fff; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .btn-row { display:flex; gap:8px; }
+  .btn-row > button { width:auto; flex:1; }
+  .hint { font-size:11px; color:var(--muted); margin-top:8px; line-height:1.5; }
+  .hint code { background:var(--panel2); padding:1px 5px; border-radius:4px; font-family:var(--mono); }
+  .result-box { margin-top:12px; font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:10px; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  .session-card { background:var(--panel2); border:1px solid var(--ok); border-radius:8px; padding:14px; }
+  .session-card .row1 { font-size:15px; font-weight:600; }
+  .session-card .row2 { font-size:12px; color:var(--muted); margin-top:4px; }
+  .key-card { background:var(--panel2); border:1px solid var(--warn); border-radius:8px; padding:14px; font-family:var(--mono); font-size:12px; word-break:break-all; }
+  .stat-grid { display:grid; grid-template-columns: repeat(3,1fr); gap:8px; margin-top:12px; }
+  .stat { background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px; text-align:center; }
+  .stat .n { font-size:18px; font-weight:700; }
+  .stat .l { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-top:2px; }
+  .live-value { font-family:var(--mono); font-size:26px; text-align:center; padding:10px 0; color:var(--accent2); }
+  #log { font-family:var(--mono); font-size:11px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px; max-height:220px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
+  .log-entry { border-bottom:1px dashed var(--border); padding:6px 0; }
+  .log-entry:last-child { border-bottom:none; }
+  .log-ok { color:var(--ok); } .log-err { color:var(--err); } .log-warn { color:var(--warn); }
+  .pill { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; margin-right:6px; }
+  .pill.get { background:#2a3a52; color:#8fc4ff; } .pill.post { background:#3a2a52; color:#c58fff; }
+  footer { text-align:center; color:var(--muted); font-size:11px; padding:20px; }
+  a { color:var(--accent2); }
+  .empty-note { font-size:12px; color:var(--warn); margin-top:6px; }
+  #errorBanner { display:none; max-width:640px; margin:0 auto 12px; padding:12px 16px; border-radius:8px;
+    background:rgba(239,83,80,.12); border:1px solid var(--err); color:#ffb4b1; font-size:13px; line-height:1.5;
+    position:relative; }
+  #errorBanner b { color:#fff; }
+  #errorBanner .close { position:absolute; top:8px; right:10px; cursor:pointer; background:none; border:none;
+    color:#ffb4b1; font-size:16px; width:auto; padding:2px 6px; }
+  #errorBanner .close:hover { color:#fff; background:none; }
+  .dim { opacity:.5; pointer-events:none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Celular como sensor de prueba — telemetría en vivo</h1>
+  <span class="origin-badge" id="originBadge">origin: …</span>
+</header>
+
+<main>
+
+  <div id="errorBanner" role="alert">
+    <button class="close" id="btnCloseError" type="button" aria-label="Cerrar">×</button>
+    <b>Error:</b> <span id="errorBannerText"></span>
+  </div>
+
+  <!-- CONFIG -->
+  <section class="panel">
+    <h2>Configuración</h2>
+    <label for="backendUrl">Backend base URL</label>
+    <input type="text" id="backendUrl" value="http://localhost:8082">
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="secondary" id="btnCheckConn" type="button">Probar conectividad</button>
+    </div>
+    <div id="connResult" class="result-box" style="display:none;"></div>
+    <div class="hint">
+      Igual que <code>index.html</code>/<code>api-test-harness.html</code>: si esta página se sirvió
+      con <code>serve_http.py</code>/<code>serve_https.py</code> (puertos 5190/5443), el campo de
+      arriba ya apunta al origen correcto y <code>/api/*</code> queda proxeado al backend real. Para
+      usar sensores reales del celular (GPS, acelerómetro) hace falta <b>HTTPS</b>
+      (<code>iniciar-pagina-prueba-https.bat</code>, puerto 5443) — los navegadores móviles no
+      exponen esas APIs fuera de un contexto seguro.
+    </div>
+  </section>
+
+  <!-- LOGIN -->
+  <section class="panel" id="loginSection">
+    <h2>1. Iniciar sesión <span class="badge">se necesita rol admin/manager</span></h2>
+    <label for="countrySelect">País</label>
+    <select id="countrySelect"><option value="">Cargando…</option></select>
+    <label for="companySelect">Empresa</label>
+    <select id="companySelect" disabled><option value="">Seleccione un país primero</option></select>
+    <div id="companyEmptyNote" class="empty-note" style="display:none;"></div>
+    <label for="pwUsername">Usuario</label>
+    <input type="text" id="pwUsername" autocomplete="username">
+    <label for="pwPassword">Contraseña / PIN</label>
+    <input type="password" id="pwPassword" autocomplete="current-password">
+    <div class="btn-row" style="margin-top:14px;">
+      <button id="btnLoginPassword" type="button">Iniciar sesión</button>
+    </div>
+    <div id="loginResult" class="result-box" style="display:none;"></div>
+    <div class="hint">
+      Se necesita el permiso <code>dispositivos.manage</code> (roles <code>admin</code>/<code>manager</code>)
+      solo para <b>registrar</b> el sensor una vez (paso 2). Enviar lecturas (paso 4) no usa esta
+      sesión — usa la API key del dispositivo.
+    </div>
+  </section>
+
+  <!-- SESION -->
+  <section class="panel" id="sessionSection" style="display:none;">
+    <h2>Sesión activa</h2>
+    <div class="session-card">
+      <div class="row1" id="sessFullName"></div>
+      <div class="row2" id="sessMeta"></div>
+    </div>
+  </section>
+
+  <!-- REGISTRO DE SENSOR -->
+  <section class="panel dim" id="registerSection">
+    <h2>2. Registrar el celular como sensor</h2>
+    <label for="sensorCode">Código de sensor (único por empresa)</label>
+    <input type="text" id="sensorCode">
+    <label for="sensorName">Nombre</label>
+    <input type="text" id="sensorName" value="Celular Android (prueba)">
+    <label for="sensorType">Tipo</label>
+    <select id="sensorType">
+      <option value="vibration">vibration (acelerómetro)</option>
+      <option value="orientation">orientation (brújula/giroscopio)</option>
+      <option value="gps">gps (geolocalización)</option>
+      <option value="custom">custom (simulado)</option>
+    </select>
+    <label for="sensorUnit">Unidad (opcional)</label>
+    <input type="text" id="sensorUnit" value="m/s2">
+    <div class="btn-row" style="margin-top:14px;">
+      <button id="btnRegisterDevice" type="button">Registrar nuevo sensor</button>
+    </div>
+    <div id="registerResult" class="result-box" style="display:none;"></div>
+
+    <label for="existingKey" style="margin-top:18px;">…o reutilizar una API key ya emitida antes</label>
+    <input type="text" id="existingKey" placeholder="dev_...">
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="secondary" id="btnUseExistingKey" type="button">Usar esta key</button>
+    </div>
+
+    <div id="keyCardWrap" style="display:none; margin-top:14px;">
+      <div class="key-card">
+        <div><b>sensor_code:</b> <span id="activeSensorCode"></span></div>
+        <div style="margin-top:6px;"><b>device_api_key:</b> <span id="activeApiKey"></span></div>
+      </div>
+      <div class="hint">La key solo se muestra una vez en el registro — si se pierde, hay que revocar
+        el dispositivo (vista "Dispositivos" del panel de alarmas) y registrar uno nuevo. Guardada en
+        memoria de esta pestaña solamente (no persiste al recargar), salvo que la copie usted mismo.</div>
+    </div>
+  </section>
+
+  <!-- STREAMING -->
+  <section class="panel dim" id="streamSection">
+    <h2>3-4. Elegir sensor del celular y enviar lecturas</h2>
+    <label for="sourceSelect">Fuente</label>
+    <select id="sourceSelect">
+      <option value="motion">Acelerómetro (magnitud, m/s², incl. gravedad)</option>
+      <option value="orientation">Orientación / brújula (grados, 0-360)</option>
+      <option value="geo">Geolocalización</option>
+      <option value="simulated">Simulado (sin sensor real — para probar el pipeline primero)</option>
+    </select>
+    <div id="geoFieldWrap" style="display:none;">
+      <label for="geoField">Campo a enviar</label>
+      <select id="geoField">
+        <option value="latitude">latitude</option>
+        <option value="longitude">longitude</option>
+        <option value="altitude">altitude</option>
+        <option value="speed">speed</option>
+        <option value="accuracy">accuracy</option>
+      </select>
+    </div>
+    <label for="intervalMs">Intervalo de envío (ms)</label>
+    <input type="number" id="intervalMs" value="1000" min="200" step="100">
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="secondary" id="btnRequestPermission" type="button">Permitir sensores (iOS)</button>
+    </div>
+    <div class="live-value" id="liveValue">—</div>
+    <div class="btn-row">
+      <button id="btnStartStream" type="button">Iniciar streaming</button>
+      <button class="danger" id="btnStopStream" type="button" disabled>Detener</button>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="n" id="statSent">0</div><div class="l">enviadas</div></div>
+      <div class="stat"><div class="n" id="statOk">0</div><div class="l">aceptadas</div></div>
+      <div class="stat"><div class="n" id="statErr">0</div><div class="l">fallidas</div></div>
+    </div>
+    <div class="hint">
+      "Aceptadas" = HTTP 202 de <code>POST /api/mining/telemetry</code> (la lectura ya quedó encolada
+      en <code>TelemetryIngestor</code>, no implica todavía que el flush a la base de datos haya
+      corrido — el flusher trabaja por lotes cada ~200ms). En Android Chrome, <code>devicemotion</code>/
+      <code>deviceorientation</code> no piden permiso explícito (basta HTTPS); en iOS Safari sí —
+      use el botón "Permitir sensores" antes de iniciar.
+    </div>
+  </section>
+
+  <!-- VERIFICACION -->
+  <section class="panel dim" id="verifySection">
+    <h2>5. Verificar que llegó</h2>
+    <div class="btn-row">
+      <button class="secondary" id="btnRefreshDevice" type="button">Refrescar estado del dispositivo</button>
+    </div>
+    <div id="verifyResult" class="result-box" style="display:none;"></div>
+    <div class="hint">
+      Consulta <code>GET /api/mining/devices</code> (con la sesión del paso 1) y muestra
+      <code>connection_status</code>/<code>last_seen_at</code> del sensor activo — pasa a
+      <code>online</code> apenas la primera lectura HTTP es aceptada. Para ver la serie completa,
+      use el panel real (Dashboard/ReportStudio → bloque de sensor) o
+      <code>GET /api/mining/telemetry/wizard/query?sensor_ids=...</code> con la sesión.
+    </div>
+  </section>
+
+  <div id="log"></div>
+
+  <footer>
+    Herramienta de prueba — no usar credenciales productivas reales. Ver
+    <code>docs/integration/EXTERNAL_API_TEST_PAGE.md</code> para el resto del harness.
+  </footer>
+
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  $('originBadge').textContent = 'origin: ' + location.origin;
+
+  const state = {
+    accessToken: null,
+    activeSensorCode: '',
+    activeApiKey: '',
+    streamTimer: null,
+    latestMotion: null,
+    latestOrientation: null,
+    latestGeo: null,
+    sent: 0, ok: 0, err: 0,
+  };
+
+  // ---- backend URL (mismo criterio que index.html / api-test-harness.html) --
+  const BACKEND_KEY = 'phone_sensor_test_backend_url';
+  const savedUrl = localStorage.getItem(BACKEND_KEY);
+  $('backendUrl').value = savedUrl || location.origin;
+  $('backendUrl').addEventListener('change', () => {
+    localStorage.setItem(BACKEND_KEY, $('backendUrl').value.trim());
+  });
+  function backendUrl() { return $('backendUrl').value.trim().replace(/\/+$/, ''); }
+
+  // ---- error banner ----------------------------------------------------------
+  function showError(msg) {
+    $('errorBannerText').textContent = msg;
+    $('errorBanner').style.display = 'block';
+  }
+  function clearError() { $('errorBanner').style.display = 'none'; }
+  $('btnCloseError').addEventListener('click', clearError);
+
+  // ---- logging ----------------------------------------------------------------
+  function redact(obj) {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'object') {
+      const out = Array.isArray(obj) ? [] : {};
+      for (const k in obj) out[k] = redact(obj[k]);
+      return out;
+    }
+    return obj;
+  }
+  function log(method, path, status, ms, body, isError) {
+    const el = document.createElement('div');
+    el.className = 'log-entry';
+    const cls = isError ? 'log-err' : (status >= 200 && status < 300 ? 'log-ok' : 'log-warn');
+    const pillCls = method === 'GET' ? 'pill get' : 'pill post';
+    const time = new Date().toLocaleTimeString();
+    let bodyStr = '';
+    try { bodyStr = JSON.stringify(redact(body), null, 2); } catch (e) { bodyStr = String(body); }
+    el.innerHTML = `<span class="${pillCls}">${method}</span><span class="${cls}">[${time}] ${status} · ${ms}ms · ${path}</span>\n${bodyStr}`;
+    $('log').prepend(el);
+  }
+  async function apiFetch(path, options = {}) {
+    const url = backendUrl() + path;
+    const method = (options.method || 'GET').toUpperCase();
+    const headers = Object.assign({}, options.headers || {});
+    if (state.accessToken && !headers['Authorization']) {
+      headers['Authorization'] = 'Bearer ' + state.accessToken;
+    }
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url, Object.assign({}, options, { method, headers, credentials: 'include' }));
+      const ms = Math.round(performance.now() - t0);
+      let body = null;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) body = await res.json().catch(() => null);
+      else body = await res.text().catch(() => '');
+      log(method, path, res.status, ms, body, false);
+      return { ok: res.ok, status: res.status, body };
+    } catch (err) {
+      const ms = Math.round(performance.now() - t0);
+      log(method, path, 0, ms, { network_or_cors_error: String(err) }, true);
+      return { ok: false, status: 0, body: { network_or_cors_error: String(err) } };
+    }
+  }
+  function showBox(id, data) {
+    const box = $(id);
+    box.style.display = 'block';
+    box.textContent = typeof data === 'string' ? data : JSON.stringify(redact(data), null, 2);
+  }
+
+  // POST /api/mining/telemetry se autentica SOLO por X-Device-Key (no por
+  // sesión de usuario) -- a diferencia de apiFetch(), deliberadamente NO
+  // manda credentials:'include' ni Authorization: si esta misma pestaña
+  // tiene una cookie de sesión (propia, de un login previo en esta página,
+  // o residual de otra) el backend la detecta como AuthTokenSource::Cookie
+  // y exige X-CSRF-Token en cualquier POST (router.cpp, ADR-082) -- un
+  // check que no tiene sentido para una llamada de dispositivo y que un
+  // teléfono real (sin sesión de navegador logueada) nunca dispararía.
+  // Reproducido en vivo: con una cookie de sesión de otra prueba presente
+  // en el mismo origen, cada envío volvía 403 csrf_token_mismatch aunque la
+  // X-Device-Key fuera válida.
+  async function deviceFetch(path, options = {}) {
+    const url = backendUrl() + path;
+    const method = (options.method || 'POST').toUpperCase();
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url, Object.assign({}, options, { method, credentials: 'omit' }));
+      const ms = Math.round(performance.now() - t0);
+      let body = null;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) body = await res.json().catch(() => null);
+      else body = await res.text().catch(() => '');
+      log(method, path, res.status, ms, body, false);
+      return { ok: res.ok, status: res.status, body };
+    } catch (err) {
+      const ms = Math.round(performance.now() - t0);
+      log(method, path, 0, ms, { network_or_cors_error: String(err) }, true);
+      return { ok: false, status: 0, body: { network_or_cors_error: String(err) } };
+    }
+  }
+
+  // ---- país + empresa ---------------------------------------------------------
+  async function loadCountries() {
+    const r = await apiFetch('/api/platform/countries');
+    const sel = $('countrySelect');
+    sel.innerHTML = '<option value="">Seleccione un país…</option>';
+    if (!r.ok) return;
+    (r.body.countries || []).forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.iso2; opt.textContent = `${c.label} (${c.iso2})`;
+      sel.appendChild(opt);
+    });
+  }
+  async function loadCompaniesForCountry(iso2) {
+    const sel = $('companySelect');
+    const note = $('companyEmptyNote');
+    note.style.display = 'none';
+    if (!iso2) {
+      sel.innerHTML = '<option value="">Seleccione un país primero</option>';
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = true;
+    sel.innerHTML = '<option value="">Cargando…</option>';
+    const r = await apiFetch('/api/auth/companies?country=' + encodeURIComponent(iso2));
+    const companies = (r.ok && r.body.companies) || [];
+    if (companies.length === 0) {
+      sel.innerHTML = '<option value="">— sin empresas para este país —</option>';
+      sel.disabled = true;
+      note.style.display = 'block';
+      note.textContent = 'El catálogo no tiene empresas registradas con country_code=' + iso2 + '.';
+      return;
+    }
+    sel.innerHTML = '';
+    companies.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    sel.disabled = false;
+  }
+  $('countrySelect').addEventListener('change', (e) => loadCompaniesForCountry(e.target.value));
+  loadCountries();
+  function selectedCompany() { return $('companySelect').value; }
+
+  $('btnCheckConn').addEventListener('click', async () => {
+    const r = await apiFetch('/api/platform/countries');
+    showBox('connResult', r.ok
+      ? { ok: true, note: 'CORS y conectividad correctas.' }
+      : { ok: false, note: r.status === 0
+            ? 'Fallo de red o CORS. Revise BEEMETRY_CORS_ALLOWED_ORIGIN o que el backend esté arriba.'
+            : `HTTP ${r.status}`, detail: r.body });
+  });
+
+  // ---- login por contraseña ----------------------------------------------------
+  $('btnLoginPassword').addEventListener('click', async () => {
+    const company = selectedCompany();
+    if (!company) { showError('Seleccione país y empresa primero.'); return; }
+    const r = await apiFetch('/api/auth/login/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        company,
+        username: $('pwUsername').value.trim(),
+        password: $('pwPassword').value,
+      }),
+    });
+    showBox('loginResult', r.body);
+    if (r.ok && r.body && r.body.user) {
+      clearError();
+      const user = r.body.user;
+      state.accessToken = user.access_token;
+      $('sessFullName').textContent = user.full_name || user.username;
+      $('sessMeta').textContent = `${user.company} · ${user.role} · tenant ${user.tenant_id}`;
+      $('sessionSection').style.display = 'block';
+      $('registerSection').classList.remove('dim');
+      $('verifySection').classList.remove('dim');
+      if (!$('sensorCode').value) {
+        $('sensorCode').value = 'phone-' + Date.now().toString(36);
+      }
+    } else {
+      const body = r.body || {};
+      showError(body.detail || body.error || (r.status === 0 ? 'Fallo de red o CORS.' : `Error HTTP ${r.status}.`));
+    }
+  });
+
+  // ---- registro de sensor -------------------------------------------------------
+  function activateKey(sensorCode, apiKey) {
+    state.activeSensorCode = sensorCode;
+    state.activeApiKey = apiKey;
+    $('activeSensorCode').textContent = sensorCode;
+    $('activeApiKey').textContent = apiKey;
+    $('keyCardWrap').style.display = 'block';
+    $('streamSection').classList.remove('dim');
+  }
+
+  $('btnRegisterDevice').addEventListener('click', async () => {
+    const sensorCode = $('sensorCode').value.trim();
+    const sensorName = $('sensorName').value.trim();
+    const sensorType = $('sensorType').value;
+    const unit = $('sensorUnit').value.trim();
+    if (!sensorCode || !sensorName) {
+      showError('sensor_code y sensor_name son requeridos.');
+      return;
+    }
+    const r = await apiFetch('/api/mining/devices/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sensor_code: sensorCode, sensor_name: sensorName, sensor_type: sensorType, unit, protocol: 'http_push' }),
+    });
+    showBox('registerResult', r.body);
+    if (r.ok && r.body && r.body.device_api_key) {
+      clearError();
+      activateKey(sensorCode, r.body.device_api_key);
+    } else {
+      const body = r.body || {};
+      showError(body.error === 'sensor_code_already_exists'
+        ? 'Ya existe un sensor con ese sensor_code — cambie el código o use "reutilizar API key" si ya tiene una emitida.'
+        : (body.error || `Error HTTP ${r.status}.`));
+    }
+  });
+
+  $('btnUseExistingKey').addEventListener('click', () => {
+    const key = $('existingKey').value.trim();
+    const sensorCode = $('sensorCode').value.trim() || '(sin confirmar — se mostrará el que devuelva el backend)';
+    if (!key) { showError('Pegue una device_api_key primero.'); return; }
+    clearError();
+    activateKey(sensorCode, key);
+  });
+
+  // ---- sensores del celular -----------------------------------------------------
+  window.addEventListener('devicemotion', (e) => {
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x === null) return;
+    state.latestMotion = Math.sqrt((a.x||0)**2 + (a.y||0)**2 + (a.z||0)**2);
+  });
+  window.addEventListener('deviceorientation', (e) => {
+    if (e.alpha === null || e.alpha === undefined) return;
+    state.latestOrientation = e.alpha;
+  });
+  let geoWatchId = null;
+  function startGeoWatch() {
+    if (geoWatchId !== null || !navigator.geolocation) return;
+    geoWatchId = navigator.geolocation.watchPosition((pos) => {
+      state.latestGeo = pos.coords;
+    }, (err) => {
+      showError('Geolocalización: ' + err.message);
+    }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 });
+  }
+
+  $('sourceSelect').addEventListener('change', () => {
+    const src = $('sourceSelect').value;
+    $('geoFieldWrap').style.display = src === 'geo' ? 'block' : 'none';
+    if (src === 'geo') startGeoWatch();
+  });
+
+  $('btnRequestPermission').addEventListener('click', async () => {
+    try {
+      if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+        const r1 = await DeviceMotionEvent.requestPermission();
+        if (r1 !== 'granted') showError('Permiso de movimiento denegado.');
+      }
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const r2 = await DeviceOrientationEvent.requestPermission();
+        if (r2 !== 'granted') showError('Permiso de orientación denegado.');
+      }
+      if ($('sourceSelect').value === 'geo') startGeoWatch();
+      clearError();
+    } catch (err) {
+      showError('No se pudo solicitar permiso de sensores: ' + err.message);
+    }
+  });
+
+  function currentValue() {
+    const src = $('sourceSelect').value;
+    if (src === 'motion') return state.latestMotion;
+    if (src === 'orientation') return state.latestOrientation;
+    if (src === 'geo') {
+      if (!state.latestGeo) return null;
+      const field = $('geoField').value;
+      const v = state.latestGeo[field];
+      return (v === null || v === undefined) ? null : v;
+    }
+    if (src === 'simulated') {
+      const prev = state._simVal === undefined ? 20 : state._simVal;
+      const next = prev + (Math.random() - 0.5) * 4;
+      state._simVal = next;
+      return next;
+    }
+    return null;
+  }
+
+  $('btnStartStream').addEventListener('click', () => {
+    if (!state.activeApiKey) { showError('Registre o pegue una API key de dispositivo primero (paso 2).'); return; }
+    if ($('sourceSelect').value === 'geo') startGeoWatch();
+    const intervalMs = Math.max(200, parseInt($('intervalMs').value, 10) || 1000);
+    $('btnStartStream').disabled = true;
+    $('btnStopStream').disabled = false;
+    state.streamTimer = setInterval(async () => {
+      const value = currentValue();
+      if (value === null || value === undefined || Number.isNaN(value)) {
+        $('liveValue').textContent = 'sin lectura…';
+        return;
+      }
+      $('liveValue').textContent = value.toFixed(3);
+      state.sent++;
+      $('statSent').textContent = state.sent;
+      const r = await deviceFetch('/api/mining/telemetry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Device-Key': state.activeApiKey },
+        body: JSON.stringify({ value }),
+      });
+      if (r.ok) { state.ok++; $('statOk').textContent = state.ok; }
+      else { state.err++; $('statErr').textContent = state.err; }
+    }, intervalMs);
+  });
+
+  $('btnStopStream').addEventListener('click', () => {
+    clearInterval(state.streamTimer);
+    state.streamTimer = null;
+    $('btnStartStream').disabled = false;
+    $('btnStopStream').disabled = true;
+  });
+
+  // ---- verificación ---------------------------------------------------------
+  $('btnRefreshDevice').addEventListener('click', async () => {
+    const r = await apiFetch('/api/mining/devices');
+    if (!r.ok) { showBox('verifyResult', r.body); return; }
+    const devices = (r.body && r.body.devices) || [];
+    const mine = devices.find(d => d.sensor_code === state.activeSensorCode);
+    showBox('verifyResult', mine || { note: 'No se encontró ese sensor_code en la lista.', devices });
+  });
+</script>
+
+</body>
+</html>

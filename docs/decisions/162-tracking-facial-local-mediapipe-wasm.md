@@ -1,7 +1,15 @@
 # ADR-162 — Tracking facial local vía MediaPipe Tasks Vision (WASM), reemplazo de FaceDetector/Haar
 
-**Status**: implemented en código; pendiente verificación visual en vivo con cámara real (no
-disponible en el entorno donde se implementó, ver "Verificación" abajo)
+> **Actualización 2026-09-12 — verificación con cámara real completada.**
+> Prueba manual end-to-end en **2 laptops distintas con cámara web de
+> producción real** y **2 personas distintas** — cierra el "Pendiente"
+> original de este ADR. Es verificación funcional del tracking/óvalo/
+> parpadeo con hardware real, no una calibración estadística formal
+> (FMR/FNMR, PAD ISO/IEC 30107-3) — ver misma nota en
+> [ADR-119](119-validacion-lentes-biometria-login-y-fusion-onnx.md).
+
+**Status**: implemented, verificado funcionalmente con cámara real (2026-09-12); calibración
+estadística formal (FMR/FNMR) sigue pendiente
 **Fecha**: 2026-09-07
 **Autores**: EC
 **Ámbito**: plataforma

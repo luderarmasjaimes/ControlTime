@@ -40,12 +40,18 @@ sensores activos, tendencia; lectura desde **réplica + agregados continuos**.
 **NO incluye:** edición de informes (007), alertas (016), mapas (009).
 
 ## 5. Criterios de aceptación
-- [ ] **CA-1:** Query de panel KPI responde **< 20 ms** (p95) leyendo de agregado materializado.
-- [ ] **CA-2:** 50 dashboards concurrentes no superan el 30% de CPU del **primario** (van a la réplica).
-- [ ] **CA-3:** (multitenant) Un dashboard nunca muestra datos de otra empresa.
-- [ ] **CA-4:** El panel se actualiza solo (push, ver 005) sin recargar.
-- [ ] **CA-5:** Endpoints existentes responden 200 con datos reales: `/api/dashboard/metrics`, `/api/mining/kpis`, `/api/sensors/data`.
-- [ ] **CA-6:** (resiliencia) Si la réplica cae, el panel degrada con dato del primario o último valor, sin error duro al usuario.
+- [x] **CA-1:** Query de panel KPI responde **< 20 ms** (p95) leyendo de agregado materializado. Medido 3-17 ms con 10M filas (`tasks.md` T10, `db_scripts/28_continuous_aggregates.sql`).
+- [x] **CA-2:** 50 dashboards concurrentes no superan el 30% de CPU del **primario** (van a la réplica). Verificado en prueba de carga 1h (`tasks.md` T11).
+- [x] **CA-3:** (multitenant) Un dashboard nunca muestra datos de otra empresa. Verificado (`tasks.md` T9/T12).
+- [x] **CA-4:** El panel se actualiza solo (push, ver 005) sin recargar. Verificado (`tasks.md` T14 referencia SPEC-005).
+- [x] **CA-5:** Endpoints existentes responden 200 con datos reales: `/api/dashboard/metrics`, `/api/mining/kpis`, `/api/sensors/data`. Verificado (`tasks.md` T14).
+- [x] **CA-6:** (resiliencia) Si la réplica cae, el panel degrada con dato del primario o último valor, sin error duro al usuario. Implementado 2026-06-24 (`tasks.md` T15).
+
+> Nota 2026-09-19 (ADR-200): checkboxes sincronizados con `tasks.md`, que ya
+> declaraba las 15 tareas y las 6 CA cerradas con evidencia real (T1-T15,
+> ver también § "Definition of Done" de ese archivo). Este `spec.md` había
+> quedado desalineado — hallazgo de auditoría de latencia en tiempo real,
+> sin implicar ningún cambio de comportamiento.
 
 ## 6. Requisitos no funcionales
 | Atributo | Objetivo |

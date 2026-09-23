@@ -53,15 +53,26 @@ export const ACTIVE_CHALLENGE_ENABLED = true
  * Ampliado 2026-09-07 (pedido explícito del usuario, etapa 2 del registro/
  * login biométrico) con shift_left/shift_right: DESPLAZAR toda la cabeza de
  * lado sin girarla, distinto de turn_left/turn_right (que SÍ giran la
- * cabeza sobre su propio eje). Ver kLivenessHeadShiftRatio en
+ * cabeza sobre su propio eje).
+ *
+ * Reemplazado 2026-09-16 (hallazgo real, prueba de esfuerzo de 8 min +
+ * revisión visual de las capturas guardadas): shift_left/shift_right resultó
+ * un gesto poco intuitivo -- 81.7% de los frames medidos iban en la
+ * dirección CONTRARIA a la pedida, y la mayoría de los "éxitos" reales
+ * correspondían a la persona mirando hacia ABAJO (no a un desplazamiento
+ * lateral: el óvalo de MediaPipe corre su centro X como efecto colateral del
+ * escorzo al inclinar la cabeza verticalmente). Se reemplaza por el gesto que
+ * la gente ya hacía por instinto: look_down/look_up (inclinar la cabeza hacia
+ * abajo/arriba), que además no tiene la ambigüedad de "su izquierda/derecha"
+ * mirando su propia imagen. Ver kLivenessHeadPitchRatio en
  * backend/src/biometric/liveness_challenge.hpp para la señal que lo mide
- * (faceOvalCx, no headYawRatio).
+ * (faceOvalCy, no headYawRatio).
  */
 export type LivenessChallengeType =
     | 'turn_left'
     | 'turn_right'
-    | 'shift_left'
-    | 'shift_right'
+    | 'look_down'
+    | 'look_up'
     | 'move_closer'
     | 'move_away'
 
@@ -158,8 +169,8 @@ export function isChallengeSequenceComplete(state: LivenessChallengeState): bool
 const INSTRUCTION_KEYS = {
     turn_left: 'liveness.challenge.turnLeft',
     turn_right: 'liveness.challenge.turnRight',
-    shift_left: 'liveness.challenge.shiftLeft',
-    shift_right: 'liveness.challenge.shiftRight',
+    look_down: 'liveness.challenge.lookDown',
+    look_up: 'liveness.challenge.lookUp',
     move_closer: 'liveness.challenge.moveCloser',
     move_away: 'liveness.challenge.moveAway',
 } as const satisfies Record<LivenessChallengeType, string>

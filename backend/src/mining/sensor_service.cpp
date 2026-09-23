@@ -259,6 +259,20 @@ handleGetTelemetrySummary(const http::request<http::string_body>& req,
       // próximo refresh — aceptable para un contador indicativo de UI, no
       // para facturación. Se excluyen los sensores de prueba de carga
       // (load_test) — ruido del stress test ADR-054, no instrumentación real.
+      //
+      // Bug real encontrado y corregido 2026-09-13 (mismo hallazgo que cerró
+      // SPEC-016, ver device_alarm_routes.cpp::evaluateRulesOnce): el
+      // `ORDER BY tf.captured_at DESC LIMIT 1` de este LATERAL, ejecutado UNA
+      // VEZ POR SENSOR (142+ filas), no tenía cota de tiempo — con
+      // chunk_time_interval=1h (ADR-131/db_scripts/74) la hypertable ya tiene
+      // ~10.900 chunks, y sin exclusión de chunks por rango de tiempo el
+      // planner debe considerar el historial completo en CADA fila del
+      // LATERAL. Medido en vivo: este endpoint completo
+      // (`/api/mining/telemetry/summary`) no respondía ni en 45s reales
+      // contra el stack corriendo; acotado a 24h, el EXPLAIN ANALYZE de la
+      // subconsulta por sensor baja a ~2ms. 24h es un margen amplio frente al
+      // reporte real de los sensores (continuo) sin acercarse al costo de
+      // escanear el historial completo.
       const std::string sqlSensors =
           "SELECT s.sensor_id::text, s.sensor_code, s.sensor_name, s.sensor_type, "
           "COALESCE(s.unit,'') AS unit, s.protocol, s.connection_status, "
@@ -269,6 +283,7 @@ handleGetTelemetrySummary(const http::request<http::string_body>& req,
           "LEFT JOIN dim_sensor ds ON ds.sensor_id = s.sensor_id "
           "LEFT JOIN LATERAL (SELECT tf.value_numeric AS v, tf.captured_at AS at "
           "  FROM telemetry_fact tf WHERE tf.sensor_id_sk = ds.sensor_id_sk AND tf.channel_id = 0 "
+          "  AND tf.captured_at > NOW() - INTERVAL '24 hours' "
           "  ORDER BY tf.captured_at DESC LIMIT 1) last ON ds.sensor_id_sk IS NOT NULL "
           "LEFT JOIN LATERAL (SELECT SUM(h.sample_count)::bigint AS n FROM telemetry_fact_hourly h "
           "  WHERE h.sensor_id_sk = ds.sensor_id_sk AND h.channel_id = 0 "

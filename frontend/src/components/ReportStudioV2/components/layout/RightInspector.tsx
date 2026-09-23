@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useEditorStore, defaultBorderByType, type ReportElement } from '../../store/useEditorStore';
+import { useEditorStore, defaultBorderByType, applyTableFontPatch, type ReportElement } from '../../store/useEditorStore';
 import { fetchMiningKpis } from '../../lib/api';
 import SensorInspector from './SensorInspector';
 import SensorMultiChartInspector from './SensorMultiChartInspector';
@@ -7,6 +7,9 @@ import { readImageFileAsDataUrl, resolveReportImageSrc } from '../../lib/reportI
 import { getSession } from '../../../../auth/authStorage';
 import { fetchTenantGallery, fetchTenantGalleryImageDataUrl, type TenantGalleryImage } from '../../lib/tenantGallery';
 import ColorPalette from '../shared/ColorPalette';
+import ConditionalFormatEditor from './ConditionalFormatEditor';
+import type { ColorScaleFormat, ConditionalFormatRule } from '../../lib/tableConditionalFormat';
+import { useActiveTableCellSelection } from '../../lib/tableCellSelectionBridge';
 import { applyListToText } from '../../lib/listFormatting';
 import { COVER_TEMPLATES } from '../../lib/coverTemplates';
 import { resolveMiningUnitName } from '../../lib/sessionChrome';
@@ -33,6 +36,8 @@ import {
   Activity,
   Pin,
   PinOff,
+  PanelRightClose,
+  PanelRightOpen,
   ChevronLeft,
   ChevronDown,
   Plug,
@@ -40,8 +45,8 @@ import {
   RefreshCw,
   LayoutTemplate,
   X,
-  FileText,
   Presentation,
+  FileText,
 } from 'lucide-react';
 
 const ELEMENT_TYPE_META: Record<string, { icon: React.ElementType; tip: string }> = {
@@ -84,14 +89,41 @@ interface SubInspectorProps {
 /* ───────── TABLE INSPECTOR ───────── */
 // Galería de estilos rápidos ("Table Design" de Word): un clic aplica un
 // conjunto coherente de colores (borde/cabecera/texto de cabecera/franjas)
-// en vez de tener que ajustar cada color por separado.
-const TABLE_STYLE_THEMES: { id: string; label: string; borderColor: string; headerBg: string; headerTextColor: string; bandColor: string }[] = [
+// en vez de tener que ajustar cada color por separado. `bandedRows` opcional
+// (default true si se omite, ver el `?? true` en el onClick/preview): los
+// temas "sin bandas" solo colorean la cabecera, cuerpo liso -- útil cuando
+// las franjas intercaladas compiten visualmente con formato condicional u
+// otro color ya aplicado a las celdas.
+interface TableStyleTheme {
+  id: string; label: string; borderColor: string; headerBg: string; headerTextColor: string; bandColor: string;
+  bandedRows?: boolean;
+}
+const TABLE_STYLE_THEMES: TableStyleTheme[] = [
   { id: 'slate',    label: 'Gris pizarra', borderColor: '#e2e8f0', headerBg: '#f8fafc', headerTextColor: '#1e293b', bandColor: '#f1f5f9' },
   { id: 'blue',     label: 'Azul corporativo', borderColor: '#bfdbfe', headerBg: '#2563eb', headerTextColor: '#ffffff', bandColor: '#eff6ff' },
   { id: 'green',    label: 'Verde operación', borderColor: '#bbf7d0', headerBg: '#15803d', headerTextColor: '#ffffff', bandColor: '#f0fdf4' },
   { id: 'amber',    label: 'Ámbar alerta', borderColor: '#fde68a', headerBg: '#b45309', headerTextColor: '#ffffff', bandColor: '#fffbeb' },
   { id: 'red',      label: 'Rojo crítico', borderColor: '#fecaca', headerBg: '#b91c1c', headerTextColor: '#ffffff', bandColor: '#fef2f2' },
   { id: 'mono',     label: 'Blanco y negro', borderColor: '#0f172a', headerBg: '#0f172a', headerTextColor: '#ffffff', bandColor: '#f1f5f9' },
+  { id: 'purple',   label: 'Púrpura elegante', borderColor: '#e9d5ff', headerBg: '#7c3aed', headerTextColor: '#ffffff', bandColor: '#f5f3ff' },
+  { id: 'teal',     label: 'Turquesa fresco', borderColor: '#99f6e4', headerBg: '#0f766e', headerTextColor: '#ffffff', bandColor: '#f0fdfa' },
+  { id: 'orange',   label: 'Naranja cálido', borderColor: '#fed7aa', headerBg: '#c2410c', headerTextColor: '#ffffff', bandColor: '#fff7ed' },
+  { id: 'pink',     label: 'Rosa suave', borderColor: '#fbcfe8', headerBg: '#be185d', headerTextColor: '#ffffff', bandColor: '#fdf2f8' },
+  { id: 'indigo',   label: 'Índigo profesional', borderColor: '#c7d2fe', headerBg: '#4338ca', headerTextColor: '#ffffff', bandColor: '#eef2ff' },
+  { id: 'sand',     label: 'Arena neutra', borderColor: '#e7e5e4', headerBg: '#78716c', headerTextColor: '#ffffff', bandColor: '#fafaf9' },
+  // ── Oscuros (cuerpo con bandas oscuras, no solo la cabecera) ──
+  { id: 'charcoal', label: 'Carbón (oscuro)', borderColor: '#334155', headerBg: '#020617', headerTextColor: '#f1f5f9', bandColor: '#1e293b' },
+  { id: 'midnight', label: 'Medianoche (oscuro)', borderColor: '#1e3a8a', headerBg: '#0c1a3e', headerTextColor: '#bfdbfe', bandColor: '#152449' },
+  { id: 'wine',     label: 'Vino (oscuro)', borderColor: '#7f1d3a', headerBg: '#3f0d16', headerTextColor: '#fecdd3', bandColor: '#450a1a' },
+  // ── Claros / pastel ──
+  { id: 'mint',     label: 'Menta clara', borderColor: '#a7f3d0', headerBg: '#d1fae5', headerTextColor: '#065f46', bandColor: '#ecfdf5' },
+  { id: 'sky',      label: 'Cielo pastel', borderColor: '#bae6fd', headerBg: '#e0f2fe', headerTextColor: '#075985', bandColor: '#f0f9ff' },
+  { id: 'lavender', label: 'Lavanda clara', borderColor: '#ddd6fe', headerBg: '#ede9fe', headerTextColor: '#5b21b6', bandColor: '#f5f3ff' },
+  // ── Solo cabecera coloreada, cuerpo liso (sin bandas) ──
+  { id: 'header-blue',   label: 'Cabecera azul', borderColor: '#bfdbfe', headerBg: '#1d4ed8', headerTextColor: '#ffffff', bandColor: '#ffffff', bandedRows: false },
+  { id: 'header-dark',   label: 'Cabecera oscura', borderColor: '#334155', headerBg: '#0f172a', headerTextColor: '#ffffff', bandColor: '#ffffff', bandedRows: false },
+  { id: 'header-green',  label: 'Cabecera verde', borderColor: '#bbf7d0', headerBg: '#166534', headerTextColor: '#ffffff', bandColor: '#ffffff', bandedRows: false },
+  { id: 'header-maroon', label: 'Cabecera granate', borderColor: '#fecaca', headerBg: '#7f1d1d', headerTextColor: '#ffffff', bandColor: '#ffffff', bandedRows: false },
 ];
 
 function TableInspector({ element, onUpdate }: SubInspectorProps) {
@@ -100,6 +132,15 @@ function TableInspector({ element, onUpdate }: SubInspectorProps) {
   const updateProps = (patch: Record<string, unknown>) => {
     onUpdate({ props: { ...props, ...patch } });
   };
+
+  // Selección de celdas activa DE ESTE bloque (ver
+  // lib/tableCellSelectionBridge.ts) -- el puente es global (una sola
+  // "última selección reportada"), así que hay que descartarla si
+  // pertenece a otra tabla (p.ej. el usuario seleccionó celdas en una
+  // tabla, después hizo clic en OTRA tabla sin tocar celdas todavía: la
+  // selección vieja de la primera no debe filtrarse acá).
+  const rawTableSelection = useActiveTableCellSelection();
+  const activeTableSelection = rawTableSelection?.elementId === element.id ? rawTableSelection : null;
 
   const addRow = () => {
     const colCount = props.rows[0]?.length || 3;
@@ -130,6 +171,26 @@ function TableInspector({ element, onUpdate }: SubInspectorProps) {
         />
       </div>
 
+      <div
+        className="input-group"
+        title="Texto para mostrar como Leyenda o pie de tabla"
+      >
+        <label>Leyenda (Opcional)</label>
+        <input
+          className="input-premium"
+          value={props.caption ?? ''}
+          onChange={(e) =>
+            onUpdate({
+              props: {
+                ...props,
+                caption: e.target.value,
+              },
+            })
+          }
+          placeholder="Ej. Tabla 1 - Vista general"
+        />
+      </div>
+
       <div className="input-group" title="Estilos de tabla predefinidos — un clic aplica borde, cabecera y franjas coherentes, igual que la galería 'Diseño de tabla' de Word">
         <label>Estilos Rápidos</label>
         <div className="table-style-gallery">
@@ -144,10 +205,15 @@ function TableInspector({ element, onUpdate }: SubInspectorProps) {
                 headerBg: theme.headerBg,
                 headerTextColor: theme.headerTextColor,
                 bandColor: theme.bandColor,
+                // La vista previa del swatch YA muestra el intercalado (o su
+                // ausencia, en los temas "solo cabecera") -- si el clic no
+                // activa el mismo valor real, la tabla no se parece en nada a
+                // lo que el usuario acaba de elegir.
+                bandedRows: theme.bandedRows ?? true,
               })}
             >
               <span className="table-style-swatch-header" style={{ background: theme.headerBg }} />
-              <span className="table-style-swatch-row" style={{ background: theme.bandColor, borderColor: theme.borderColor }} />
+              <span className="table-style-swatch-row" style={{ background: theme.bandedRows === false ? '#ffffff' : theme.bandColor, borderColor: theme.borderColor }} />
               <span className="table-style-swatch-row" style={{ background: '#ffffff', borderColor: theme.borderColor }} />
             </button>
           ))}
@@ -175,25 +241,14 @@ function TableInspector({ element, onUpdate }: SubInspectorProps) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div className="input-group" title="Color del texto de la fila de cabecera">
-          <label>Color Texto Cabecera</label>
-          <input
-            type="color"
-            value={props.headerTextColor || '#1e293b'}
-            onChange={(e) => updateProps({ headerTextColor: e.target.value })}
-            style={{ width: '100%', height: 32, padding: 0, border: 'none', background: 'none' }}
-          />
-        </div>
-        <div className="input-group" title="Color de las filas alternadas cuando 'Filas Alternadas' está activo">
-          <label>Color Franja</label>
-          <input
-            type="color"
-            value={props.bandColor || '#f1f5f9'}
-            onChange={(e) => updateProps({ bandColor: e.target.value })}
-            style={{ width: '100%', height: 32, padding: 0, border: 'none', background: 'none' }}
-          />
-        </div>
+      <div className="input-group" title="Color del texto de la fila de cabecera">
+        <label>Color Texto Cabecera</label>
+        <input
+          type="color"
+          value={props.headerTextColor || '#1e293b'}
+          onChange={(e) => updateProps({ headerTextColor: e.target.value })}
+          style={{ width: '100%', height: 32, padding: 0, border: 'none', background: 'none' }}
+        />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -239,7 +294,13 @@ function TableInspector({ element, onUpdate }: SubInspectorProps) {
             className="input-premium"
             type="number"
             value={props.fontSize}
-            onChange={(e) => updateProps({ fontSize: Number(e.target.value) })}
+            // Bug real reportado: cambiar esto solo actualizaba el default
+            // de la tabla, así que las celdas que YA tenían un tamaño
+            // puntual aplicado por selección (barra de formato de celda)
+            // seguían ganando y no cambiaban. `applyTableFontPatch` quita
+            // esos overrides además de actualizar el default -- mismo
+            // criterio que usa "Fuente global" para todas las tablas.
+            onChange={(e) => onUpdate({ props: applyTableFontPatch(props, { fontSize: Number(e.target.value) }) })}
           />
         </div>
       </div>
@@ -257,24 +318,59 @@ function TableInspector({ element, onUpdate }: SubInspectorProps) {
         </select>
       </div>
 
-      <div className="inspector-actions" style={{ marginTop: 4, display: 'flex', gap: 8 }}>
+      <div className="input-group" title="Alineación vertical del contenido de las celdas -- se nota sobre todo en una celda muy alta o fusionada (rowSpan), para centrar el texto en vez de dejarlo pegado arriba">
+        <label>Alineación Vertical</label>
+        <select
+          className="input-premium"
+          value={props.cellVAlign || 'top'}
+          onChange={(e) => updateProps({ cellVAlign: e.target.value })}
+        >
+          <option value="top">Arriba</option>
+          <option value="middle">Centro</option>
+          <option value="bottom">Abajo</option>
+        </select>
+      </div>
+
+      <div className="inspector-actions" style={{ marginTop: 4 }}>
         <button
           className={`btn-premium-outline${props.headerBold !== false ? ' btn-premium-outline--active' : ''}`}
-          style={{ flex: 1 }}
+          style={{ width: '100%' }}
           onClick={() => updateProps({ headerBold: props.headerBold === false })}
           title="Negrita en el texto de la fila de cabecera"
         >
           Cabecera Negrita
         </button>
-        <button
-          className={`btn-premium-outline${props.bandedRows ? ' btn-premium-outline--active' : ''}`}
-          style={{ flex: 1 }}
-          onClick={() => updateProps({ bandedRows: !props.bandedRows })}
-          title="Colorear filas alternadas para facilitar la lectura, igual que 'Filas con bandas' de Word"
-        >
-          Filas Alternadas
-        </button>
       </div>
+
+      <div className="input-group" title="Colorea filas alternadas para facilitar la lectura, igual que 'Filas con bandas' de Word" style={{ marginTop: 8 }}>
+        <label className="table-checkbox-row">
+          <input
+            type="checkbox"
+            checked={Boolean(props.bandedRows)}
+            onChange={(e) => updateProps({ bandedRows: e.target.checked })}
+          />
+          Filas alternadas (intercalado)
+        </label>
+        {props.bandedRows && (
+          <div className="table-band-color-row">
+            <span>Color del intercalado</span>
+            <ColorPalette
+              value={props.bandColor || '#f1f5f9'}
+              title="Color de las filas alternadas"
+              align="right"
+              onChange={(color) => updateProps({ bandColor: color })}
+            />
+          </div>
+        )}
+      </div>
+
+      <ConditionalFormatEditor
+        rules={(props.conditionalFormats as ConditionalFormatRule[]) || []}
+        onChange={(rules) => updateProps({ conditionalFormats: rules })}
+        colorScales={(props.colorScales as ColorScaleFormat[]) || []}
+        onColorScalesChange={(colorScales) => updateProps({ colorScales })}
+        activeSelection={activeTableSelection}
+      />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 8 }}>
         <button className="btn-premium-outline" onClick={addRow}>
@@ -535,6 +631,26 @@ function ImageInspector({ element, onUpdate, onOpenCaptureModal }: ImageInspecto
         />
       </div>
 
+      <div
+        className="input-group"
+        title="Texto para mostrar como Leyenda o pie de figura"
+      >
+        <label>Leyenda (Opcional)</label>
+        <input
+          className="input-premium"
+          value={props.caption ?? ''}
+          onChange={(e) =>
+            onUpdate({
+              props: {
+                ...props,
+                caption: e.target.value,
+              },
+            })
+          }
+          placeholder="Ej. Imagen 1 - Vista general"
+        />
+      </div>
+
       <div className="input-group" title="Cómo encaja la imagen en su marco: cubrir (recorta), contener (sin recortar) o estirar">
         <label>Ajuste en el marco</label>
         <select
@@ -621,6 +737,25 @@ const ChartInspector = React.memo(function ChartInspector({ element, onUpdate }:
       <div className="input-group" title="Título que se muestra sobre el gráfico en el informe">
         <label>Título</label>
         <input className="input-premium" value={props.title || ''} onChange={(e) => updateProps({ title: e.target.value })} placeholder="Ej: Producción mensual" />
+      </div>
+      <div
+        className="input-group"
+        title="Texto para mostrar como Leyenda o pie de figura"
+      >
+        <label>Leyenda (Opcional)</label>
+        <input
+          className="input-premium"
+          value={props.caption ?? ''}
+          onChange={(e) =>
+            onUpdate({
+              props: {
+                ...props,
+                caption: e.target.value,
+              },
+            })
+          }
+          placeholder="Ej. Imagen 1 - Vista general"
+        />
       </div>
       <div className="input-group" title="Tipo de representación: barras, líneas, área o circular">
         <label>Tipo de gráfico</label>
@@ -722,7 +857,15 @@ const TextInspector = React.memo(function TextInspector({ element, onUpdate }: S
           />
         </div>
       </div>
-      <div className="inspector-actions" style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+      <div className="input-group" title="Columnas tipo periódico dentro del bloque (pantalla/PDF: CSS real; Word/PowerPoint: se aproxima con N cuadros de texto lado a lado)">
+        <label>Columnas</label>
+        <select className="input-premium" value={Number(props.columnCount) || 1} onChange={(e) => updateProps({ columnCount: Number(e.target.value) || 1 })}>
+          <option value={1}>1 (sin columnas)</option>
+          <option value={2}>2 columnas</option>
+          <option value={3}>3 columnas</option>
+        </select>
+      </div>
+      <div className="inspector-actions" style={{ marginTop: 8, display: 'flex', gap: 4, width: '98%', overflowX: 'auto' }}>
         <button className={`btn-premium-outline${props.bold ? ' btn-premium-outline--active' : ''}`} style={{ flex: 1 }} onClick={() => updateProps({ bold: !props.bold })} title="Alternar negrita (Ctrl+B)">
           <Type size={14} /> Negrita
         </button>
@@ -1029,6 +1172,124 @@ function BorderInspector({ element, onUpdate }: SubInspectorProps) {
   );
 }
 
+function WordArtInspector({ element, onUpdate }: SubInspectorProps) {
+  const props = element.props || {};
+  const updateProps = (patch: Record<string, unknown>) => onUpdate({ props: { ...props, ...patch } });
+  const hasGradient = !!props.gradientFrom && !!props.gradientTo;
+  return (
+    <div className="inspector-form">
+      <span className="inspector-section-label">WordArt</span>
+      <div className="input-group">
+        <label>Texto</label>
+        <textarea className="input-premium" rows={2} value={props.text || ''} onChange={(e) => updateProps({ text: e.target.value })} />
+      </div>
+      <div className="input-group">
+        <label>Tamaño de fuente</label>
+        <input className="input-premium" type="number" min={8} max={200} step={1} value={Number(props.fontSize) || 48} onChange={(e) => updateProps({ fontSize: Math.max(8, Number(e.target.value) || 48) })} />
+      </div>
+      <div className="input-group">
+        <label>Alineación</label>
+        <select className="input-premium" value={props.textAlign || 'center'} onChange={(e) => updateProps({ textAlign: e.target.value })}>
+          <option value="left">Izquierda</option>
+          <option value="center">Centro</option>
+          <option value="right">Derecha</option>
+        </select>
+      </div>
+      <div className="input-group">
+        <label>
+          <input type="checkbox" checked={hasGradient} onChange={(e) => updateProps(e.target.checked ? { gradientFrom: props.gradientFrom || '#1d4ed8', gradientTo: props.gradientTo || '#7c3aed' } : { gradientFrom: '', gradientTo: '' })} />
+          {' '}Relleno degradado
+        </label>
+      </div>
+      {!hasGradient && (
+        <div className="input-group">
+          <label>Color de relleno</label>
+          <input type="color" value={props.fillColor || '#1d4ed8'} onChange={(e) => updateProps({ fillColor: e.target.value })} style={{ width: '100%', height: 32, padding: 0, border: 'none' }} />
+        </div>
+      )}
+      {hasGradient && (
+        <>
+          <div className="input-group">
+            <label>Degradado — desde</label>
+            <input type="color" value={props.gradientFrom || '#1d4ed8'} onChange={(e) => updateProps({ gradientFrom: e.target.value })} style={{ width: '100%', height: 32, padding: 0, border: 'none' }} />
+          </div>
+          <div className="input-group">
+            <label>Degradado — hasta</label>
+            <input type="color" value={props.gradientTo || '#7c3aed'} onChange={(e) => updateProps({ gradientTo: e.target.value })} style={{ width: '100%', height: 32, padding: 0, border: 'none' }} />
+          </div>
+        </>
+      )}
+      <div className="input-group">
+        <label>Ancho de contorno</label>
+        <input className="input-premium" type="number" min={0} max={12} step={1} value={Number(props.strokeWidth) || 0} onChange={(e) => updateProps({ strokeWidth: Math.max(0, Number(e.target.value) || 0) })} />
+      </div>
+      {Number(props.strokeWidth) > 0 && (
+        <div className="input-group">
+          <label>Color de contorno</label>
+          <input type="color" value={props.strokeColor || '#0f172a'} onChange={(e) => updateProps({ strokeColor: e.target.value })} style={{ width: '100%', height: 32, padding: 0, border: 'none' }} />
+        </div>
+      )}
+      <div className="input-group">
+        <label>
+          <input type="checkbox" checked={!!props.shadow} onChange={(e) => updateProps({ shadow: e.target.checked })} />
+          {' '}Sombra
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function ShapeInspector({ element, onUpdate }: SubInspectorProps) {
+  const props = element.props || {};
+  const border = element.border || defaultBorderByType('shape');
+  const updateProps = (patch: Record<string, unknown>) => onUpdate({ props: { ...props, ...patch } });
+  return (
+    <div className="inspector-form">
+      <span className="inspector-section-label">Forma</span>
+      <div className="input-group">
+        <label>Tipo</label>
+        <select className="input-premium" value={props.shapeType || 'rectangle'} onChange={(e) => updateProps({ shapeType: e.target.value })}>
+          {['rectangle', 'square', 'circle', 'ellipse', 'diamond', 'triangle', 'star', 'line'].map((type) => (
+            <option key={type} value={type}>{type}</option>
+          ))}
+        </select>
+      </div>
+      {props.shapeType !== 'line' && (
+        <div className="input-group">
+          <label>Color de fondo</label>
+          <input type="color" value={props.fill || '#dbeafe'} onChange={(e) => updateProps({ fill: e.target.value })} style={{ width: '100%', height: 32, padding: 0, border: 'none' }} />
+        </div>
+      )}
+      {props.shapeType === 'line' && (
+        <div className="input-group">
+          <label>Ancho de línea</label>
+          <input
+            className="input-premium"
+            type="number"
+            min={1}
+            max={30}
+            step={1}
+            value={Number(props.strokeWidth ?? 2)}
+            onChange={(e) => updateProps({ strokeWidth: Math.min(30, Math.max(1, Number(e.target.value) || 1)) })}
+          />
+        </div>
+      )}
+      <div className="input-group">
+        <label>Color de borde</label>
+        <input
+          type="color"
+          value={props.stroke || border.color}
+          onChange={(e) => {
+            const color = e.target.value;
+            onUpdate({ props: { ...props, stroke: color }, border: { ...border, color } });
+          }}
+          style={{ width: '100%', height: 32, padding: 0, border: 'none' }}
+        />
+      </div>
+    </div>
+  );
+}
+
 /* ───────── WRAP INSPECTOR (ADR-049 revisado, "Ajustar texto" de Word) ─────
    Réplica de las 7 opciones del menú "Opciones de diseño" de Word — antes
    solo había 3 opciones en un <select> escondido varias secciones abajo en
@@ -1134,12 +1395,21 @@ interface RightInspectorProps {
    * ribbon) vive fuera de este componente. */
   showTemplatesPanel?: boolean;
   onCloseTemplatesPanel?: () => void;
+  /** Notifica a App.tsx cada vez que este panel pasa a expandido/contraído
+   * (pedido explícito 2026-09-08: la columna de miniaturas de diapositivas,
+   * SlideThumbnailRail.tsx, debe achicarse mientras este panel está
+   * desplegado, igual que ya hace con la biblioteca de contenidos de la
+   * izquierda) -- `isExpanded` acá mezcla hover/fijado/selección/plantillas
+   * (varios motivos, no un solo booleano en props), así que se levanta vía
+   * callback en vez de duplicar esa lógica en el padre. */
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 /* ───────── PLANTILLAS DE DOCUMENTO ───────── */
-// Ícono + etiqueta por tipo de plantilla -- distinción visual pedida
-// explícitamente entre plantillas tipo documento (Word, lienzo A4) y tipo
-// presentación (PowerPoint, lienzo 16:9 960x540, ADR-083).
+// Badge chico (ícono + "Word"/"PowerPoint") en el diálogo de confirmación de
+// reemplazo -- portado del avance de Luder (2026-09-11): antes de aplicar una
+// plantilla de diapositivas no había ninguna señal visual de que el lienzo
+// iba a cambiar de A4/A3 a 16:9, más allá del texto plano.
 function TemplateTypeBadge({ docType }: { docType?: 'document' | 'presentation' }) {
   const isPresentation = docType === 'presentation';
   return (
@@ -1226,7 +1496,6 @@ function DocumentTemplatesPanel({ onClose }: { onClose?: () => void }) {
             onClick={() => setPendingId(t.id)}
             title={t.description}
           >
-            <TemplateTypeBadge docType={t.docType} />
             <span style={{ fontWeight: 700, fontSize: 12 }}>{t.label}</span>
             <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>{t.description}</span>
           </button>
@@ -1247,7 +1516,6 @@ function DocumentTemplatesPanel({ onClose }: { onClose?: () => void }) {
             onClick={() => setPendingId(t.id)}
             title={t.description}
           >
-            <TemplateTypeBadge docType={t.docType} />
             <span style={{ fontWeight: 700, fontSize: 12 }}>{t.label}</span>
             <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>{t.description}</span>
           </button>
@@ -1258,7 +1526,7 @@ function DocumentTemplatesPanel({ onClose }: { onClose?: () => void }) {
 }
 
 /* ───────── MAIN COMPONENT ───────── */
-export default function RightInspector({ onRequestImageReplace, showTemplatesPanel, onCloseTemplatesPanel }: RightInspectorProps) {
+export default function RightInspector({ onRequestImageReplace, showTemplatesPanel, onCloseTemplatesPanel, onExpandedChange }: RightInspectorProps) {
   const selectedPage = useEditorStore((s) => s.selectedPage);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
   const page = useEditorStore((s) => s.doc.pages.find((p) => p.page_number === selectedPage));
@@ -1282,10 +1550,19 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
 
   const [isHovered, setIsHovered] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
+  // Pedido explícito: a veces el panel de propiedades no hace falta y ocupa
+  // espacio regular, pero antes no había forma de contraerlo mientras el
+  // bloque seguía seleccionado (el autodesplegable de abajo es más fuerte
+  // que cualquier otra cosa). Minimizar suprime SOLO ese autodesplegable por
+  // selección -- hover (para asomarse un instante) y pin (forzar abierto)
+  // siguen funcionando igual. Se mantiene así hasta que el usuario vuelve a
+  // tocar el mismo botón; no se resetea solo al cambiar de bloque seleccionado.
+  const [isMinimized, setIsMinimized] = useState(false);
   // Al seleccionar un bloque en el lienzo, el panel se expande automáticamente
   // para mostrar sus propiedades (además de hover/pin). Es el comportamiento
   // esperado: seleccionar objeto ⇒ ver y editar sus parámetros de inmediato.
-  const isExpanded = isHovered || isPinned || Boolean(selected) || Boolean(showTemplatesPanel);
+  const isExpanded = isHovered || isPinned || (Boolean(selected) && !isMinimized) || Boolean(showTemplatesPanel);
+  useEffect(() => { onExpandedChange?.(isExpanded); }, [isExpanded, onExpandedChange]);
 
   const typeMeta = selected ? ELEMENT_TYPE_META[selected.type] : null;
   const TypeIcon = typeMeta?.icon || Settings2;
@@ -1293,7 +1570,7 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
 
   return (
     <aside
-      className={`panel panel--right ${isExpanded ? 'panel--right-expanded' : ''}${isPinned ? ' panel--pinned' : ''}`}
+      className={`panel panel--right ${isExpanded ? 'panel--right-expanded' : ''}${isPinned ? ' panel--pinned' : ''} py-5 px-2`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => { if (!isPinned) setIsHovered(false); }}
     >
@@ -1308,7 +1585,7 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
           {showTemplatesPanel
             ? <LayoutTemplate size={18} color="var(--accent)" aria-hidden />
             : <Settings2 size={18} color="var(--accent)" aria-hidden />}
-          {isExpanded && <span>{showTemplatesPanel ? 'Plantillas de Documento' : 'Propiedades'}</span>}
+          {isExpanded && <span style={{color:'white'}}>{showTemplatesPanel ? 'Plantillas de Documento' : 'Propiedades'}</span>}
         </h3>
         {isExpanded && showTemplatesPanel && (
           <button
@@ -1323,12 +1600,23 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
         {isExpanded && !showTemplatesPanel && (
           <button
             type="button"
+            className={`panel-pin-btn${isMinimized ? ' panel-pin-btn--active' : ''}`}
+            onClick={() => setIsMinimized((m) => !m)}
+            title={isMinimized ? 'Restaurar el autodesplegable al seleccionar un bloque' : 'Minimizar (contraer aunque el bloque siga seleccionado)'}
+            aria-pressed={isMinimized}
+          >
+            {isMinimized ? <PanelRightOpen color="#F07E41" size={14} aria-hidden /> : <PanelRightClose color="#F07E41" size={14} aria-hidden />}
+          </button>
+        )}
+        {isExpanded && !showTemplatesPanel && (
+          <button
+            type="button"
             className={`panel-pin-btn${isPinned ? ' panel-pin-btn--active' : ''}`}
             onClick={() => setIsPinned((p) => !p)}
             title={isPinned ? 'Soltar la barra (vuelve a contraerse al salir)' : 'Fijar la barra expandida (útil en tablet)'}
             aria-pressed={isPinned}
           >
-            {isPinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}
+            {isPinned ? <PinOff color="#F07E41" size={14} aria-hidden /> : <Pin color="#F07E41" size={14} aria-hidden />}
           </button>
         )}
       </div>
@@ -1383,6 +1671,18 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
         <div className="inspector-content-scroll" style={{ marginTop: 4 }}>
           {selected.type === 'table' && (
             <TableInspector
+              element={selected}
+              onUpdate={handleUpdate}
+            />
+          )}
+          {selected.type === 'shape' && (
+            <ShapeInspector
+              element={selected}
+              onUpdate={handleUpdate}
+            />
+          )}
+          {selected.type === 'wordart' && (
+            <WordArtInspector
               element={selected}
               onUpdate={handleUpdate}
             />
@@ -1461,10 +1761,10 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
             <>
               {/* Ajuste de texto PRIMERO — pedido explícito: quedaba "muy
                  oculto" varias secciones más abajo en el panel. */}
-              {['image', 'chart', 'table', 'kpi', 'sensor', 'map', 'sensor_multi_chart'].includes(selected.type) && (
+              {['image', 'chart', 'table', 'kpi', 'sensor', 'map', 'sensor_multi_chart', 'shape'].includes(selected.type) && (
                 <div
                   className="inspector-form"
-                  style={{ marginTop: ['table', 'kpi', 'sensor', 'image', 'chart', 'map', 'sensor_multi_chart'].includes(selected.type) ? 18 : 0 }}
+                  style={{ marginTop: ['table', 'kpi', 'sensor', 'image', 'chart', 'map', 'sensor_multi_chart', 'shape'].includes(selected.type) ? 18 : 0 }}
                 >
                   <WrapInspector element={selected} onUpdate={handleUpdate} />
                 </div>
@@ -1525,7 +1825,7 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
                     {selected.locked ? 'Desbloquear' : 'Bloquear'}
                   </button>
                   <button
-                    className="btn-premium-outline btn-premium-outline--danger"
+                    className="btn-premium-outline"
                     style={{ flex: 1 }}
                     onClick={() => removeElement(selectedPage, selected.id)}
                     title="Eliminar el bloque seleccionado del informe"
@@ -1539,8 +1839,8 @@ export default function RightInspector({ onRequestImageReplace, showTemplatesPan
       )}
       {!selected && isExpanded && (
         <div className="inspector-empty-state">
-           <MousePointerClick size={44} color="#94a3b8" style={{ marginBottom: 14 }} aria-hidden />
-           <p title="Haga clic en cualquier bloque del lienzo para editarlo aquí">
+           <MousePointerClick size={44} color="white" style={{ marginBottom: 14 }} aria-hidden />
+           <p title="Haga clic en cualquier bloque del lienzo para editarlo aquí" style={{color:"white"}}>
              Seleccione un bloque en el lienzo para editar sus propiedades
            </p>
         </div>

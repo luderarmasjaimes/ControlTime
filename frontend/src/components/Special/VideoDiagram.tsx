@@ -47,6 +47,17 @@ interface VideoDiagramProps {
     telemetryTenantId?: string;
 }
 
+// SPEC-013 T9 (grid CCTV, "refresh configurable"): opciones de auto-refresh
+// en ms; 0 = apagado (solo manual, vía el botón "Actualizar"). Persistido en
+// localStorage para que la preferencia del operador sobreviva un reload.
+const REFRESH_INTERVAL_OPTIONS = [
+    { label: 'Manual', value: 0 },
+    { label: '15 s', value: 15000 },
+    { label: '30 s', value: 30000 },
+    { label: '60 s', value: 60000 },
+] as const
+const REFRESH_INTERVAL_STORAGE_KEY = 'beemetry.cctv.refreshIntervalMs'
+
 const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: VideoDiagramProps) => {
     const [cameras, setCameras] = useState<any[]>([])
     const [loading, setLoading] = useState(true)
@@ -55,6 +66,20 @@ const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: Video
     const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
     const [webcamActive, setWebcamActive] = useState(false)
     const [copiedId, setCopiedId] = useState<string | number | null>(null)
+    // SPEC-013 T10 (indicador de cámara offline con timestamp): marca de
+    // tiempo del último poll exitoso a /api/surveillance/cameras -- es el
+    // "as of" real del estado online/offline mostrado por cámara (la API
+    // devuelve el estado de todas juntas en una sola respuesta, no hay un
+    // timestamp por cámara individual en el schema real).
+    const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null)
+    const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(() => {
+        try {
+            const stored = Number(localStorage.getItem(REFRESH_INTERVAL_STORAGE_KEY))
+            return REFRESH_INTERVAL_OPTIONS.some((o) => o.value === stored) ? stored : 30000
+        } catch {
+            return 30000
+        }
+    })
     const localVideoRef = useRef<HTMLVideoElement | null>(null)
     const streamRef = useRef<MediaStream | null>(null)
 
@@ -84,6 +109,7 @@ const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: Video
             }
             setCameras(Array.isArray(data.cameras) ? data.cameras : [])
             setHasLoadedOnce(true)
+            setLastFetchedAt(new Date())
         } catch (err) {
             log.error('Failed to load cameras', err)
             setLoadError('No se pudo conectar con /api/surveillance/cameras')
@@ -98,6 +124,26 @@ const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: Video
         setLoading(true)
         loadCameras()
     }, [loadCameras])
+
+    // SPEC-013 T9: auto-refresh configurable -- reinicia el timer si cambia
+    // el intervalo elegido o el tenant (loadCameras cambia de identidad).
+    // `refreshIntervalMs === 0` (Manual) no arma ningún timer.
+    useEffect(() => {
+        if (!refreshIntervalMs) return undefined
+        const id = window.setInterval(() => {
+            loadCameras()
+        }, refreshIntervalMs)
+        return () => window.clearInterval(id)
+    }, [refreshIntervalMs, loadCameras])
+
+    const onChangeRefreshInterval = (value: number) => {
+        setRefreshIntervalMs(value)
+        try {
+            localStorage.setItem(REFRESH_INTERVAL_STORAGE_KEY, String(value))
+        } catch {
+            /* almacenamiento no disponible (modo privado, cuota) -- no bloquea la función */
+        }
+    }
 
     const onRefresh = () => {
         setRefreshing(true)
@@ -175,17 +221,38 @@ const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: Video
                 subtitle="Cámaras disponibles en la plataforma (MP4/HLS)."
                 icon={Camera}
                 actions={
-                    <button
-                        type="button"
-                        onClick={onRefresh}
-                        disabled={refreshing}
-                        className="mining-workbench-action-btn inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-                    >
-                        <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-                        Actualizar
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <label className="hidden items-center gap-1.5 text-[11px] font-semibold text-slate-500 sm:flex" style={{ fontFamily: 'var(--font-mining-ui)' }}>
+                            Auto-actualizar
+                            <select
+                                value={refreshIntervalMs}
+                                onChange={(e) => onChangeRefreshInterval(Number(e.target.value))}
+                                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-200"
+                                title="Frecuencia de auto-actualización del muro de cámaras"
+                            >
+                                {REFRESH_INTERVAL_OPTIONS.map((o) => (
+                                    <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
+                            </select>
+                        </label>
+                        <button
+                            type="button"
+                            onClick={onRefresh}
+                            disabled={refreshing}
+                            className="mining-workbench-action-btn inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                        >
+                            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                            Actualizar
+                        </button>
+                    </div>
                 }
             />
+            {lastFetchedAt && (
+                <p className="mb-4 -mt-2 text-right text-[10px] text-slate-600" style={{ fontFamily: 'var(--font-mining-ui)' }}>
+                    Estado al {lastFetchedAt.toLocaleTimeString()}
+                    {refreshIntervalMs > 0 && ` · próxima actualización automática en ${Math.round(refreshIntervalMs / 1000)} s`}
+                </p>
+            )}
 
             {cameras.length > 0 && (
                 <div className="mb-5 flex flex-wrap gap-2">
@@ -266,13 +333,29 @@ const VideoDiagram = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: Video
                         const kind = streamKind(cam.rtmp_url)
                         const playable = kind === 'http' || kind === 'hls'
                         const st = statusStyles(cam.status)
+                        // SPEC-013 T10: indicador de cámara offline -- placeholder dedicado
+                        // (distinto del de "sin URL reproducible" de arriba) + timestamp del
+                        // último poll que confirmó ese estado.
+                        const isOffline = ['offline', 'down', 'error'].includes(String(cam.status || '').toLowerCase())
                         return (
                             <article
                                 key={cam.id}
                                 className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/80 shadow-xl"
                             >
                                 <div className="relative aspect-video bg-black">
-                                    {playable && cam.rtmp_url ? (
+                                    {isOffline ? (
+                                        <div className="flex h-full flex-col items-center justify-center gap-2 bg-gradient-to-b from-rose-950/40 to-black p-4 text-center">
+                                            <AlertTriangle className="text-rose-500" size={36} />
+                                            <span className="text-[11px] font-bold uppercase tracking-wide text-rose-300">
+                                                Cámara sin señal
+                                            </span>
+                                            {lastFetchedAt && (
+                                                <span className="text-[10px] text-slate-500">
+                                                    Confirmado a las {lastFetchedAt.toLocaleTimeString()}
+                                                </span>
+                                            )}
+                                        </div>
+                                    ) : playable && cam.rtmp_url ? (
                                         <CctvStreamVideo
                                             streamUrl={cam.rtmp_url}
                                             className="h-full w-full object-cover"

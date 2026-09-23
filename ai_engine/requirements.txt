@@ -76,8 +76,14 @@ waitress
 numpy>=1.24,<2
 requests
 onnxruntime>=1.16.0,<1.24
-# Embeddings faciales (modelos ONNX descargados en INSIGHTFACE_ROOT)
-insightface>=0.7.3,<0.8
+# insightface (embeddings faciales, motor secundario de login) retirado
+# ADR-166/188: sus modelos pre-entrenados (buffalo_l) tienen licencia
+# "solo uso académico", incompatible con Beemetry como producto comercial.
+# face_embedding_insight.py y sus dos usos internos en eye_analyzer.py
+# (QA de similitud de identidad del avatar generado, control de calidad de
+# bbox) ya degradan con gracia a "sin señal"/None cuando el paquete no está
+# instalado (ver _get_analyzer() en face_embedding_insight.py) -- no
+# requieren código nuevo, solo dejaron de tener el paquete disponible.
 onnx>=1.15.0,<1.17
 # Lectura de DNI por cámara (dni_scan.py) -- PDF417 (DNI antiguo) + MRZ
 # (todas las versiones). Requiere libzbar0/tesseract-ocr en Dockerfile.ai.

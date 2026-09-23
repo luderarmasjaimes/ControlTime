@@ -244,38 +244,26 @@ bool applyIcaoGlassesEma(GlassesEmaState &s, double rawLikelihood,
   return s.lastNoGlassesState;
 }
 
-static std::string toLowerCopy(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
-}
-
-static std::vector<std::string> splitCsvLower(const std::string &csv) {
-  std::vector<std::string> out;
-  std::stringstream ss(csv);
-  std::string item;
-  while (std::getline(ss, item, ',')) {
-    auto first = item.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) {
-      continue;
-    }
-    auto last = item.find_last_not_of(" \t\r\n");
-    out.push_back(toLowerCopy(item.substr(first, last - first + 1)));
-  }
-  return out;
-}
-
-std::string resolveRoleForUsername(const std::string &username) {
-  const auto candidate = toLowerCopy(username);
-  const auto configured = splitCsvLower(config::getenvOr("BEEMETRY_AUTH_ADMIN_USERS", "admin"));
-  for (const auto &admin : configured) {
-    if (candidate == admin) {
-      return "admin";
-    }
-  }
-  if (candidate.rfind("admin_", 0) == 0) {
-    return "admin";
-  }
+// ADR-177 (2026-09-12): resolveRoleForUsername() -- que otorgaba "admin"
+// automáticamente a cualquier username "admin"/"admin_*" o a la lista de
+// BEEMETRY_AUTH_ADMIN_USERS -- queda RETIRADA. Era un heurístico de bootstrap
+// de un único admin local para desarrollo, nunca pensado para exponerse al
+// registro público (ver hallazgo ADR-134); su única función ahora es
+// eliminarse por completo en vez de seguir siendo un vector de escalada
+// residual. defaultSelfRegisteredRole() la reemplaza en el único caller real
+// (handler de POST /api/auth/register en main.cpp): el autoregistro público
+// ya no acepta NINGÚN rol del cliente (ni "admin" ni ningún otro de los 7
+// roles) -- pero el default para un registro legítimo sigue siendo
+// "operator" (el rol operativo normal, ya era el default de facto de
+// resolveRoleForUsername para cualquier username que no calzara el
+// heurístico de admin -- el 100% de los registros reales, ver
+// frontend/src/auth/authApi.ts::registerUser, que nunca mandó "role").
+// "viewer" (el más bajo de los 7) sigue existiendo, pero solo como el
+// castigo puntual que ADR-134 ya documentó para el caso de una empresa
+// EXISTENTE con un rol elevado solicitado -- ese bloque también se retiró
+// del handler porque ahora es inalcanzable (role ya nunca es distinto de
+// "operator"), no porque "viewer" deba ser el default de un registro sano.
+std::string defaultSelfRegisteredRole() {
   return "operator";
 }
 

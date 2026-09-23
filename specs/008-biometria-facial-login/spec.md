@@ -58,8 +58,10 @@ requiere verificación de identidad por rostro, **ejecutada localmente en el
 servidor** (no nube), para acceso de operación.
 
 ## 2. Objetivo
-Verificar identidad por rostro con modelos locales (ONNX/InsightFace), con
-calidad de imagen ICAO mínima, integrado al login (006), sin enviar datos a la nube.
+Verificar identidad por rostro con modelos locales (SeetaFace6/DeepFace
+ONNX; InsightFace fue el motor secundario original, retirado por licencia
+no comercial — ADR-166/188), con calidad de imagen ICAO mínima, integrado al
+login (006), sin enviar datos a la nube.
 
 ## 3. Usuarios y contexto
 - **Roles:** operador en campo (tablet). **Multitenant:** plantilla facial por
@@ -148,9 +150,9 @@ local derivado del retrato conforme a ADR-074.
 ## 6. Requisitos no funcionales
 | Atributo | Objetivo |
 |---|---|
-| Procesamiento | local (DeepFace+Silent-Face por defecto; SeetaFace6/InsightFace/Dermalog seleccionables) |
+| Procesamiento | local (DeepFace+Silent-Face por defecto; SeetaFace6/Dermalog seleccionables — InsightFace retirado, ADR-166/188) |
 | Latencia verificación | objetivo < 1 s (warmup precargado) |
-| Umbrales | `FACE_EMBEDDING_COSINE_THRESHOLD`, `BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN` |
+| Umbrales | `BEEMETRY_FACE_SEETAFACE6_COSINE_THRESHOLD`, `BEEMETRY_FACE_DEEPFACE_COSINE_THRESHOLD`, `BEEMETRY_FACE_LEGACY_COSINE_THRESHOLD`, `BIOMETRIC_ICAO_EYE_CONFIDENCE_MIN` |
 
 ## 7. Contratos (endpoints reales)
 - `POST /api/auth/biometric/verify-frame`, `GET /api/auth/biometric/status`

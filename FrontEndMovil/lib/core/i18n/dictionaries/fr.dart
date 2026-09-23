@@ -1,0 +1,31 @@
+/// Diccionario parcial (francés) — fallback a [esDictionary] para el resto.
+const Map<String, String> frDictionary = {
+  'common.loading': 'Chargement…',
+  'common.retry': 'Réessayer',
+  'common.cancel': 'Annuler',
+  'common.save': 'Enregistrer',
+  'common.close': 'Fermer',
+  'common.confirm': 'Confirmer',
+  'common.search': 'Rechercher',
+  'common.noData': 'Aucune donnée disponible',
+  'common.refresh': 'Actualiser',
+  'common.offline': 'Hors ligne',
+
+  'auth.login': 'Se connecter',
+  'auth.logout': 'Se déconnecter',
+  'auth.company': 'Entreprise',
+  'auth.identity': 'Utilisateur / ID',
+  'auth.password': 'Mot de passe',
+  'auth.loginWithPassword': 'Se connecter avec mot de passe',
+  'auth.loginWithFace': 'Se connecter avec le visage',
+  'auth.restoringSession': 'Restauration de la session…',
+
+  'nav.control': 'Contrôle',
+  'nav.ground': 'Terrain',
+  'nav.maps': 'Cartes',
+  'nav.reports': 'Rapports',
+  'nav.manage': 'Gestion',
+  'nav.access': 'Accès',
+  'nav.dashboard': 'Tableau de bord',
+  'nav.alarms': 'Alarmes',
+};

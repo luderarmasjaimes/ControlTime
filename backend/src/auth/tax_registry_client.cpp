@@ -154,6 +154,16 @@ TaxRegistryLookup lookupPeruRuc(const std::string &ruc) {
     out.condicion = firstStringField(obj, {"condicion"});
     out.domicilioFiscal = firstStringField(
         obj, {"domicilioFiscal", "direccion", "domicilio_fiscal"});
+    // El proveedor separa distrito/provincia/departamento del resto de la
+    // dirección -- se anexan aquí (si vienen) para que domicilio_fiscal
+    // quede completo (ej. "AV. X 123, MIRAFLORES, LIMA, LIMA") en vez de
+    // solo la calle, que por sí sola no ubica la empresa.
+    const std::string distrito = firstStringField(obj, {"distrito"});
+    const std::string provincia = firstStringField(obj, {"provincia"});
+    const std::string departamento = firstStringField(obj, {"departamento"});
+    for (const auto &part : {distrito, provincia, departamento}) {
+      if (!part.empty()) out.domicilioFiscal += (out.domicilioFiscal.empty() ? "" : ", ") + part;
+    }
     out.found = !out.razonSocial.empty();
   } catch (const std::exception &ex) {
     // Cualquier excepción (parse, red, TLS) se traduce a "no disponible" --

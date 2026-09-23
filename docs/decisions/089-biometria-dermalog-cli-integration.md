@@ -1,5 +1,13 @@
 # ADR-089 — Integración Comercial Biométrica con Dermalog Face SDK
 
+> **Actualización 2026-09-12 — SDK descartado por licencia comercial con
+> costo adicional, ver [ADR-180](180-descarte-dermalog-licencia-comercial-costo-adicional.md).**
+> Se decidió no adquirir la licencia comercial de Dermalog — el pendiente
+> de certificación con hardware real (SPEC-008 T16) se retira, no se
+> reprograma. El wrapper CLI de este ADR se conserva en el código, inactivo
+> por defecto (ya lo estaba desde ADR-105); no hay ningún cambio en el
+> sistema biométrico real de producción.
+
 > **Actualización 2026-09-11 — el rol de InsightFace como motor secundario se
 > retira por ADR-166.** Investigando la licencia de InspireFace (ADR-144) se
 > encontró que el propio InsightFace/`buffalo_l` que este ADR introdujo como

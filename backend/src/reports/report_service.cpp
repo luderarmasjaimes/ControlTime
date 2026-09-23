@@ -198,7 +198,8 @@ bool getReportByIdPg(const std::string &databaseUrl, const std::string &id, cons
 bool createReportPg(const std::string &databaseUrl, const Report &r,
                     std::string &outNewId, std::string &error,
                     const std::string &auditUsername, const std::string &auditCompany,
-                    const std::string &auditToken, int &outVersionNumber) {
+                    const std::string &auditToken, int &outVersionNumber,
+                    const std::string &conflictResolution) {
   outVersionNumber = 0;
   // ADR-039 (migración completa, 2026-07-13): tenant_id ya no es opcional —
   // la columna es NOT NULL en BD; se valida aquí primero para devolver un
@@ -292,16 +293,19 @@ bool createReportPg(const std::string &databaseUrl, const Report &r,
   // sesión) resuelve el auth_users.id del creador — independiente del
   // tenant_id del informe (ADR-039).
   {
-    const char *revParams[4] = {outNewId.c_str(), contentStr.c_str(),
-                                auditUsername.c_str(), auditCompany.c_str()};
+    const std::string changeSummary =
+        conflictResolution.empty() ? "creacion_inicial" : conflictResolution;
+    const char *revParams[5] = {outNewId.c_str(), contentStr.c_str(),
+                                auditUsername.c_str(), auditCompany.c_str(),
+                                changeSummary.c_str()};
     storage::PgResult revRes{PQexecParams(
         conn,
         "INSERT INTO report_content_revision "
         "(report_id, version_number, content_json, created_by, change_summary) "
         "VALUES ($1::uuid, 1, $2::jsonb, "
         "(SELECT id FROM auth_users WHERE username = $3 AND company_name = $4 LIMIT 1), "
-        "'creacion_inicial')",
-        4, nullptr, revParams, nullptr, nullptr, 0)};
+        "$5)",
+        5, nullptr, revParams, nullptr, nullptr, 0)};
   }
   outVersionNumber = 1;  // primera revisión, hardcodeada arriba (version_number=1)
 
@@ -325,7 +329,8 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
                     const std::string &userId,
                     const std::string &signerRole,
                     const std::string &workflowComment,
-                    const std::string &expectedVersion) {
+                    const std::string &expectedVersion,
+                    const std::string &conflictResolution) {
   outVersionNumber = 0;
   if (tenantId.empty()) {
     error = "tenant_required";
@@ -551,8 +556,19 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
   // informe — evita colisiones en la UNIQUE(report_id, version_number).
   // Best-effort: un fallo aquí no debe revertir el guardado del contenido.
   if (ok) {
-    const char *revParams[4] = {id.c_str(), contentStr.c_str(),
-                                auditUsername.c_str(), auditCompany.c_str()};
+    // ADR-022, cierre CA-3 de SPEC-014 (2026-09-13): un guardado que
+    // resuelve un conflicto offline forzando la sobrescritura de la versión
+    // del servidor (`conflictResolution` no vacío, p.ej.
+    // "offline_conflict_overwrite") queda etiquetado como tal en vez del
+    // literal "autosave" -- visible en el historial de versiones del
+    // frontend (App.tsx, `summaryLabels`), cierra la trazabilidad de Art. 6
+    // que antes solo dejaba una fila genérica indistinguible de un guardado
+    // normal.
+    const std::string changeSummary =
+        conflictResolution.empty() ? "autosave" : conflictResolution;
+    const char *revParams[5] = {id.c_str(), contentStr.c_str(),
+                                auditUsername.c_str(), auditCompany.c_str(),
+                                changeSummary.c_str()};
     storage::PgResult revRes{PQexecParams(
         conn,
         "INSERT INTO report_content_revision "
@@ -562,8 +578,8 @@ bool updateReportPg(const std::string &databaseUrl, const std::string &id,
         "WHERE report_id = $1::uuid), 0) + 1, "
         "$2::jsonb, "
         "(SELECT id FROM auth_users WHERE username = $3 AND company_name = $4 LIMIT 1), "
-        "'autosave') RETURNING version_number",
-        4, nullptr, revParams, nullptr, nullptr, 0)};
+        "$5) RETURNING version_number",
+        5, nullptr, revParams, nullptr, nullptr, 0)};
     // ADR-021: el cliente necesita el version_number real para no depender de
     // su propio contador local (document.meta.version, que cuenta ediciones,
     // no revisiones confirmadas). Best-effort: si por algún motivo no viene

@@ -91,6 +91,19 @@ Es el estado actual. Se desincroniza al editar; las refs cruzadas quedan mal. Re
 ### Resolver solo en UI (no en export)
 La TOC overlay actual no viaja al export ni al `.miningreport`. Rompe reproducibilidad. Rechazado.
 
+## Actualización 2026-09-12 — `AnnexList.tsx` encaja sin cambios de modelo
+
+Auditoría de conformidad: `components/document/AnnexList.tsx` (nuevo,
+alimenta el picker de referencias cruzadas de este ADR) genera la lista de
+"Anexos" recorriendo `doc.pages` en vivo y recolectando todo elemento
+`image`/`table`/`chart` con `props.caption` no vacía, numerado por tipo
+("Imagen 1", "Tabla 1"...) en orden de lectura real — mismo patrón de
+fuente única en vivo que `TableOfContents.tsx`. No introduce un tipo de
+bloque nuevo ni una capacidad de resolución distinta a la que ya describe
+este ADR; solo deriva metadatos (`AnnexItem`) de props de bloques ya
+existentes. Sin acción requerida.
+
 ## Referencias
 - `Referencias/frontend/src/components/ReportStudioV2/components/document/TableOfContents.jsx`
+- `frontend/src/components/ReportStudioV2/components/document/AnnexList.tsx` (agregado 2026-09-12, ver actualización arriba)
 - ADR-011 (estructura formal), ADR-016 (export), ADR-010 (modelo)

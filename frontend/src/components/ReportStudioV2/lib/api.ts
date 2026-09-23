@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios';
-import { refreshAccessToken } from '../../../auth/authApi';
+import { refreshAccessToken, authFetch } from '../../../auth/authApi';
 import { authHeaders } from '../../../auth/authStorage';
 
 export function apiBaseUrl(): string {
@@ -130,23 +130,18 @@ export async function fetchTelemetryWizardCatalog(params: {
 // Un informe puede contener decenas (o, en exports grandes DOCX/PPTX/PDF,
 // miles) de bloques de sensores. En la página de impresión todos se montan
 // según avanza la virtualización, y sin coordinación pueden saturar el
-// límite de Nginx (20 req/s, burst 40).
-// Se implementa:
-// 1. Límite de concurrencia (máximo 16 peticiones simultáneas en vuelo --
-//    subido de 3→6→16: medido en vivo en un export de 2104 páginas/6300
-//    gráficos. Al ampliar `EXPORT_VIRTUALIZATION_WINDOW` (ReadOnlyViewer.tsx,
-//    ver su comentario -- causa raíz real de los abortos de red) de 1 a 6
-//    para que un widget no se desmonte antes de que termine su fetch, la
-//    población de widgets montados SIMULTÁNEAMENTE subió de ~9 a ~39 -- con
-//    solo 6 cupos de concurrencia, la cola de abajo se atascaba (crecía sin
-//    drenar: 0 peticiones completadas en 3+ min, confirmado en vivo con
-//    `queueLength()`/`runningCount()`). El burst=40 de Nginx da margen para
-//    16 cupos sin arriesgar 429s.
-// 2. Intervalo mínimo garantizado de 50 ms entre inicios de petición (bajado
-//    de 75ms -- a 75ms el propio intervalo topeaba los arranques en ~13.3/s,
-//    por debajo de los 20 r/s que Nginx ya permite).
-// 3. Deduplicación de peticiones en vuelo con los mismos parámetros.
-// 4. Reintento exponencial para 429 Y para timeouts de axios (ver más abajo).
+// límite de Nginx (20 req/s, burst 40) -- hallazgo de Luder, portado aquí
+// (2026-09-11) tras confirmarlo en un export real de 2104 páginas/6300
+// gráficos. Se implementa:
+// 1. Límite de concurrencia (16 peticiones simultáneas en vuelo -- ver
+//    nginx.conf::api_general_limit_key, calibrado junto con este número).
+// 2. Intervalo mínimo garantizado de 50ms entre inicios de petición.
+// 3. Caché/deduplicación por parámetros exactos, con TTL de 30 min (no solo
+//    peticiones EN VUELO: dos pedidos con el mismo sensor/rango dentro de
+//    esos 30 min reusan el mismo resultado sin ir a red -- medido en vivo:
+//    el mismo par sensor/rango se repetía hasta 300 veces en un export
+//    grande, separadas por minutos, así que un TTL corto no evitaba nada).
+// 4. Reintento con backoff exponencial para 429 y para timeouts.
 class AsyncTelemetryQueue {
   private maxConcurrency = 16;
   private running = 0;
@@ -154,16 +149,13 @@ class AsyncTelemetryQueue {
   private lastStartAt = 0;
   private minIntervalMs = 50;
 
-  /** Reduce la cuota de ESTA cola (una página = una cola, ver comentario de
-   * arriba) -- necesario cuando VARIAS páginas corren en paralelo contra el
-   * mismo backend (pipeline DOCX Fase 2, `pdf-export-service/server.js`):
-   * los 16 cupos / 50ms fueron calibrados para UNA sola página contra el
-   * límite de Nginx (20 r/s) -- con N páginas paralelas, cada una con su
-   * propia cola independiente, la demanda agregada es N veces esa cuota
-   * (reproducido en vivo: 4 workers, ráfaga sostenida de 429 desde el
-   * arranque, cero capturas en varios minutos). Cada worker debe pedir una
-   * fracción proporcional para que la SUMA de las N colas siga respetando
-   * el límite real del servidor. */
+  /** Reduce la cuota de ESTA cola (una página = una cola) -- necesario
+   * cuando VARIAS páginas corren en paralelo contra el mismo backend
+   * (pipeline DOCX Fase 2): los 16 cupos/50ms se calibraron para UNA sola
+   * página contra el límite de Nginx -- con N páginas paralelas, cada una
+   * con su propia cola, la demanda agregada es N veces esa cuota. Cada
+   * worker debe pedir una fracción proporcional para que la SUMA de las N
+   * colas siga respetando el límite real del servidor. */
   setQuota(maxConcurrency: number, minIntervalMs: number): void {
     this.maxConcurrency = Math.max(1, Math.floor(maxConcurrency));
     this.minIntervalMs = Math.max(1, Math.floor(minIntervalMs));
@@ -191,9 +183,6 @@ class AsyncTelemetryQueue {
       if (this.running < this.maxConcurrency) {
         tryExecute();
       } else {
-        // DIAGNÓSTICO TEMPORAL -- queueLength()/runningCount() exponen el
-        // tamaño real de esta cola para confirmar en vivo si el atasco es
-        // ACÁ (muchos widgets esperando turno) o en la red/servidor.
         this.queue.push(() => tryExecute());
       }
     });
@@ -212,8 +201,8 @@ const telemetryQueue = new AsyncTelemetryQueue();
 const telemetryInFlightQueries = new Map<string, Promise<any>>();
 
 /** Ver `AsyncTelemetryQueue.setQuota`. Llamarlo ANTES de cualquier
- * `fetchTelemetryWizardSeries` -- lo usa `print-report/main.tsx` cuando
- * navega como un worker del pipeline DOCX en paralelo. */
+ * `fetchTelemetryWizardSeries` si varias páginas de export corren en
+ * paralelo contra el mismo backend. */
 export function setTelemetryQueueQuota(maxConcurrency: number, minIntervalMs: number): void {
   telemetryQueue.setQuota(maxConcurrency, minIntervalMs);
 }
@@ -240,86 +229,21 @@ export async function fetchTelemetryWizardSeries(params: {
 
   const dedupeKey = `${queryParams.tenant_id || ''}|${queryParams.sensor_ids}|${queryParams.from}|${queryParams.to}|${queryParams.agg || 'hourly'}`;
   const inFlight = telemetryInFlightQueries.get(dedupeKey);
-  // DIAGNÓSTICO TEMPORAL -- contador de aciertos/fallos de caché expuesto en
-  // window para medir en vivo (vía consola del sidecar de export, que ya
-  // captura console.warn) si la extensión de TTL de telemetryInFlightQueries
-  // realmente está evitando refetch en un documento con muchas repeticiones
-  // del mismo sensor/rango (ver comentario del TTL de 30 min más abajo).
-  const w = window as unknown as { __telemetryCacheStats__?: { hits: number; misses: number } };
-  w.__telemetryCacheStats__ = w.__telemetryCacheStats__ || { hits: 0, misses: 0 };
-  if (inFlight) {
-    w.__telemetryCacheStats__.hits += 1;
-    if (w.__telemetryCacheStats__.hits % 50 === 0) {
-      console.warn('[TELEMETRY_CACHE]', JSON.stringify(w.__telemetryCacheStats__));
-    }
-    return inFlight;
-  }
-  w.__telemetryCacheStats__.misses += 1;
-  if (w.__telemetryCacheStats__.misses % 50 === 0) {
-    console.warn('[TELEMETRY_CACHE]', JSON.stringify(w.__telemetryCacheStats__));
-  }
+  if (inFlight) return inFlight;
 
   const queryPromise = (async () => {
     const maxAttempts = 5;
-    // DIAGNÓSTICO TEMPORAL -- separa cuánto tiempo se va en ESPERAR TURNO en
-    // AsyncTelemetryQueue (queueWaitMs) de cuánto se va en la llamada de RED
-    // en sí (networkMs), para confirmar cuál de las dos es el cuello de
-    // botella real antes de decidir qué ajustar.
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      // DIAGNÓSTICO TEMPORAL -- logueado ANTES de esperar el cupo (no
-      // gateado detrás de un éxito/fallo que quizás nunca llegue): si la
-      // cola crece sin drenar, esto lo muestra de inmediato en vez de
-      // quedar en silencio total como pasó con el conteo por-éxito de abajo.
-      const w3 = window as unknown as { __telemetryAcquireCount__?: number };
-      w3.__telemetryAcquireCount__ = (w3.__telemetryAcquireCount__ || 0) + 1;
-      if (w3.__telemetryAcquireCount__ % 10 === 0) {
-        console.warn('[TELEMETRY_QUEUE]', JSON.stringify({
-          acquireCount: w3.__telemetryAcquireCount__,
-          queueLength: telemetryQueue.queueLength(),
-          running: telemetryQueue.runningCount(),
-        }));
-      }
-      const acquireStartedAt = Date.now();
       const release = await telemetryQueue.acquire();
-      const queueWaitMs = Date.now() - acquireStartedAt;
-      const networkStartedAt = Date.now();
       try {
-        // Timeout propio de 45s (no los 15s por defecto de `api` -- ver su
-        // comentario en la definición): reproducido en vivo con
-        // "data-export-error":"timeout of 15000ms exceeded" en un export
-        // grande -- el widget se quedaba con `data-export-ready=false` para
-        // SIEMPRE porque este catch relanzaba el error sin reintentar (el
-        // bloque de abajo solo cubría 429), y encima 15s alcanza para que la
-        // ESPERA EN COLA (AsyncTelemetryQueue de arriba, bajo carga con miles
-        // de widgets) por sí sola agote el reloj de axios antes de que la
-        // petición llegue siquiera a salir por la red.
+        // Timeout propio de 45s (no los 15s por defecto de `api`): la espera
+        // en cola bajo carga (miles de widgets) puede por sí sola acercarse
+        // a 15s antes de que la petición llegue siquiera a salir por la red.
         const response = await api.get('/mining/telemetry/wizard/query', { params: queryParams, timeout: 45000 });
-        const networkMs = Date.now() - networkStartedAt;
-        const w2 = window as unknown as { __telemetryTiming__?: { count: number; totalQueueMs: number; totalNetworkMs: number; maxQueueMs: number; maxNetworkMs: number } };
-        w2.__telemetryTiming__ = w2.__telemetryTiming__ || { count: 0, totalQueueMs: 0, totalNetworkMs: 0, maxQueueMs: 0, maxNetworkMs: 0 };
-        w2.__telemetryTiming__.count += 1;
-        w2.__telemetryTiming__.totalQueueMs += queueWaitMs;
-        w2.__telemetryTiming__.totalNetworkMs += networkMs;
-        w2.__telemetryTiming__.maxQueueMs = Math.max(w2.__telemetryTiming__.maxQueueMs, queueWaitMs);
-        w2.__telemetryTiming__.maxNetworkMs = Math.max(w2.__telemetryTiming__.maxNetworkMs, networkMs);
-        if (w2.__telemetryTiming__.count % 5 === 0) {
-          console.warn('[TELEMETRY_TIMING]', JSON.stringify({
-            ...w2.__telemetryTiming__,
-            avgQueueMs: Math.round(w2.__telemetryTiming__.totalQueueMs / w2.__telemetryTiming__.count),
-            avgNetworkMs: Math.round(w2.__telemetryTiming__.totalNetworkMs / w2.__telemetryTiming__.count),
-            queueLength: telemetryQueue.queueLength(),
-            running: telemetryQueue.runningCount(),
-          }));
-        }
         return response.data ?? {};
       } catch (error) {
         const status = (error as AxiosError)?.response?.status;
         const isTimeout = (error as AxiosError)?.code === 'ECONNABORTED';
-        console.warn('[TELEMETRY_ERROR]', JSON.stringify({
-          attempt, status: status ?? null, isTimeout, code: (error as AxiosError)?.code ?? null,
-          message: (error as Error)?.message ?? String(error),
-          queueWaitMs, networkMs: Date.now() - networkStartedAt,
-        }));
         if ((status === 429 || isTimeout) && attempt < maxAttempts - 1) {
           const retryAfter = Number((error as AxiosError)?.response?.headers?.['retry-after']);
           const backoffMs = Number.isFinite(retryAfter) && retryAfter > 0
@@ -340,18 +264,10 @@ export async function fetchTelemetryWizardSeries(params: {
   try {
     return await queryPromise;
   } finally {
-    // TTL de 30 min (antes 10s). `from`/`to` son literales dentro de
-    // `dedupeKey`: un dashboard "en vivo" que recalcula `to=now()` en cada
-    // mount ya genera una key DISTINTA cada vez, así que subir el TTL no
-    // arriesga mostrar datos viejos ahí -- solo evita refetch cuando el
-    // rango realmente es el MISMO. Medido en vivo en un export DOCX de
-    // 2104 páginas (generador demo, ADR de prueba de escala): el mismo par
-    // de sensores se vuelve a pedir hasta 300 veces (20 tipos de gráfico ×
-    // 15 pasadas de REPEAT_PASSES) para el MISMO sensorType/rango, pero
-    // separadas por minutos entre sí (no por los 10s que cubría el TTL
-    // anterior) -- cada una disparaba un fetch nuevo en vez de reusar el
-    // resultado ya obtenido, inflando tanto el tiempo total de export como
-    // la carga sobre telemetry_raw sin ninguna razón real.
+    // `from`/`to` son literales dentro de `dedupeKey`: un dashboard "en vivo"
+    // que recalcula `to=now()` en cada mount ya genera una key DISTINTA cada
+    // vez, así que un TTL largo no arriesga mostrar datos viejos ahí -- solo
+    // evita refetch cuando el rango realmente es el MISMO.
     window.setTimeout(() => {
       telemetryInFlightQueries.delete(dedupeKey);
     }, 30 * 60 * 1000);
@@ -504,10 +420,6 @@ export async function streamSupportChatMessage(
   const decoder = new TextDecoder();
   let buf = '';
   let sawError: string | undefined;
-  // TODO(reconciliar con backend real): se asume que `conversation_id` puede
-  // llegar en cualquier evento SSE del turno (típicamente el primero o el de
-  // `done`) -- si el backend real lo manda solo en un evento específico,
-  // esta captura "el último que aparezca" sigue funcionando igual.
   let sawConversationId: string | undefined;
   while (true) {
     const { value, done } = await reader.read();
@@ -546,7 +458,573 @@ export async function escalateSupportChatToWhatsapp(): Promise<{ status?: string
   }
 }
 
-/** Categorías válidas de `support_ticket` (ver kValidCategories en support_routes.cpp). */
+export async function syncMiningKpisFromExternal(): Promise<any> {
+  try {
+    const response = await api.post('/mining/kpis/sync-from-external', {}, { timeout: 45000 });
+    return response.data ?? { status: 'error', synced: 0 };
+  } catch (error) {
+    const { status, backendError, backendMessage } = backendErrorMessage(error);
+    if (status === 401) {
+      throw new Error('Sesión expirada. Vuelve a iniciar sesión para sincronizar KPI.');
+    }
+    throw new Error(backendMessage || backendError || 'No se pudo sincronizar KPI desde fuente externa.');
+  }
+}
+
+export async function fetchMiningKpiPoints(code: string, days = 7): Promise<any[]> {
+  const response = await api.get('/mining/kpis/points', {
+    params: {
+      code,
+      days,
+    },
+  });
+  return response.data?.points ?? [];
+}
+
+export async function fetchProjects(): Promise<any[]> {
+  const response = await api.get('/projects');
+  return response.data?.projects ?? [];
+}
+
+// tenantId: unidad minera a consultar (multitenant, UUID). Si se omite, el
+// backend usa el tenant activo de la sesión. Si se pasa uno distinto, el
+// backend verifica membresía real en auth_user_tenant antes de honrarlo —
+// ver resolveAllowedReportTenant en report_routes.cpp (403 si no pertenece).
+// ADR-039 (migración completa 2026-07-13): antes se enviaba `company`
+// (nombre de empresa); reports.tenant_id es ahora la única clave de
+// aislamiento real, igual que el resto de la plataforma.
+export async function fetchReports(tenantId?: string): Promise<any[]> {
+  const response = await api.get('/reports', { params: tenantId ? { tenant_id: tenantId } : undefined });
+  return response.data?.reports ?? [];
+}
+
+export async function fetchAnalysisCatalogs(): Promise<any> {
+  try {
+    const response = await api.get('/analysis/catalogos');
+    return response.data ?? { rows: [], usuarios: [] };
+  } catch (error) {
+    const { status, backendError } = backendErrorMessage(error);
+    if (status === 401) {
+      throw new Error('Sesion expirada o invalida. Vuelve a iniciar sesion.');
+    }
+    throw new Error(backendError || 'No se pudo cargar el catalogo de formula minera.');
+  }
+}
+
+export async function runTemperatureAnalysis(payload: unknown): Promise<any> {
+  try {
+    const response = await api.post('/analysis/temperaturas', payload, { timeout: 60000 });
+    return response.data ?? { rows: [], summary: {} };
+  } catch (error) {
+    const { status, backendError } = backendErrorMessage(error);
+    if (status === 401) {
+      throw new Error('Sesion expirada o invalida. Vuelve a iniciar sesion.');
+    }
+    throw new Error(backendError || 'No fue posible ejecutar la formula minera.');
+  }
+}
+
+/** Carga un informe completo (incl. content_json) para edición.
+ * `tenantId` se reenvía cuando el informe proviene de una búsqueda
+ * multitenant (puede no ser el tenant activo de la sesión) — el backend
+ * verifica membresía real antes de honrarlo, igual que en fetchReports. */
+export async function fetchReportById(id: string, tenantId?: string): Promise<any> {
+  const response = await api.get(`/reports/${encodeURIComponent(id)}`, {
+    params: tenantId ? { tenant_id: tenantId } : undefined,
+  });
+  return response.data;
+}
+
+const REPORT_SAVE_TIMEOUT_MS = 120000;
+
+export async function createReport(data: unknown): Promise<any> {
+  const response = await api.post('/reports', data, { timeout: REPORT_SAVE_TIMEOUT_MS });
+  return response.data;
+}
+
+export async function updateReport(id: string, data: unknown): Promise<any> {
+  const response = await api.put(`/reports/${id}`, data, { timeout: REPORT_SAVE_TIMEOUT_MS });
+  return response.data;
+}
+
+export async function deleteReport(id: string): Promise<any> {
+  const response = await api.delete(`/reports/${id}`);
+  return response.data;
+}
+
+/** ADR-015: historial de revisiones autoritativo del servidor (una por cada guardado confirmado). */
+export async function fetchReportRevisions(id: string): Promise<any[]> {
+  const response = await api.get(`/reports/${encodeURIComponent(id)}/revisions`);
+  return response.data?.revisions || [];
+}
+
+/**
+ * ADR-016: export PDF server-side (Chromium headless vía sidecar), con la
+ * MISMA fidelidad visual que el visor de solo lectura (reusa ReadOnlyViewer).
+ * Requiere que el informe ya esté guardado (id real, no borrador sin guardar).
+ * ADR-080: el PDF viene con marca de agua y cifrado con una contraseña
+ * generada para esta descarga (`password`, header `X-Pdf-Password` — axios
+ * normaliza los nombres de header a minúsculas). No se persiste en ningún
+ * lado: cada descarga genera un PDF y una contraseña nuevos.
+ */
+export async function fetchReportPdfBlob(
+  id: string,
+  noWatermark = false,
+): Promise<{ blob: Blob; filename: string; password: string | null }> {
+  // 650s: por encima de BEEMETRY_PDF_EXPORT_TIMEOUT_MS (docker-compose.yml,
+  // 600s -- el backend esperando al sidecar Chromium) y por debajo de
+  // proxy_read_timeout/proxy_send_timeout (nginx.conf, 900s, en la location
+  // dedicada a esta misma ruta) -- si el backend agota SU presupuesto,
+  // queremos que llegue su respuesta de error real en vez de que axios
+  // aborte la conexión primero con un timeout genérico del lado del
+  // navegador. Antes en 60s (heredado del resto de llamadas cortas de este
+  // archivo): un informe grande captura página por página en serie (ver
+  // pdf-export-service/server.js::renderCanvasesToPdf) y supera eso solo con
+  // el tiempo real de captura, sin que nada esté colgado.
+  // `no_watermark` (ADR-204): el backend rechaza con 403
+  // informes.export_sin_marca_agua si el rol no tiene el permiso -- nunca lo
+  // aplica en silencio como si fuera `false`.
+  const response = await api.get(`/reports/${encodeURIComponent(id)}/export/pdf`, {
+    responseType: 'blob',
+    timeout: 650000,
+    params: noWatermark ? { no_watermark: 1 } : undefined,
+  });
+  const disposition = response.headers?.['content-disposition'] || '';
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const password = response.headers?.['x-pdf-password'] || null;
+  return { blob: response.data, filename: match ? match[1] : 'informe.pdf', password };
+}
+
+/**
+ * Exporta el informe como archivo `.mreport` cifrado (AES-256-GCM, clave solo
+ * en el backend) — requiere que el informe ya esté guardado (id real). No es
+ * un ZIP: no puede abrirse con otra herramienta, solo re-importarse aquí.
+ */
+export async function fetchReportPortableBlob(id: string): Promise<{ blob: Blob; filename: string }> {
+  const response = await api.get(`/reports/${encodeURIComponent(id)}/export/portable`, {
+    responseType: 'blob',
+    timeout: 60000,
+  });
+  const disposition = response.headers?.['content-disposition'] || '';
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return { blob: response.data, filename: match ? match[1] : 'informe.mreport' };
+}
+
+export interface ExportJobStatus {
+  job_id: string;
+  report_id: string;
+  export_format: string;
+  status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled';
+  error_message: string;
+  created_at: string;
+  started_at: string;
+  completed_at: string;
+  // Solo viene poblado mientras el job está 'queued'/'running', si el
+  // backend/sidecar lo exponen (avance de Luder 2026-09-11: el sidecar
+  // escribe progreso periódicamente y el backend lo expone en este campo).
+  // `undefined` es el caso normal hoy -- la UI que lo consume (App.tsx,
+  // barra de progreso de export) debe tolerar su ausencia sin romperse.
+  progress?: { captured: number; total: number } | null;
+}
+
+/**
+ * Encola la exportación del informe a PPTX (sidecar Chromium, mismo pipeline
+ * que /export/pdf, endpoint /render-pptx). Solo funciona si el informe está
+ * en `layoutMode: 'presentation'` (lienzo 16:9) — el backend responde 400
+ * `layout_mode_not_presentation` en caso contrario. Async: usar
+ * `pollExportJob` para esperar el resultado antes de descargar.
+ */
+export async function createPptxExportJob(reportId: string): Promise<{ job_id: string; status: string }> {
+  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/pptx`);
+  return response.data;
+}
+
+/**
+ * Encola la exportación del informe a PDF vía el pipeline ASÍNCRONO (sidecar
+ * Chromium, endpoint /render-pdf) -- portado del avance de Luder
+ * (2026-09-11), alternativa a `fetchReportPdfBlob` (síncrona, ADR-016):
+ * pensada para informes grandes (miles de páginas) donde el render puede
+ * exceder cualquier presupuesto razonable de request HTTP directo aunque
+ * termine bien. Mismo watermark + cifrado (ADR-080) que la variante
+ * síncrona -- la contraseña se recupera de `fetchExportJobBlob` (header
+ * `X-Pdf-Password`) una vez el job está en `success`. Async: usar
+ * `pollExportJob`. `usePdfExport.ts` intenta esta variante primero y cae de
+ * vuelta a `fetchReportPdfBlob` si el backend todavía no expone esta ruta
+ * (404) -- no reemplaza al pipeline síncrono hasta confirmar que el backend
+ * real la soporta. `unprotected` (default `false`, ADR-080 sigue siendo el
+ * comportamiento normal): pide el PDF SIN contraseña -- el backend lo
+ * rechaza con 403 `informes.export_sin_clave` si el rol de la sesión no
+ * tiene ese permiso (perfiles avanzados, db_scripts/112), nunca lo aplica
+ * en silencio como si fuera `false`. `noWatermark` (default `false`,
+ * ADR-204): mismo criterio pero para `informes.export_sin_marca_agua`
+ * (db_scripts/115) -- pide el PDF SIN marca de agua.
+ */
+export async function createPdfExportJob(
+  reportId: string,
+  unprotected = false,
+  noWatermark = false,
+): Promise<{ job_id: string; status: string }> {
+  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/pdf`, {
+    unprotected,
+    no_watermark: noWatermark,
+  });
+  return response.data;
+}
+
+/**
+ * Lista de correos adicionales a quienes se envía automáticamente el PDF
+ * exportado de `reportId` (ADR-204, además del correo del usuario que
+ * exportó) -- persistida en `report_document_settings.pdf_share_recipients_json`.
+ * Gateado por `informes.share` (mismo permiso que compartir el informe).
+ */
+export async function fetchPdfShareRecipients(reportId: string): Promise<string[]> {
+  const response = await api.get(`/reports/${encodeURIComponent(reportId)}/pdf-share-recipients`);
+  return Array.isArray(response.data?.recipients) ? response.data.recipients : [];
+}
+
+/**
+ * Reemplaza por completo la lista de `fetchPdfShareRecipients` -- se manda
+ * la lista entera en cada guardado (no hay agregar/borrar incremental del
+ * lado del servidor), el backend valida formato y trunca a 10
+ * (`report_document_settings.cpp::savePdfShareRecipients`).
+ */
+export async function savePdfShareRecipients(
+  reportId: string,
+  emails: string[],
+): Promise<string[]> {
+  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/pdf-share-recipients`, {
+    recipients: emails,
+  });
+  return Array.isArray(response.data?.recipients) ? response.data.recipients : [];
+}
+
+/**
+ * Encola la exportación del informe a DOCX vía el pipeline SERVIDOR (sidecar
+ * Chromium, endpoint /render-docx + reportDocxBuilder.js) -- mismo patrón
+ * asíncrono que PPTX/PDF (ver report_routes.cpp, sección /export/docx).
+ * A diferencia del pipeline cliente (exportEngine.ts::exportDOCX, ADR-139),
+ * este SÍ requiere que el informe esté guardado en servidor (no funciona
+ * sobre un borrador en memoria) y solo acepta layoutMode 'document' (A4/A3)
+ * -- el backend responde 400 `layout_mode_not_document` en modo presentación
+ * y 503 `docx_export_disabled` si el sidecar no está configurado
+ * (`gPdfExportUrl` vacío), único caso en que App.tsx cae de vuelta al
+ * pipeline cliente. `layout`: 'absolute' (default, ADR-139) ancla cada
+ * bloque a su x/y exacto del lienzo (cuadros de texto independientes);
+ * 'flow' (pedido explícito 2026-09-18) lo reflowa como documento Word
+ * tradicional -- ver `reportDocxBuilder.js::buildPageSection`. El fallback
+ * cliente (exportDOCX) NO soporta 'flow' todavía, así que ese caso 503
+ * siempre entrega layout absoluto sin importar lo pedido acá. Async: usar
+ * `pollExportJob`.
+ */
+export async function createDocxExportJob(
+  reportId: string,
+  layout: 'absolute' | 'flow' = 'absolute',
+): Promise<{ job_id: string; status: string }> {
+  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/docx`, { layout });
+  return response.data;
+}
+
+/**
+ * Encola la exportación del informe a XLSX (sidecar Chromium, endpoint
+ * /render-xlsx + reportXlsxBuilder.js) -- mismo patrón asíncrono que
+ * PPTX/DOCX/PDF. Alcance explícito: exporta ÚNICAMENTE los bloques `table`
+ * ya insertados en el informe (una hoja real por tabla + una hoja "Índice"
+ * con hipervínculos reales), sin restricción de `layoutMode`. Async: usar
+ * `pollExportJob`.
+ */
+export async function createXlsxExportJob(reportId: string): Promise<{ job_id: string; status: string }> {
+  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/xlsx`);
+  return response.data;
+}
+
+/**
+ * Convierte un job PPTX ya exitoso (`pptxJobId`) en un MP4 sin narración
+ * (Stage 3): el backend reutiliza las MISMAS imágenes de diapositiva del
+ * .pptx (nunca vuelve a renderizar el informe). `transition`: 'cut' (corte
+ * seco) o 'crossfade' (fundido). Requiere que el job pptx referenciado ya
+ * esté en estado `success` — el backend responde 409 `pptx_job_not_ready`
+ * si no.
+ */
+export async function createVideoExportJob(
+  reportId: string,
+  pptxJobId: string,
+  options: { slideDurationSeconds?: number; transition?: 'cut' | 'crossfade' } = {},
+): Promise<{ job_id: string; status: string }> {
+  const response = await api.post(
+    `/reports/${encodeURIComponent(reportId)}/export/pptx/${encodeURIComponent(pptxJobId)}/video`,
+    {
+      slide_duration_seconds: options.slideDurationSeconds ?? 4,
+      transition: options.transition ?? 'cut',
+    },
+  );
+  return response.data;
+}
+
+/**
+ * Adjunta la narración de UNA página de un job PPTX (Stage 4): `audioBlob`
+ * (grabación real, se sube como cuerpo binario con su propio Content-Type —
+ * el backend la escribe a disco y la referencia queda lista para el próximo
+ * `createVideoExportJob`) o `speakerNotes` (texto, guardado para una futura
+ * conversión TTS — sin proveedor integrado todavía, la página queda muda
+ * hasta que se resuelva ese follow-up). Pasar ambos vacíos no tiene efecto
+ * útil — el caller decide cuál de los dos enviar.
+ */
+export async function uploadSlideNarration(
+  reportId: string,
+  pptxJobId: string,
+  pageNumber: number,
+  payload: { audioBlob: Blob; durationSeconds: number } | { speakerNotes: string },
+): Promise<{ status: string; kind: string }> {
+  const path = `/reports/${encodeURIComponent(reportId)}/export/jobs/${encodeURIComponent(pptxJobId)}/narration/${pageNumber}`;
+  if ('audioBlob' in payload) {
+    const response = await api.post(path, payload.audioBlob, {
+      headers: { 'Content-Type': payload.audioBlob.type || 'audio/webm' },
+      params: { duration_seconds: payload.durationSeconds },
+      timeout: 30000,
+    });
+    return response.data;
+  }
+  const response = await api.post(path, { speaker_notes: payload.speakerNotes }, { timeout: 15000 });
+  return response.data;
+}
+
+export async function fetchExportJobStatus(reportId: string, jobId: string): Promise<ExportJobStatus> {
+  const response = await api.get(
+    `/reports/${encodeURIComponent(reportId)}/export/jobs/${encodeURIComponent(jobId)}`,
+  );
+  return response.data;
+}
+
+export async function fetchExportJobBlob(
+  reportId: string,
+  jobId: string,
+): Promise<{ blob: Blob; filename: string; password: string | null }> {
+  const response = await api.get(
+    `/reports/${encodeURIComponent(reportId)}/export/jobs/${encodeURIComponent(jobId)}/download`,
+    { responseType: 'blob', timeout: 60000 },
+  );
+  const disposition = response.headers?.['content-disposition'] || '';
+  const match = /filename="([^"]+)"/.exec(disposition);
+  // Solo viene poblado para jobs 'pdf' (ADR-080) -- axios normaliza los
+  // nombres de header a minúsculas, mismo criterio que `fetchReportPdfBlob`.
+  const password = response.headers?.['x-pdf-password'] || null;
+  return { blob: response.data, filename: match ? match[1] : 'informe.pptx', password };
+}
+
+/**
+ * Espera a que un job de exportación asíncrono (report_export_job: PPTX/MP4)
+ * termine, haciendo polling de `fetchExportJobStatus` cada `intervalMs`.
+ * `onProgress` se llama en cada tick con el estado crudo — la UI lo usa para
+ * mostrar queued/running antes de que el job resuelva. Lanza
+ * `export_job_poll_timeout` si se agotan los intentos sin llegar a un estado
+ * terminal (success/failed/cancelled).
+ */
+export async function pollExportJob(
+  reportId: string,
+  jobId: string,
+  options: { intervalMs?: number; maxAttempts?: number; onProgress?: (status: ExportJobStatus) => void } = {},
+): Promise<ExportJobStatus> {
+  const { intervalMs = 2000, maxAttempts = 150, onProgress } = options;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const status = await fetchExportJobStatus(reportId, jobId);
+    onProgress?.(status);
+    if (status.status === 'success' || status.status === 'failed' || status.status === 'cancelled') {
+      return status;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error('export_job_poll_timeout');
+}
+
+export interface PortableImportResponse {
+  document: any;
+  title: string;
+  source_company: string;
+  tenant_match: boolean;
+  redacted: boolean;
+}
+
+/**
+ * Sube un `.mreport` para que el backend lo descifre y, si el tenant del
+ * usuario no coincide con el de origen, devuelva el documento con
+ * imágenes/KPIs/gráficos/mapas/sensores redactados (estructura y texto
+ * intactos). El descifrado real SIEMPRE ocurre en el servidor.
+ */
+export async function importReportPortable(fileBytes: ArrayBuffer): Promise<PortableImportResponse> {
+  const response = await api.post('/reports/import/portable', fileBytes, {
+    headers: { 'Content-Type': 'application/octet-stream' },
+    timeout: 30000,
+  });
+  return response.data;
+}
+
+export interface PdfOcrImportApiResponse {
+  ok: boolean;
+  page_count?: number;
+  pages?: import('./pdfOcrImport').PdfOcrPageDto[];
+  error?: string;
+  scanned_pages?: number;
+  limit?: number;
+}
+
+/**
+ * Importación de PDF con OCR avanzado (ADR-199): sube el PDF crudo (mismo
+ * patrón que importReportPortable -- cuerpo = bytes, filename por query) y
+ * el backend hace de proxy hacia ai_engine/ocr_engine (PaddleOCR
+ * PP-StructureV2, texto digital cuando lo hay, OCR real solo en páginas
+ * escaneadas). Timeout largo a propósito: coincide con
+ * BEEMETRY_AI_ENGINE_PDF_OCR_TIMEOUT_MS del backend (600s) más margen --
+ * documentos con varias páginas escaneadas tardan de verdad en CPU.
+ */
+export async function importReportPdfOcr(
+  fileBytes: ArrayBuffer,
+  filename: string,
+): Promise<PdfOcrImportApiResponse> {
+  try {
+    const response = await api.post(
+      `/reports/import/pdf-ocr?filename=${encodeURIComponent(filename)}`,
+      fileBytes,
+      { headers: { 'Content-Type': 'application/octet-stream' }, timeout: 620000 },
+    );
+    return { ok: true, ...response.data };
+  } catch (error) {
+    const { backendError } = backendErrorMessage(error);
+    const data = (error as AxiosError<Record<string, unknown>>)?.response?.data;
+    return {
+      ok: false,
+      error: backendError || 'pdf_ocr_import_failed',
+      scanned_pages: typeof data?.scanned_pages === 'number' ? data.scanned_pages : undefined,
+      limit: typeof data?.limit === 'number' ? data.limit : undefined,
+    };
+  }
+}
+
+export async function validateCompany(company: string, ruc: string): Promise<boolean> {
+  const response = await api.get('/auth/validate-company', { params: { company, ruc } });
+  return response.data?.valid ?? false;
+}
+
+const TEXT_SPELL_TIMEOUT_MS = 120000;
+
+/** Corrección ortográfica/gramatical rápida en backend: LanguageTool aplica
+ *  solo reemplazos seguros (ortografía/gramática) — preciso y fiel al texto,
+ *  nunca parafrasea ni inventa (a diferencia de "Optimizar IA" / rewrite). */
+export async function textCorrectQuick(text: unknown): Promise<any> {
+  const response = await api.post(
+    '/text/correct/quick',
+    { text: String(text ?? '') },
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+/** Sugerencias LanguageTool vía backend (on-premise). */
+export async function textCorrectAdvanced(
+  text: unknown,
+  { language = 'es-PE', level = 'picky' }: { language?: string; level?: string } = {},
+): Promise<any> {
+  const response = await api.post(
+    '/text/correct/advanced',
+    { text: String(text ?? ''), language, level },
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+/** Pasada segura LT + rápido + reescritura Ollama opcional (on-premise). */
+export async function textRewriteOnPremise(
+  text: unknown,
+  { language = 'es-PE', level = 'picky', use_llm = true }: { language?: string; level?: string; use_llm?: boolean } = {},
+): Promise<any> {
+  const response = await api.post(
+    '/text/rewrite',
+    { text: String(text ?? ''), language, level, use_llm },
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+export interface Apa7CitationFields {
+  author?: string;
+  year?: string;
+  title?: string;
+  source?: string;
+  url?: string;
+}
+
+/**
+ * Da formato APA 7 a datos bibliográficos que el usuario YA aportó (no busca
+ * ni inventa fuentes) — usa el LLM local (Ollama) para puntuar/ordenar esos
+ * mismos campos según la norma; si no responde, el backend cae a un
+ * formateador determinístico (misma garantía: nunca inventa nada).
+ */
+export async function formatApa7Citation(fields: Apa7CitationFields): Promise<{ apa: string; source: string }> {
+  const response = await api.post(
+    '/text/format-apa7',
+    fields,
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+export interface ReferenceSearchResult {
+  title: string;
+  author: string;
+  year: string;
+  source: string;
+  url: string;
+  snippet: string;
+  domain: string;
+}
+
+/**
+ * Busca fuentes REALES en internet (Tavily, o Serper.dev como respaldo) para
+ * un tema, ya filtradas a una lista de dominios de confianza (gobierno,
+ * universidades, organismos internacionales, editoriales académicas) — nunca
+ * inventa ni "recuerda" una fuente de entrenamiento del LLM. Si el backend no
+ * tiene ninguna API key configurada, lanza con `search_not_configured` en el
+ * mensaje.
+ */
+export async function searchTrustedReferences(query: string): Promise<{ results: ReferenceSearchResult[]; excluded_untrusted_count: number; source: string }> {
+  const response = await api.post(
+    '/text/search-references',
+    { query },
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+export interface ReferenceVerification {
+  verified: boolean;
+  matched_year: boolean;
+  matched_title: boolean;
+  source: string;
+}
+
+/**
+ * Verificación programática (sin LLM) de que una URL de referencia
+ * realmente contiene el título y/o año declarados — trae el contenido crudo
+ * de la página vía Tavily /extract y hace un chequeo de substring local. Si
+ * Tavily no está configurado, lanza con `tavily_not_configured`: esto NO debe
+ * bloquear la inserción de la cita, solo se muestra como "no verificable".
+ */
+export async function verifyReference(url: string, title?: string, year?: string): Promise<ReferenceVerification> {
+  const response = await api.post(
+    '/text/verify-reference',
+    { url, title, year },
+    { timeout: TEXT_SPELL_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Merge del zip del ingeniero (2026-09-01): tickets/adjuntos de soporte,
+// candidatos RRHH y enlace de acceso directo al PDF. Bloque traído tal cual
+// de su versión de este archivo -- consumido por CandidatesRrhhView.tsx,
+// SupportAdminView.tsx y useShareLink.ts/ShareLinkModal.tsx (nuevos, no
+// existían en la versión previa de este módulo).
+// ─────────────────────────────────────────────────────────────────────────
+
 export type SupportTicketCategory = 'soporte' | 'comercial' | 'reclamo' | 'agenda' | 'rrhh';
 
 /** Crea un ticket directamente desde la web (ADR-112: endpoint reservado para
@@ -954,32 +1432,26 @@ export function cvCandidateFileUrl(submissionId: string): string {
   return `${apiBaseUrl()}/support/admin/candidates/${encodeURIComponent(submissionId)}/file`;
 }
 
-export async function syncMiningKpisFromExternal(): Promise<any> {
-  try {
-    const response = await api.post('/mining/kpis/sync-from-external', {}, { timeout: 45000 });
-    return response.data ?? { status: 'error', synced: 0 };
-  } catch (error) {
-    const { status, backendError, backendMessage } = backendErrorMessage(error);
-    if (status === 401) {
-      throw new Error('Sesión expirada. Vuelve a iniciar sesión para sincronizar KPI.');
-    }
-    throw new Error(backendMessage || backendError || 'No se pudo sincronizar KPI desde fuente externa.');
-  }
+/**
+ * ADR-138: crea un enlace de acceso directo al PDF (token opaco, expira en
+ * `expires_in_hours` horas) -- a diferencia de `fetchReportPdfBlob` (ADR-080,
+ * PDF cifrado con contraseña), el PDF servido por esa URL NO pide nada: la
+ * protección es el token en sí, pensado para un QR que se escanea y abre
+ * directo, sin ningún paso manual.
+ */
+export async function createReportShareLink(
+  id: string,
+): Promise<{ url: string; expiresInHours: number }> {
+  const response = await api.post(`/reports/${encodeURIComponent(id)}/share-link`, {});
+  // El backend devuelve una ruta same-origin para no fijar localhost ni un
+  // host interno en el QR. Resolverla donde corre la SPA garantiza que un
+  // celular abra exactamente el host/puerto/protocolo que ve el usuario.
+  const url = resolveReportShareLinkUrl(String(response.data.url), window.location.origin);
+  return { url, expiresInHours: response.data.expires_in_hours };
 }
 
-export async function fetchMiningKpiPoints(code: string, days = 7): Promise<any[]> {
-  const response = await api.get('/mining/kpis/points', {
-    params: {
-      code,
-      days,
-    },
-  });
-  return response.data?.points ?? [];
-}
-
-export async function fetchProjects(): Promise<any[]> {
-  const response = await api.get('/projects');
-  return response.data?.projects ?? [];
+export function resolveReportShareLinkUrl(pathOrUrl: string, browserOrigin: string): string {
+  return new URL(pathOrUrl, browserOrigin).toString();
 }
 
 export interface CompanyUser {
@@ -993,7 +1465,7 @@ export interface CompanyUser {
 }
 
 /**
- * GET /api/auth/users — usuarios de la misma empresa que la sesión (el
+ * GET /api/auth/users -- usuarios de la misma empresa que la sesión (el
  * backend filtra por `session.company`, nunca por un parámetro del cliente).
  * Usado por ShareReportModal.tsx para el picker de destinatarios con avatar
  * real (antes leía una lista mock de localStorage con solo iniciales).
@@ -1023,11 +1495,10 @@ export interface ShareReportChannelResult {
 }
 
 /**
- * POST /api/reports/{id}/share — envía el informe a otro usuario de la
+ * POST /api/reports/{id}/share -- envía el informe a otro usuario de la
  * empresa: persiste en `report_shares` y dispara notificación in-app +
- * email + WhatsApp + SMS (best-effort, canal por canal — ver
- * `notify/notify_service.cpp`). Antes esta función no existía: el modal
- * llamaba a un mock que no tocaba el backend en absoluto.
+ * email + WhatsApp + SMS (best-effort, canal por canal). Antes esta función
+ * no existía: el modal llamaba a un mock que no tocaba el backend.
  */
 export async function shareReport(
   reportId: string,
@@ -1048,417 +1519,4 @@ export async function shareReport(
     const { backendError, backendMessage } = backendErrorMessage(error);
     return { status: 'error', channels: [], error: backendMessage || backendError || 'share_failed' };
   }
-}
-
-// tenantId: unidad minera a consultar (multitenant, UUID). Si se omite, el
-// backend usa el tenant activo de la sesión. Si se pasa uno distinto, el
-// backend verifica membresía real en auth_user_tenant antes de honrarlo —
-// ver resolveAllowedReportTenant en report_routes.cpp (403 si no pertenece).
-// ADR-039 (migración completa 2026-07-13): antes se enviaba `company`
-// (nombre de empresa); reports.tenant_id es ahora la única clave de
-// aislamiento real, igual que el resto de la plataforma.
-export async function fetchReports(tenantId?: string): Promise<any[]> {
-  const response = await api.get('/reports', { params: tenantId ? { tenant_id: tenantId } : undefined });
-  return response.data?.reports ?? [];
-}
-
-export async function fetchAnalysisCatalogs(): Promise<any> {
-  try {
-    const response = await api.get('/analysis/catalogos');
-    return response.data ?? { rows: [], usuarios: [] };
-  } catch (error) {
-    const { status, backendError } = backendErrorMessage(error);
-    if (status === 401) {
-      throw new Error('Sesion expirada o invalida. Vuelve a iniciar sesion.');
-    }
-    throw new Error(backendError || 'No se pudo cargar el catalogo de formula minera.');
-  }
-}
-
-export async function runTemperatureAnalysis(payload: unknown): Promise<any> {
-  try {
-    const response = await api.post('/analysis/temperaturas', payload, { timeout: 60000 });
-    return response.data ?? { rows: [], summary: {} };
-  } catch (error) {
-    const { status, backendError } = backendErrorMessage(error);
-    if (status === 401) {
-      throw new Error('Sesion expirada o invalida. Vuelve a iniciar sesion.');
-    }
-    throw new Error(backendError || 'No fue posible ejecutar la formula minera.');
-  }
-}
-
-/** Carga un informe completo (incl. content_json) para edición.
- * `tenantId` se reenvía cuando el informe proviene de una búsqueda
- * multitenant (puede no ser el tenant activo de la sesión) — el backend
- * verifica membresía real antes de honrarlo, igual que en fetchReports. */
-export async function fetchReportById(id: string, tenantId?: string): Promise<any> {
-  const response = await api.get(`/reports/${encodeURIComponent(id)}`, {
-    params: tenantId ? { tenant_id: tenantId } : undefined,
-  });
-  return response.data;
-}
-
-const REPORT_SAVE_TIMEOUT_MS = 120000;
-
-export async function createReport(data: unknown): Promise<any> {
-  const response = await api.post('/reports', data, { timeout: REPORT_SAVE_TIMEOUT_MS });
-  return response.data;
-}
-
-export async function updateReport(id: string, data: unknown): Promise<any> {
-  const response = await api.put(`/reports/${id}`, data, { timeout: REPORT_SAVE_TIMEOUT_MS });
-  return response.data;
-}
-
-export async function deleteReport(id: string): Promise<any> {
-  const response = await api.delete(`/reports/${id}`);
-  return response.data;
-}
-
-/** ADR-015: historial de revisiones autoritativo del servidor (una por cada guardado confirmado). */
-export async function fetchReportRevisions(id: string): Promise<any[]> {
-  const response = await api.get(`/reports/${encodeURIComponent(id)}/revisions`);
-  return response.data?.revisions || [];
-}
-
-/**
- * ADR-138: crea un enlace de acceso directo al PDF (token opaco, expira en
- * `expires_in_hours` horas) — a diferencia de `fetchReportPdfBlob` (ADR-080,
- * PDF cifrado con contraseña), el PDF servido por esa URL NO pide nada: la
- * protección es el token en sí, pensado para un QR que se escanea y abre
- * directo, sin ningún paso manual.
- */
-export async function createReportShareLink(
-  id: string,
-): Promise<{ url: string; expiresInHours: number }> {
-  const response = await api.post(`/reports/${encodeURIComponent(id)}/share-link`, {});
-  // El backend devuelve una ruta same-origin para no fijar localhost ni un
-  // host interno en el QR. Resolverla donde corre la SPA garantiza que un
-  // celular abra exactamente el host/puerto/protocolo que ve el usuario.
-  const url = resolveReportShareLinkUrl(String(response.data.url), window.location.origin);
-  return { url, expiresInHours: response.data.expires_in_hours };
-}
-
-export function resolveReportShareLinkUrl(pathOrUrl: string, browserOrigin: string): string {
-  return new URL(pathOrUrl, browserOrigin).toString();
-}
-
-/**
- * Exporta el informe como archivo `.mreport` cifrado (AES-256-GCM, clave solo
- * en el backend) — requiere que el informe ya esté guardado (id real). No es
- * un ZIP: no puede abrirse con otra herramienta, solo re-importarse aquí.
- */
-export async function fetchReportPortableBlob(id: string): Promise<{ blob: Blob; filename: string }> {
-  const response = await api.get(`/reports/${encodeURIComponent(id)}/export/portable`, {
-    responseType: 'blob',
-    timeout: 60000,
-  });
-  const disposition = response.headers?.['content-disposition'] || '';
-  const match = /filename="([^"]+)"/.exec(disposition);
-  return { blob: response.data, filename: match ? match[1] : 'informe.mreport' };
-}
-
-export interface ExportJobStatus {
-  job_id: string;
-  report_id: string;
-  export_format: string;
-  status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled';
-  error_message: string;
-  created_at: string;
-  started_at: string;
-  completed_at: string;
-  // Solo viene poblado mientras el job está 'queued'/'running' -- lo escribe
-  // el sidecar periódicamente (pdf-export-service/server.js,
-  // `saveJobProgress`) y el backend lo lee del volumen compartido
-  // (`readExportJobProgress`, report_routes.cpp). `null` es normal: antes
-  // de la primera escritura periódica, o para formatos que no lo reportan.
-  progress: { captured: number; total: number } | null;
-}
-
-/**
- * Encola la exportación del informe a PPTX (sidecar Chromium, mismo pipeline
- * que /export/pdf, endpoint /render-pptx). Solo funciona si el informe está
- * en `layoutMode: 'presentation'` (lienzo 16:9) — el backend responde 400
- * `layout_mode_not_presentation` en caso contrario. Async: usar
- * `pollExportJob` para esperar el resultado antes de descargar.
- */
-export async function createPptxExportJob(reportId: string): Promise<{ job_id: string; status: string }> {
-  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/pptx`);
-  return response.data;
-}
-
-/**
- * Encola la exportación del informe a DOCX vía el pipeline SERVIDOR (sidecar
- * Chromium, endpoint /render-docx) — alternativa al pipeline cliente
- * (`lib/exportEngine.ts::exportDOCX`, que no llama a esta función y no
- * depende del backend). Solo funciona sobre informes YA GUARDADOS y con
- * `layoutMode: 'document'` (A4/A3) — el backend responde 400
- * `layout_mode_not_document` en caso contrario. Async: usar `pollExportJob`.
- */
-export async function createDocxExportJob(reportId: string): Promise<{ job_id: string; status: string }> {
-  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/docx`);
-  return response.data;
-}
-
-/**
- * Encola la exportación del informe a PDF vía el pipeline ASÍNCRONO (sidecar
- * Chromium, endpoint /render-pdf) — alternativa a `fetchReportPdfBlob`
- * (síncrona, ADR-016), pensada para informes grandes (miles de páginas)
- * donde el render puede exceder cualquier presupuesto razonable de request
- * HTTP directo aunque termine bien. Mismo watermark + cifrado (ADR-080) que
- * la variante síncrona -- la contraseña se recupera de
- * `fetchExportJobBlob` (header `X-Pdf-Password`) una vez el job está en
- * `success`. Async: usar `pollExportJob`.
- */
-export async function createPdfExportJob(reportId: string): Promise<{ job_id: string; status: string }> {
-  const response = await api.post(`/reports/${encodeURIComponent(reportId)}/export/pdf`);
-  return response.data;
-}
-
-/**
- * Convierte un job PPTX ya exitoso (`pptxJobId`) en un MP4 sin narración
- * (Stage 3): el backend reutiliza las MISMAS imágenes de diapositiva del
- * .pptx (nunca vuelve a renderizar el informe). `transition`: 'cut' (corte
- * seco) o 'crossfade' (fundido). Requiere que el job pptx referenciado ya
- * esté en estado `success` — el backend responde 409 `pptx_job_not_ready`
- * si no.
- */
-export async function createVideoExportJob(
-  reportId: string,
-  pptxJobId: string,
-  options: { slideDurationSeconds?: number; transition?: 'cut' | 'crossfade' } = {},
-): Promise<{ job_id: string; status: string }> {
-  const response = await api.post(
-    `/reports/${encodeURIComponent(reportId)}/export/pptx/${encodeURIComponent(pptxJobId)}/video`,
-    {
-      slide_duration_seconds: options.slideDurationSeconds ?? 4,
-      transition: options.transition ?? 'cut',
-    },
-  );
-  return response.data;
-}
-
-/**
- * Adjunta la narración de UNA página de un job PPTX (Stage 4): `audioBlob`
- * (grabación real, se sube como cuerpo binario con su propio Content-Type —
- * el backend la escribe a disco y la referencia queda lista para el próximo
- * `createVideoExportJob`) o `speakerNotes` (texto, guardado para una futura
- * conversión TTS — sin proveedor integrado todavía, la página queda muda
- * hasta que se resuelva ese follow-up). Pasar ambos vacíos no tiene efecto
- * útil — el caller decide cuál de los dos enviar.
- */
-export async function uploadSlideNarration(
-  reportId: string,
-  pptxJobId: string,
-  pageNumber: number,
-  payload: { audioBlob: Blob; durationSeconds: number } | { speakerNotes: string },
-): Promise<{ status: string; kind: string }> {
-  const path = `/reports/${encodeURIComponent(reportId)}/export/jobs/${encodeURIComponent(pptxJobId)}/narration/${pageNumber}`;
-  if ('audioBlob' in payload) {
-    const response = await api.post(path, payload.audioBlob, {
-      headers: { 'Content-Type': payload.audioBlob.type || 'audio/webm' },
-      params: { duration_seconds: payload.durationSeconds },
-      timeout: 30000,
-    });
-    return response.data;
-  }
-  const response = await api.post(path, { speaker_notes: payload.speakerNotes }, { timeout: 15000 });
-  return response.data;
-}
-
-export async function fetchExportJobStatus(reportId: string, jobId: string): Promise<ExportJobStatus> {
-  const response = await api.get(
-    `/reports/${encodeURIComponent(reportId)}/export/jobs/${encodeURIComponent(jobId)}`,
-  );
-  return response.data;
-}
-
-export async function fetchExportJobBlob(
-  reportId: string,
-  jobId: string,
-): Promise<{ blob: Blob; filename: string; password: string | null }> {
-  const response = await api.get(
-    `/reports/${encodeURIComponent(reportId)}/export/jobs/${encodeURIComponent(jobId)}/download`,
-    { responseType: 'blob', timeout: 60000 },
-  );
-  const disposition = response.headers?.['content-disposition'] || '';
-  const match = /filename="([^"]+)"/.exec(disposition);
-  // Solo viene poblado para jobs 'pdf' (ADR-080, ver runPdfExportJob en el
-  // backend) -- axios normaliza los nombres de header a minúsculas, mismo
-  // criterio que `fetchReportPdfBlob`.
-  const password = response.headers?.['x-pdf-password'] || null;
-  return { blob: response.data, filename: match ? match[1] : 'informe.pptx', password };
-}
-
-/**
- * Espera a que un job de exportación asíncrono (report_export_job: PPTX/MP4)
- * termine, haciendo polling de `fetchExportJobStatus` cada `intervalMs`.
- * `onProgress` se llama en cada tick con el estado crudo — la UI lo usa para
- * mostrar queued/running antes de que el job resuelva. Lanza
- * `export_job_poll_timeout` si se agotan los intentos sin llegar a un estado
- * terminal (success/failed/cancelled).
- */
-export async function pollExportJob(
-  reportId: string,
-  jobId: string,
-  options: { intervalMs?: number; maxAttempts?: number; onProgress?: (status: ExportJobStatus) => void } = {},
-): Promise<ExportJobStatus> {
-  // maxAttempts=1350 (~45 min de polling total, antes 400/~13.3 min): medido
-  // en vivo en un documento de 2104 páginas/6302 gráficos con la Fase 2 de
-  // paralelismo (checkpoints + N workers dedicados, ver server.js) — DOCX
-  // tomó ~30 min de procesamiento activo, PPTX ~25 min. Con 400 intentos el
-  // FRONTEND se rendía y mostraba "export_job_poll_timeout" mientras el job
-  // seguía corriendo de verdad en el backend (y terminaba bien poco después,
-  // invisible para el usuario que ya vio "error"). 1350 intentos da margen
-  // real por encima de esos tiempos medidos, no solo del timeout HTTP del
-  // backend (que en la práctica no corta la conexión, ver comentario de
-  // `postJsonToSidecar`/`gPdfExportTimeoutMs` en report_export_jobs.cpp).
-  const { intervalMs = 2000, maxAttempts = 1350, onProgress } = options;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const status = await fetchExportJobStatus(reportId, jobId);
-    onProgress?.(status);
-    if (status.status === 'success' || status.status === 'failed' || status.status === 'cancelled') {
-      return status;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  throw new Error('export_job_poll_timeout');
-}
-
-export interface PortableImportResponse {
-  document: any;
-  title: string;
-  source_company: string;
-  tenant_match: boolean;
-  redacted: boolean;
-}
-
-/**
- * Sube un `.mreport` para que el backend lo descifre y, si el tenant del
- * usuario no coincide con el de origen, devuelva el documento con
- * imágenes/KPIs/gráficos/mapas/sensores redactados (estructura y texto
- * intactos). El descifrado real SIEMPRE ocurre en el servidor.
- */
-export async function importReportPortable(fileBytes: ArrayBuffer): Promise<PortableImportResponse> {
-  const response = await api.post('/reports/import/portable', fileBytes, {
-    headers: { 'Content-Type': 'application/octet-stream' },
-    timeout: 30000,
-  });
-  return response.data;
-}
-
-export async function validateCompany(company: string, ruc: string): Promise<boolean> {
-  const response = await api.get('/auth/validate-company', { params: { company, ruc } });
-  return response.data?.valid ?? false;
-}
-
-const TEXT_SPELL_TIMEOUT_MS = 120000;
-
-/** Corrección ortográfica/gramatical rápida en backend: LanguageTool aplica
- *  solo reemplazos seguros (ortografía/gramática) — preciso y fiel al texto,
- *  nunca parafrasea ni inventa (a diferencia de "Optimizar IA" / rewrite). */
-export async function textCorrectQuick(text: unknown): Promise<any> {
-  const response = await api.post(
-    '/text/correct/quick',
-    { text: String(text ?? '') },
-    { timeout: TEXT_SPELL_TIMEOUT_MS },
-  );
-  return response.data;
-}
-
-/** Sugerencias LanguageTool vía backend (on-premise). */
-export async function textCorrectAdvanced(
-  text: unknown,
-  { language = 'es-PE', level = 'picky' }: { language?: string; level?: string } = {},
-): Promise<any> {
-  const response = await api.post(
-    '/text/correct/advanced',
-    { text: String(text ?? ''), language, level },
-    { timeout: TEXT_SPELL_TIMEOUT_MS },
-  );
-  return response.data;
-}
-
-/** Pasada segura LT + rápido + reescritura Ollama opcional (on-premise). */
-export async function textRewriteOnPremise(
-  text: unknown,
-  { language = 'es-PE', level = 'picky', use_llm = true }: { language?: string; level?: string; use_llm?: boolean } = {},
-): Promise<any> {
-  const response = await api.post(
-    '/text/rewrite',
-    { text: String(text ?? ''), language, level, use_llm },
-    { timeout: TEXT_SPELL_TIMEOUT_MS },
-  );
-  return response.data;
-}
-
-export interface Apa7CitationFields {
-  author?: string;
-  year?: string;
-  title?: string;
-  source?: string;
-  url?: string;
-}
-
-/**
- * Da formato APA 7 a datos bibliográficos que el usuario YA aportó (no busca
- * ni inventa fuentes) — usa el LLM local (Ollama) para puntuar/ordenar esos
- * mismos campos según la norma; si no responde, el backend cae a un
- * formateador determinístico (misma garantía: nunca inventa nada).
- */
-export async function formatApa7Citation(fields: Apa7CitationFields): Promise<{ apa: string; source: string }> {
-  const response = await api.post(
-    '/text/format-apa7',
-    fields,
-    { timeout: TEXT_SPELL_TIMEOUT_MS },
-  );
-  return response.data;
-}
-
-export interface ReferenceSearchResult {
-  title: string;
-  url: string;
-  snippet: string;
-  domain: string;
-}
-
-/**
- * Busca fuentes REALES en internet (Tavily, o Serper.dev como respaldo) para
- * un tema, ya filtradas a una lista de dominios de confianza (gobierno,
- * universidades, organismos internacionales, editoriales académicas) — nunca
- * inventa ni "recuerda" una fuente de entrenamiento del LLM. Si el backend no
- * tiene ninguna API key configurada, lanza con `search_not_configured` en el
- * mensaje.
- */
-export async function searchTrustedReferences(query: string): Promise<{ results: ReferenceSearchResult[]; excluded_untrusted_count: number; source: string }> {
-  const response = await api.post(
-    '/text/search-references',
-    { query },
-    { timeout: TEXT_SPELL_TIMEOUT_MS },
-  );
-  return response.data;
-}
-
-export interface ReferenceVerification {
-  verified: boolean;
-  matched_year: boolean;
-  matched_title: boolean;
-  source: string;
-}
-
-/**
- * Verificación programática (sin LLM) de que una URL de referencia
- * realmente contiene el título y/o año declarados — trae el contenido crudo
- * de la página vía Tavily /extract y hace un chequeo de substring local. Si
- * Tavily no está configurado, lanza con `tavily_not_configured`: esto NO debe
- * bloquear la inserción de la cita, solo se muestra como "no verificable".
- */
-export async function verifyReference(url: string, title?: string, year?: string): Promise<ReferenceVerification> {
-  const response = await api.post(
-    '/text/verify-reference',
-    { url, title, year },
-    { timeout: TEXT_SPELL_TIMEOUT_MS },
-  );
-  return response.data;
 }

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import ReadOnlyViewer from '../components/ReportStudioV2/components/viewers/ReadOnlyViewer';
-import { fetchReportById, fetchTelemetryWizardSeries, setExplicitBearerToken, setTelemetryQueueQuota } from '../components/ReportStudioV2/lib/api';
+import { fetchReportById, fetchTelemetryWizardSeries, setExplicitBearerToken } from '../components/ReportStudioV2/lib/api';
 import '../index.css';
 import '../components/ReportStudioV2/styles.css';
 
@@ -33,30 +33,11 @@ import '../components/ReportStudioV2/styles.css';
  * el export. Cuando cada widget monte más adelante, su fetch ya no golpea
  * la red -- lee directo de ese caché, sin ninguna carrera contra la
  * virtualización.
- *
- * `pageFrom`/`pageTo` (opcionales, 1-indexados, inclusive): recorte del
- * documento a prefetchear. Lo usa el pipeline DOCX en paralelo
- * (`pdf-export-service/server.js`, Fase 2 de captura) -- cada worker navega
- * con su propio rango de páginas en la URL (`?pageFrom=&pageTo=`) para que
- * SOLO precargue la telemetría de las páginas que ese worker va a capturar,
- * en vez de repetir el documento COMPLETO en cada una de las N pestañas
- * (medido en vivo: con 4 workers sin este recorte, cada uno prefetcheaba el
- * 100% del documento -- 4x la carga real contra el backend, sin ganancia de
- * velocidad neta pese a correr en paralelo). Sin estos params (undefined),
- * el comportamiento es el de siempre: todo el documento -- así sigue
- * funcionando igual para PDF/PPTX y para el DOCX sin paralelismo.
  */
-async function prefetchAllSensorTelemetry(
-  doc: any,
-  tenantId: string | undefined,
-  pageFrom?: number,
-  pageTo?: number,
-): Promise<void> {
+async function prefetchAllSensorTelemetry(doc: any, tenantId: string | undefined): Promise<void> {
   if (!doc || !Array.isArray(doc.pages)) return;
   const seen = new Map<string, { sensorIds: string[]; from: string; to: string }>();
   for (const page of doc.pages) {
-    if (pageFrom != null && page?.page_number < pageFrom) continue;
-    if (pageTo != null && page?.page_number > pageTo) continue;
     if (!Array.isArray(page?.elements)) continue;
     for (const el of page.elements) {
       if (el?.type !== 'sensor_multi_chart') continue;
@@ -64,7 +45,9 @@ async function prefetchAllSensorTelemetry(
       const sensorIds: string[] = selections.map((s: any) => s?.sensorId).filter(Boolean);
       const from = el?.props?.from;
       const to = el?.props?.to;
-      if (sensorIds.length === 0 || !from || !to) continue;
+      // Ventana en vivo ("Última hora"): el widget recalcula su propio rango
+      // al montar, un prefetch con el from/to guardado no le serviría.
+      if (sensorIds.length === 0 || !from || !to || el?.props?.liveWindowMinutes) continue;
       const key = `${sensorIds.join(',')}|${from}|${to}`;
       if (!seen.has(key)) seen.set(key, { sensorIds, from, to });
     }
@@ -113,24 +96,6 @@ function PrintReportRoot() {
   const [error, setError] = useState<string | null>(null);
 
   const params = new URLSearchParams(window.location.search);
-  // Solo el sidecar de export PPTX navega con esto (server-side, nunca lo
-  // agrega un usuario) — ver ReadOnlyViewer.tsx::hideOverlayText y
-  // pdf-export-service/server.js::/render-pptx.
-  const hideOverlayText = params.get('pptxOverlay') === '1';
-  // Solo un worker de captura DOCX en paralelo navega con esto -- ver
-  // comentario de `prefetchAllSensorTelemetry` más arriba.
-  const pageFromParam = params.get('pageFrom');
-  const pageToParam = params.get('pageTo');
-  const pageFrom = pageFromParam ? Number(pageFromParam) : undefined;
-  const pageTo = pageToParam ? Number(pageToParam) : undefined;
-  // Cuota de telemetría reducida para ESTA página -- ver comentario de
-  // `setTelemetryQueueQuota`/`AsyncTelemetryQueue.setQuota` en api.ts. Solo
-  // viene seteado cuando este worker corre junto a otros en paralelo.
-  const telemetryConcurrencyParam = params.get('telemetryConcurrency');
-  const telemetryMinIntervalMsParam = params.get('telemetryMinIntervalMs');
-  if (telemetryConcurrencyParam && telemetryMinIntervalMsParam) {
-    setTelemetryQueueQuota(Number(telemetryConcurrencyParam), Number(telemetryMinIntervalMsParam));
-  }
 
   useEffect(() => {
     const id = params.get('id');
@@ -167,7 +132,23 @@ function PrintReportRoot() {
         // por-página del sidecar arranque -- ver comentario de
         // `prefetchAllSensorTelemetry` más arriba. Nunca bloquea el export
         // por un error de red puntual (allSettled adentro de la función).
-        await prefetchAllSensorTelemetry(doc, full?.tenant_id || full?.tenantId, pageFrom, pageTo);
+        await prefetchAllSensorTelemetry(doc, full?.tenant_id || full?.tenantId);
+        // Esperar la fuente 'Inter' (ver <link> en print-report.html, ahora
+        // auto-hospedada -- ADR-184) antes de pintar -- sin esto, el texto
+        // se captura con la fuente de respaldo del sistema, de métricas
+        // distintas, y una celda de tabla larga envuelve a MÁS líneas de lo
+        // que el alto guardado del bloque contempla -- las últimas filas
+        // quedan recortadas por el overflow:hidden de su contenedor
+        // (encontrado en vivo: una tabla de 6 filas exportaba solo 4).
+        // `catch(() => {})` porque `document.fonts.ready` en teoría podría
+        // no resolver nunca en un entorno roto -- degradar al
+        // comportamiento anterior (2 rAF) es mejor que colgar el export
+        // entero; el timeout de 4s queda como red de seguridad aunque ya
+        // no se espere alcanzarlo en el camino normal (fuente local).
+        await Promise.race([
+          document.fonts.ready,
+          new Promise((resolve) => setTimeout(resolve, 4000)),
+        ]).catch(() => {});
         // Deja que React pinte el DOM del informe antes de marcar listo.
         requestAnimationFrame(() => requestAnimationFrame(() => {
           window.__PDF_READY__ = true;
@@ -185,7 +166,7 @@ function PrintReportRoot() {
   if (!report) {
     return <div style={{ padding: 24, fontFamily: 'sans-serif' }}>Cargando informe…</div>;
   }
-  return <ReadOnlyViewer report={report} onClose={null} hideOverlayText={hideOverlayText} isPrint={true} />;
+  return <ReadOnlyViewer report={report} onClose={null} isPrint={true} />;
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<PrintReportRoot />);

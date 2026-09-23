@@ -43,6 +43,40 @@ interface Device {
   sensor_name: string;
 }
 
+// SPEC-016 (cierre del demo de gate R5, 2026-09-14): antes había que elegir
+// el sensor "a ciegas" (solo código+nombre) y adivinar un umbral por consola
+// mirando /api/mining/telemetry/summary aparte -- ahora el selector unifica
+// AMBOS orígenes de sensor que acepta el backend (`sensor_id` real vía
+// telemetry_fact, `mining_sensor_id` de referencia vía mining_sensors) con
+// su valor conocido más reciente visible en la propia lista.
+interface RealSensorSummary {
+  id: string; // UUID real (= Device.sensor_id)
+  code: string;
+  name: string;
+  last_value?: number;
+  last_at?: string;
+}
+interface LegacySensor {
+  id: number;
+  name: string;
+  current_value: number | null;
+  status: string;
+}
+interface SensorOption {
+  key: string;
+  kind: 'real' | 'legacy';
+  id: string | number;
+  label: string;
+  currentValue: number | null;
+  /** 'live': dato real de telemetry_fact hace <15min (mismo umbral que el
+   * evaluador de alarmas, ver ADR-186). 'stale': hay último valor real pero
+   * más viejo -- el evaluador NO lo va a usar (evita alarmas sobre datos
+   * congelados). 'reference': mining_sensors, sin timestamp por diseño --
+   * el evaluador SIEMPRE lo usa tal cual esté. 'unknown': sin ningún dato. */
+  freshness: 'live' | 'stale' | 'reference' | 'unknown';
+  lastAt?: string;
+}
+
 // Etiquetas con caracteres Unicode reales (≥ ≤ > <) en vez de entidades
 // HTML (&ge; &le;…). Antes se pintaban con dangerouslySetInnerHTML solo
 // para decodificar esas entidades — innecesario y un sink de HTML evitable
@@ -81,14 +115,17 @@ function AlarmConfigView() {
   const [rules, setRules] = useState<AlarmRule[]>([]);
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [realSummary, setRealSummary] = useState<RealSensorSummary[]>([]);
+  const [legacySensors, setLegacySensors] = useState<LegacySensor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const [showRuleForm, setShowRuleForm] = useState(false);
   const [ruleForm, setRuleForm] = useState({
-    rule_name: '', sensor_id: '', operator: 'gt', threshold: '', severity: 'warning',
+    rule_name: '', sensorKey: '', operator: 'gt', threshold: '', severity: 'warning',
   });
+  const [sensorFilter, setSensorFilter] = useState('');
   const [savingRule, setSavingRule] = useState(false);
 
   const [showChannelForm, setShowChannelForm] = useState(false);
@@ -106,10 +143,16 @@ function AlarmConfigView() {
     setLoading(true);
     setError(null);
     try {
-      const [rRes, cRes, dRes] = await Promise.all([
+      // El resumen de telemetría (last_value/last_at por sensor real) y los
+      // sensores de referencia (mining_sensors) son "best-effort": si
+      // fallan, el formulario sigue funcionando igual que antes (elegir por
+      // código/nombre a secas), solo sin el valor conocido a la vista.
+      const [rRes, cRes, dRes, summaryRes, legacyRes] = await Promise.all([
         fetch('/api/mining/alarms/rules', { headers: authHeaders() }),
         fetch('/api/mining/notifications/channels', { headers: authHeaders() }),
         fetch('/api/mining/devices', { headers: authHeaders() }),
+        fetch('/api/mining/telemetry/summary?hours=24', { headers: authHeaders() }),
+        fetch('/api/sensors/data', { headers: authHeaders() }),
       ]);
       if (rRes.status === 401 || cRes.status === 401) {
         setError('Sesión expirada. Vuelva a iniciar sesión.');
@@ -118,9 +161,13 @@ function AlarmConfigView() {
       const rData = await rRes.json();
       const cData = await cRes.json();
       const dData = dRes.ok ? await dRes.json() : { devices: [] };
+      const summaryData = summaryRes.ok ? await summaryRes.json().catch(() => null) : null;
+      const legacyData = legacyRes.ok ? await legacyRes.json().catch(() => null) : null;
       setRules(Array.isArray(rData?.rules) ? rData.rules : []);
       setChannels(Array.isArray(cData?.channels) ? cData.channels : []);
       setDevices(Array.isArray(dData?.devices) ? dData.devices : []);
+      setRealSummary(Array.isArray(summaryData?.sensors) ? summaryData.sensors : []);
+      setLegacySensors(Array.isArray(legacyData?.sensors) ? legacyData.sensors : []);
     } catch (err) {
       log.error('AlarmConfigView: fallo al cargar', err);
       setError('No se pudo cargar la configuración de alarmas.');
@@ -133,12 +180,81 @@ function AlarmConfigView() {
 
   const deviceLabel = useMemo(() => {
     const map = new Map(devices.map((d) => [d.sensor_id, d.sensor_code || d.sensor_name]));
-    return (id: string | null) => (id ? map.get(id) || id.slice(0, 8) : '—');
-  }, [devices]);
+    const legacyMap = new Map(legacySensors.map((s) => [String(s.id), `${s.name} (referencia)`]));
+    return (sensorId: string | null, miningSensorId: string | null) => {
+      if (sensorId) return map.get(sensorId) || sensorId.slice(0, 8);
+      if (miningSensorId) return legacyMap.get(String(miningSensorId)) || `#${miningSensorId} (referencia)`;
+      return '—';
+    };
+  }, [devices, legacySensors]);
+
+  // SPEC-016: lista unificada de sensores elegibles con su valor conocido más
+  // reciente a la vista -- reemplaza el flujo anterior de "elegir a ciegas y
+  // adivinar el umbral por consola". `freshness` usa la misma ventana de
+  // 15 min que el evaluador real (ADR-186) para que lo que se ve acá sea
+  // consistente con lo que de verdad va a evaluar el backend.
+  const sensorOptions = useMemo<SensorOption[]>(() => {
+    const summaryById = new Map(realSummary.map((s) => [s.id, s]));
+    const real: SensorOption[] = devices.map((d) => {
+      const s = summaryById.get(d.sensor_id);
+      const lastAtMs = s?.last_at ? Date.parse(s.last_at) : NaN;
+      const isFresh = Number.isFinite(lastAtMs) && Date.now() - lastAtMs < 15 * 60 * 1000;
+      const freshness: SensorOption['freshness'] =
+        s?.last_value == null ? 'unknown' : isFresh ? 'live' : 'stale';
+      return {
+        key: `real:${d.sensor_id}`,
+        kind: 'real',
+        id: d.sensor_id,
+        label: `${d.sensor_code} — ${d.sensor_name}`,
+        currentValue: s?.last_value ?? null,
+        freshness,
+        lastAt: s?.last_at,
+      };
+    });
+    const legacy: SensorOption[] = legacySensors.map((s) => ({
+      key: `legacy:${s.id}`,
+      kind: 'legacy',
+      id: s.id,
+      label: s.name,
+      currentValue: s.current_value,
+      freshness: s.current_value == null ? 'unknown' : 'reference',
+    }));
+    return [...real, ...legacy];
+  }, [devices, realSummary, legacySensors]);
+
+  const filteredSensorOptions = useMemo(() => {
+    const q = sensorFilter.trim().toLowerCase();
+    if (!q) return sensorOptions;
+    return sensorOptions.filter((o) => o.label.toLowerCase().includes(q));
+  }, [sensorOptions, sensorFilter]);
+
+  const selectedSensor = useMemo(
+    () => sensorOptions.find((o) => o.key === ruleForm.sensorKey) || null,
+    [sensorOptions, ruleForm.sensorKey],
+  );
+
+  /** Autocompleta un umbral que la condición elegida YA cruza con el valor
+   * conocido del sensor seleccionado -- para verificar que una regla se
+   * dispara de verdad sin tener que adivinar un número a mano. Redondea a
+   * un paso "limpio" (10% del valor, mínimo 1) para que quede legible. */
+  const suggestTriggeringThreshold = () => {
+    if (!selectedSensor || selectedSensor.currentValue == null) return;
+    const v = selectedSensor.currentValue;
+    const step = Math.max(Math.abs(v) * 0.1, 1);
+    const byOperator: Record<string, number> = {
+      gt: v - step, gte: v, lt: v + step, lte: v, eq: v,
+    };
+    const suggested = byOperator[ruleForm.operator] ?? v;
+    setRuleForm((f) => ({ ...f, threshold: String(Number(suggested.toFixed(2))) }));
+  };
 
   const createRule = async () => {
-    if (!ruleForm.rule_name.trim() || !ruleForm.sensor_id || !ruleForm.threshold.trim()) {
+    if (!ruleForm.rule_name.trim() || !ruleForm.sensorKey || !ruleForm.threshold.trim()) {
       showToast('error', 'Complete nombre, sensor y umbral.');
+      return;
+    }
+    if (!selectedSensor) {
+      showToast('error', 'Seleccione un sensor válido.');
       return;
     }
     setSavingRule(true);
@@ -148,7 +264,9 @@ function AlarmConfigView() {
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           rule_name: ruleForm.rule_name.trim(),
-          sensor_id: ruleForm.sensor_id,
+          ...(selectedSensor.kind === 'real'
+            ? { sensor_id: selectedSensor.id }
+            : { mining_sensor_id: selectedSensor.id }),
           operator: ruleForm.operator,
           threshold: Number(ruleForm.threshold),
           severity: ruleForm.severity,
@@ -158,7 +276,8 @@ function AlarmConfigView() {
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       showToast('success', 'Regla de alarma creada correctamente.');
       setShowRuleForm(false);
-      setRuleForm({ rule_name: '', sensor_id: '', operator: 'gt', threshold: '', severity: 'warning' });
+      setRuleForm({ rule_name: '', sensorKey: '', operator: 'gt', threshold: '', severity: 'warning' });
+      setSensorFilter('');
       loadAll();
     } catch (err) {
       showToast('error', `No se pudo crear la regla: ${(err as Error).message}`);
@@ -285,39 +404,94 @@ function AlarmConfigView() {
             <div className="p-4 border-b border-white/5 bg-slate-950/40 space-y-3 shrink-0 animate-in fade-in slide-in-from-top-2">
               <div className="grid grid-cols-2 gap-3">
                 <div className="col-span-2">
-                  <label className="form-label">Nombre de la Regla</label>
+                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Nombre de la Regla</label>
                   <input type="text" placeholder="Ej. Temperatura crítica chancadora"
-                    className="form-input-base"
+                    className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
                     value={ruleForm.rule_name} onChange={(e) => setRuleForm({ ...ruleForm, rule_name: e.target.value })} />
                 </div>
-                <div>
-                  <label className="form-label">Sensor / Dispositivo</label>
-                  <select className="form-select-base"
-                    value={ruleForm.sensor_id} onChange={(e) => setRuleForm({ ...ruleForm, sensor_id: e.target.value })}>
-                    <option value="">Seleccione…</option>
-                    {devices.map((d) => (
-                      <option key={d.sensor_id} value={d.sensor_id}>{d.sensor_code} — {d.sensor_name}</option>
-                    ))}
+                <div className="col-span-2">
+                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Sensor / Dispositivo</label>
+                  <input
+                    type="text"
+                    placeholder="Buscar por nombre o código…"
+                    className="w-full bg-slate-900 border border-white/10 rounded-t-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50 border-b-0"
+                    value={sensorFilter}
+                    onChange={(e) => setSensorFilter(e.target.value)}
+                  />
+                  <select
+                    size={5}
+                    className="w-full bg-slate-900 border border-white/10 rounded-b-lg px-1 py-1 text-[11px] text-white outline-none focus:border-indigo-500/50"
+                    value={ruleForm.sensorKey}
+                    onChange={(e) => setRuleForm({ ...ruleForm, sensorKey: e.target.value })}
+                  >
+                    {filteredSensorOptions.length === 0 && <option disabled value="">Sin coincidencias…</option>}
+                    <optgroup label="Sensores en tiempo real (telemetry_fact)">
+                      {filteredSensorOptions.filter((o) => o.kind === 'real').map((o) => (
+                        <option key={o.key} value={o.key}>
+                          {o.label} — {
+                            o.freshness === 'live' ? `en vivo, ${o.currentValue}`
+                            : o.freshness === 'stale' ? `sin dato reciente (últ. ${o.currentValue})`
+                            : 'sin dato'
+                          }
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Sensores de referencia (mining_sensors, valor fijo de demo)">
+                      {filteredSensorOptions.filter((o) => o.kind === 'legacy').map((o) => (
+                        <option key={o.key} value={o.key}>
+                          {o.label} — valor de referencia {o.currentValue ?? 'sin dato'}
+                        </option>
+                      ))}
+                    </optgroup>
                   </select>
+                  {selectedSensor && (
+                    <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-[11px] font-bold text-white">{selectedSensor.label}</div>
+                        <div className="text-[9px] uppercase tracking-wide text-slate-500">
+                          {selectedSensor.kind === 'real' ? 'Sensor real' : 'Sensor de referencia (demo)'}
+                          {' · '}
+                          {selectedSensor.freshness === 'live' && <span className="text-emerald-400">dato en vivo</span>}
+                          {selectedSensor.freshness === 'stale' && <span className="text-amber-400">último dato viejo — el evaluador no lo usará</span>}
+                          {selectedSensor.freshness === 'reference' && <span className="text-sky-400">valor de referencia fijo</span>}
+                          {selectedSensor.freshness === 'unknown' && <span className="text-rose-400">sin ningún dato</span>}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="font-mono text-sm font-black text-emerald-400">
+                          {selectedSensor.currentValue ?? '—'}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={selectedSensor.currentValue == null}
+                          onClick={suggestTriggeringThreshold}
+                          title="Completa el umbral con un valor que esta condición ya cruza con el dato actual — útil para verificar que la regla se dispara"
+                          className="rounded-md bg-indigo-600/80 hover:bg-indigo-500 disabled:opacity-40 px-2 py-1 text-[9px] font-black uppercase text-white whitespace-nowrap"
+                        >
+                          Umbral que dispara ya
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div>
-                  <label className="form-label">Severidad</label>
-                  <select className="form-select-base"
+                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Severidad</label>
+                  <select className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
                     value={ruleForm.severity} onChange={(e) => setRuleForm({ ...ruleForm, severity: e.target.value })}>
                     {SEVERITIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="form-label">Condición</label>
-                  <select className="form-select-base"
+                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Condición</label>
+                  <select className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
                     value={ruleForm.operator} onChange={(e) => setRuleForm({ ...ruleForm, operator: e.target.value })}>
                     {OPERATORS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </div>
-                <div>
-                  <label className="form-label">Umbral (valor numérico)</label>
+                <div className="col-span-2">
+                  <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Umbral (valor numérico)</label>
                   <input type="number" step="any" placeholder="Ej. 85.5"
-                    className="form-input-base"
+                    className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-emerald-400 outline-none focus:border-indigo-500/50"
                     value={ruleForm.threshold} onChange={(e) => setRuleForm({ ...ruleForm, threshold: e.target.value })} />
                 </div>
               </div>
@@ -360,7 +534,7 @@ function AlarmConfigView() {
                           <div className="text-[11px] font-black text-white uppercase tracking-tight leading-none">{rule.rule_name}</div>
                         </td>
                         <td className="px-3 py-2.5">
-                          <span className="text-[10px] font-mono text-indigo-300/80">{deviceLabel(rule.sensor_id || rule.mining_sensor_id)}</span>
+                          <span className="text-[10px] font-mono text-indigo-300/80">{deviceLabel(rule.sensor_id, rule.mining_sensor_id)}</span>
                         </td>
                         <td className="px-3 py-2.5">
                           <span className="text-[10px] text-slate-300">{opLabel} {rule.threshold}</span>
@@ -419,22 +593,22 @@ function AlarmConfigView() {
                 </button>
               </div>
               <div>
-                <label className="form-label">Etiqueta</label>
+                <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Etiqueta</label>
                 <input type="text" placeholder="Ej. Guardia turno noche"
-                  className="form-input-base"
+                  className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
                   value={channelForm.label} onChange={(e) => setChannelForm({ ...channelForm, label: e.target.value })} />
               </div>
               <div>
-                <label className="form-label">
+                <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">
                   {channelForm.channel_type === 'email' ? 'Correo destino' : 'URL del webhook'}
                 </label>
                 <input type="text" placeholder={channelForm.channel_type === 'email' ? 'guardia@minera.com' : 'https://hooks.slack.com/...'}
-                  className="form-input-base"
+                  className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white outline-none focus:border-indigo-500/50"
                   value={channelForm.target} onChange={(e) => setChannelForm({ ...channelForm, target: e.target.value })} />
               </div>
               <div>
-                <label className="form-label">Severidad mínima que dispara este canal</label>
-                <select className="form-select-base"
+                <label className="text-[8px] font-black text-slate-500 uppercase mb-1 block">Severidad mínima que dispara este canal</label>
+                <select className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500/50"
                   value={channelForm.min_severity} onChange={(e) => setChannelForm({ ...channelForm, min_severity: e.target.value })}>
                   {SEVERITIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                 </select>

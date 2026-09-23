@@ -4,7 +4,7 @@ WORKDIR /app
 ARG BUILD_STAMP=dev
 ENV VITE_BUILD_STAMP=$BUILD_STAMP
 COPY package*.json ./
-# Causa real de los timeouts de red repetidos (confirmado en vivo,
+# Causa real de los timeouts de red repetidos (confirmado en vivo por Luder,
 # 2026-09-08): `playwright` es devDependency (solo para test:e2e, nunca se
 # ejecuta dentro de esta imagen) y su postinstall intenta descargar los
 # binarios de Chromium/Firefox/WebKit (cientos de MB) desde una CDN aparte

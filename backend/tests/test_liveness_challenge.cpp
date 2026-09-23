@@ -26,20 +26,20 @@ TEST_CASE("pickChallengeQueue: sortea 1 desafio de los 6 conocidos") {
   const auto queue = pickChallengeQueue();
   CHECK(queue.size() == static_cast<std::size_t>(kLivenessChallengeCount));
   for (const auto &c : queue) {
-    CHECK((c == "turn_left" || c == "turn_right" || c == "shift_left" ||
-           c == "shift_right" || c == "move_closer" || c == "move_away"));
+    CHECK((c == "turn_left" || c == "turn_right" || c == "look_down" ||
+           c == "look_up" || c == "move_closer" || c == "move_away"));
   }
 }
 
 TEST_CASE("pickReplacementChallenge: nunca devuelve uno excluido si hay pool disponible") {
-  const std::vector<std::string> exclude = {"turn_left", "turn_right", "shift_left", "shift_right"};
+  const std::vector<std::string> exclude = {"turn_left", "turn_right", "look_down", "look_up"};
   const auto replacement = pickReplacementChallenge(exclude);
   CHECK((replacement == "move_closer" || replacement == "move_away"));
 }
 
 TEST_CASE("pickReplacementChallenge: fail-closed cuando los 6 ya estan excluidos") {
-  const std::vector<std::string> exclude = {"turn_left",  "turn_right",  "shift_left",
-                                            "shift_right", "move_closer", "move_away"};
+  const std::vector<std::string> exclude = {"turn_left",  "turn_right",  "look_down",
+                                            "look_up", "move_closer", "move_away"};
   const auto replacement = pickReplacementChallenge(exclude);
   CHECK(replacement == "move_away");  // repite el ultimo, nunca queda vacio
 }
@@ -48,12 +48,12 @@ TEST_CASE("evaluateLivenessChallenge: sortea la cola y captura la referencia de 
   LivenessChallengeState st;
   const auto now = t0();
   evaluateLivenessChallenge(st, /*headYawRatio*/ 0.0, /*interEyePx*/ 200.0,
-                            /*faceOvalCx*/ 300.0, now);
+                            /*faceOvalCy*/ 300.0, now);
   CHECK(st.queue.size() == 1);
   CHECK_FALSE(st.complete);
   CHECK(st.index == 0);
   CHECK(st.baselineInterEyePx == 200.0);
-  CHECK(st.baselineFaceCenterX == 300.0);
+  CHECK(st.baselineFaceCenterY == 300.0);
 }
 
 TEST_CASE("evaluateLivenessChallenge: turn_left/turn_right satisfacen por umbral de headYawRatio") {
@@ -72,32 +72,32 @@ TEST_CASE("evaluateLivenessChallenge: turn_left/turn_right satisfacen por umbral
   CHECK(stRight.complete);
 }
 
-TEST_CASE("evaluateLivenessChallenge: shift_left/shift_right satisfacen por desplazamiento lateral del centro del ovalo") {
-  LivenessChallengeState stLeft;
-  stLeft.queue = {"shift_left"};
-  stLeft.baselineInterEyePx = 200.0;
-  stLeft.baselineFaceCenterX = 500.0;
-  stLeft.deadline = t0() + std::chrono::milliseconds(kLivenessChallengeTimeoutMs);
-  // Por debajo del umbral (kLivenessHeadShiftRatio == 0.35 * 200 == 70px) no satisface.
-  evaluateLivenessChallenge(stLeft, 0.0, 200.0, 500.0 + 60.0, t0());
-  CHECK_FALSE(stLeft.complete);
-  evaluateLivenessChallenge(stLeft, 0.0, 200.0, 500.0 + 80.0, t0());
-  CHECK(stLeft.complete);
+TEST_CASE("evaluateLivenessChallenge: look_down/look_up satisfacen por inclinacion vertical del centro del ovalo") {
+  LivenessChallengeState stDown;
+  stDown.queue = {"look_down"};
+  stDown.baselineInterEyePx = 200.0;
+  stDown.baselineFaceCenterY = 500.0;
+  stDown.deadline = t0() + std::chrono::milliseconds(kLivenessChallengeTimeoutMs);
+  // Por debajo del umbral (kLivenessHeadPitchRatio == 0.35 * 200 == 70px) no satisface.
+  evaluateLivenessChallenge(stDown, 0.0, 200.0, 500.0 + 60.0, t0());
+  CHECK_FALSE(stDown.complete);
+  evaluateLivenessChallenge(stDown, 0.0, 200.0, 500.0 + 80.0, t0());
+  CHECK(stDown.complete);
 
-  LivenessChallengeState stRight;
-  stRight.queue = {"shift_right"};
-  stRight.baselineInterEyePx = 200.0;
-  stRight.baselineFaceCenterX = 500.0;
-  stRight.deadline = t0() + std::chrono::milliseconds(kLivenessChallengeTimeoutMs);
-  evaluateLivenessChallenge(stRight, 0.0, 200.0, 500.0 - 80.0, t0());
-  CHECK(stRight.complete);
+  LivenessChallengeState stUp;
+  stUp.queue = {"look_up"};
+  stUp.baselineInterEyePx = 200.0;
+  stUp.baselineFaceCenterY = 500.0;
+  stUp.deadline = t0() + std::chrono::milliseconds(kLivenessChallengeTimeoutMs);
+  evaluateLivenessChallenge(stUp, 0.0, 200.0, 500.0 - 80.0, t0());
+  CHECK(stUp.complete);
 }
 
-TEST_CASE("evaluateLivenessChallenge: shift_left/shift_right fail-closed sin referencia valida") {
+TEST_CASE("evaluateLivenessChallenge: look_down/look_up fail-closed sin referencia valida") {
   LivenessChallengeState st;
-  st.queue = {"shift_left"};
+  st.queue = {"look_down"};
   st.baselineInterEyePx = 0.0;  // no deberia pasar en la practica, pero fail-closed
-  st.baselineFaceCenterX = 500.0;
+  st.baselineFaceCenterY = 500.0;
   st.deadline = t0() + std::chrono::milliseconds(kLivenessChallengeTimeoutMs);
   evaluateLivenessChallenge(st, 0.0, 200.0, 5000.0, t0());
   CHECK_FALSE(st.complete);

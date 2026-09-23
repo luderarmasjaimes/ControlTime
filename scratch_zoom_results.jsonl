@@ -1,0 +1,204 @@
+{"category": "normal", "file": "WIN_20260915_15_18_16_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.945918977, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_17_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.889044166, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_20_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.513455629, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_20_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.808604836, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_21_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.892112255, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_22_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.574936748, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_23_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.470590442, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_24_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.748747885, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_25_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.898371518, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_26_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.928258002, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_26_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.933658719, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_27_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.967382073, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_28_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.852248847, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_29_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.103594325, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_29_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.916645586, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_30_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.334520072, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_31_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.426995665, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_32_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.685459137, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_33_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.662785351, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_18_34_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.701614499, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_04_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.629403174, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_05_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.63572973, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_05_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.791132569, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_06_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.375304431, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_07_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.454589367, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_09_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.36264959, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_09_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.719185829, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_10_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.241650626, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_11_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.101542026, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_12_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.0554594882, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_12_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0456100442, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_13_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0486830883, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_14_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.114111342, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_15_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.10235776, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_16_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.0182475448, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_16_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0430096425, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_17_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0323532, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_18_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0182257202, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_19_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.148146272, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_19_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0147096105, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_20_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.616514981, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_20_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0673702136, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_21_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.838447928, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_22_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.394126236, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_22_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.717187643, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_23_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.385764927, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_24_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.121225253, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_24_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0916172639, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_25_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0687929317, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_26_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.301556408, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_26_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.507054567, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_27_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.450976729, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_30_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.334091485, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_31_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.162535176, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_32_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.120437436, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_32_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.120873854, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_33_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.240385592, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_34_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.714665711, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_35_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.209741309, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_35_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.313418239, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_36_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.109866709, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_37_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0857502744, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_38_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.231868252, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_38_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0978941768, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_39_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.37420547, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_40_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.319980979, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_40_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.77438426, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_41_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.925644636, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_43_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.70419842, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_44_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.777548194, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_45_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.809481263, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_45_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.692527533, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_46_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.761076152, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_47_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.676480055, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_48_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.737209857, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_49_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.599868536, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_50_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.237115175, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_50_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.456459701, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_51_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.92520386, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_51_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.569600105, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_52_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.799055278, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_53_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.873925686, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_53_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.721837044, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_54_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.87202692, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_55_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.867924631, "issues": [], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_56_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.312469929, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_56_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.341564685, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_57_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.41109097, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_57_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.440939218, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_58_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.629998565, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "normal", "file": "WIN_20260915_15_20_59_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.579615951, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_53_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.134183928, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_53_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0863543674, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_54_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.311639518, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_55_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.636931181, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_55_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.328887135, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_56_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0828900933, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_57_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.0254764147, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_57_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0194482114, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_58_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0159039591, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_21_59_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.042742867, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_00_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.846093953, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_00_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.590076208, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_01_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.825653732, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_02_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.699469805, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_03_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.253244758, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_03_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0414659493, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_04_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0280801933, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_05_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.0117544029, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_05_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0431188643, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_06_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0234244503, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_07_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0174735859, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_08_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.0202669818, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_08_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.169447049, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_09_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.00699426979, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_10_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.141601816, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_10_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0451263674, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_11_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.643325448, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_12_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.743651927, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_12_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.753886819, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_13_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.836629927, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_14_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.692578256, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_14_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.804328263, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_15_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.833724916, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_16_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.830958128, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_16_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.689362109, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_17_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.384146631, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_18_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.236356542, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_18_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.235779807, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_19_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.502528667, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_20_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.322934866, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_21_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.414964944, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_22_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.264120996, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_22_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.201889455, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_23_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.140608042, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_23_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0536108762, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_24_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.204464838, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_25_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.208989814, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_25_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.116475932, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_26_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0196720362, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_29_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.0808075592, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_29_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.321822196, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_30_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0613868199, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_31_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.139644787, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_31_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.142305642, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_32_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.162404358, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_33_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.120876402, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_33_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.120289683, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_34_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.0577761158, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_35_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.438087881, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_35_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.344175279, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_36_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.832472801, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_38_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.952335775, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_39_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.958329856, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_39_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.914709806, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_40_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.785631597, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_41_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.909973979, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_41_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.916355133, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_44_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.946516097, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_45_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.919389606, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_45_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.955372572, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_46_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.908243418, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_47_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.947574317, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_47_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.877366185, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_48_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.900299191, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_49_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.94068867, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_49_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.584944189, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_50_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.546029627, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_51_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.717564523, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_51_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.843598902, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_52_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.788154721, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_53_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.685274124, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_53_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.702790558, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_54_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.65989989, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_55_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.718195736, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_56_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.885585248, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_57_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.919162214, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_58_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.814337671, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_58_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.845188916, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_22_59_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.794933617, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_00_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.793574214, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_00_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.810522795, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_01_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.872195601, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_02_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.83436352, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_03_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.593984663, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_03_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.816027761, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_04_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.528833032, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_05_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.586521566, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_05_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.626673698, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_06_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.204081818, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_07_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.364506364, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_08_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.195740804, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_08_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.493443638, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_09_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.146955058, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_09_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.141444653, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_10_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.55217427, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_11_Pro (2).jpg", "pass": false, "clarity": 1, "reality": 0.296267331, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_11_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.879106998, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_12_Pro.jpg", "pass": false, "clarity": 1, "reality": 0.673074484, "issues": ["seetaface_liveness_spoof"], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_13_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.926553845, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_13_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.820536792, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_14_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.887667894, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_15_Pro (2).jpg", "pass": true, "clarity": 1, "reality": 0.854596078, "issues": [], "error": null}
+{"category": "lejos", "file": "WIN_20260915_15_23_15_Pro.jpg", "pass": true, "clarity": 1, "reality": 0.931802392, "issues": [], "error": null}

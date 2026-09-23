@@ -1,10 +1,11 @@
 import React, { memo, useState, useEffect, useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
-import { Gauge, RefreshCw, AlertTriangle, TrendingUp, TrendingDown, Minus, Cpu } from 'lucide-react';
+import { Gauge, RefreshCw, AlertTriangle, TrendingUp, TrendingDown, Minus, Cpu, Radio } from 'lucide-react';
 import MiningWorkbenchHeader from './MiningWorkbenchHeader';
 import { TELEMETRY_DEFAULT_TENANT_ID } from '../../auth/telemetryTenant';
 import { fetchWithAuthRetry } from '../../lib/fetchWithAuth';
 import { log } from '../../lib/logger';
+import { useLiveKpi } from '../../lib/useLiveKpi';
 
 /* ─────────────────────────────────────────────────────────────────────────────
    KPIs DE OPERACIÓN — Monitoreo → KPIs
@@ -16,6 +17,13 @@ import { log } from '../../lib/logger';
       El backend y la tabla existían desde antes, pero NINGÚN menú los
       mostraba: solo el widget KPI dentro del editor de informes. Esta vista
       es su primer dashboard.
+      SPEC-005 (cierre 2026-09-12): el `current_value` de cada tarjeta se
+      refresca cada ~2s vía SSE (`useLiveKpi`, `GET /api/live/kpi`), no solo
+      cada 60s como el resto de la metadata — ver el badge "En vivo" junto al
+      título. El endpoint SSE tenía un bug real (consultaba columnas
+      `name`/`value`/`tenant_id` que no existen en `mining_runtime_kpis`,
+      corregido en `main.cpp::handleLiveKpiSse`) y nunca había servido datos
+      reales hasta ahora.
 
    2. Indicadores derivados de sensores: /api/sensors/data (mismo endpoint
       que Monitoreo→Sensores) — cumplimiento normativo PM10 y ruido,
@@ -190,6 +198,18 @@ const KpiOperationsView = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: 
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [telemetryTenantId]);
 
+    // SPEC-005 (push realtime, cierre 2026-09-12): el poll de 60s de arriba
+    // sigue siendo la fuente de la metadata rica (title, description,
+    // target_value, tendencia) que /api/live/kpi no manda -- la SSE solo
+    // aporta `current_value` fresco cada ~2s en vez de esperar hasta 60s.
+    // Se combinan por `code`/`name` en vez de reemplazar `kpis` por completo.
+    const live = useLiveKpi();
+    const liveKpis = useMemo((): KpiRow[] => {
+        if (!live.kpis || live.kpis.length === 0) return kpis;
+        const byCode = new Map(live.kpis.map((k) => [k.name, k.value]));
+        return kpis.map((k) => (byCode.has(k.code) ? { ...k, current_value: byCode.get(k.code)! } : k));
+    }, [kpis, live.kpis]);
+
     // ── Bloque 2: indicadores derivados del historial real de sensores ──
     const derived = useMemo((): DerivedCard[] => {
         const { sensors, sensor_types, history } = sensorData;
@@ -351,14 +371,29 @@ const KpiOperationsView = ({ telemetryTenantId = TELEMETRY_DEFAULT_TENANT_ID }: 
             )}
 
             {/* ── 1. KPIs corporativos ─────────────────────────────────── */}
-            <h2 className="mb-3 text-sm font-bold tracking-wide text-sky-300">KPIs corporativos de la operación</h2>
-            {kpis.length === 0 ? (
+            <h2 className="mb-3 flex items-center gap-2 text-sm font-bold tracking-wide text-sky-300">
+                KPIs corporativos de la operación
+                {live.connected ? (
+                    <span
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
+                            live.degraded
+                                ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                                : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                        }`}
+                        title={live.degraded ? 'Réplica de lectura no disponible: sirviendo desde la base primaria' : `Push en vivo — último dato ${live.lastUpdate ?? ''}`}
+                    >
+                        <Radio size={10} className="animate-pulse" />
+                        {live.degraded ? 'En vivo (degradado)' : 'En vivo'}
+                    </span>
+                ) : null}
+            </h2>
+            {liveKpis.length === 0 ? (
                 <div className="mb-6 rounded-xl border border-dashed border-slate-700 bg-slate-950/50 p-6 text-center text-sm text-slate-500">
                     Sin KPIs registrados. Use “Sincronizar KPIs” en el editor de informes o el endpoint /api/mining/kpis/upsert.
                 </div>
             ) : (
                 <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    {kpis.map((k) => <KpiCard key={k.code} kpi={k} />)}
+                    {liveKpis.map((k) => <KpiCard key={k.code} kpi={k} />)}
                 </div>
             )}
 

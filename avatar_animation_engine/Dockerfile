@@ -19,13 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
-    # TTS local/offline para el guion de las funcionalidades pre-renderizadas
-    # (bienvenida/onboarding/informes/KPIs, ADR-150 integración a producto) --
-    # invocado como subproceso (mismo patrón que ffmpeg), no enlazado: la
-    # licencia GPL-3.0 de espeak-ng no alcanza a este servicio por eso, igual
-    # criterio ya aplicado a herramientas GPL invocadas por subprocess en
-    # todo el ecosistema de este tipo de pipeline (ver THIRD_PARTY_NOTICES.md).
-    espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -65,7 +65,18 @@ function Apa7CitationModal({ onClose, onInsert }: Apa7CitationModalProps) {
   }, [searchQuery]);
 
   const pickResult = useCallback((r: ReferenceSearchResult) => {
-    setFields((prev) => ({ ...prev, title: r.title, url: r.url, source: prev.source || r.domain }));
+    const result = r as ReferenceSearchResult & {
+      authors?: string | string[] | null;
+      published_date?: string | null;
+      publishedDate?: string | null;
+      publication_year?: string | number | null;
+    };
+    const author = String(result.author || result.authors || '').trim();
+    const rawYear = result.year || result.publication_year || result.published_date || result.publishedDate || '';
+    const yearMatch = String(rawYear).match(/\b\d{4}\b/);
+    const year = yearMatch?.[0] || String(rawYear).trim();
+
+    setFields((prev) => ({ ...prev, title: r.title || '', author, year, url: r.url || '', source: prev.source || r.source || r.domain || '' }));
     setPickedUrl(r.url);
     setPreview(null);
     setVerification(null);
@@ -132,7 +143,7 @@ function Apa7CitationModal({ onClose, onInsert }: Apa7CitationModalProps) {
             </label>
             <div className="flex gap-2 mt-1.5">
               <input
-                className="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-sm"
+                className="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-sm text-black"
                 placeholder="p.ej. estabilidad de taludes en minería a cielo abierto"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -197,27 +208,27 @@ function Apa7CitationModal({ onClose, onInsert }: Apa7CitationModalProps) {
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <label className="text-xs font-bold text-slate-600">Autor (persona u organismo)</label>
-              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm" placeholder="p.ej. Ministerio de Energía y Minas del Perú"
+              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm text-black" placeholder="p.ej. Ministerio de Energía y Minas del Perú"
                 value={fields.author} onChange={setField('author')} />
             </div>
             <div>
               <label className="text-xs font-bold text-slate-600">Año</label>
-              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm" placeholder="2023"
+              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm text-black" placeholder="2023"
                 value={fields.year} onChange={setField('year')} />
             </div>
             <div>
               <label className="text-xs font-bold text-slate-600">Fuente / Editorial</label>
-              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm" placeholder="p.ej. MINEM"
+              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm text-black" placeholder="p.ej. MINEM"
                 value={fields.source} onChange={setField('source')} />
             </div>
             <div className="col-span-2">
               <label className="text-xs font-bold text-slate-600">Título</label>
-              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm" placeholder="Título del documento/artículo"
+              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm text-black" placeholder="Título del documento/artículo"
                 value={fields.title} onChange={setField('title')} />
             </div>
             <div className="col-span-2">
               <label className="text-xs font-bold text-slate-600">URL (opcional)</label>
-              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm" placeholder="https://..."
+              <input className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 text-sm text-black" placeholder="https://..."
                 value={fields.url} onChange={setField('url')} />
             </div>
           </div>

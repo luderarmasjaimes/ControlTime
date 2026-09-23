@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(beemetry_backend LANGUAGES CXX)
+# C habilitado solo para vendorear third_party/tinyexpr/tinyexpr.c tal cual
+# upstream (ADR-187, motor de fórmulas) -- todo el resto del proyecto sigue
+# siendo C++ puro.
+project(beemetry_backend LANGUAGES CXX C)
 
 # open62541 1.3.10 aún usa FindPythonInterp. Declarar la compatibilidad de
 # forma explícita evita una advertencia de política sin alterar su resolución.
@@ -163,6 +166,13 @@ set(MINING_MODULES
   src/mining/notification_routes.cpp
   src/mining/rp_odoo_sync.cpp
   src/mining/rp_gateway_routes.cpp
+  src/mining/sensor_formula_routes.cpp
+  src/mining/sensor_formula_diagram.cpp
+  src/mining/sensor_formula_evaluator.cpp
+  src/mining/sensor_formula_template_routes.cpp
+  src/mining/sensor_type_catalog_routes.cpp
+  src/mining/internal_session_routes.cpp
+  third_party/tinyexpr/tinyexpr.c
 )
 
 # Módulos de reportes y fórmulas
@@ -177,6 +187,7 @@ set(REPORTS_MODULES
   src/reports/report_document_settings.cpp
   src/reports/report_portable.cpp
   src/reports/report_share_links.cpp
+  src/reports/pdf_ocr_client.cpp
   src/formula/formula_service.cpp
   src/formula/formula_routes.cpp
 )
@@ -229,6 +240,7 @@ target_include_directories(beemetry_backend PRIVATE
   src/security
   src/server
   src/vision
+  third_party/tinyexpr
 )
 
 if(ONNXRUNTIME_ROOT AND EXISTS "${_onnx_hdr}")

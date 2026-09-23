@@ -1,0 +1,1281 @@
+Corte con Puntos|
+self.onInit = function() {
+    
+        var scope = self.ctx.$scope;
+
+        scope.ctx = self.ctx;
+
+        console.log('self.ctx.',self.ctx)
+        
+        var subs = self.ctx.subscriptions;
+        
+        
+            
+        Object.keys(subs).forEach(function (key) {
+            
+                 console.log(subs[key])
+            
+                var datasources = subs[key].data;
+                
+                console.log('datasources',datasources)
+                
+                
+                
+                series =[];
+                
+                data_piezometro=[]
+                
+                for (var da = 0; da < datasources.length; da++) {
+                    
+                    label =datasources.map(d=>{ return d })[da]['datasource']['entityName']
+                    
+                    field =datasources.map(d=>{ return d })[da]['dataKey']['name']
+                    
+                    datos = datasources.map(d=>{ return d.data })[da]
+                    
+                    console.log('datos',field)
+                    
+                    
+                    if(field=='ALT'){
+                        
+                        data_piezometro.push([0,0,label,0,0,0,0,0,0])
+                        
+                        series.push({type: 'scatter',name: label,cursor: 'pointer',keys:['x', 'y','id','mca','mpa','temp','freq','ultima_lectura','marker'],data: data_piezometro,zIndex:2000})
+                        
+
+                    }
+                    
+                          
+                    
+                    
+                    if(field=='dataset_name'){
+                        
+        
+                        series.push({type: 'spline',cursor: 'pointer',name: label ,fillOpacity: 1,data: [],zIndex:300})
+                        
+                    }
+                    
+                    if(field=='distancia_corte'){
+                        
+                        data_piezometro.push()
+                        
+                    }
+                    
+                   // _array_field=['ALT','distancia_corte','dataset_name','dataset_array','options']
+                    
+                    
+                    //if(_array_field.includes(field)==false){
+                        
+                      //  console.log('entre',field)
+                        //series.push({type: 'scatter',name: field+' '+String(da),cursor: 'pointer',keys:['x', 'y','id'],data: [],zIndex:2000})
+
+                    //}
+                    
+                    
+                }
+                
+                
+                
+                
+                
+        })
+        
+        console.log('series...',series)
+                    
+                 
+
+ 
+        
+        function grafica(tipo){
+
+
+        
+
+        var chart = Highcharts.chart('container3', {
+
+            title: {
+                text: '',
+                style: {
+                   color: '#234'
+               }
+            },
+            subtitle: {
+                text: 'Nivel de Lama Actual (Y Value msnm)'
+            },
+            legend: {
+                     itemStyle: {
+                        color: '#234'
+                     },
+                     itemHoverStyle: {
+                        color: '#FFF'
+                     },
+                     itemHiddenStyle: {
+                        color: '#444'
+                     }
+           
+            },
+            chart: {
+                      backgroundColor: {
+                          linearGradient: { x1: 0, y1: 0, x2: 1, y2: 1 },
+                          stops: [
+                              [0, '#fff'],
+                              [1, '#fff']
+                          ]
+                      },
+                      style: {
+                          fontFamily: '\'Unica One\', sans-serif'
+                      },
+                      plotBorderColor: '#606063'
+                    
+                  },
+
+             xAxis: {
+                  showEmpty: true,
+                  opposite: true,
+                  gridLineWidth: 1,
+                  lineWidth: 0,
+                  tickWidth: 0,
+                  minPadding: 0,
+                  maxPadding: 0,
+                  gridLineColor: '#dddde2',
+                  gridLineDashStyle: 'longdash',
+                  crosshair: {
+                	snap: false
+                    
+                    }
+                  
+                },
+
+            yAxis: {
+                //min: 1025,
+                gridLineColor: '#dddde2',
+                showEmpty: true,
+                gridLineDashStyle: 'longdash',
+              
+                title: {
+                    text: 'Elevacion (msnm)'
+                },
+                labels: {
+                    formatter: function() {
+                        return this.value;
+                    }
+                },
+                crosshair: {
+                		snap: false
+                },
+            },
+            annotations: [{
+                labelOptions: {
+                    backgroundColor: '#234',
+                    verticalAlign: 'top',
+                    borderLine:'0px',
+                    y: -10
+                },
+                
+                labelOptions: {
+                    
+                    align: 'right',
+                    justify: false,
+                    crop: true,
+                    
+                },
+                labels: [
+                    
+                    {
+                        point: "ST.VWP-3",
+                        text: 'Titulo',
+                        x:0
+                    
+                }]
+            }],
+                    
+              scatter: {
+                marker: {
+                    radius: 5,
+                    states: {
+                        hover: {
+                            enabled: false
+                        }
+                    }
+                },
+                states: {
+                    hover: {
+                        marker: {
+                            enabled: false
+                        }
+                    }
+                },
+                tooltip: {
+                    headerFormat: '<b>{series.name}</b><br>',
+                    pointFormat: '{point.x} cm, {point.y} kg'
+                }
+            },
+                    
+            series: series,
+            plotOptions: {
+            series: {
+                    states: {
+                        inactive: {
+                            opacity: 1
+                        }
+                    }
+                },
+           
+                
+            },
+            tooltip: {
+                padding:15,
+                
+                useHTML: true,
+                formatter: function () {
+                    
+                    if(this.series.type=='line'){
+                        
+                        
+                        
+                        return  '<b>' +this.series.name+ ' </b>'+parseFloat(this.y).toFixed(2) + '<br><b>Progresiva</b> '+parseFloat(this.x);
+                  
+                        
+                    }
+                     if(this.series.type=='scatter'){
+                        
+                        console.log('pintando...',this)
+              
+                        return '<b><div style="width:200px;">'+this.point.id+'</div></b><br><div style="display:grid;grid-template-columns:50% 50%"><div>Ultima Lectura</div><div>'+this.point.ultima_lectura+'</div><div>Col de Agua</div><div>'+parseFloat(this.y).toFixed(2)+'</div><div>MCA</div><div>'+parseFloat(this.point.mca).toFixed(2)+'</div><div>MPA</div><div>'+parseFloat(this.point.mpa).toFixed(2)+'</div><div>Temp</div><div>'+parseFloat(this.point.temp).toFixed(2)+'</div><div>Freq</div><div>'+parseFloat(this.point.freq).toFixed(2)+'</div><div>Progresiva</div><div>'+parseFloat(this.x).toFixed(2)+'</div></div>'
+
+                        
+                        
+                    }
+                    
+                    
+                }
+            }
+
+                });
+
+
+
+
+        }
+
+
+
+            grafica('area')
+
+            
+
+}
+
+   
+self.onDataUpdated = function() {
+    
+                //var chart = $('#container').highcharts();
+
+                console.log('Updating')
+                
+                var chart = $('#container3').highcharts();
+
+
+          
+            //Nivel
+            
+            var subs = self.ctx.subscriptions;
+            
+            Object.keys(subs).forEach(function (key) {
+            
+                var datasources = subs[key].data;
+                
+                
+                vector=[]
+                
+                array_dataset = []
+                
+                sen =0
+                
+                var distancia_corte;
+                
+                array_distancia_corte=[]
+                
+                lista_piezometros=[]
+                
+                lista_puntos=[]
+                
+                var array_piezo;
+                
+                
+                var mca,mpa,temp,freq,ultima_lectura
+                
+                
+                
+                for (var da = 0; da < datasources.length; da++) {
+                    
+                    label =datasources.map(d=>{ return d })[da]['datasource']['entityName']
+                    
+                    field =datasources.map(d=>{ return d })[da]['dataKey']['name']
+                    
+                    datos = datasources.map(d=>{ return d.data })[da]
+                    
+                    
+                    console.log('field,label,datos',field,'/',label,'/',datos)
+                    
+                    if(field=='ALT'){
+                        
+                         if(datos.length>0){
+                             
+                            elevacion = datos.map(d=>{return d[1]})[0]
+                            
+                            ultima_lectura = datos.map(d=>{return d[0]})[0]
+                            
+                            
+                         }
+                         
+                    }
+                    
+                    
+                    
+                    if(field=='MCA'){
+                        
+                            if(datos){
+                            mca = datos[0][1]
+                            }
+                         
+                    }
+                    
+                    if(field=='MPA'){
+                        
+                            if(datos){
+                            mpa = datos[0][1]
+                            }
+                         
+                    }
+                    
+                     if(field=='Temp'){
+                        
+                            if(datos){
+                            temp = datos[0][1]
+                            }
+                         
+                    }
+                    
+                    if(field=='Freq'){
+                        
+                            if(datos){
+                            freq = datos[0][1]
+                            }
+                         
+                    }
+                    
+                    
+                    
+                    
+                    if(field=='distancia_corte'){
+                        
+                        if(datos.length>0){
+                            
+                            distancia_corte = datos.map(d=>{return d[1]})[0];
+                            
+                            d =new Date(ultima_lectura)
+                            
+                            var ultima_lectura = ("0" + d.getDate()).slice(-2) + "-" + ("0"+(d.getMonth()+1)).slice(-2) + "-" +
+    d.getFullYear() + " " + ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+                            
+                            array_distancia_corte.push([label,distancia_corte,elevacion,mca,mpa,temp,freq,ultima_lectura])
+ 
+                            array_piezo = array_distancia_corte
+       
+                        }
+ 
+                    }
+
+
+                    if(field=='dataset_array'){
+                        
+                        
+                        console.log('dataset_array.....',datos[0])
+                        
+                        if(datos[0]){
+                            
+                          
+                            //valor_dataset = JSON.parse(JSON.parse(datos[0][1]))
+                            
+                            console.log('QUEEE',datos[0])
+                            
+                            console.log(chart.series)
+                            
+                            index = chart.series.filter(s=>s.name==label)[0].index
+                            
+                        
+                            try{
+                                _dataset=JSON.parse(JSON.parse(datos[0][1]))
+                            }
+                            catch(e){
+                                
+                                _dataset=[]
+                            }
+                            
+                            
+                            console.log('_dataset',_dataset)
+                            
+                            
+                            try{
+                                    chart.series[index].setData([]);
+                            }
+                            catch(error){
+                              console.log(error)
+                             
+                            }
+
+                              chart.series[index].setData(_dataset,false);                          
+                                
+                                  
+                             
+                                  chart.series[index].setData(_dataset,false);
+                                  
+                               
+
+                        }
+   
+                    }
+                    
+                    
+                    _array_field=['ALT','distancia_corte','dataset_name','dataset_array','options']
+                    
+                    
+                    if(_array_field.includes(field)==false){
+                        
+                        try{
+                            punto=JSON.parse(JSON.parse(datos[0][1]))
+
+                            lista_puntos.push([field+' '+String(da),punto])
+                        }
+                        catch(e){
+                            
+                        }
+                        
+
+                    }
+                    
+                    if(field=='options'){
+
+                        if(datos[0]){
+                            
+                            var d=JSON.parse(datos[0][1])
+                            
+                            console.log('d.....',d)
+                            
+                            if(d){
+
+                            
+                            var x= d.replace(/\'/g, "\"")
+                                
+                            _index = chart.series.filter(s=>s.name==label)[0]['index']
+                                
+                            console.log('index',_index)
+                            
+                            chart.series[_index].options.color = JSON.parse(x).color;
+                            
+                            chart.series[_index].options.type = JSON.parse(x).type;
+                            
+                            chart.series[_index].options.zIndex = JSON.parse(x).zIndex;
+                            
+                            chart.series[_index].options.dashStyle = JSON.parse(x).dashStyle;
+                    
+                            chart.series[_index].update(chart.series[_index].options);
+                            
+                            }
+
+                        }
+                        
+                        
+                    }
+                    
+                    
+                    
+  
+
+                }
+                
+                console.log('lista_puntos',lista_puntos,array_distancia_corte)
+                
+                /*
+                 _array_field=['ALT','distancia_corte','dataset_name','dataset_array','options']
+                    
+                    
+                    if(_array_field.includes(field)==false){
+                        
+                    }
+                 */
+                 
+                  console.log('array_piezo',array_piezo)
+                  
+                    
+                    
+                    /*_lista_piezo = array_piezo.map(s=>[s[1],s[2],s[0],s[3],s[4],s[5],s[6],s[7],{symbol: 'url(https://aniavestidos.com/Olas2.png)'}])
+                    */
+                  
+                    for(a in array_piezo){
+                        
+                        //label,distancia_corte,elevacion,mca,mpa,temp,freq,ultima_lectura
+                        label=array_piezo[a][0]
+                        distancia_corte=array_piezo[a][1]
+                        elevacion=array_piezo[a][2]
+                        mca=array_piezo[a][3]
+                        mpa=array_piezo[a][4]
+                        temp=array_piezo[a][5]
+                        freq=array_piezo[a][6]
+                        ultima_lectura=array_piezo[a][7]
+                        
+                        index = chart.series.filter(s=>s['name']==label)[0]['index'];
+                        
+                        _lista_piezo=[
+                              {id:label,x:distancia_corte,y:elevacion,mca:mca,mpa:mpa,temp:temp,freq:freq,ultima_lectura:ultima_lectura,marker:{symbol: 'url(https://aniavestidos.com/Olas2.png)'}}
+                            ] 
+                        
+                        chart.series[index].setData(_lista_piezo);
+                    
+                        
+                    }
+                        
+                 
+                
+                
+                //Puntos
+                 
+
+                 /*var ptos=[]
+                
+                 for(p in piezos){
+                     
+                    index = chart.series.filter(s=>s['name']==lista_puntos[p][0])[0]['index'];
+                     
+                
+                    chart.series[index].setData([[piezos[p][1],lista_puntos[p][1]]]);
+                     
+                 }*/
+                 
+                
+                /*
+                
+                var tp=[]
+                
+                for(p in array_piezo){
+                    
+                    tp.push({point:array_piezo[p][0],text:array_piezo[p][0],backgroundColor: 'white'})
+                }*/
+                
+                
+                
+                var tp=[]
+                /*
+                 array_distancia_corte.map(s=>
+                            tp.push({point:s[0],text:s[0],align: 'left',verticalAlign: 'center',y:10,borderColor: '#05b1f0', borderWidth: .3,backgroundColor:null,style: {
+                fontSize: '10px',color:"#000"            }})
+                            )*/
+                         console.log('karem',array_distancia_corte);   
+                for(p in array_distancia_corte){
+                    
+                    
+                if(isEven(parseInt(p)+1)==true){
+                    ext=-1
+                }
+                else{
+                    ext=1
+                }
+                
+                console.log('p ext',(p+1)*ext*5)
+                    
+                tp.push({point:{xAxis: 0,
+                            yAxis: 0,
+                            x: array_distancia_corte[p][1],
+                            y: array_distancia_corte[p][2]},
+                            x:(p+3)*ext*5,
+                            y:0,
+                            text:array_distancia_corte[p][0],
+                            backgroundColor: 'white',
+                            borderColor: '#05b1f0', 
+                            borderWidth: 1,
+                            backgroundColor:null,
+                            style: {fontSize: '10px',color:"#000"}})
+                
+    
+                    
+                }
+                
+                
+                    var newAnnotations={labels:tp,id:'no',labelOptions:{
+                            
+                            allowOverlap: true
+                        }}
+                        
+                        console.log('newAnnotations',newAnnotations)
+                
+                
+                try{
+                    chart.removeAnnotation('no')
+                
+                    chart.addAnnotation(newAnnotations) 
+                }
+                catch(e){
+                    
+                    console.log('error',e)
+                }
+                
+                
+                
+                
+                
+                
+                
+                
+            
+                
+   
+                
+    
+            })
+            
+            
+   var chart = $('#container3').highcharts();
+   
+   
+   chart.setSize( self.ctx.width, self.ctx.height);
+
+
+
+            
+            
+}
+
+
+function isEven(value){
+    if (value%2 == 0)
+        return true;
+    else
+        return false;
+}
+
+
+self.onResize =function(){
+
+   var chart = $('#container3').highcharts();
+   
+   
+   chart.setSize( self.ctx.width, self.ctx.height);
+
+   
+}
+
+self.onDestroy = function() {
+}
+
+Corte con Lineas...|
+self.onInit = function() {
+    
+        var scope = self.ctx.$scope;
+
+    scope.ctx = self.ctx;
+
+//console.log('self.ctx.',self.ctx)
+        var subs = self.ctx.subscriptions;
+        
+        
+            
+        Object.keys(subs).forEach(function (key) {
+            
+                 //console.log(subs[key])
+            
+                var datasources = subs[key].data;
+                
+               // console.log('datasources',datasources)
+                
+                
+                
+                series =[];
+                
+                data_piezometro=[]
+                
+                for (var da = 0; da < datasources.length; da++) {
+                    
+                    label =datasources.map(d=>{ return d })[da]['datasource']['entityName']
+                    
+                    field =datasources.map(d=>{ return d })[da]['dataKey']['name']
+                    
+                    datos = datasources.map(d=>{ return d.data })[da]
+                    
+            
+                    
+                    
+                    if(field=='dataset_name'){
+                        
+        
+                        series.push({type: 'line',cursor: 'pointer',name: label ,fillOpacity: 1,data: [],zIndex:300})
+                        
+                    }
+                    
+                    if(field=='distancia_corte'){
+                        
+                        data_piezometro.push()
+                        
+                    }
+                    
+                }
+                
+                
+                //series.push({type: 'line',name: 'Nivel',fillOpacity: 1,keys:['x', 'y','id'],data: data_piezometro,zIndex:2000})
+                
+                
+                series.push({type: 'line',name: 'Nivel',cursor: 'pointer',keys:['x', 'y','id','mca','mpa','temp','freq','ultima_lectura','marker'],data: data_piezometro,zIndex:2000})
+                
+                
+        })
+        
+        // console.log('series...noooo',series)
+                    
+                 
+
+ 
+        
+        function grafica(tipo){
+
+
+        
+
+        var chart = Highcharts.chart('container', {
+
+            title: {
+                text: '',
+                style: {
+                   color: '#234'
+               }
+            },
+            subtitle: {
+                text: 'Nivel de Lama Actual (Y Value msnm)'
+            },
+            legend: {
+                     itemStyle: {
+                        color: '#234'
+                     },
+                     itemHoverStyle: {
+                        color: '#FFF'
+                     },
+                     itemHiddenStyle: {
+                        color: '#444'
+                     }
+           
+            },
+            chart: {
+                      backgroundColor: {
+                          linearGradient: { x1: 0, y1: 0, x2: 1, y2: 1 },
+                          stops: [
+                              [0, '#fff'],
+                              [1, '#fff']
+                          ]
+                      },
+                      style: {
+                          fontFamily: '\'Unica One\', sans-serif'
+                      },
+                      plotBorderColor: '#606063'
+                    
+                  },
+
+             xAxis: {
+                  showEmpty: true,
+                  opposite: true,
+                  gridLineWidth: 1,
+                  lineWidth: 0,
+                  tickWidth: 0,
+                  minPadding: 0,
+                  maxPadding: 0,
+                  gridLineColor: '#dddde2',
+                  gridLineDashStyle: 'longdash',
+                  crosshair: {
+                	snap: false
+                    
+                    }
+                  
+                },
+
+            yAxis: {
+                //min: 1025,
+                gridLineColor: '#dddde2',
+                showEmpty: true,
+                gridLineDashStyle: 'longdash',
+              
+                title: {
+                    text: 'Elevacion (msnm)'
+                },
+                labels: {
+                    formatter: function() {
+                        return this.value;
+                    }
+                },
+                crosshair: {
+                		snap: false
+                },
+            },
+            annotations: [{
+        labelOptions: {
+            backgroundColor: '#234',
+            verticalAlign: 'top',
+            borderLine:'0px',
+            y: -10
+        },
+        
+        labelOptions: {
+            
+            align: 'right',
+            justify: false,
+            crop: true,
+            
+        },
+        labels: [
+            
+            {
+                point: "ST.VWP-3",
+                text: 'Titulo',
+                x:0
+            
+        }]
+    }],
+            
+            series: series,
+            plotOptions: {
+            series: {
+                    states: {
+                        inactive: {
+                            opacity: 1
+                        }
+                    }
+                }
+            },
+            tooltip: {
+                useHTML: true,
+                formatter: function () {
+                    
+                    
+                    //if(this.series.sensores){
+                    //    console.log('sensores...',this)
+                        
+                      //  var sen = this.series.sensores.filter(s=>s[1]==this.x)
+                      
+                      if(this.point.id.split('-')[0]=='highcharts'){
+                          
+                          return ' <b> Elevacion  </b>'+parseFloat(this.y).toFixed(2) + '<br><b>Progresiva</b> '+parseFloat(this.x);
+                          
+                      }
+                      else{
+                          
+                          //console.log(this.point)
+                          
+                          return '<b><div style="width:200px;">'+this.point.id+'</div></b><br><div style="display:grid;grid-template-columns:50% 50%"><div>Ultima Lectura</div><div>'+this.point.ultima_lectura+'</div><div>Col de Agua</div><div>'+parseFloat(this.y).toFixed(2)+'</div><div>MCA</div><div>'+parseFloat(this.point.mca).toFixed(2)+'</div><div>MPA</div><div>'+parseFloat(this.point.mpa).toFixed(2)+'</div><div>Temp</div><div>'+parseFloat(this.point.temp).toFixed(2)+'</div><div>Freq</div><div>'+parseFloat(this.point.freq).toFixed(2)+'</div><div>Progresiva</div><div>'+parseFloat(this.x).toFixed(2)+'</div></div>'
+                          
+                          
+                      }
+                        
+                        
+                        /*
+                        return ' <b>' +sen[0][0]+ ' </b>'+parseFloat(this.y).toFixed(2) + '<br><b>Progresiva</b> '+parseFloat(this.x);
+                        */
+                  
+                        
+                   // }
+                    /*
+                    else{
+                        
+                        
+                        if(this.series.name.includes('Nivel')){
+                            
+                            
+                            
+                            
+                            
+                            return '<b>'+this.series.name+'</b> '+parseFloat(this.y).toFixed(2)+'<br><b> Progresiva </b>'+this.x
+                            
+                            
+                            
+                        }
+                        else{
+                            
+                            return '<b>'+this.series.name+'</b><br>'+this.y
+                        }
+                    }
+                    */
+                    
+                    
+                }
+            }
+
+                });
+
+
+
+
+        }
+
+
+
+            grafica('area')
+
+            
+
+}
+
+   
+self.onDataUpdated = function() {
+    
+                //var chart = $('#container').highcharts();
+
+                //console.log('Updating')
+                
+                var chart = $('#container').highcharts();
+
+
+            //Nivel
+            
+            var subs = self.ctx.subscriptions;
+            
+            Object.keys(subs).forEach(function (key) {
+            
+                var datasources = subs[key].data;
+                
+                
+                vector=[]
+                
+                array_dataset = []
+                
+                sen =0
+                
+                array_distancia_corte=[]
+                
+                lista_piezometros=[]
+                
+                var mca,mpa,temp,freq,ultima_lectura
+                
+                for (var da = 0; da < datasources.length; da++) {
+                    
+                    label =datasources.map(d=>{ return d })[da]['datasource']['entityName']
+                    
+                    field =datasources.map(d=>{ return d })[da]['dataKey']['name']
+                    
+                    datos = datasources.map(d=>{ return d.data })[da]
+                    
+                    
+                     console.log('LABEL',label,field)
+                     
+                     
+                     if(field=='options'){
+
+                        if(datos[0]){
+                            
+                            var d=JSON.parse(datos[0][1])
+                            
+                            //console.log('d.....',d)
+                            
+                            var x= d.replace(/\'/g, "\"")
+                                
+                            _index = chart.series.filter(s=>s.name==label)[0]['index']
+                                
+                            //console.log('index',_index)
+                            
+                            chart.series[_index].options.color = JSON.parse(x).color;
+                            
+                            chart.series[_index].options.type = JSON.parse(x).type;
+                            
+                            chart.series[_index].options.zIndex = JSON.parse(x).zIndex;
+                            
+                            chart.series[_index].options.dashStyle = JSON.parse(x).dashStyle;
+                    
+                            chart.series[_index].update(chart.series[_index].options);
+
+                        }
+                        
+                        
+                    }
+                    
+                    
+                    
+
+                    if(field=='ALT'){
+                        
+                         if(datos.length>0){
+                             
+                            elevacion = datos.map(d=>{return d[1]})[0]
+                            
+                            ultima_lectura = datos.map(d=>{return d[0]})[0]
+                         }
+                         
+                    }
+                    
+                          
+                    
+                    if(field=='MCA'){
+                        
+                            if(datos){
+                            mca = datos[0][1]
+                            }
+                         
+                    }
+                    
+                    if(field=='MPA'){
+                        
+                            if(datos){
+                            mpa = datos[0][1]
+                            }
+                         
+                    }
+                    
+                     if(field=='Temp'){
+                        
+                            if(datos){
+                            temp = datos[0][1]
+                            }
+                         
+                    }
+                    
+                    if(field=='Freq'){
+                        
+                            if(datos){
+                            freq = datos[0][1]
+                            }
+                         
+                    }
+                    
+                    
+                      
+                    
+                    if(field=='distancia_corte'){
+                        
+                        
+                        if(datos.length>0){
+                            
+                            distancia_corte = datos.map(d=>{return d[1]})[0];
+                            
+                            //array_distancia_corte.push([label,distancia_corte,elevacion])
+                            
+                            //array_distancia_corte.push([label,distancia_corte,elevacion,mca,mpa,temp,freq,ultima_lectura])
+                            
+                            
+                            
+                             d =new Date(ultima_lectura)
+                            
+                            var ultima_lectura = ("0" + d.getDate()).slice(-2) + "-" + ("0"+(d.getMonth()+1)).slice(-2) + "-" +
+    d.getFullYear() + " " + ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+                            
+                            array_distancia_corte.push([label,distancia_corte,elevacion,mca,mpa,temp,freq,ultima_lectura])
+                            
+                            
+                            
+                            
+                        
+                            sen=sen+1
+ 
+                            
+                        }
+                        
+                        
+                        
+                    }
+                    
+                   
+
+                    if(field=='dataset_array'){
+                        console.log('datos',datos[0][1]);
+                        if(datos[0]){
+                            
+                            //console.log('datos....',JSON.parse(datos[0][1]))
+                            
+                            
+                            
+                        
+                            index = chart.series.filter(s=>s.name==label)[0].index
+                            
+                            
+                            //chart.series[index].setData([]);
+                            
+                            _dataset=JSON.parse(JSON.parse(datos[0][1]))
+                            
+                            
+                            try{
+                                    chart.series[index].setData([]);
+                            }
+                            catch(error){
+                              console.log('error datos',error)
+                             
+                            }
+                                chart.series[index].setData(_dataset,false);                          
+                                if(label.includes('Topografía')==true){
+                                    
+                                  chart.series[index].setData(_dataset,true);
+                                  
+                                }
+                                
+                                if(label.includes('Dique')==true){
+
+                                  chart.series[index].setData(_dataset,false);
+                                  
+                                }
+                                
+                                
+                            
+                        
+                            
+                            
+                            
+                            
+
+                        
+                        }
+                            
+                        
+                    }
+                    
+                   
+                 
+                    
+                    
+                 
+                  
+                 
+                    
+                    
+                 
+
+                }
+                
+                console.log('array_distancia_corte',array_distancia_corte)
+                
+                
+                array_piezo = array_distancia_corte
+                
+                
+                var piezos = array_piezo.sort(function (a, b) {
+                  if (a[1] > b[1]) {
+                    return 1;
+                  }
+                  if (a[1] < b[1]) {
+                    return -1;
+                  }
+                  // a must be equal to b
+                  return 0;
+                });
+                
+                
+                
+                console.log('piezos',piezos)
+                
+                console.log('series..',chart.series)
+                
+                index = chart.series.filter(s=>s['name']=='Nivel')[0]['index'];
+                
+               
+                _lista_piezo = array_piezo.map(s=>[s[1],s[2],s[0],s[3],s[4],s[5],s[6],s[7]])
+                
+  
+                chart.series[index].options.color = '#2b908f';
+                
+                chart.series[index].update(chart.series[index].options);
+
+                chart.series[index].setData(_lista_piezo);
+                
+                chart.series[index].sensores=piezos; 
+                
+               
+                var tp=[]
+                
+                for(p in piezos){
+                    
+                    tp.push({point:piezos[p][0],text:piezos[p][0],backgroundColor: 'white'})
+                }
+                
+                console.log('tp',tp)
+                
+                
+                
+                var newAnnotations={labels:tp,id:'anotacion'}
+                
+                try{
+                    chart.removeAnnotation('no')
+                
+                    chart.addAnnotation(newAnnotations) 
+                }
+                catch(e){
+                    
+                    console.log('error',e)
+                }
+                
+                
+                //chart.addAnnotation(newAnnotations)
+                
+                /*chart.renderer.button('Area',20, 20)
+                .on('click', function () {
+                    
+                    
+                   chart.series.map(s=>{
+                       
+                        console.log(s['name'])
+                        
+                        if( s['name'].includes('Poza de Bombeo') || s['name'].includes('Nivel') ){
+                            
+                            chart.series[s.index].options.type="line"
+                            chart.series[s.index].update(chart.series[s.index].options);
+                        }
+                        else{
+                            chart.series[s.index].options.type="area"
+                            chart.series[s.index].update(chart.series[s.index].options);
+                            
+                        }
+                        
+              
+                       
+                        
+                       })    
+                       
+    
+                   
+                   
+                    
+                    
+                })
+                .add();
+                
+                */
+                
+               /* chart.renderer.button('Linear',70, 20)
+                .attr({
+                    zIndex: 3
+                })
+                .on('click', function () {
+                    chart.series.map(s=>{
+                       
+                        console.log(s['name'])
+                       
+                        chart.series[s.index].options.type="line"
+                        chart.series[s.index].update(chart.series[s.index].options);
+                       })  
+                })
+                .add();*/
+                            
+                //chart.tooltip.refresh(chart.series[index].points[2]);
+            
+            })
+
+
+
+            
+            
+}
+
+
+self.onResize =function(){
+
+   //var chart = $('#container').highcharts();
+   
+   
+   //chart.setSize( self.ctx.width, self.ctx.height);
+
+   
+}
+
+self.onDestroy = function() {
+}
+

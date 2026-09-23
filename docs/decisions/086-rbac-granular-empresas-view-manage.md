@@ -1,5 +1,7 @@
 # ADR-086 — RBAC granular: `empresas.view` / `empresas.manage`
 
+> **Actualización 2026-09-23 (ADR-210) — verificación cerrada por uso real.** Los permisos `empresas.view` y `empresas.manage` existen en `platform_permissions` de la BD viva y la pantalla de empresas se usa en producción de desarrollo (ver ADR-085 y ADR-190). Estado vigente: **implemented, verificado por uso**.
+
 **Status**: implemented (backend + frontend; pendiente de verificación E2E — ver Fase 6 del plan de implementación)
 **Fecha**: 2026-08-05
 **Autores**: EC

@@ -4,39 +4,50 @@ import RibbonToolbar from './components/layout/RibbonToolbar';
 import LeftLibrary from './components/layout/LeftLibrary';
 import RightInspector from './components/layout/RightInspector';
 import MultipageView from './components/document/MultipageView';
+import SlideThumbnailRail from './components/document/SlideThumbnailRail';
 import WorkflowPanel, { createWorkflowEntry, WorkflowStatusBadge, type WorkflowStatus, type WorkflowEntry, type WorkflowSignature } from './components/document/WorkflowPanel';
 import VersionHistory, { createSnapshot, type VersionSnapshot } from './components/document/VersionHistory';
 import VersionComparator from './components/document/VersionComparator';
 import VoiceDictation from './components/document/VoiceDictation';
 import PerformanceDashboard from './components/dashboard/PerformanceDashboard';
-import { useEditorStore, type OptimizationSuggestion } from './store/useEditorStore';
+import { useEditorStore, type GlobalTextFormat, type OptimizationSuggestion, type ReportDocument } from './store/useEditorStore';
+import { parseRichClipboardBlocks } from './lib/richPaste';
+import { convertPdfOcrResponseToBlocks, buildReplicaPages, isReplicaResponse, formatPdfOcrSummary } from './lib/pdfOcrImport';
+import { expandParagraphPageBreaks, markParagraphAlignment, markRunFontSize, enrichDocxTextStyles, extractDocxTableShading, extractDocxPageSetup, DOCX_ALIGNMENT_STYLE_MAP, DOCX_HIGHLIGHT_STYLE_MAP } from './lib/docxPageBreaks';
 import { usePermissions } from '../../auth/usePermissions';
 import ReportsAdminModal from './components/modals/ReportsAdminModal';
 import ReadOnlyViewer from './components/viewers/ReadOnlyViewer';
 import PdfPasswordModal from './components/PdfPasswordModal';
-import ShareLinkModal from './components/ShareLinkModal';
 import ShareReportModal from './components/modals/ShareReportModal';
 import DeleteReportConfirm from './components/modals/DeleteReportConfirm';
 import MapCaptureModal from './components/modals/MapCaptureModal';
 import ImageInsertModal from './components/modals/ImageInsertModal';
 import VideoInsertModal from './components/modals/VideoInsertModal';
-import { generateDemoReport, type DemoReportProgress } from './lib/demoReportGenerator';
 import NarrationModal from './components/modals/NarrationModal';
 import Apa7CitationModal from './components/modals/Apa7CitationModal';
 import SaveTitleModal from './components/modals/SaveTitleModal';
+import SaveTextStyleModal from './components/modals/SaveTextStyleModal';
+import { loadCustomTextStyles, saveCustomTextStyle, deleteCustomTextStyle, type CustomTextStyle } from './lib/customTextStyles';
+import type { HeadingStyleDef } from './lib/headingStyles';
 import FormulaAnalysisModal from './components/modals/FormulaAnalysisModal';
+import DocumentLayoutModal from './components/modals/DocumentLayoutModal';
 import SupportChatWidget from './components/support/SupportChatWidget';
 import { saveReportAsync } from './lib/reportsStorage';
 import { startAutosave, stopAutosave, subscribeAutosave } from './lib/autosaveEngine';
-import { exportPDF, exportDOCX } from './lib/exportEngine';
+import { exportDOCX, generateFilename } from './lib/exportEngine';
+import { usePdfExport } from './lib/usePdfExport';
 import { initAccessibility, destroyAccessibility } from './lib/accessibility';
 import { measurePerfAsync } from './lib/performanceMonitor';
+import { generateDemoReport, type DemoReportProgress } from './lib/demoReportGenerator';
+import { useShareLink } from './lib/useShareLink';
+import ShareLinkModal from './components/ShareLinkModal';
 import {
+  fetchReports,
   fetchReportById,
   fetchReportRevisions,
-  createReportShareLink,
   fetchReportPortableBlob,
   importReportPortable,
+  importReportPdfOcr,
   syncMiningKpisFromDashboard,
   syncMiningKpisFromExternal,
   fetchMiningKpis,
@@ -44,7 +55,7 @@ import {
   fetchSeismicReport,
   createPptxExportJob,
   createDocxExportJob,
-  createPdfExportJob,
+  createXlsxExportJob,
   createVideoExportJob,
   uploadSlideNarration,
   pollExportJob,
@@ -55,11 +66,13 @@ import { getSession, type Session } from '../../auth/authStorage';
 import { telemetryTenantIdFromSession } from '../../auth/telemetryTenant';
 import { useConnectivity } from '../../lib/connectivityMonitor';
 import {
+  getOfflineDb,
   saveOfflineSnapshot,
   loadOfflineSnapshot,
   markOfflineSnapshotSynced,
   recordWentOffline,
   recordCameOnline,
+  findOrphanedLocalDrafts,
 } from './lib/offlineSqlite';
 import { log } from '../../lib/logger';
 import { tryApplyToActiveTextSelection, tryApplyCaseToActiveTextSelection } from './lib/activeTextFormatBridge';
@@ -123,9 +136,17 @@ export default function App({
   // servidor) hasta que el usuario resuelva el conflicto al presionar
   // "Guardar" — ver handleSaveReport.
   const [workingOfflineConflict, setWorkingOfflineConflict] = useState(false);
+  // document_id LOCAL del informe que el usuario guardó explícitamente
+  // mientras estaba offline (ver handleSaveReport) y que TODAVÍA no existe
+  // en el servidor — el efecto de reconexión de más abajo lo usa para
+  // terminar de crearlo apenas vuelva la señal, sin depender de qué informe
+  // esté abierto en pantalla en ese momento (el usuario pudo haber seguido
+  // trabajando en otro mientras tanto).
+  const [pendingOfflineCreateFor, setPendingOfflineCreateFor] = useState<string | null>(null);
 
   const doc = useEditorStore((s) => s.doc);
   const addElement = useEditorStore((s) => s.addElement);
+  const applySlideLayout = useEditorStore((s) => s.applySlideLayout);
   const addTocElement = useEditorStore((s) => s.addTocElement);
   const syncTocPages = useEditorStore((s) => s.syncTocPages);
   const addCenteredImage = useEditorStore((s) => s.addCenteredImage);
@@ -145,6 +166,11 @@ export default function App({
   const snapEnabled = useEditorStore((s) => s.snapEnabled);
   const setGridEnabled = useEditorStore((s) => s.setGridEnabled);
   const setSnapEnabled = useEditorStore((s) => s.setSnapEnabled);
+  const setPageMargins = useEditorStore((s) => s.setPageMargins);
+  const applyGlobalTextFormat = useEditorStore((s) => s.applyGlobalTextFormat);
+  const addComment = useEditorStore((s) => s.addComment);
+  const copyElement = useEditorStore((s) => s.copyElement);
+  const pasteElement = useEditorStore((s) => s.pasteElement);
 
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
@@ -152,14 +178,15 @@ export default function App({
   const [showReview, setShowReview] = useState(false);
   const [aiStatus, setAiStatus] = useState('');
   // Barra de progreso de export DOCX/PPTX/PDF (server-side, job asíncrono) --
-  // visible en la barra superior persistente (.doc-header-meta, ver más
-  // abajo) para que el usuario vea que el sistema sigue trabajando en
-  // exports largos (documentos de miles de páginas miden 25-40+ min reales,
-  // ver ADR de checkpoints/paralelismo) en vez de asumir que se colgó.
-  // `null` = sin export en curso. Se actualiza desde el `onProgress` de
-  // `pollExportJob` (ver `makeExportProgressHandler`).
+  // portado del avance de Luder (2026-09-11): visible en la barra superior
+  // persistente para que el usuario vea que el sistema sigue trabajando en
+  // exports largos (miles de páginas) en vez de asumir que se colgó. `null`
+  // = sin export en curso. Solo se llena si `ExportJobStatus.progress` viene
+  // poblado (depende de un sidecar/backend que aún no confirmamos que lo
+  // reporte para todos los formatos) -- mientras tanto no se muestra nada,
+  // sin romper el texto de `aiStatus` que ya informaba el estado.
   const [exportProgress, setExportProgress] = useState<{ format: string; captured: number; total: number } | null>(null);
-  // Callback de progreso COMPARTIDO entre DOCX/PPTX/PDF: mismo texto en
+  // Callback de progreso compartido entre DOCX/PPTX/PDF: mismo texto en
   // `aiStatus` + misma barra visual, solo cambia la etiqueta de formato.
   const makeExportProgressHandler = useCallback((formatLabel: string, renderingText: string) => (status: ExportJobStatus) => {
     setAiStatus(status.status === 'running' ? renderingText : `${formatLabel} en cola de exportación...`);
@@ -176,15 +203,20 @@ export default function App({
   const [showReportsAdmin, setShowReportsAdmin] = useState(false);
   const [showReadOnly, setShowReadOnly] = useState(false);
   const [readOnlyReport, setReadOnlyReport] = useState<any>(null);
-  // ADR-080: contraseña del PDF recién descargado desde el ribbon — se
-  // muestra una sola vez (ver PdfPasswordModal), no se persiste.
-  const [pdfPassword, setPdfPassword] = useState<string | null>(null);
-  // ADR-138: enlace de acceso directo (sin contraseña) recién generado desde
-  // el ribbon — se muestra una vez (ver ShareLinkModal); a diferencia de
-  // pdfPassword, este SÍ queda persistido en report_pdf_share_links
-  // (server-side) hasta que vence, pero no hace falta recordarlo en el
-  // cliente entre sesiones.
-  const [shareLink, setShareLink] = useState<{ url: string; expiresInHours: number } | null>(null);
+  // Visualizador de PPT en pantalla completa ("Presentar", ribbon Exportar) —
+  // reusa readOnlyReport/ReadOnlyViewer (mismo "report" que la vista previa
+  // de impresión), solo cambia el modo con el que se abre.
+  const [showPresentation, setShowPresentation] = useState(false);
+  // ADR-016/080: MISMO hook que ReadOnlyViewer.tsx (visor de solo lectura) —
+  // el botón "PDF" del ribbon y "Descargar PDF protegido" del visor ejecutan
+  // ahora exactamente el mismo pipeline server-side, en vez de tener cada
+  // uno su propia implementación (antes este botón generaba un PDF distinto,
+  // rasterizado con html2canvas, sin texto seleccionable).
+  const { downloadPdf: downloadProtectedPdf, password: pdfPassword, clearPassword: clearPdfPassword } = usePdfExport();
+  // ADR-204: toggle "sin sello de agua" -- solo se ofrece en la cinta cuando
+  // `canToggleWatermark` es true (permission code informes.export_sin_marca_agua,
+  // ver props pasadas a RibbonToolbar más abajo); default false = CON sello.
+  const [noWatermark, setNoWatermark] = useState(false);
   // Stage 3 (PPTX -> video): job pptx exitoso más reciente de ESTA sesión —
   // habilita el botón "Convertir a MP4"; se reinicia si el informe cambia
   // (evita reusar un job de otro reportId al cambiar de informe abierto).
@@ -193,6 +225,7 @@ export default function App({
   const [shareTarget, setShareTarget] = useState<any>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [reportsRefreshToken, setReportsRefreshToken] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [saveLabel, setSaveLabel] = useState('Guardar');
   const [showMapCapture, setShowMapCapture] = useState(false);
@@ -200,6 +233,11 @@ export default function App({
   const [showVideoInsertModal, setShowVideoInsertModal] = useState(false);
   const [showNarrationModal, setShowNarrationModal] = useState(false);
   const [showApa7Modal, setShowApa7Modal] = useState(false);
+  const [showDocumentLayout, setShowDocumentLayout] = useState(false);
+  // Estilos de texto personalizados (ribbon Inicio → Estilos → "guardar
+  // estilo actual") -- persistidos en localStorage, ver lib/customTextStyles.ts.
+  const [customTextStyles, setCustomTextStyles] = useState<CustomTextStyle[]>(() => loadCustomTextStyles());
+  const [showSaveTextStyleModal, setShowSaveTextStyleModal] = useState(false);
   // Reemplazo de window.prompt() para nombrar un informe nuevo al guardar
   // (ver promptForTitle más abajo, y SaveTitleModal.tsx) — mismo estilo
   // visual que el resto de modales de la plataforma (clases ra-*).
@@ -228,6 +266,14 @@ export default function App({
   // misma convención que rightPanelVisible, ya que RightInspector es un
   // componente no controlado que solo gestiona su propio expand/collapse.
   const [showTemplatesPanel, setShowTemplatesPanel] = useState(false);
+  // Pedido explícito 2026-09-08: la columna de miniaturas de diapositivas
+  // (SlideThumbnailRail) debe achicarse mientras el panel derecho de
+  // Propiedades está desplegado -- a diferencia de la biblioteca izquierda
+  // (cuyo estado expandido se resuelve con un simple selector CSS de
+  // hermano adyacente porque SÍ es el hermano inmediato en el DOM),
+  // RightInspector NO es adyacente a SlideThumbnailRail (queda <main> en
+  // medio), así que hace falta levantar el estado hasta acá.
+  const [rightInspectorExpanded, setRightInspectorExpanded] = useState(false);
   const [showWorkflow, setShowWorkflow] = useState(false);
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>('draft');
   // Firma documental (ADR-018): solo lectura en el cliente, la escribe el
@@ -235,6 +281,16 @@ export default function App({
   const [reportSignature, setReportSignature] = useState<WorkflowSignature | null>(null);
   const [auditLog, setAuditLog] = useState<WorkflowEntry[]>([]);
   const [autosaveStatus, setAutosaveStatus] = useState('idle');
+
+  // Gate cliente-side de defensa en profundidad (ADR-018/079): el backend ya
+  // rechaza el guardado de un informe signed/archived sin excepción de rol
+  // (409 report_immutable), pero hasta este cambio el editor dejaba
+  // editar/deshacer localmente sin aviso -- ver useEditorStore.documentLocked,
+  // que addElement/updateElement/removeElement(s)/pasteSelection/undo/redo
+  // ya respetan.
+  useEffect(() => {
+    useEditorStore.getState().setDocumentLocked(workflowStatus === 'signed' || workflowStatus === 'archived');
+  }, [workflowStatus]);
 
   // Handle signal from floating toolbar to open inspector
   useEffect(() => {
@@ -250,6 +306,104 @@ export default function App({
       setRightPanelVisible(true);
     }
   }, [selectedElementId]);
+
+  useEffect(() => {
+  const handleGlobalHistoryShortcut = (event: KeyboardEvent) => {
+    const isModifier = event.ctrlKey || event.metaKey;
+
+    if (!isModifier) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    if (key !== 'z' && key !== 'y') {
+      return;
+    }
+
+    const target = event.target as HTMLElement | null;
+
+    if (target) {
+      const tag = target.tagName?.toLowerCase();
+      const isFieldLike = tag === 'textarea' || tag === 'input' || tag === 'select' || target.isContentEditable;
+      // El <textarea> de un bloque de texto y las celdas contentEditable de
+      // una tabla TAMBIÉN son "campos" para el navegador, pero viven DENTRO
+      // del lienzo (`.page-scroll`, ver MultipageView.tsx) y son la razón
+      // de ser de este atajo -- bug real reportado 2026-09-10 ("el
+      // undo/redo no funciona, sobre todo al agregar una tabla y editar"):
+      // esta función bloqueaba Ctrl+Z/Y para CUALQUIER campo, sin importar
+      // dónde estuviera, así que escribir en una celda o en un bloque de
+      // texto y presionar Ctrl+Z sin antes hacer clic afuera no hacía
+      // NADA (ni el undo del documento, que se descartaba aquí, ni un undo
+      // nativo útil -- ambos editores manejan su contenido con estado de
+      // React/el store, no con el historial nativo del campo). Solo los
+      // campos "de formulario" de verdad FUERA del lienzo (inspector
+      // derecho, ribbon, buscadores, modales) siguen dejando pasar el undo
+      // nativo del navegador tal cual.
+      const isInsideDocumentCanvas = Boolean(target.closest('.page-scroll'));
+
+      if (isFieldLike && !isInsideDocumentCanvas) {
+        return;
+      }
+
+      if (isFieldLike && isInsideDocumentCanvas) {
+        // Si el atajo se dispara con el editor de texto o la celda TODAVÍA
+        // enfocados, hay que cerrarlos/confirmarlos ANTES de tocar el
+        // historial -- si no, dos bugs simétricos: (1) lo último tecleado
+        // vive solo en estado local (liveEdit del bloque de texto /
+        // el DOM de la celda) y nunca llegó a confirmarse al store, así
+        // que el snapshot que se restaura queda desfasado; y (2) el propio
+        // editor se queda mostrando ese valor VIEJO en pantalla después del
+        // undo (liveEdit no se limpia solo, y TableCell.tsx a propósito no
+        // resiembra su contenido mientras tiene el foco -- ver el
+        // comentario de ese useEffect). blur() dispara el mismo onBlur que
+        // ya usa el cierre manual (closeAndProcess / persistCell) para
+        // confirmar y cerrar limpio antes de deshacer/rehacer.
+        target.blur();
+      }
+    }
+
+    if (key === 'z' && !event.shiftKey) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      useEditorStore.getState().undo();
+      return;
+    }
+
+    if (key === 'y') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      useEditorStore.getState().redo();
+      return;
+    }
+
+    // Atajo alternativo habitual de redo.
+    if (key === 'z' && event.shiftKey) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      useEditorStore.getState().redo();
+    }
+  };
+
+  // CAPTURE = true
+  // Hace que el evento se intercepte antes de los listeners normales
+  // que puedan existir en el canvas, Konva, ribbon, etc.
+  window.addEventListener(
+    'keydown',
+    handleGlobalHistoryShortcut,
+    true,
+  );
+
+  return () => {
+    window.removeEventListener(
+      'keydown',
+      handleGlobalHistoryShortcut,
+      true,
+    );
+  };
+}, []);
 
   // Reconcilia páginas de continuación del TOC (ver
   // useEditorStore.ts::syncTocPages) cada vez que el documento cambia —
@@ -275,6 +429,7 @@ export default function App({
   const setCurrentReportId = useEditorStore((s) => s.setCurrentReportId);
   const setCurrentReportTitle = useEditorStore((s) => s.setCurrentReportTitle);
   const setCurrentReportVersionNumber = useEditorStore((s) => s.setCurrentReportVersionNumber);
+  const createNewDocument = useEditorStore((s) => s.createNewDocument);
   const loadDocument = useEditorStore((s) => s.loadDocument);
   const layoutMode = useEditorStore((s) =>
     s.doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document',
@@ -291,6 +446,17 @@ export default function App({
     return page?.elements?.find(e => e.id === selectedElementId) || null;
   }, [doc.pages, selectedPage, selectedElementId]);
 
+  const handleAddComment = useCallback(() => {
+    // Si hay un bloque seleccionado, se ancla a él; de lo contrario queda al
+    // inicio de la página activa. El nombre proviene siempre de la sesión.
+    addComment({
+      pageNumber: selectedPage || 1,
+      elementId: selectedElement?.id,
+      author: loggedAuthor,
+      authorId: session?.userId,
+    });
+  }, [addComment, selectedPage, selectedElement?.id, loggedAuthor, session?.userId]);
+
   const handleUpdateSelectedProps = useCallback((newProps: Record<string, unknown>) => {
     if (!selectedElementId || !selectedPage || !selectedElement) return;
     updateElement(selectedPage, selectedElementId, { props: { ...(selectedElement.props || {}), ...newProps } });
@@ -301,6 +467,34 @@ export default function App({
   const currentFontSize = currentProps.fontSize;
   const currentFontColor = currentProps.fontColor;
   const currentHighlightColor = currentProps.highlightColor;
+
+  // El panel de párrafo trabaja a nivel DOCUMENTO. Antes de que el usuario
+  // aplique un estilo global por primera vez, se muestra el formato del
+  // primer globo de texto disponible como referencia; al aplicar un valor el
+  // store lo sincroniza en todos los globos de todas las páginas.
+  const globalTextFormat = useMemo(() => {
+    const firstText = doc.pages.flatMap((page) => page.elements).find((element) => element.type === 'text');
+    const props = firstText?.props || doc.meta?.globalTextFormat || {};
+    return {
+      fontFamily: String(props.fontFamily || 'Arial'),
+      fontSize: Math.max(7, Number(props.fontSize) || 14),
+      fontColor: String(props.fontColor || '#0f172a'),
+      textAlign: (props.textAlign || 'left') as NonNullable<GlobalTextFormat['textAlign']>,
+      lineHeight: Number(props.lineHeight) || 1.35,
+      indentLeft: Math.max(0, Number(props.indentLeft) || 0),
+      indentRight: Math.max(0, Number(props.indentRight) || 0),
+      specialIndent: (props.specialIndent === 'firstLine' || props.specialIndent === 'hanging' ? props.specialIndent : 'none') as NonNullable<GlobalTextFormat['specialIndent']>,
+      specialIndentBy: Math.max(0, Number(props.specialIndentBy) || 0),
+      spacingBefore: Math.max(0, Number(props.spacingBefore) || 0),
+      spacingAfter: Math.max(0, Number(props.spacingAfter) || 0),
+    };
+  }, [doc.pages, doc.meta]);
+  const pageMargins = useMemo(() => ({
+    top: Math.max(6, Number(doc.meta?.marginTop) || 36),
+    right: Math.max(6, Number(doc.meta?.marginRight) || 36),
+    bottom: Math.max(6, Number(doc.meta?.marginBottom) || 36),
+    left: Math.max(6, Number(doc.meta?.marginLeft) || 36),
+  }), [doc.meta]);
 
   // Botón "Aa" del ribbon FIJO cuando no hay selección de texto activa en
   // un editor (tryApplyCaseToActiveTextSelection devuelve false) — mismo
@@ -336,6 +530,40 @@ export default function App({
   const isItalic = currentProps.italic;
   const isUnderline = currentProps.underline;
 
+  // Guardar el formato actual como estilo personalizado (ribbon Inicio →
+  // Estilos → botón "guardar") -- misma forma que HeadingStyleDef, así se
+  // reaplica con el mismo onApplyHeadingStyle que Título/H1-H6 (ver más
+  // abajo). El botón funciona SIEMPRE, haya o no texto seleccionado (igual
+  // que "Crear nuevo estilo a partir del formato" de Word, que se puede
+  // abrir y configurar de cero): si hay un bloque de texto seleccionado se
+  // usa su formato actual como punto de partida en el modal, si no, un
+  // formato por defecto razonable -- SaveTextStyleModal.tsx deja editar
+  // cada propiedad ahí mismo antes de guardar.
+  const defaultTextFormat: Omit<HeadingStyleDef, 'id' | 'label' | 'tag'> = {
+    fontFamily: 'Arial', fontSize: 12, fontWeight: 400, italic: false, underline: false,
+    color: '#1e293b', textAlign: 'left', lineHeight: 1.35,
+  };
+  const initialTextFormat: Omit<HeadingStyleDef, 'id' | 'label' | 'tag'> = selectedElement?.type === 'text' ? {
+    fontFamily: String(currentProps.fontFamily || defaultTextFormat.fontFamily),
+    fontSize: Number(currentProps.fontSize) || defaultTextFormat.fontSize,
+    fontWeight: currentProps.bold ? 700 : 400,
+    italic: !!currentProps.italic,
+    underline: !!currentProps.underline,
+    color: String(currentProps.fontColor || defaultTextFormat.color),
+    textAlign: (currentProps.textAlign || defaultTextFormat.textAlign) as HeadingStyleDef['textAlign'],
+    lineHeight: Number(currentProps.lineHeight) || defaultTextFormat.lineHeight,
+  } : defaultTextFormat;
+  const handleOpenSaveTextStyle = useCallback(() => {
+    setShowSaveTextStyleModal(true);
+  }, []);
+  const handleConfirmSaveTextStyle = useCallback((label: string, format: Omit<HeadingStyleDef, 'id' | 'label' | 'tag'>) => {
+    setCustomTextStyles(saveCustomTextStyle(label, format));
+    setShowSaveTextStyleModal(false);
+  }, []);
+  const handleDeleteCustomTextStyle = useCallback((id: string) => {
+    setCustomTextStyles(deleteCustomTextStyle(id));
+  }, []);
+
   // Reemplaza window.prompt(): abre SaveTitleModal y resuelve la promesa con
   // el título ingresado, o null si el usuario cancela (mismo contrato que
   // window.prompt() devolviendo null al cancelar, para no tener que tocar
@@ -347,11 +575,19 @@ export default function App({
   }, []);
 
   // ── Guardar informe ────────────────────────────────────────────────────────
-  const handleSaveReport = async () => {
+  const handleSaveReport = async (options?: { titleOverride?: string }): Promise<boolean> => {
     if (!session) {
       void requestNotice(t('notice.loginToSave'));
-      return;
+      return false;
     }
+
+    // ADR-022, cierre CA-3 de SPEC-014: cuando la rama "Sobrescribir" de abajo
+    // deja caer la ejecución al guardado normal más adelante en esta misma
+    // función, esta bandera es lo único que distingue ese guardado (fuerza la
+    // sobrescritura de la versión del servidor tras un conflicto) de un
+    // guardado manual común — se pasa a `saveReportAsync` para que quede
+    // etiquetado en el historial de versiones, no solo en este comentario.
+    let conflictResolutionTag: string | undefined;
 
     // ADR-022: hay un conflicto offline sin resolver sobre este informe —
     // antes de guardar nada, el usuario decide si sobrescribe la versión
@@ -374,8 +610,12 @@ export default function App({
             title: newTitle,
             contentJson: JSON.stringify(doc),
             status: 'draft',
-            createdBy: session.username,
+            createdBy: session.userId,
             company: session.company || 'default',
+            // ADR-022, cierre CA-3 de SPEC-014: deja trazabilidad de que este
+            // informe nació de un conflicto offline resuelto sin sobrescribir
+            // la versión del servidor (ver summaryLabels en el historial).
+            conflictResolution: 'offline_conflict_kept_as_new',
           });
           if (saved?.id) {
             setCurrentReportId(saved.id);
@@ -391,26 +631,97 @@ export default function App({
           setWorkingOfflineConflict(false);
           setSaveLabel('¡Guardado!');
           setTimeout(() => setSaveLabel('Guardar'), 2000);
+          return true;
         } catch (err) {
           log.error('Error al guardar informe offline como nuevo:', err);
           setSaveLabel('Error');
           setTimeout(() => setSaveLabel('Guardar'), 3000);
+          return false;
         } finally {
           setIsSaving(false);
         }
-        return;
       }
       // Sobrescribir: sigue el flujo normal de abajo, pero SIN
       // expectedVersion (fuerza el guardado, el usuario ya confirmó
       // explícitamente que quiere pisar la versión del servidor).
       setWorkingOfflineConflict(false);
+      conflictResolutionTag = 'offline_conflict_overwrite';
     }
 
-    let title = currentReportTitle;
-    if (!currentReportId) {
+    let title = options?.titleOverride ?? currentReportTitle;
+    if (!currentReportId && !options?.titleOverride) {
       const input = await promptForTitle(title, 'Nombrar informe nuevo');
-      if (input === null) return; // cancelled
+      if (input === null) return false; // cancelled
       title = (input || '').trim() || title;
+    }
+
+    // Se captura ANTES del guardado: si este es el primer guardado del
+    // documento (currentReportId todavía null), el autosave venía
+    // persistiendo en SQLite local bajo este id local (ver motor de
+    // autosave más abajo) — una vez el servidor confirme un id real, ese
+    // snapshot local queda obsoleto y se marca sincronizado para que
+    // findOrphanedLocalDrafts no lo siga ofreciendo para recuperar.
+    const localDraftIdBeforeSave = !currentReportId ? doc.document_id : null;
+
+    // Sin conexión real: "Guardar" no debe fallar con un error de red — el
+    // usuario puede no saber cuándo va a volver la señal, y necesita la
+    // certeza de que esto quedó guardado para poder seguir avanzando sin
+    // apuro (pedido explícito: "avanzo offline, lo guardo, y cuando se
+    // reconecte que se suba solo"). Se persiste explícitamente en el mismo
+    // SQLite local que ya usa el autoguardado offline (ver motor de
+    // autosave más abajo), bajo la misma clave que usaría ese autoguardado
+    // (id real si el informe ya existía, o el id local del documento si es
+    // la primera vez) — y si es la primera vez, se marca con
+    // pendingOfflineCreateFor para que el efecto de reconexión (más abajo)
+    // termine de crearlo en el servidor apenas vuelva la señal, sin que
+    // haga falta un segundo "Guardar" manual.
+    if (connectivity.state === 'OFFLINE') {
+      setCurrentReportTitle(title);
+      // Bug real reportado (2026-09-08): el guardado offline persistía
+      // `doc` tal cual, con `meta.author` en lo que sea que tuviera en ese
+      // momento -- para un documento que arrancó del estado inicial del
+      // store (nunca pasó por createNewDocument(), ver useEditorStore.ts)
+      // eso es el placeholder 'AGM Solutions', nunca el usuario real. El
+      // guardado ONLINE (unas líneas más abajo) ya corrige esto mismo al
+      // armar el JSON que manda al servidor (`author: loggedAuthor`) --
+      // faltaba aplicar la misma corrección acá, así que un borrador
+      // guardado offline quedaba invisible en "Documentos sin conexión"
+      // (ReportsAdminModal.tsx filtra por author === currentUserName) aun
+      // cuando el guardado local en sí había funcionado.
+      const offlineDoc: ReportDocument = { ...doc, meta: { ...doc.meta, author: loggedAuthor } };
+      try {
+        await saveOfflineSnapshot(
+          currentReportId || offlineDoc.document_id,
+          title,
+          offlineDoc,
+          currentReportVersionNumber ?? offlineDoc.meta?.version ?? 1,
+        );
+      } catch (err) {
+        // Bug real reportado (2026-09-08): sin este catch, un fallo acá
+        // (típicamente: este navegador nunca alcanzó a descargar la base
+        // SQLite local mientras tuvo señal -- ver getOfflineDb en
+        // offlineSqlite.ts, que necesita red la primera vez -- y ahora,
+        // offline, no puede) quedaba como una promesa rechazada sin
+        // manejar: no se guardaba en el servidor (obvio, sin conexión) NI
+        // localmente, y el usuario no veía ningún aviso -- creía que había
+        // guardado y perdía el documento por completo. Con el pre-cacheo
+        // agregado más abajo (efecto keyed en connectivity.state) esto ya
+        // no debería pasar en el uso normal, pero si pasa igual (primera
+        // vez offline de la sesión antes de que ese efecto llegue a
+        // completar la descarga), el usuario necesita enterarse.
+        log.error('Error al guardar el borrador offline (sin conexión y sin base local disponible):', err);
+        setSaveLabel('Error');
+        setTimeout(() => setSaveLabel('Guardar'), 3000);
+        void requestNotice(t('notice.offlineSaveFailed'));
+        return false;
+      }
+      if (!currentReportId) {
+        setPendingOfflineCreateFor(doc.document_id);
+      }
+      setSaveLabel('Guardado (sin conexión)');
+      setTimeout(() => setSaveLabel('Guardar'), 2500);
+      setAiStatus('Guardado localmente — se subirá al servidor automáticamente en cuanto vuelva la conexión.');
+      return true;
     }
 
     setIsSaving(true);
@@ -430,14 +741,20 @@ export default function App({
         projectName: doc.meta?.project || '',
         contentJson: contentJsonString,
         status: 'draft',
-        createdBy: session.username,
+        createdBy: session.userId,
         createdByName: session.fullName || session.username,
         company: session.company || 'default',
+        // ADR-022, cierre CA-3 de SPEC-014: solo definido cuando este
+        // guardado llegó acá vía la rama "Sobrescribir" de arriba.
+        conflictResolution: conflictResolutionTag,
       });
       log.debug('Report saved successfully:', saved);
       // Backend might return the full object with id
       if (saved && saved.id) {
         setCurrentReportId(saved.id);
+        if (localDraftIdBeforeSave) {
+          await markOfflineSnapshotSynced(localDraftIdBeforeSave);
+        }
       } else if (!currentReportId) {
         // Fallback for list refresh or similar if id wasn't returned as expected
         setAiStatus('Informe guardado. Recarga para ver cambios en la lista.');
@@ -452,6 +769,7 @@ export default function App({
       setCurrentReportTitle(title);
       setSaveLabel('¡Guardado!');
       setTimeout(() => setSaveLabel('Guardar'), 2000);
+      return true;
     } catch (err: any) {
       log.error('Error al guardar informe:', err);
       setSaveLabel('Error');
@@ -461,10 +779,115 @@ export default function App({
       if (err?.response?.data?.error === 'tenant_required') {
         void requestNotice(t('notice.noTenant'));
       }
+      return false;
     } finally {
       setIsSaving(false);
     }
   };
+
+  // Guarda `doc` en SQLite local -- mismo criterio que ya usa el motor de
+  // autoguardado más abajo (efecto "Autosave engine"): un informe sin id
+  // real del servidor (nunca guardado) se guarda bajo su document_id local;
+  // uno ya guardado, bajo su id real. Se extrae acá para reusarlo también
+  // en handleNewReport cuando no hay conexión (ver más abajo) -- antes esa
+  // acción se bloqueaba por completo sin red en vez de proteger el informe
+  // actual y dejar avanzar, igual que ya se protege el autoguardado.
+  const persistCurrentDocOffline = useCallback(async (doc: ReportDocument) => {
+    // Mismo fix que en handleSaveReport (bug real reportado 2026-09-08):
+    // esta función es la que usa el motor de autoguardado (cada 5s) para
+    // persistir offline, así que sin esto un documento nuevo que arranca
+    // del estado inicial del store (author: 'AGM Solutions', ver
+    // useEditorStore.ts) quedaba guardado localmente con ese placeholder
+    // en TODOS los autoguardados, no solo en un "Guardar" manual.
+    const stampedDoc: ReportDocument = { ...doc, meta: { ...doc.meta, author: loggedAuthor } };
+    if (!currentReportId) {
+      if (!stampedDoc.document_id) return;
+      await saveOfflineSnapshot(stampedDoc.document_id, currentReportTitle, stampedDoc, stampedDoc.meta?.version ?? 1);
+      return;
+    }
+    await saveOfflineSnapshot(
+      currentReportId,
+      currentReportTitle,
+      stampedDoc,
+      currentReportVersionNumber ?? stampedDoc.meta?.version ?? 1,
+    );
+  }, [currentReportId, currentReportTitle, currentReportVersionNumber, loggedAuthor]);
+
+  // Un documento vacío solo contiene el encabezado y pie que el editor crea
+  // automáticamente. Cualquier bloque adicional —incluso un globo de texto
+  // aún vacío— o comentario representa trabajo que el usuario debe guardar.
+  const hasUnsavedUserContent = useCallback(() => (
+    doc.pages.some((page) => page.elements.some((element) => (
+      element.type !== 'header' && element.type !== 'footer'
+    ))) || Boolean(doc.meta?.comments?.length)
+  ), [doc]);
+
+  const handleNewReport = useCallback(async () => {
+    if (isSaving) return;
+
+    const mustSaveCurrent = Boolean(currentReportId) || hasUnsavedUserContent();
+    if (!mustSaveCurrent) {
+      createNewDocument(loggedAuthor);
+      setWorkflowStatus('draft');
+      setAuditLog([]);
+      setReportSignature(null);
+      setWorkingOfflineConflict(false);
+      setAiStatus('Nuevo informe listo para editar.');
+      return;
+    }
+
+    // Sin conexión real: el guardado forzado de abajo (llamada de red) fallaría
+    // seguro, y antes eso bloqueaba por completo la creación del informe nuevo
+    // -- el usuario se quedaba atascado en el actual hasta reconectarse. Ahora
+    // se protege el informe actual en SQLite local (mismo mecanismo que ya usa
+    // el autoguardado offline) y se deja avanzar igual que Word: nunca hace
+    // falta red para poder empezar a escribir algo nuevo.
+    if (connectivity.state === 'OFFLINE') {
+      await persistCurrentDocOffline(doc);
+      createNewDocument(loggedAuthor);
+      setWorkflowStatus('draft');
+      setAuditLog([]);
+      setReportSignature(null);
+      setWorkingOfflineConflict(false);
+      setAiStatus('Sin conexión: el informe anterior se guardó localmente. Nuevo informe listo para editar.');
+      return;
+    }
+
+    // Para un borrador que aún no posee ID, se pide el título ANTES de crear
+    // el nuevo lienzo. Cancelar mantiene intacto el informe que se estaba
+    // editando, por lo que nunca se pierde trabajo de forma silenciosa.
+    let titleOverride: string | undefined;
+    if (!currentReportId) {
+      const enteredTitle = await promptForTitle(
+        currentReportTitle,
+        'Guardar informe antes de crear uno nuevo',
+      );
+      if (enteredTitle === null) return;
+      titleOverride = enteredTitle.trim() || currentReportTitle;
+    }
+
+    const saved = await handleSaveReport({ titleOverride });
+    if (!saved) return;
+
+    createNewDocument(loggedAuthor);
+    setWorkflowStatus('draft');
+    setAuditLog([]);
+    setReportSignature(null);
+    setWorkingOfflineConflict(false);
+    setAiStatus('Nuevo informe listo para editar.');
+  }, [
+    createNewDocument,
+    currentReportId,
+    currentReportTitle,
+    handleSaveReport,
+    hasUnsavedUserContent,
+    isSaving,
+    promptForTitle,
+    connectivity.state,
+    persistCurrentDocOffline,
+    doc,
+    loggedAuthor,
+  ]);
 
   // ── Abrir informe desde modal (Leer / Editar / Enviar / Eliminar) ──────────
   const handleOpenRead = async (report: any) => {
@@ -539,6 +962,73 @@ export default function App({
       log.error('handleOpenEdit', err);
       setAiStatus('No se pudo cargar el informe para editar.');
       void requestNotice(t('notice.reportLoadError'));
+    }
+  };
+
+  /** Sufijo "(Copia)" / "(Copia N)" que agrega handleDuplicateReport --
+   * se quita antes de recalcular, para que duplicar una copia no encadene
+   * "(Copia) (Copia)" sino que numere sobre el mismo título base. */
+  const stripCopySuffix = (title: string) => title.replace(/\s*\(Copia(?:\s+\d+)?\)\s*$/i, '').trim();
+
+  // ── Duplicar informe (pedido explícito 2026-09-09) ──────────────────────
+  // El lienzo no soporta seleccionar/copiar TODO un documento a la vez (Ctrl+C
+  // ahí solo maneja un elemento -- ver PageCanvas.tsx), así que la forma real
+  // de "reusar un informe como base de otro con distinta data" es duplicarlo
+  // del lado del servidor: se trae el content_json completo del informe
+  // original y se guarda como un informe NUEVO (id propio, nunca pisa el
+  // original) con un título sugerido "Título (Copia)" que se va numerando si
+  // ya existe ("Título (Copia 2)", "(Copia 3)"...).
+  const handleDuplicateReport = async (report: any) => {
+    if (!report?.id) return;
+    if (!session) {
+      void requestNotice(t('notice.loginToSave'));
+      return;
+    }
+    const reportTenantId = report.tenantId || report.tenant_id;
+    const baseTitle = stripCopySuffix(report.title || 'Informe sin título') || 'Informe sin título';
+    let suggestedTitle = `${baseTitle} (Copia)`;
+    try {
+      const siblings = await fetchReports(reportTenantId);
+      const existingTitles = new Set(siblings.map((r: any) => (r.title || '').trim()));
+      if (existingTitles.has(suggestedTitle)) {
+        let n = 2;
+        while (existingTitles.has(`${baseTitle} (Copia ${n})`)) n++;
+        suggestedTitle = `${baseTitle} (Copia ${n})`;
+      }
+    } catch (err) {
+      // No es crítico -- si no se pudo revisar títulos existentes, se
+      // ofrece igual el sufijo simple "(Copia)"; el usuario puede editarlo
+      // a mano en el modal si ya existe uno igual.
+      log.warn('handleDuplicateReport: no se pudieron revisar los títulos existentes', err);
+    }
+
+    const newTitle = await promptForTitle(suggestedTitle, 'Duplicar informe');
+    if (newTitle === null) return; // cancelado
+    const finalTitle = (newTitle || '').trim() || suggestedTitle;
+
+    try {
+      const full = await fetchReportById(report.id, reportTenantId);
+      const parsed = JSON.parse(full.content_json ?? full.contentJson ?? '{}');
+      const duplicatedDoc = {
+        ...parsed,
+        // Id local propio (mismo patrón que useEditorStore::createNewDocument)
+        // -- sin esto, el duplicado y el original comparten el mismo
+        // document_id interno, el mismo problema de fondo que causaba la
+        // colisión de borradores offline ya corregida antes.
+        document_id: `rep_${Date.now()}`,
+        meta: { ...(parsed.meta || {}), author: loggedAuthor, updatedAt: new Date().toISOString() },
+      };
+      const saved = await saveReportAsync({
+        id: undefined, // fuerza POST -- informe nuevo, nunca pisa el original
+        title: finalTitle,
+        contentJson: JSON.stringify(duplicatedDoc),
+        status: 'draft',
+      });
+      setReportsRefreshToken((tk) => tk + 1);
+      setAiStatus(saved?.id ? `Duplicado "${finalTitle}" creado.` : 'Duplicado creado.');
+    } catch (err) {
+      log.error('handleDuplicateReport', err);
+      void requestNotice(t('notice.duplicateError'));
     }
   };
 
@@ -762,40 +1252,8 @@ export default function App({
     setShowVideoInsertModal(false);
   }, []);
 
-  // "Generar Reporte Demo Completo" (MIS INFORMES) -- corre DENTRO del
-  // editor real (mismas acciones del store que un usuario), así valida en
-  // vivo el motor de márgenes/anti-colisión/auto-resize. No auto-guarda: el
-  // documento generado queda cargado en el lienzo y el usuario confirma con
-  // el botón "Guardar" normal -- evita depender de un cierre de store
-  // (`currentReportId`/`currentReportTitle`) capturado en un closure
-  // desactualizado justo después de una generación asíncrona.
-  const handleGenerateDemoReport = useCallback(async () => {
-    const confirmed = await requestConfirmation(
-      '¿Generar el informe demo de prueba exhaustiva (100% de tipos de sensor x 100% de tipos de gráfico, en A4/A3)? Reemplaza el contenido del lienzo actual (sin guardar automáticamente).',
-    );
-    if (!confirmed) return;
-    setShowReportsAdmin(false);
-    setAiStatus('Generando reporte demo…');
-    try {
-      const result = await generateDemoReport((p: DemoReportProgress) => {
-        setAiStatus(`${p.phase} (${p.current}/${p.total})`);
-      });
-      setAiStatus(
-        `Reporte demo generado: ${result.pageCount} páginas, ${result.sensorTypeCount} tipos de sensor, ${result.chartCount} diagramas. Revise y presione "Guardar" para conservarlo.`,
-      );
-    } catch (err) {
-      log.error('Error al generar reporte demo:', err);
-      const message = err instanceof Error ? err.message : '';
-      setAiStatus(
-        message.toLowerCase().includes('ya hay una generación')
-          ? message
-          : 'Error al generar el reporte demo. Verifique el catálogo de sensores del tenant.',
-      );
-    }
-  }, []);
-
   const handleVideoInsertComplete = useCallback(
-    (videoDataUrl: string, meta: { source: 'webcam' | 'screen'; durationSeconds: number; mimeType: string; posterDataUrl?: string }) => {
+    (videoDataUrl: string, meta: { source: 'webcam' | 'screen'; durationSeconds: number; mimeType: string }) => {
       if (!videoDataUrl || videoDataUrl.length < 32) {
         setAiStatus('Error: video vacío o inválido.');
         return;
@@ -806,10 +1264,6 @@ export default function App({
           source: meta.source,
           mimeType: meta.mimeType,
           durationSeconds: meta.durationSeconds,
-          // Miniatura real del primer frame -- permite que exportaciones que
-          // no pueden reproducir video (DOCX) embeban una imagen en vez de
-          // solo texto (ver reportDocxBuilder.js/buildReportDocx.ts).
-          posterSrc: meta.posterDataUrl,
         },
       });
       setAiStatus(`Video (${meta.source === 'webcam' ? 'cámara web' : 'pantalla'}, ${meta.durationSeconds}s) insertado en la página activa.`);
@@ -939,6 +1393,101 @@ export default function App({
     return () => clearInterval(timer);
   }, [kpiAutoSyncEnabled]);
 
+  // ── Recuperación de borradores locales huérfanos ──────────────────────────
+  // DESACTIVADO 2026-09-08 (pedido explícito) -- este efecto disparaba una
+  // ventana de confirmación POR CADA borrador huérfano encontrado, una
+  // detrás de otra, apenas arrancaba la app: molesto con varios documentos
+  // sin sincronizar. Se comenta entero (no se borra) para no perder el
+  // diseño -- la MISMA función se sigue usando, pero ahora desde una
+  // sección "Documentos sin conexión" dentro de ReportsAdminModal.tsx (no
+  // intrusiva, el usuario entra cuando quiere) -- ver
+  // handleRestoreOfflineDraft más abajo, que hace exactamente lo que hacía
+  // el `if (restore)` de este loop.
+  //
+  // Un informe NUEVO que el usuario editó pero nunca llegó a guardar (sin id
+  // de servidor) no aparece en "Mis informes" — si se cerró la pestaña o se
+  // cortó la conexión antes del primer "Guardar", su único rastro es el
+  // snapshot en SQLite local bajo su document_id (ver motor de autosave más
+  // abajo). Se revisaba una sola vez por sesión, apenas había sesión
+  // iniciada, y solo si el documento actual estaba vacío y sin id — para no
+  // reemplazar de golpe un informe que el usuario ya estuviera editando en
+  // esta misma pestaña.
+  //
+  // Se preguntaba por TODOS los huérfanos encontrados, uno por uno (más
+  // reciente primero) — no solo el último: si el usuario creaba varios
+  // informes nuevos sin conexión seguidos (p.ej. con "Nuevo informe" ya
+  // protegido offline, ver handleNewReport), antes solo se ofrecía
+  // recuperar el más reciente y los demás quedaban a salvo en SQLite pero
+  // sin que nadie los volviera a ofrecer.
+  //
+  // const orphanDraftCheckedRef = useRef(false);
+  // useEffect(() => {
+  //   if (!session || orphanDraftCheckedRef.current) return;
+  //   if (currentReportId || hasUnsavedUserContent()) return;
+  //   orphanDraftCheckedRef.current = true;
+  //   (async () => {
+  //     try {
+  //       const orphans = await findOrphanedLocalDrafts();
+  //       const locale = language === 'pt' ? 'pt-BR' : language === 'fr' ? 'fr-CA' : language === 'en' ? 'en-US' : 'es-PE';
+  //       for (const orphan of orphans) {
+  //         if (orphan.reportId === doc.document_id) continue;
+  //         const restore = await requestConfirmation(t('confirm.restoreOffline', {
+  //           date: new Date(orphan.updatedAt).toLocaleString(locale),
+  //         }));
+  //         if (restore) {
+  //           loadDocument(orphan.documentJson, null, orphan.title || currentReportTitle);
+  //           setAiStatus('Borrador local recuperado (nunca se había guardado en el servidor) — se guardará al presionar "Guardar".');
+  //           break;
+  //         }
+  //         // Si declina: NO se marca sincronizado — a diferencia del caso de
+  //         // un informe ya guardado (que siempre tiene una copia de respaldo
+  //         // en el servidor), este borrador no existe en ningún otro lado,
+  //         // así que "no ahora" no debe borrarlo. Se sigue preguntando por
+  //         // los demás huérfanos de esta pasada; este también se volverá a
+  //         // ofrecer en el próximo arranque de la app.
+  //       }
+  //     } catch (err) {
+  //       log.warn('No se pudo revisar borradores locales huérfanos', err);
+  //     }
+  //   })();
+  //   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // }, [session]);
+
+  /** Restaura un borrador local huérfano elegido desde la sección
+   * "Documentos sin conexión" de ReportsAdminModal.tsx -- mismo efecto que
+   * tenía confirmar "sí" en la ventana emergente ahora desactivada arriba:
+   * carga el documento en el editor y cierra el wizard de administración.
+   * NO marca el snapshot como sincronizado -- eso lo sigue haciendo
+   * handleSaveReport recién cuando el primer "Guardar" manual obtiene un id
+   * real del servidor (ADR-022), igual que antes. */
+  const handleRestoreOfflineDraft = useCallback((draft: { documentJson: any; title: string }) => {
+    loadDocument(draft.documentJson, null, draft.title || currentReportTitle);
+    setAiStatus('Borrador local recuperado (nunca se había guardado en el servidor) — se guardará al presionar "Guardar".');
+    setShowReportsAdmin(false);
+  }, [loadDocument, currentReportTitle]);
+
+  // ── Precarga de la base SQLite offline apenas hay señal real (ADR-022,
+  // bug real reportado 2026-09-08): getOfflineDb() necesita red la PRIMERA
+  // vez que se usa en un navegador (descarga una plantilla del servidor,
+  // ver offlineSqlite.ts) -- si esa primera descarga nunca ocurrió mientras
+  // había señal, la primera desconexión real de la sesión deja sin forma de
+  // guardar nada localmente (ni en el servidor, obvio, ni en SQLite, porque
+  // ESA descarga también necesita red). El comentario original de
+  // offlineSqlite.ts ya documentaba esta intención ("se invoca desde el
+  // primer chequeo de conectividad exitoso de la sesión") pero nunca quedó
+  // cableada -- solo existían llamadas reactivas (cuando ya hacía falta
+  // escribir/leer, demasiado tarde si eso pasa offline). getOfflineDb() es
+  // barata de llamar de más (cachea la promesa una vez resuelta), así que
+  // se reintenta en cada transición a un estado no-OFFLINE, no solo la
+  // primera del montaje -- se autorecupera si el primer intento falló por
+  // otra razón transitoria (p.ej. sesión aún no lista).
+  useEffect(() => {
+    if (connectivity.state === 'OFFLINE') return;
+    void getOfflineDb().catch((err) => {
+      log.warn('[OFFLINE] No se pudo precargar la base local offline con la señal disponible:', err);
+    });
+  }, [connectivity.state]);
+
   // ── Conectividad offline: aviso en el lienzo + registro del instante exacto
   // de la caída (pedido explícito del negocio: "indicar en el lienzo un
   // mensaje que indique fuera de línea con la fecha y hora que se perdió la
@@ -961,6 +1510,78 @@ export default function App({
       const now = new Date().toISOString();
       recordCameOnline(reportKey, now).catch((err) => log.warn('[OFFLINE] recordCameOnline falló', err));
       setOfflineSince(null);
+
+      // Informe NUNCA guardado en el servidor que el usuario guardó
+      // explícitamente mientras estaba offline (ver pendingOfflineCreateFor
+      // en handleSaveReport) — se termina de crear apenas vuelve la señal,
+      // sin depender de qué informe esté abierto en pantalla en ESTE
+      // momento (el usuario pudo haber seguido trabajando en otro mientras
+      // tanto). Independiente del bloque de abajo (que sincroniza el
+      // informe YA guardado que esté abierto ahora) — ambos pueden aplicar
+      // a la vez en la misma reconexión.
+      if (pendingOfflineCreateFor) {
+        const targetDraftId = pendingOfflineCreateFor;
+        // Actualización funcional en cada `setPendingOfflineCreateFor` de
+        // este bloque: si mientras esta subida está en vuelo el usuario
+        // guardó OTRO informe nuevo offline (valor más reciente), no hay
+        // que perder de vista ESE — solo se limpia si sigue siendo el mismo
+        // que se está procesando acá.
+        const clearIfStillTarget = () =>
+          setPendingOfflineCreateFor((current) => (current === targetDraftId ? null : current));
+        (async () => {
+          // isSaving también deshabilita el botón "Guardar" del ribbon —
+          // evita que el usuario dispare un guardado manual mientras esta
+          // subida automática todavía está en vuelo (crearía el mismo
+          // informe DOS veces: un POST acá y otro desde handleSaveReport).
+          setIsSaving(true);
+          try {
+            const pendingDraft = await loadOfflineSnapshot(targetDraftId);
+            if (!pendingDraft?.dirty || !session) {
+              // Ya no hay nada pendiente para este id (se sincronizó por
+              // otra vía, p.ej. un "Guardar" manual mientras tanto) — no
+              // tiene sentido seguir reintentando algo que ya no existe.
+              clearIfStillTarget();
+              return;
+            }
+            const saved = await saveReportAsync({
+              id: undefined, // nunca existió en el servidor -- fuerza POST
+              title: pendingDraft.title || currentReportTitle,
+              contentJson: JSON.stringify(pendingDraft.documentJson),
+              status: 'draft',
+              createdBy: session.userId,
+              company: session.company || 'default',
+            });
+            if (!saved?.id) return; // respuesta inesperada -- se reintenta en la próxima reconexión
+            await markOfflineSnapshotSynced(targetDraftId);
+            clearIfStillTarget();
+            // Si el usuario SIGUE en ese mismo documento (no se pasó a
+            // editar otro mientras esperaba la reconexión), se vincula en
+            // vivo al id real recién creado. Si ya se movió a otro informe,
+            // esto NO debe tocar lo que está en pantalla ahora — le
+            // asignaría el id equivocado a un documento distinto. De
+            // cualquier forma queda creado y a salvo en el servidor.
+            if (useEditorStore.getState().doc.document_id === targetDraftId) {
+              setCurrentReportId(saved.id);
+              if (typeof saved?.version_number === 'number') {
+                setCurrentReportVersionNumber(saved.version_number);
+              }
+              setAiStatus('Reconectado: el informe que guardaste sin conexión ya se subió al servidor.');
+            } else {
+              setAiStatus('Reconectado: un informe que habías guardado sin conexión ya se subió al servidor (búscalo en "Mis informes").');
+            }
+          } catch (err) {
+            // pendingOfflineCreateFor se deja intacto A PROPÓSITO -- si
+            // esto falló por algo transitorio (p.ej. la conexión se cortó
+            // de nuevo justo al reconectar), se reintenta solo en la
+            // próxima reconexión real, sin perder de vista el borrador.
+            log.error('[OFFLINE] No se pudo terminar de crear el informe pendiente al reconectar', err);
+            setAiStatus('Reconectado, pero no se pudo subir un informe guardado sin conexión — se reintentará en la próxima reconexión.');
+          } finally {
+            setIsSaving(false);
+          }
+        })();
+      }
+
       (async () => {
         try {
           const pending = await loadOfflineSnapshot(reportKey);
@@ -977,7 +1598,7 @@ export default function App({
               title: pending.title || currentReportTitle,
               contentJson: JSON.stringify(pending.documentJson),
               status: workflowStatus,
-              createdBy: session.username,
+              createdBy: session.userId,
               company: session.company || 'default',
               expectedVersion: pending.baseVersionNumber ?? undefined,
             });
@@ -1016,7 +1637,7 @@ export default function App({
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectivity.state, currentReportId]);
+  }, [connectivity.state, currentReportId, pendingOfflineCreateFor]);
 
   // ── Autosave engine ──
   useEffect(() => {
@@ -1024,7 +1645,24 @@ export default function App({
     startAutosave(
       () => useEditorStore.getState().doc,
       async (doc) => {
-        if (!session || !currentReportId) return;
+        if (!session) return;
+        // Informe recién creado que TODAVÍA no tiene id real del servidor
+        // (currentReportId null — ver useEditorStore.createNewDocument): no
+        // hay id con el que hacer PUT, y crear una fila en el servidor aquí
+        // sería un POST silencioso sin que el usuario haya elegido título vía
+        // "Guardar". Se persiste solo en SQLite local, bajo doc.document_id
+        // (el id local estable que el store asigna desde el momento en que
+        // crea el documento) — sin esto, un informe nuevo editado y nunca
+        // guardado no tenía NINGÚN respaldo (ni servidor ni SQLite) si se
+        // cerraba la pestaña o se cortaba la conexión antes del primer
+        // guardado manual. Se recupera desde la sección "Documentos sin
+        // conexión" de ReportsAdminModal.tsx (vía findOrphanedLocalDrafts;
+        // el efecto de arranque automático que la ofrecía antes quedó
+        // comentado más abajo, ver handleRestoreOfflineDraft).
+        if (!currentReportId) {
+          await persistCurrentDocOffline(doc);
+          return;
+        }
         // Sin conexión real (verificada contra el propio backend, no solo
         // navigator.onLine — ver connectivityMonitor.ts) O con un conflicto
         // offline sin resolver (ADR-022: el usuario eligió seguir trabajando
@@ -1033,12 +1671,7 @@ export default function App({
         // al servidor, hasta que el usuario resuelva el conflicto al
         // presionar "Guardar" (handleSaveReport).
         if (connectivity.state === 'OFFLINE' || workingOfflineConflict) {
-          await saveOfflineSnapshot(
-            currentReportId,
-            currentReportTitle,
-            doc,
-            currentReportVersionNumber ?? doc.meta?.version ?? 1,
-          );
+          await persistCurrentDocOffline(doc);
           return;
         }
         const saved = await saveReportAsync({
@@ -1046,7 +1679,7 @@ export default function App({
           title: currentReportTitle,
           contentJson: JSON.stringify(doc),
           status: workflowStatus,
-          createdBy: session.username,
+          createdBy: session.userId,
           company: session.company || 'default',
         });
         // ADR-021 (revisado): cada autosave confirmado también genera una
@@ -1059,7 +1692,7 @@ export default function App({
       currentReportId,
     );
     return () => { stopAutosave(); unsub(); };
-  }, [currentReportId, session?.username, connectivity.state, workingOfflineConflict, currentReportVersionNumber]);
+  }, [currentReportId, session?.username, connectivity.state, workingOfflineConflict, currentReportVersionNumber, persistCurrentDocOffline]);
 
   // ── Checkpoint forzado cada 3 minutos en línea (pedido explícito del
   // negocio, ADR-022) ──
@@ -1085,7 +1718,7 @@ export default function App({
           title: currentReportTitle,
           contentJson: JSON.stringify(currentDoc),
           status: workflowStatus,
-          createdBy: session.username,
+          createdBy: session.userId,
           company: session.company || 'default',
         });
         if (typeof saved?.version_number === 'number') {
@@ -1228,7 +1861,7 @@ export default function App({
         title: currentReportTitle,
         contentJson: JSON.stringify(docToSave),
         status: nextStatus,
-        createdBy: session?.username,
+        createdBy: session?.userId,
         company: session?.company || 'default',
         // ADR-030: el comentario (p.ej. motivo de rechazo) viaja al servidor
         // para quedar en la entrada de auditoría de esta transición. Antes
@@ -1345,6 +1978,219 @@ export default function App({
     input.click();
   }, [loadDocument]);
 
+  // Importar un documento Word MODERNO (.docx) y pintarlo en el lienzo --
+  // ribbon Datos > Importación, pedido explícito 2026-09-09. mammoth.js solo
+  // entiende el formato .docx (Office Open XML) -- un .doc viejo (formato
+  // binario de Word 97-2003) no lo puede leer, por eso el selector de
+  // archivo se restringe a esa extensión y se vuelve a validar al elegir
+  // (un usuario puede forzar "todos los archivos" y elegir cualquier cosa).
+  // Reutiliza el MISMO parser (`parseRichClipboardBlocks`) que ya usa el
+  // pegado de Word/Google Docs -- mammoth convierte el .docx a HTML
+  // (imágenes ya embebidas como data: URI, sin descargas aparte) y de ahí en
+  // adelante es indistinguible de un pegado real. `mammoth` se importa DE
+  // FORMA DINÁMICA (no al tope del archivo): es una librería pesada
+  // (parseo de OOXML + JSZip) que la inmensa mayoría de sesiones nunca usa,
+  // cargarla solo cuando de verdad se hace clic acá evita inflar el bundle
+  // inicial de toda la app por una función que casi nadie dispara.
+  const handleImportDocx = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    input.onchange = async (e: Event) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.docx')) {
+        setAiStatus('Solo se admiten documentos Word modernos (.docx) -- un .doc antiguo no es compatible.');
+        return;
+      }
+      setAiStatus(`Importando "${file.name}"…`);
+      try {
+        const rawArrayBuffer = await file.arrayBuffer();
+        // Nivela los DOS mecanismos de salto de página manual que existen
+        // en el formato (Ctrl+Enter dentro del texto vs. "agregar salto de
+        // página antes" como propiedad del párrafo -- este segundo NO lo
+        // entiende mammoth en absoluto) para que ambos se vean iguales de
+        // acá en adelante -- ver el comentario largo en docxPageBreaks.ts.
+        const pageBreaksBuffer = await expandParagraphPageBreaks(rawArrayBuffer);
+        // Color de texto directo + tamaño de fuente -- pedido explícito
+        // 2026-09-10, probado en vivo con un TDR real ("no se estan
+        // trayendo bien los colores del texto, tamaños"). Ver el comentario
+        // largo en lib/docxPageBreaks.ts::enrichDocxTextStyles para el
+        // porqué hace falta un paso aparte (mammoth ni siquiera lee el
+        // color a su modelo interno).
+        const { arrayBuffer, styleMap: textStyleMap } = await enrichDocxTextStyles(pageBreaksBuffer);
+        const mammothModule = (await import('mammoth')) as unknown as { default?: typeof import('mammoth') };
+        const mammoth = mammothModule.default ?? (mammothModule as unknown as typeof import('mammoth'));
+        // `styleMap` para saltos de página MANUALES -- pedido explícito
+        // 2026-09-09: "si hay texto en la página 1, es un solo bloque; si
+        // hay texto en la página 2, es otro bloque". mammoth DESCARTA por
+        // completo un salto de página manual (Ctrl+Enter en Word) al
+        // convertir a HTML -- sin este mapeo, el texto de dos páginas
+        // separadas por un salto queda indistinguible de un solo párrafo
+        // largo. Esto lo redirige a un marcador (`<hr class="docx-page-break">`)
+        // que `parseRichClipboardBlocks` (lib/richPaste.ts) reconoce y usa
+        // para forzar el corte entre bloques de texto.
+        // `transformDocument` + `DOCX_ALIGNMENT_STYLE_MAP` -- pedido explícito
+        // 2026-09-09: "que traiga también la disposición del texto... si está
+        // centrado... justificación". Ver el comentario largo en
+        // lib/docxPageBreaks.ts::markParagraphAlignment para el por qué hace
+        // falta esto (mammoth lee la alineación del .docx pero nunca la usa).
+        const result = await mammoth.convertToHtml({ arrayBuffer }, {
+          transformDocument: (element: any) => markRunFontSize(markParagraphAlignment(element)),
+          styleMap: ["br[type='page'] => hr.docx-page-break", ...DOCX_ALIGNMENT_STYLE_MAP, ...DOCX_HIGHLIGHT_STYLE_MAP, ...textStyleMap],
+        });
+        const blocks = parseRichClipboardBlocks(result.value);
+        if (blocks.length === 0) {
+          setAiStatus(`No se pudo extraer contenido de "${file.name}".`);
+          return;
+        }
+        // Sombreado de celda/encabezado -- pedido explícito 2026-09-10
+        // ("los colores en la tabla"). mammoth no trae esto en el HTML en
+        // absoluto (ver el comentario largo en
+        // lib/docxPageBreaks.ts::extractDocxTableShading), así que se
+        // extrae aparte del XML crudo y se empareja acá con el N-ésimo
+        // bloque `table` -- mismo orden de documento en ambos lados.
+        try {
+          const shadingByTable = await extractDocxTableShading(rawArrayBuffer);
+          let tableIndex = 0;
+          blocks.forEach((block) => {
+            if (block.kind !== 'table') return;
+            const shading = shadingByTable[tableIndex];
+            tableIndex += 1;
+            if (!shading || shading.length === 0) return;
+            shading.forEach(({ row, col, fill }) => {
+              if (block.backgrounds[row] && block.backgrounds[row][col] === undefined) {
+                block.backgrounds[row][col] = `#${fill}`;
+              }
+            });
+          });
+        } catch (shadingErr) {
+          // El sombreado es un extra, nunca debe tumbar el import completo.
+          log.warn('No se pudo extraer el sombreado de tabla del .docx', shadingErr);
+        }
+        // Tamaño/orientación/márgenes REALES del documento de origen --
+        // mismo criterio que ya usa el import de PDF+OCR (ADR-199 §7,
+        // arriba en handleImportPdfOcr) en vez de dejar todo en el A4
+        // vertical por defecto del editor. Tiene que aplicarse ANTES de
+        // `setPendingImportBlocks` -- el auto-paginado/auto-ajuste de
+        // PageCanvas.tsx::processPasteBlocks calcula el ancho/alto
+        // disponible contra el paperSize/orientation/margins YA vigentes
+        // en el store en ese momento.
+        try {
+          const pageSetup = await extractDocxPageSetup(rawArrayBuffer);
+          if (pageSetup) {
+            const store = useEditorStore.getState();
+            store.setPaperSize(pageSetup.paperSize);
+            store.setOrientation(pageSetup.orientation);
+            store.setPageMargins(pageSetup.margins);
+          }
+        } catch (pageSetupErr) {
+          // El tamaño de página es un extra -- nunca debe tumbar el resto
+          // del import (mismo criterio que el sombreado de tabla arriba).
+          log.warn('No se pudo extraer el tamaño de página del .docx', pageSetupErr);
+        }
+        useEditorStore.getState().setPendingImportBlocks(blocks);
+        setAiStatus(`"${file.name}" importado -- acomodando el contenido en el lienzo…`);
+      } catch (err) {
+        log.error('Import .docx failed', err);
+        setAiStatus('Error al importar el documento Word (¿archivo corrupto o protegido?).');
+      }
+    };
+    input.click();
+  }, []);
+
+  // Importar un PDF con OCR AVANZADO (ADR-199) -- ribbon Datos > Importación,
+  // mismo lugar que "Importar Word (.docx)". A diferencia del .docx (parseo
+  // 100% en el navegador con mammoth), acá el trabajo pesado ocurre en el
+  // backend -> ai_engine -> sidecar ocr_engine (PaddleOCR PP-StructureV2):
+  // texto digital cuando el PDF ya lo trae, OCR real solo en páginas
+  // escaneadas -- ver docs/decisions/199-importacion-pdf-ocr-avanzado.md.
+  // Puede tardar de verdad (varios minutos en un documento con muchas
+  // páginas escaneadas), por eso el estado intermedio es explícito en vez de
+  // un genérico "Importando…".
+  const handleImportPdfOcr = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.pdf,.png,.jpg,.jpeg,.bmp,application/pdf,image/png,image/jpeg,image/bmp';
+    input.onchange = async (e: Event) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      const lowerName = file.name.toLowerCase();
+      const isSupportedName = /\.(pdf|png|jpe?g|bmp)$/.test(lowerName);
+      if (!isSupportedName) {
+        setAiStatus('Solo se admiten archivos PDF o imágenes PNG/JPG/JPEG/BMP.');
+        return;
+      }
+      try {
+        const bytes = await file.arrayBuffer();
+        // Firma real del archivo ANTES de subirlo -- gap que ADR-173 dejó
+        // pendiente para .docx (validación solo por extensión), resuelto
+        // acá desde el día 1: un archivo renombrado a .pdf que no lo es se
+        // rechaza acá mismo, sin gastar una subida completa ni tiempo de OCR.
+        const header = new Uint8Array(bytes.slice(0, 8));
+        const isPdfSignature = String.fromCharCode(...header.slice(0, 5)) === '%PDF-';
+        const isPngSignature = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47;
+        const isJpegSignature = header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+        const isBmpSignature = header[0] === 0x42 && header[1] === 0x4d;
+        if (!isPdfSignature && !isPngSignature && !isJpegSignature && !isBmpSignature) {
+          setAiStatus('El archivo no es un PDF/imagen compatible real (firma inválida) -- ¿fue renombrado?');
+          return;
+        }
+        setAiStatus(`Extrayendo texto y aplicando OCR a "${file.name}"… esto puede tardar varios minutos si el documento tiene páginas escaneadas o imágenes grandes.`);
+        const result = await importReportPdfOcr(bytes, file.name);
+        if (!result.ok || !result.pages) {
+          if (result.error === 'too_many_scanned_pages') {
+            setAiStatus(
+              `"${file.name}" tiene demasiadas páginas escaneadas para procesar de una vez (${result.scanned_pages} > límite de ${result.limit}). Dividí el archivo en partes más chicas e intentá de nuevo.`,
+            );
+          } else if (result.error === 'not_a_pdf' || result.error === 'unsupported_file_type' || result.error === 'invalid_size') {
+            setAiStatus(`No se pudo importar "${file.name}": el archivo no es un PDF/imagen válido o es demasiado grande.`);
+          } else {
+            setAiStatus(`Error al importar "${file.name}" (OCR no disponible en este momento: ${result.error || 'error desconocido'}).`);
+          }
+          return;
+        }
+        const ocrResponse = { page_count: result.page_count || result.pages.length, pages: result.pages };
+        // Modo réplica (ADR-209): fondo + texto en posición absoluta, página
+        // por página -- no pasa por el auto-flujo de pegado (esa vía
+        // reacomodaba el texto con otra fuente/interlineado y producía las
+        // superposiciones reportadas).
+        if (isReplicaResponse(ocrResponse)) {
+          const replica = buildReplicaPages(ocrResponse);
+          if (replica.pages.length === 0) {
+            setAiStatus(`No se pudo extraer contenido de "${file.name}".`);
+            return;
+          }
+          useEditorStore.getState().importReplicaPages(replica.pages);
+          setAiStatus(formatPdfOcrSummary(file.name, replica.summary));
+          return;
+        }
+        const { blocks, summary, pageSetup } = convertPdfOcrResponseToBlocks(ocrResponse);
+        if (blocks.length === 0) {
+          setAiStatus(`No se pudo extraer contenido de "${file.name}".`);
+          return;
+        }
+        // Configura el documento con el tamaño/orientación/márgenes REALES
+        // del PDF de origen (primera página) en vez de dejarlo en el A4
+        // vertical por defecto -- fidelidad ampliada, ver ADR-199 §7.
+        // Mutaciones ya existentes del store (ADR-174), nada nuevo del lado
+        // del editor.
+        if (pageSetup) {
+          const store = useEditorStore.getState();
+          store.setPaperSize(pageSetup.paperSize);
+          store.setOrientation(pageSetup.orientation);
+          store.setPageMargins(pageSetup.margins);
+        }
+        useEditorStore.getState().setPendingImportBlocks(blocks);
+        setAiStatus(formatPdfOcrSummary(file.name, summary));
+      } catch (err) {
+        log.error('Import PDF+OCR failed', err);
+        setAiStatus('Error al importar el PDF (¿archivo corrupto o el servicio de OCR no está disponible?).');
+      }
+    };
+    input.click();
+  }, []);
+
   // Vista previa de impresión (ADR-080): abre el mismo visor de solo lectura
   // que ya reusa el export server-side (ReadOnlyViewer), acotando la
   // impresión nativa del navegador al contenido del informe en vez de a la
@@ -1360,173 +2206,297 @@ export default function App({
     setShowReadOnly(true);
   }, [currentReportId, currentReportTitle, doc, session]);
 
-  // ── Export handlers ──
-  // ADR-016: si el informe ya está guardado, usa el export server-side real
-  // (Chromium headless, misma fidelidad visual que el visor de lectura). Si
-  // aún no tiene id (borrador sin guardar) o el servidor falla, no hay nada
-  // que renderizar todavía server-side — cae al viejo camino cliente, que
-  // ahora abre la vista previa de impresión (.ro-overlay) en vez de llamar
-  // window.print() sobre el editor completo (ver exportEngine.ts::exportPDF).
-  // Exports medidos contra el presupuesto O3 de ADR-023 (<5s) — antes
-  // measurePerfAsync existía pero no se llamaba desde ningún export real.
-  const handleExportPdf = useCallback(async () => {
-    if (currentReportId) {
-      setAiStatus('Generando PDF (servidor)...');
-      try {
-        // Job asíncrono (report_export_job, /render-pdf) -- mismo patrón que
-        // DOCX/PPTX (ver comentario de `handleExportDocx`), no el
-        // `fetchReportPdfBlob` síncrono de antes (ADR-016): un informe de
-        // miles de páginas puede terminar de renderizar bien y aun así jamás
-        // llegar a responder dentro del presupuesto de un request HTTP
-        // directo. El sidecar sigue aplicando el mismo watermark + cifrado
-        // (ADR-080) -- la contraseña viaja en el header `X-Pdf-Password` de
-        // `fetchExportJobBlob` recién al descargar, no antes.
-        const { job_id: jobId } = await measurePerfAsync('export', () => createPdfExportJob(currentReportId));
-        const finalStatus = await pollExportJob(currentReportId, jobId, {
-          onProgress: makeExportProgressHandler('PDF', 'Generando PDF (renderizando informe)...'),
-        });
-        if (finalStatus.status === 'success') {
-          const { blob, filename, password } = await fetchExportJobBlob(currentReportId, jobId);
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(url);
-          setAiStatus('PDF exportado (servidor)');
-          requestSupportAvatar('report', currentReportId); // ADR-164
-          // ADR-080: el PDF llega cifrado y con marca de agua — la contraseña
-          // se muestra una única vez, nunca queda guardada en el backend.
-          if (password) setPdfPassword(password);
-          return;
-        }
-        if (finalStatus.error_message === 'export_busy') {
-          setAiStatus('Ya hay una exportación pesada en curso. Espere a que termine antes de iniciar otro DOCX/PPTX/PDF.');
-          return;
-        }
-        log.warn('Export PDF servidor no exitoso, usando fallback cliente:', finalStatus.error_message);
-      } catch (err) {
-        if (err instanceof Error && err.message === 'export_busy') {
-          setAiStatus('Ya hay una exportación pesada en curso. Espere a que termine antes de iniciar otro DOCX/PPTX/PDF.');
-          return;
-        }
-        log.error('Export PDF server-side falló, usando fallback cliente', err);
-      } finally {
-        setExportProgress(null);
-      }
-    }
-    setAiStatus('Exportando PDF...');
-    const result = await measurePerfAsync('export', () => exportPDF(doc, { author: loggedAuthor }));
-    if (result.method === 'print-fallback') {
-      setAiStatus('Sin conexión con el servidor de export — abriendo vista previa de impresión...');
-      handlePrintPreview();
-      return;
-    }
-    setAiStatus(result.success ? `PDF exportado (${result.method})` : 'Error al exportar PDF');
-  }, [doc, loggedAuthor, currentReportId, handlePrintPreview]);
+  // Visualizador de PPT (pantalla completa, flechas/espacio para pasar
+  // diapositiva, transición real por diapositiva) — usa el documento EN
+  // MEMORIA (igual que la vista previa de impresión), no una versión
+  // guardada del servidor: no tiene sentido exigir guardar solo para
+  // previsualizar la presentación dentro de la propia app.
+  const handleStartPresentation = useCallback(() => {
+    if (doc.meta?.layoutMode !== 'presentation') return;
+    setReadOnlyReport({
+      id: currentReportId,
+      title: currentReportTitle,
+      contentJson: doc,
+      tenantId: session?.tenantId,
+    });
+    setShowPresentation(true);
+  }, [currentReportId, currentReportTitle, doc, session]);
 
-  // ADR-138: enlace de acceso directo — a diferencia de handleExportPdf, no
-  // hay fallback cliente: requiere el informe guardado (id real) porque el
-  // token vive en report_pdf_share_links, ligado a un report_id concreto.
+  // "Generar Reporte Demo Completo" (Mis Informes) -- portado del avance de
+  // Luder (2026-09-11): corre DENTRO del editor real (mismas acciones del
+  // store que un usuario), así valida en vivo el motor de márgenes/
+  // anti-colisión/auto-resize con el 100% de tipos de sensor/gráfico. No
+  // auto-guarda: el documento generado queda cargado en el lienzo y el
+  // usuario confirma con el botón "Guardar" normal. Es la herramienta que
+  // se usó para calibrar la optimización de exportación (informe de prueba
+  // de 2104 páginas/6300 gráficos) -- sin dependencia de backend nuevo.
+  const handleGenerateDemoReport = useCallback(async () => {
+    const confirmed = await requestConfirmation(
+      '¿Generar el informe demo de prueba exhaustiva (100% de tipos de sensor x 100% de tipos de gráfico, en A4/A3)? Reemplaza el contenido del lienzo actual (sin guardar automáticamente).',
+    );
+    if (!confirmed) return;
+    setShowReportsAdmin(false);
+    setAiStatus('Generando reporte demo…');
+    try {
+      const result = await generateDemoReport((p: DemoReportProgress) => {
+        setAiStatus(`${p.phase} (${p.current}/${p.total})`);
+      });
+      setAiStatus(
+        `Reporte demo generado: ${result.pageCount} páginas, ${result.sensorTypeCount} tipos de sensor, ${result.chartCount} diagramas. Revise y presione "Guardar" para conservarlo.`,
+      );
+    } catch (err) {
+      log.error('Error al generar reporte demo:', err);
+      const message = err instanceof Error ? err.message : '';
+      setAiStatus(
+        message.toLowerCase().includes('ya hay una generación')
+          ? message
+          : 'Error al generar el reporte demo. Verifique el catálogo de sensores del tenant.',
+      );
+    }
+  }, []);
+
+  // "Enlace + QR" (ADR-138) -- portado del avance de Luder (2026-09-11): el
+  // hook/modal ya existían en el repo (useShareLink.ts, ShareLinkModal.tsx)
+  // pero nunca se habían conectado a la cinta. Genera un enlace de acceso
+  // directo (sin contraseña, vence en 48h) al PDF ya guardado del informe.
+  const { generateLink: generateShareLink, link: shareLink, clearLink: clearShareLink } = useShareLink();
   const handleGenerateShareLink = useCallback(async () => {
     if (!currentReportId) {
-      setAiStatus('Guardá el informe antes de generar un enlace de acceso directo.');
+      setAiStatus('Guarda el informe antes de generar un enlace de acceso directo.');
       return;
     }
     setAiStatus('Generando enlace de acceso directo...');
     try {
-      const result = await createReportShareLink(currentReportId);
-      setShareLink(result);
+      await generateShareLink(currentReportId);
       setAiStatus('Enlace de acceso directo generado.');
     } catch (err) {
       log.error('No se pudo generar el enlace de acceso directo', err);
       setAiStatus('No se pudo generar el enlace de acceso directo.');
     }
-  }, [currentReportId]);
+  }, [currentReportId, generateShareLink]);
 
-  // Export DOCX: dos pipelines completos, con el servidor como preferido.
-  // Verificado (2026-08-30) sobre un informe de 14 páginas / 134 elementos /
-  // 56 sensores / 20 tipos de gráfico: el pipeline servidor generó el
-  // documento en ~5.6s con captura completa de los 22 bloques raster; el
-  // pipeline cliente tomó ~22-26s y, al competir por un solo hilo de JS con
-  // 22 capturas html2canvas simultáneas, solo completó 16/22 (el resto queda
-  // como nota de texto, degradado con gracia, no como error). El servidor
-  // solo aplica si el informe ya está guardado (necesita navegar
-  // print-report.html) y en modo 'document' (no 'presentation', como PPTX)
-  // -- en cualquier otro caso, o si el servidor falla, se usa el pipeline
-  // cliente (`exportDOCX`), que no depende de red ni de guardado previo.
-  const handleExportDocx = useCallback(async () => {
-    const layoutMode = doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
-    if (currentReportId && layoutMode === 'document') {
-      setAiStatus('Generando DOCX (servidor)...');
-      try {
-        const { job_id: jobId } = await measurePerfAsync('export', () => createDocxExportJob(currentReportId));
-        const finalStatus = await pollExportJob(currentReportId, jobId, {
-          onProgress: makeExportProgressHandler('DOCX', 'Generando DOCX (renderizando informe)...'),
-        });
-        if (finalStatus.status === 'success') {
-          const { blob, filename } = await fetchExportJobBlob(currentReportId, jobId);
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(url);
-          setAiStatus('DOCX exportado (servidor)');
-          requestSupportAvatar('report', currentReportId); // ADR-164
-          return;
-        }
-        if (finalStatus.error_message === 'export_busy') {
-          setAiStatus('Ya hay una exportación pesada en curso. Espere a que termine antes de iniciar otro DOCX/PDF.');
-          return;
-        }
-        log.warn('Export DOCX servidor no exitoso, usando pipeline cliente:', finalStatus.error_message);
-      } catch (err) {
-        log.warn('Export DOCX servidor falló, usando pipeline cliente:', err);
-      } finally {
-        setExportProgress(null);
+  // ── Export handlers ──
+  // ADR-016/080: reusa el mismo pipeline server-side (Chromium headless +
+  // ReadOnlyViewer, ver usePdfExport.ts) que "Descargar PDF protegido" —
+  // renderiza lo que está guardado en el servidor, no el DOM en vivo del
+  // editor, así que primero hay que guardar (handleSaveReport siempre
+  // persiste el estado actual, para que el PDF nunca quede desactualizado
+  // respecto a lo que el usuario ve en el lienzo).
+  // `unprotected` (default false, ADR-080 sigue siendo el comportamiento
+  // normal): solo lo puede pedir un rol con `informes.export_sin_clave`
+  // (ver `canExportPdfUnprotected` más abajo, gatea el botón "PDF (sin
+  // contraseña)" en la cinta) -- si de todos modos llegara acá sin el
+  // permiso, el backend lo rechaza con 403 (report_routes.cpp).
+  // `noWatermark` (ADR-204, default false): mismo criterio pero para
+  // `informes.export_sin_marca_agua` (ver `canToggleWatermark`/checkbox
+  // "Sin sello de agua" en la cinta).
+  const handleExportPdf = useCallback(async (unprotected = false, noWatermark = false) => {
+    setAiStatus('Guardando informe...');
+    try {
+      const saved = await handleSaveReport();
+      if (!saved) {
+        setAiStatus('Exportación cancelada.');
+        return;
       }
+      const reportId = useEditorStore.getState().currentReportId;
+      if (!reportId) {
+        setAiStatus('No se pudo generar el PDF: el informe no tiene un ID válido.');
+        return;
+      }
+      setAiStatus(unprotected ? 'Generando PDF (sin contraseña)...' : 'Generando PDF protegido...');
+      await measurePerfAsync('export', () => downloadProtectedPdf(reportId, unprotected, noWatermark));
+      setAiStatus('PDF exportado');
+      requestSupportAvatar('report', reportId); // ADR-164
+    } catch (err) {
+      log.error('Exportación PDF falló', err);
+      setAiStatus('No se pudo generar el PDF.');
     }
-    setAiStatus('Exportando DOCX (cliente)...');
-    const result = await measurePerfAsync('export', () => exportDOCX(doc, { author: loggedAuthor }));
-    setAiStatus(result.success ? `DOCX exportado (${result.method})` : 'Error al exportar DOCX');
-  }, [doc, loggedAuthor, currentReportId]);
+  }, [handleSaveReport, downloadProtectedPdf]);
 
-  // Export PPTX: igual que el PDF, requiere un informe ya guardado (el
-  // servidor renderiza /print-report.html, no puede hacerlo sobre un borrador
-  // que solo existe en memoria del navegador). A diferencia del PDF, no hay
-  // fallback cliente sensato — sin sidecar no hay PPTX. Job asíncrono
-  // (report_export_job): se crea, se hace polling hasta success/failed, y
-  // recién ahí se descarga. Ya NO se exige modo presentación (16:9) --
-  // /render-pptx arma el tamaño del deck con el papel real del informe (A4/
-  // A3) cuando es modo documento, igual que ya hace /render-docx (ver
-  // server.js `paperSizeInches`); forzar el cambio a presentación acá
-  // destruiría la paginación A4/A3 del informe sin necesidad.
+  // DOCX ahora se enruta al pipeline SERVIDOR (sidecar Chromium, /render-docx
+  // + reportDocxBuilder.js) en vez del pipeline 100% cliente de ADR-139 --
+  // mismo patrón asíncrono que PPTX (job + polling + descarga), y requiere
+  // por eso un informe ya guardado (el sidecar renderiza lo persistido en
+  // servidor, no el borrador en memoria del editor). El pipeline cliente
+  // (exportDOCX de exportEngine.ts) se conserva SOLO como fallback cuando el
+  // backend responde 503 `docx_export_disabled` (sidecar no configurado en
+  // este entorno) -- cualquier otro error es un fallo real de exportación,
+  // no de routing, y se reporta como tal sin enmascararlo.
+  // `layout`: 'absolute' (default, botón "DOCX") o 'flow' (botón "DOCX
+  // (fluido)") -- ver createDocxExportJob en lib/api.ts para el detalle de
+  // qué cambia. El fallback cliente (503) ignora `layout` -- exportDOCX no
+  // soporta flow todavía, así que ese caso siempre sale en absoluto (se
+  // avisa en el mensaje de estado para no hacerlo pasar por lo pedido).
+  const handleExportDocx = useCallback(async (layout: 'absolute' | 'flow' = 'absolute') => {
+    if (!currentReportId) {
+      setAiStatus('Guarda el informe antes de exportar a DOCX — el servidor necesita un informe guardado para renderizarlo.');
+      return;
+    }
+    setAiStatus('Guardando informe...');
+    const saved = await handleSaveReport();
+    if (!saved) {
+      setAiStatus('Exportación cancelada.');
+      return;
+    }
+    setAiStatus('Generando DOCX (servidor)...');
+    setExportProgress(null);
+    try {
+      const { job_id: jobId } = await measurePerfAsync('export', () => createDocxExportJob(currentReportId, layout));
+      const finalStatus = await pollExportJob(currentReportId, jobId, {
+        onProgress: makeExportProgressHandler('DOCX', 'Generando DOCX (renderizando páginas)...'),
+      });
+      setExportProgress(null);
+      if (finalStatus.status !== 'success') {
+        setAiStatus(`Error al exportar DOCX${finalStatus.error_message ? `: ${finalStatus.error_message}` : ''}`);
+        return;
+      }
+      const { blob } = await fetchExportJobBlob(currentReportId, jobId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = generateFilename(currentReportTitle || doc.meta?.title, 'docx');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setAiStatus('DOCX exportado (server)');
+      requestSupportAvatar('report', currentReportId ?? undefined); // ADR-164
+    } catch (err) {
+      setExportProgress(null);
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 503) {
+        log.warn('[EXPORT][DOCX] Sidecar no configurado (503), usando fallback cliente:', err);
+        setAiStatus(
+          layout === 'flow'
+            ? 'Servidor no disponible: exportando DOCX con diseño exacto (el pipeline cliente aún no soporta texto fluido)...'
+            : 'Exportando DOCX (cliente, servidor no disponible)...',
+        );
+        const result = await measurePerfAsync('export', () => exportDOCX(doc, { author: loggedAuthor, title: currentReportTitle }));
+        setAiStatus(result.success ? `DOCX exportado (${result.method})` : 'Error al exportar DOCX');
+        if (result.success) requestSupportAvatar('report', currentReportId ?? undefined);
+        return;
+      }
+      log.warn('[EXPORT][DOCX] Falló el pipeline servidor:', err);
+      setAiStatus(`Error al exportar DOCX${(err as Error)?.message ? `: ${(err as Error).message}` : ''}`);
+    }
+  }, [doc, loggedAuthor, currentReportTitle, currentReportId, handleSaveReport, makeExportProgressHandler]);
+
+  // Export XLSX: alcance explícito -- exporta ÚNICAMENTE las tablas ya
+  // insertadas en el informe (una hoja real por tabla + un índice con
+  // hipervínculos), sin restricción de layoutMode. Mismo patrón asíncrono
+  // que DOCX/PPTX (requiere el informe guardado en servidor).
+  const handleExportXlsx = useCallback(async () => {
+    if (!currentReportId) {
+      setAiStatus('Guarda el informe antes de exportar a XLSX — el servidor necesita un informe guardado para renderizarlo.');
+      return;
+    }
+    setAiStatus('Guardando informe...');
+    const saved = await handleSaveReport();
+    if (!saved) {
+      setAiStatus('Exportación cancelada.');
+      return;
+    }
+    setAiStatus('Generando XLSX (servidor)...');
+    setExportProgress(null);
+    try {
+      const { job_id: jobId } = await measurePerfAsync('export', () => createXlsxExportJob(currentReportId));
+      const finalStatus = await pollExportJob(currentReportId, jobId, {
+        onProgress: makeExportProgressHandler('XLSX', 'Generando XLSX (tablas del informe)...'),
+      });
+      setExportProgress(null);
+      if (finalStatus.status !== 'success') {
+        setAiStatus(`Error al exportar XLSX${finalStatus.error_message ? `: ${finalStatus.error_message}` : ''}`);
+        return;
+      }
+      const { blob } = await fetchExportJobBlob(currentReportId, jobId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = generateFilename(currentReportTitle || doc.meta?.title, 'xlsx');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setAiStatus('XLSX exportado (servidor)');
+      requestSupportAvatar('report', currentReportId); // ADR-164
+    } catch (err) {
+      setExportProgress(null);
+      log.warn('[EXPORT][XLSX] Falló el pipeline servidor:', err);
+      setAiStatus(`Error al exportar XLSX${(err as Error)?.message ? `: ${(err as Error).message}` : ''}`);
+    }
+  }, [doc, currentReportTitle, currentReportId, handleSaveReport, makeExportProgressHandler]);
+
+  // Export PPTX (modo presentación): igual que el PDF, requiere un informe ya
+  // guardado (el servidor renderiza /print-report.html, no puede hacerlo
+  // sobre un borrador que solo existe en memoria del navegador). A diferencia
+  // del PDF, no hay fallback cliente sensato — sin sidecar no hay PPTX. Job
+  // asíncrono (report_export_job): se crea, se hace polling hasta
+  // success/failed, y recién ahí se descarga.
+  //
+  // Bug real reportado (SCRUM-35, "exporta en formato de Word/documento"):
+  // este handler decía en el comentario de arriba que se comporta "igual
+  // que el PDF", pero handleExportPdf SIEMPRE fuerza handleSaveReport()
+  // antes de pedir el render server-side (ver ese handler) y este NUNCA lo
+  // hacía. Como print-report.html renderiza lo que está GUARDADO en el
+  // servidor, no el DOM en vivo del editor, la falta de ese guardado
+  // forzado dejaba una ventana real de condición de carrera: al cambiar a
+  // modo presentación, `setLayoutMode('presentation')` solo actualiza el
+  // store del navegador -- la persistencia al backend depende del
+  // autoguardado con debounce (ver lib/autosaveEngine.ts), que puede no
+  // haber corrido todavía cuando el usuario, seguiendo la instrucción en
+  // pantalla, vuelve a hacer clic en "PPTX" de inmediato. El servidor
+  // entonces renderizaba la versión guardada ANTERIOR (`layoutMode:
+  // 'document'`, hoja A4 vertical) -- de ahí que el .pptx resultante se
+  // viera armado con paginas de Word en vez de diapositivas 16:9. Ahora se
+  // fuerza el guardado en los dos puntos que antes dependían del
+  // autoguardado: justo despues de cambiar el modo, y de nuevo justo antes
+  // de encolar el job (cubre tambien ediciones de contenido sin guardar
+  // ajenas al cambio de modo, el mismo caso que ya cubre el PDF).
   const handleExportPptx = useCallback(async () => {
     if (!currentReportId) {
       setAiStatus('Guarda el informe antes de exportar a PPTX — el servidor necesita un informe guardado para renderizarlo.');
       return;
     }
+    const layoutMode = doc.meta?.layoutMode === 'presentation' ? 'presentation' : 'document';
+    if (layoutMode !== 'presentation') {
+      const wantsSwitch = await requestConfirmation(
+        'El PPTX solo se genera en modo presentación (lienzo 16:9). ¿Cambiar el informe a modo presentación ahora?',
+      );
+      if (!wantsSwitch) return;
+      setLayoutMode('presentation');
+      setAiStatus('Guardando cambio a modo presentación...');
+      await handleSaveReport();
+      setAiStatus('Informe cambiado a modo presentación. Vuelve a hacer clic en "PPTX" para exportarlo.');
+      return;
+    }
+    setAiStatus('Guardando informe...');
+    const saved = await handleSaveReport();
+    if (!saved) {
+      setAiStatus('Exportación cancelada.');
+      return;
+    }
     setAiStatus('Generando PPTX (servidor)...');
+    setExportProgress(null);
     try {
       const { job_id: jobId } = await measurePerfAsync('export', () => createPptxExportJob(currentReportId));
       const finalStatus = await pollExportJob(currentReportId, jobId, {
         onProgress: makeExportProgressHandler('PPTX', 'Generando PPTX (renderizando diapositivas)...'),
       });
+      setExportProgress(null);
       if (finalStatus.status !== 'success') {
         setAiStatus(`Error al exportar PPTX${finalStatus.error_message ? `: ${finalStatus.error_message}` : ''}`);
         return;
       }
       setLastPptxJobId(jobId);
-      const { blob, filename } = await fetchExportJobBlob(currentReportId, jobId);
+      const { blob } = await fetchExportJobBlob(currentReportId, jobId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = filename;
+      // El nombre que manda el servidor en Content-Disposition es genérico
+      // (no el título del informe) -- se descarta y se genera acá con el
+      // mismo criterio que ya usa DOCX (generateFilename), para que el
+      // archivo se llame igual que como se guardó el informe.
+      a.download = generateFilename(currentReportTitle, 'pptx');
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1534,6 +2504,7 @@ export default function App({
       setAiStatus('PPTX exportado (servidor)');
       requestSupportAvatar('report', currentReportId); // ADR-164
     } catch (err) {
+      setExportProgress(null);
       log.error('Export PPTX server-side falló', err);
       const backendError = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setAiStatus(
@@ -1541,10 +2512,8 @@ export default function App({
           ? 'El informe no está en modo presentación.'
           : 'Error al exportar PPTX.',
       );
-    } finally {
-      setExportProgress(null);
     }
-  }, [currentReportId, doc, setLayoutMode]);
+  }, [currentReportId, doc, setLayoutMode, handleSaveReport, currentReportTitle]);
 
   // Convierte el último PPTX exportado en esta sesión (lastPptxJobId) a un
   // MP4 sin narración (Stage 3) — no vuelve a renderizar el informe, el
@@ -1630,6 +2599,10 @@ export default function App({
         const summaryLabels: Record<string, string> = {
           creacion_inicial: 'Creación inicial',
           autosave: 'Autoguardado',
+          // ADR-022, cierre CA-3 de SPEC-014 (2026-09-13): resoluciones de
+          // conflicto offline, antes indistinguibles de un guardado normal.
+          offline_conflict_overwrite: 'Conflicto offline resuelto: sobrescribió versión del servidor',
+          offline_conflict_kept_as_new: 'Conflicto offline resuelto: guardado como informe nuevo',
         };
         const mapped: VersionSnapshot[] = revisions.map((rev: any) => {
           const content = rev.content_json || {};
@@ -1681,10 +2654,16 @@ export default function App({
 
   const designToolbar = (
     <RibbonToolbar
-      onExportPdf={handleExportPdf}
+      onExportPdf={() => handleExportPdf(false, noWatermark)}
+      onExportPdfUnprotected={() => handleExportPdf(true, noWatermark)}
+      canExportPdfUnprotected={hasReportPermission('informes.export_sin_clave')}
+      noWatermark={noWatermark}
+      onToggleNoWatermark={() => setNoWatermark((v) => !v)}
+      canToggleWatermark={hasReportPermission('informes.export_sin_marca_agua')}
       onGenerateShareLink={handleGenerateShareLink}
       onExportVideo={handleRecordScreenToCanvas}
       onPrint={handlePrintPreview}
+      onStartPresentation={handleStartPresentation}
       onReviewDocument={handleReviewDocument}
       onOptimizeDocument={handleOptimizeDocument}
       onZoomIn={handleZoomIn}
@@ -1697,6 +2676,7 @@ export default function App({
       isOptimizing={isOptimizing}
       zoomPercent={zoomPercent}
       onOpenReportsAdmin={() => setShowReportsAdmin(true)}
+      onNewReport={handleNewReport}
       onSaveReport={handleSaveReport}
       isSaving={isSaving}
       saveLabel={saveLabel}
@@ -1711,12 +2691,19 @@ export default function App({
       onPaperSizeChange={(v) => setPaperSize(v === 'A3' ? 'A3' : 'A4')}
       orientation={orientation}
       onOrientationChange={(v) => setOrientation(v === 'landscape' ? 'landscape' : 'portrait')}
+      pageMargins={pageMargins}
+      onSetPageMargins={setPageMargins}
+      globalTextFormat={globalTextFormat}
+      onApplyGlobalTextFormat={applyGlobalTextFormat}
+      onOpenDocumentLayout={() => setShowDocumentLayout(true)}
+      onAddComment={handleAddComment}
       onInsertElement={(type) => {
         if (type === 'map') setShowMapCapture(true);
         else if (type === 'image') openImageInsertForNew();
         else if (type === 'video') openVideoInsertForNew();
         else addElement(type);
       }}
+      onInsertShape={(shapeType) => addElement('shape', { props: { shapeType } })}
       onAddPage={addPage}
       onDuplicatePage={() => duplicatePage(selectedPage)}
       onAddTemplate={(tmpl) => addTextTemplate(tmpl)}
@@ -1738,6 +2725,7 @@ export default function App({
       // distintos (Gerencia/Control Interno/Auditoría Interna/Campo/
       // Normativo — ver lib/coverTemplates.ts), no el mismo diseño 5 veces.
       onInsertCoverPage={(templateId) => addElement('cover', { props: { coverTemplate: templateId } })}
+      onApplySlideLayout={applySlideLayout}
       onStartWorkflow={() => setShowWorkflow((v) => !v)}
       onToggleLeftPanel={() => setLeftPanelVisible((v) => !v)}
       onToggleRightPanel={() => setRightPanelVisible((v) => !v)}
@@ -1745,7 +2733,11 @@ export default function App({
       rightPanelVisible={rightPanelVisible}
       onExportMiningReport={handleExportMiningReport}
       onImportMiningReport={handleImportMiningReport}
+      onImportDocx={handleImportDocx}
+      onImportPdfOcr={handleImportPdfOcr}
       onExportDocx={handleExportDocx}
+      onExportDocxFlow={() => handleExportDocx('flow')}
+      onExportXlsx={handleExportXlsx}
       onExportPptx={handleExportPptx}
       onExportPptxVideo={() => setShowNarrationModal(true)}
       canExportPptxVideo={!!lastPptxJobId}
@@ -1788,10 +2780,20 @@ export default function App({
         // encabezado real), así que esto no afecta al índice.
         headingStyle: style.id === 'normal' ? undefined : style.id,
       })}
+      customTextStyles={customTextStyles}
+      onOpenSaveTextStyle={handleOpenSaveTextStyle}
+      onDeleteCustomTextStyle={handleDeleteCustomTextStyle}
       onToggleBold={() => { if (!tryApplyToActiveTextSelection({ bold: true })) handleUpdateSelectedProps({ bold: !isBold }); }}
       onToggleItalic={() => { if (!tryApplyToActiveTextSelection({ italic: true })) handleUpdateSelectedProps({ italic: !isItalic }); }}
       onToggleUnderline={() => { if (!tryApplyToActiveTextSelection({ underline: true })) handleUpdateSelectedProps({ underline: !isUnderline }); }}
+      onCopy={() => {
+        if (selectedPage && selectedElementId) copyElement(selectedPage, selectedElementId);
+      }}
+      onPaste={() => {
+        if (selectedPage) pasteElement(selectedPage);
+      }}
       onSetAlignment={(align) => handleUpdateSelectedProps({ textAlign: align })}
+      currentTextAlign={currentProps.textAlign}
       onSetListStyle={applyListStyleToWholeBlock}
       currentListStyle={currentListStyle}
       onSetFontFamily={(font) => { if (!tryApplyToActiveTextSelection({ fontFamily: font })) handleUpdateSelectedProps({ fontFamily: font }); }}
@@ -1806,6 +2808,12 @@ export default function App({
       onSetLineHeight={(lineHeight) => handleUpdateSelectedProps({ lineHeight })}
     />
   );
+
+
+  // testing by jhon
+  useEffect(()=>{
+    console.log(session)
+  },[])
 
   return (
     <div className="app-shell">
@@ -1839,13 +2847,15 @@ export default function App({
           />
         )}
 
+        <SlideThumbnailRail collapsed={rightInspectorExpanded} />
+
         <main className="studio-main">
           <div className="doc-header-meta">
-            <span>ID: <b>{doc.document_id}</b></span>
+            <span>ID: <b style={{color:'gray'}}>{doc.document_id}</b></span>
             <span style={{ height: '14px', width: '1px', background: 'var(--border)' }}></span>
-            <span>Autor: <b>{loggedAuthor}</b></span>
+            <span>Autor: <b style={{color:'gray'}}>{loggedAuthor}</b></span>
             <span style={{ height: '14px', width: '1px', background: 'var(--border)' }}></span>
-            <span>Versión: <b>{versionLabel}</b></span>
+            <span>Versión: <b style={{color:'gray'}}>{versionLabel}</b></span>
             <span style={{ height: '14px', width: '1px', background: 'var(--border)' }}></span>
             <WorkflowStatusBadge status={workflowStatus} />
             <span className={`autosave-indicator autosave-indicator--${autosaveStatus}`}>
@@ -1962,6 +2972,8 @@ export default function App({
             onRequestImageReplace={openImageInsertForReplace}
             onRequestCoverImage={openImageInsertForCompanyImage}
             tenantId={session?.tenantId}
+            currentUserId={session?.userId}
+            currentUserName={loggedAuthor}
           />
         </main>
         <div id="aria-live-region" aria-live="polite" />
@@ -1971,6 +2983,7 @@ export default function App({
             onRequestImageReplace={openImageInsertForReplace}
             showTemplatesPanel={showTemplatesPanel}
             onCloseTemplatesPanel={() => setShowTemplatesPanel(false)}
+            onExpandedChange={setRightInspectorExpanded}
           />
         )}
       </div>
@@ -2140,6 +3153,30 @@ export default function App({
           onOpenRead={handleOpenRead}
           onOpenEdit={handleOpenEdit}
           onGenerateDemo={handleGenerateDemoReport}
+          onDuplicate={handleDuplicateReport}
+          refreshToken={reportsRefreshToken}
+          currentReportId={currentReportId}
+          onRestoreOfflineDraft={handleRestoreOfflineDraft}
+        />
+      )}
+
+      {shareLink && (
+        <ShareLinkModal
+          url={shareLink.url}
+          expiresInHours={shareLink.expiresInHours}
+          onClose={clearShareLink}
+        />
+      )}
+
+      {showDocumentLayout && (
+        <DocumentLayoutModal
+          margins={pageMargins}
+          textFormat={globalTextFormat}
+          onClose={() => setShowDocumentLayout(false)}
+          onApply={(margins, format) => {
+            setPageMargins(margins);
+            applyGlobalTextFormat(format);
+          }}
         />
       )}
 
@@ -2150,13 +3187,16 @@ export default function App({
         />
       )}
 
-      {pdfPassword && (
-        <PdfPasswordModal password={pdfPassword} onClose={() => setPdfPassword(null)} />
+      {showPresentation && readOnlyReport && (
+        <ReadOnlyViewer
+          report={readOnlyReport}
+          presenterMode
+          onClose={() => { setShowPresentation(false); setReadOnlyReport(null); }}
+        />
       )}
 
-      {shareLink && (
-        <ShareLinkModal url={shareLink.url} expiresInHours={shareLink.expiresInHours}
-          onClose={() => setShareLink(null)} />
+      {pdfPassword && currentReportId && (
+        <PdfPasswordModal password={pdfPassword} reportId={currentReportId} onClose={clearPdfPassword} />
       )}
 
       {showShareModal && shareTarget && (
@@ -2171,7 +3211,12 @@ export default function App({
         <DeleteReportConfirm
           report={deleteTarget}
           onClose={() => { setShowDeleteModal(false); setDeleteTarget(null); }}
-          onSuccess={(msg) => { setShowDeleteModal(false); setDeleteTarget(null); setAiStatus(msg); }}
+          onSuccess={(msg) => {
+            setReportsRefreshToken((token) => token + 1);
+            setShowDeleteModal(false);
+            setDeleteTarget(null);
+            setAiStatus(msg);
+          }}
         />
       )}
 
@@ -2220,6 +3265,17 @@ export default function App({
               onClose={() => setShowNarrationModal(false)}
               onUploadPage={handleUploadNarrationPage}
               onSubmit={handleConvertPptxToVideo}
+            />,
+            document.body,
+          )
+        : null}
+
+      {typeof document !== 'undefined' && showSaveTextStyleModal
+        ? createPortal(
+            <SaveTextStyleModal
+              initialFormat={initialTextFormat}
+              onConfirm={handleConfirmSaveTextStyle}
+              onCancel={() => setShowSaveTextStyleModal(false)}
             />,
             document.body,
           )

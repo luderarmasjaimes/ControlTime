@@ -6,6 +6,7 @@
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/strand.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <deque>
 #include <functional>
@@ -62,6 +63,31 @@ public:
     const std::string &tenantId() const { return tenantId_; }
 
     /**
+     * @brief Config explícita de timeouts del WS (reemplaza a
+     * `websocket::stream_base::timeout::suggested(role_type::server)`).
+     * `suggested(server)` deja `idle_timeout = none()` y
+     * `keep_alive_pings = false` -- es decir, el backend nunca manda un ping
+     * propio para mantener viva una conexión silenciosa. El canal de alarmas
+     * (ADR: 140-alertas-umbral-cache-tasa-debounce-sensor.md, WS en vez de un
+     * segundo canal SSE) puede quedar minutos sin tráfico en un tenant sin
+     * alarmas disparándose -- si algún proxy/LB intermedio (no solo el nginx
+     * de este repo, que ahora sí fija `proxy_read_timeout` en `location /ws`)
+     * tiene su propio idle-timeout por debajo de eso, la conexión se cae en
+     * silencio y el cliente no se entera hasta el próximo intento de envío.
+     * `keep_alive_pings = true` hace que Beast mande un ping WS automático
+     * cuando pasa `idle_timeout` sin tráfico, refrescando cualquier timeout
+     * de inactividad de capas intermedias. `handshake_timeout` se deja igual
+     * al valor de `suggested(server)` (30s) para no alterar el accept flow.
+     */
+    static websocket::stream_base::timeout wsTimeoutConfig() {
+        websocket::stream_base::timeout cfg;
+        cfg.handshake_timeout = std::chrono::seconds(30);
+        cfg.idle_timeout = std::chrono::seconds(30);
+        cfg.keep_alive_pings = true;
+        return cfg;
+    }
+
+    /**
      * @brief Arranca el handshake sin request previamente leído (uso: el
      * socket es virgen, nadie llamó a http::read todavía). No usado por el
      * flujo actual de main.cpp (que sí lee el upgrade primero para poder
@@ -70,7 +96,7 @@ public:
      * sesión directamente sobre un socket recién aceptado.
      */
     void run() {
-        ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
+        ws_.set_option(wsTimeoutConfig());
         ws_.async_accept(
             beast::bind_front_handler(
                 &WebSocketSession::on_accept,
@@ -91,7 +117,7 @@ public:
      */
     template <class Body, class Fields>
     void run(const http::request<Body, Fields> &req) {
-        ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
+        ws_.set_option(wsTimeoutConfig());
         ws_.async_accept(
             req,
             beast::bind_front_handler(

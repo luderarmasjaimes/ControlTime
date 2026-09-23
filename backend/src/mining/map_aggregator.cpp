@@ -22,7 +22,9 @@
 #include <boost/json.hpp>
 
 #include <chrono>
+#include <future>
 #include <iostream>
+#include <vector>
 
 namespace json = boost::json;
 
@@ -54,10 +56,50 @@ void MapAggregator::loop() {
 #if HAS_LIBPQ
     while (running_.load()) {
         auto tenants = WsRegistry::instance().tenantsWithListeners();
+
+        // Despacho paralelo por tenant (antes: secuencial -- un tenant lento
+        // o con muchos sensores demoraba el push de TODOS los demás dentro
+        // del mismo ciclo, aunque son lógicamente independientes). Cada
+        // pollTenant() es autocontenido: hace su propia query, calcula su
+        // propio diff y empuja su propio WS update -- despacharlo vía
+        // std::async hace que cada tenant reciba su actualización tan
+        // pronto como SU trabajo termine, sin esperar al más lento.
+        //
+        // Seguro de paralelizar (estado compartido revisado):
+        //   - storage::PgPool::acquire() es thread-safe (mutex interno +
+        //     condition_variable, ver storage/pg_pool.hpp) -- diseñado
+        //     justamente para acquire() concurrente desde múltiples hilos;
+        //     cada tenant obtiene su propio Lease/PGconn, sin compartir
+        //     conexión entre hilos.
+        //   - snapshotMutex_ ya protege CUALQUIER acceso a
+        //     lastSnapshotByTenant_ (el lock envuelve el operator[] más el
+        //     cálculo del diff, no solo la escritura final), así que no hay
+        //     carrera de rehash del unordered_map compartido aunque dos
+        //     tenants distintos lo toquen a la vez -- solo se serializa el
+        //     cómputo barato del diff, nunca la query SQL.
+        //   - WsRegistry está documentado thread-safe (mutex propio, ver
+        //     ws_broadcast.hpp) -- broadcastToTenant() concurrente es
+        //     seguro.
+        // Mismo patrón (std::async + std::future) que ya usa main.cpp para
+        // despachar trabajo independiente sin bloquear la ruta principal
+        // (ver cartoonFut / fetchCartoonAvatarBestEffort) -- se reutiliza en
+        // vez de introducir un thread pool nuevo.
+        std::vector<std::future<void>> pending;
+        pending.reserve(tenants.size());
         for (auto &tenantId : tenants) {
             if (!running_.load()) break;
-            pollTenant(tenantId);
+            pending.push_back(std::async(std::launch::async,
+                                         [this, tenantId] { pollTenant(tenantId); }));
         }
+        // Esperar a que el ciclo termine antes de dormir/reiniciar -- el
+        // push por tenant ya ocurrió dentro de cada pollTenant() en cuanto
+        // ese tenant estuvo listo; este wait solo evita acumular hilos/
+        // conexiones de ciclos sucesivos si algún tenant resulta más lento
+        // que pollIntervalMs_.
+        for (auto &f : pending) {
+            if (f.valid()) f.wait();
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(pollIntervalMs_));
     }
 #else
@@ -76,20 +118,36 @@ void MapAggregator::pollTenant(const std::string &tenantId) {
     if (PQstatus(conn) != CONNECTION_OK) return;
 
     const char *params[1] = {tenantId.c_str()};
-    // Mismo UNION que /api/map/markers (map_routes.cpp), sin bbox/limit --
-    // el agregador necesita ver el universo completo del tenant para poder
-    // detectar altas/bajas correctamente; el recorte por viewport es
-    // responsabilidad del fetch inicial del cliente, no de este diff.
+    // Mismo UNION que /api/map/markers (map_routes.cpp), incluido el status
+    // compuesto (alarma activa > connection_status) y sensor_type, sin
+    // bbox/limit -- el agregador necesita ver el universo completo del
+    // tenant para poder detectar altas/bajas correctamente; el recorte por
+    // viewport es responsabilidad del fetch inicial del cliente, no de este
+    // diff. Ver comentario extenso en map_routes.cpp sobre por qué prevalece
+    // la severidad de alarma sobre connection_status.
     storage::PgResult res{PQexecParams(
         conn,
         "SELECT * FROM ("
-        "  SELECT id::text AS id, type, lat, lng, name, status, updated_at::text AS updated_at "
+        "  SELECT id::text AS id, type, lat, lng, name, status, "
+        "         updated_at::text AS updated_at, NULL::text AS sensor_type "
         "  FROM map_markers WHERE tenant_id = $1::uuid "
         "  UNION ALL "
-        "  SELECT sensor_id::text AS id, 'sensor' AS type, lat, lng, sensor_name AS name, "
-        "         connection_status AS status, last_seen_at::text AS updated_at "
-        "  FROM sensors WHERE tenant_id = $1::uuid AND is_active = true "
-        "    AND lat IS NOT NULL AND lng IS NOT NULL"
+        "  SELECT s.sensor_id::text AS id, 'sensor' AS type, s.lat, s.lng, "
+        "         s.sensor_name AS name, "
+        "         COALESCE(alarm.severity, s.connection_status) AS status, "
+        "         s.last_seen_at::text AS updated_at, "
+        "         s.sensor_type AS sensor_type "
+        "  FROM sensors s "
+        "  LEFT JOIN LATERAL ("
+        "    SELECT pa.severity FROM platform_alarms pa "
+        "    JOIN platform_alarm_rules par ON par.id = pa.rule_id "
+        "    WHERE par.sensor_id = s.sensor_id AND pa.resolved_at IS NULL "
+        "    ORDER BY CASE pa.severity WHEN 'critical' THEN 3 "
+        "                              WHEN 'warning' THEN 2 ELSE 1 END DESC "
+        "    LIMIT 1"
+        "  ) alarm ON true "
+        "  WHERE s.tenant_id = $1::uuid AND s.is_active = true "
+        "    AND s.lat IS NOT NULL AND s.lng IS NOT NULL"
         ") u",
         1, nullptr, params, nullptr, nullptr, 0)};
     if (!res.okTuples()) return;
@@ -108,13 +166,16 @@ void MapAggregator::pollTenant(const std::string &tenantId) {
         const std::string name = PQgetisnull(res.get(), i, 4) ? "" : PQgetvalue(res.get(), i, 4);
         const std::string status = PQgetisnull(res.get(), i, 5) ? "" : PQgetvalue(res.get(), i, 5);
         const std::string updatedAt = PQgetisnull(res.get(), i, 6) ? "" : PQgetvalue(res.get(), i, 6);
+        const std::string sensorType = PQgetisnull(res.get(), i, 7) ? "" : PQgetvalue(res.get(), i, 7);
         // "Hash" barato: concatenación de campos que importan para el
         // render del mapa. No es criptográfico, solo detección de cambio.
-        current[id] = type + "|" + lat + "|" + lng + "|" + name + "|" + status + "|" + updatedAt;
+        // Incluye sensor_type por completitud aunque rara vez cambie.
+        current[id] = type + "|" + lat + "|" + lng + "|" + name + "|" + status + "|" + updatedAt +
+                      "|" + sensorType;
         currentObjs[id] = json::object{{"id", id},       {"type", type},
                                        {"lat", std::stod(lat)}, {"lng", std::stod(lng)},
                                        {"name", name},   {"status", status},
-                                       {"updated_at", updatedAt}};
+                                       {"updated_at", updatedAt}, {"sensor_type", sensorType}};
     }
 
     json::array added;

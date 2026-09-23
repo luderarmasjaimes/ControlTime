@@ -8,6 +8,7 @@
 #include "permissions.hpp"
 #include "tax_id.hpp"
 #include "tax_registry_client.hpp"
+#include "../biometric/ai_engine_client.hpp"
 #include "../biometric/avatar_animation_client.hpp"
 #include "../biometric/face_analysis.hpp"
 #include "../config/app_config.hpp"
@@ -18,6 +19,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -97,14 +99,17 @@ static http::response<http::string_body> buildAuthLoginCheckIdentityResponse(
 
   using ILKind = AuthLoginIdentityLookupResult::Kind;
   if (lu.kind == ILKind::DbError) {
+    // El diagnóstico de libpq (host/IP interna de pgbouncer) solo al log;
+    // al cliente un 503 genérico y reintentable.
+    std::cerr << "[AUTH_CHECK_IDENTITY] BD no disponible: " << lu.diagnostic
+              << std::endl;
     return makeJsonResponse(
-        http::status::internal_server_error,
+        http::status::service_unavailable,
         json::object{
             {"ok", false},
-            {"reason", "server_error"},
-            {"error", lu.diagnostic.empty()
-                          ? "No se pudo comprobar el usuario."
-                          : lu.diagnostic}});
+            {"reason", "db_unavailable"},
+            {"error", "El servicio no está disponible en este momento. "
+                      "Intente nuevamente en unos segundos."}});
   }
   if (lu.kind == ILKind::NotFound) {
     return makeJsonResponse(
@@ -748,6 +753,31 @@ handleUserTenantPost(const http::request<http::string_body> &req,
   return handleGrantUserTenant(req, query);
 }
 
+// Rediseño de avatar (2026-09-20, ADR-203): catálogo fijo de cuerpo/
+// vestimenta -- MISMA lista que el CHECK de auth_users.avatar_body_template_slug
+// (db_scripts/113_avatar_body_template.sql) y que TEMPLATES en
+// ai_engine/avatar_body_templates.py. Si se agrega/renombra una plantilla,
+// las tres deben cambiar juntas.
+// Catálogo reducido a solo fotos reales (pedido explícito del usuario,
+// 2026-09-21: "eliminar todas las camisetas y solo se quede amarilla con
+// brazos... añadir las siguientes vestimentas"). Se elimina TODO el catálogo
+// anterior (procedural + fotos reales previas) salvo camiseta_amarilla_brazos_real,
+// y se agregan 8 prendas nuevas de foto real -- ver
+// ai_engine/avatar_body_templates.py::REAL_GARMENT_ASSETS para la extracción
+// (GrabCut) y el detalle de cada una.
+static constexpr std::array<const char *, 9> kAvatarBodyTemplateSlugs = {
+    "camiseta_amarilla_brazos_real",
+    "camiseta_diagonal_roja_real", "camiseta_amarilla_verde_real",
+    "camiseta_celeste_rayas_real", "camiseta_crema_marron_real",
+    "camiseta_marino_rayas_real", "camiseta_celeste_real",
+    "chaqueta_electronica_real", "chaleco_geologo_real"};
+
+static bool isValidAvatarBodyTemplateSlug(const std::string &slug) {
+  return std::any_of(kAvatarBodyTemplateSlugs.begin(),
+                     kAvatarBodyTemplateSlugs.end(),
+                     [&](const char *s) { return slug == s; });
+}
+
 static bool isSafeAvatarUserId(const std::string &userId) {
   return !userId.empty() && userId.size() <= 128 &&
          std::all_of(userId.begin(), userId.end(), [](unsigned char c) {
@@ -825,7 +855,12 @@ static http::response<http::string_body> handleMyAvatarThumb(
   return makeJsonResponse(
       http::status::ok,
       json::object{{"status", "ready"},
-                   {"avatar_cartoon_base64", user->avatarCartoonBase64}});
+                   {"avatar_cartoon_base64", user->avatarCartoonBase64},
+                   // Rediseño de avatar (2026-09-20, ADR-203): permite al
+                   // selector de vestimenta del frontend marcar la plantilla
+                   // ACTUAL sin una llamada aparte. Vacío en cuentas
+                   // anteriores a este cambio.
+                   {"avatar_body_template_slug", user->avatarBodyTemplateSlug}});
 }
 
 /** GET /api/auth/avatar/hd
@@ -937,6 +972,340 @@ static http::response<http::string_body> handleMyAvatarHd(
         json::object{{"error", "avatar_hd_generation_failed"},
                      {"detail", ex.what()}});
   }
+}
+
+// ── Cuerpo/vestimenta del avatar (rediseño 2026-09-20, ADR-203) ────────────
+// El avatar recorta solo la cabeza; el resto viene de un catálogo fijo de
+// plantillas pre-hechas (ai_engine/avatar_body_templates.py) en vez de los
+// hombros/torso fotografiados -- ver el módulo Python para el razonamiento
+// completo (evitar depender de segmentar hombros/ropa reales).
+
+/** GET /api/avatar/body-templates
+ * Catálogo de cuerpo/vestimenta -- requiere sesión válida (evita scraping
+ * anónimo) pero el catálogo en sí es el mismo para cualquier cuenta; la
+ * sesión solo sirve para marcar cuál es la plantilla ACTUAL del usuario. */
+static http::response<http::string_body> handleListAvatarBodyTemplates(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+  auto &cfg = AppConfig::instance();
+  const std::string dataRoot =
+      config::getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+  const auto user = findCurrentAvatarUser(cfg, dataRoot, session->userId);
+  const std::string currentSlug = user ? user->avatarBodyTemplateSlug : std::string();
+  const bool headAvailable = isSafeAvatarUserId(session->userId) &&
+      std::filesystem::is_regular_file(std::filesystem::path(dataRoot) /
+                                       "auth" / "avatar_heads" /
+                                       (session->userId + ".png"));
+
+  const auto templates = biometric::listAvatarBodyTemplatesFromAiEngine();
+  json::array arr;
+  for (const auto &t : templates) {
+    arr.push_back(json::object{
+        {"slug", t.slug},
+        {"display_name", t.displayName},
+        {"thumbnail_base64", t.thumbnailBase64},
+        {"current", !currentSlug.empty() && t.slug == currentSlug},
+    });
+  }
+  return makeJsonResponse(http::status::ok,
+                          json::object{{"ok", true},
+                                       {"avatar_head_available", headAvailable},
+                                       {"templates", arr}});
+}
+
+/** POST /api/auth/avatar/body-template  body: {"slug": "..."}
+ * "Cambiar de vestimenta": recompone el avatar contra otra plantilla SIN
+ * volver a correr difusión ni detección de rostro -- reusa el recorte de
+ * cabeza ya persistido en el registro
+ * (/data/auth/avatar_heads/{userId}.png, ver main.cpp). 409 si esa cuenta
+ * todavía no tiene ese recorte (avatar generado antes de este cambio, o los
+ * 3 niveles de fallback cayeron al lienzo blanco clásico sin cabeza
+ * aislable) -- requiere regenerar el avatar (reenrolarse) antes de poder
+ * usar esta función. */
+static http::response<http::string_body> handleUpdateAvatarBodyTemplate(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+  if (!isSafeAvatarUserId(session->userId)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_user_id"}});
+  }
+
+  std::string slug;
+  try {
+    auto payload = json::parse(req.body());
+    if (payload.is_object()) {
+      const auto &obj = payload.as_object();
+      if (obj.if_contains("slug") && obj.at("slug").is_string()) {
+        slug = json::value_to<std::string>(obj.at("slug"));
+      }
+    }
+  } catch (...) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_json"}});
+  }
+  if (!isValidAvatarBodyTemplateSlug(slug)) {
+    return makeJsonResponse(
+        http::status::bad_request,
+        json::object{{"error", "invalid_body_template_slug"}});
+  }
+
+  auto &cfg = AppConfig::instance();
+  const std::string dataRoot =
+      config::getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+  const std::filesystem::path headPath = std::filesystem::path(dataRoot) /
+                                         "auth" / "avatar_heads" /
+                                         (session->userId + ".png");
+
+  std::scoped_lock lk(gAvatarHdMutex);
+
+  std::ifstream headIn(headPath, std::ios::binary);
+  if (!headIn.is_open()) {
+    return makeJsonResponse(
+        http::status::conflict,
+        json::object{{"error", "avatar_head_not_available"}});
+  }
+  std::vector<unsigned char> headBytes(
+      (std::istreambuf_iterator<char>(headIn)),
+      std::istreambuf_iterator<char>());
+  headIn.close();
+  if (headBytes.empty()) {
+    return makeJsonResponse(
+        http::status::conflict,
+        json::object{{"error", "avatar_head_not_available"}});
+  }
+
+  auto recomposed =
+      biometric::recomposeAvatarBodyTemplateOnAiEngine(headBytes, slug);
+  if (!recomposed.ok()) {
+    return makeJsonResponse(
+        http::status::service_unavailable,
+        json::object{{"error", "avatar_recompose_failed"},
+                     {"detail", recomposed.error}});
+  }
+
+  std::vector<unsigned char> hdBytes;
+  if (!recomposed.imageHdBase64.empty() &&
+      biometric::decodeBase64(recomposed.imageHdBase64, hdBytes) &&
+      !hdBytes.empty()) {
+    try {
+      const std::filesystem::path hdDir =
+          std::filesystem::path(dataRoot) / "auth" / "avatars_hd";
+      std::filesystem::create_directories(hdDir);
+      const std::filesystem::path finalPath = hdDir / (session->userId + ".png");
+      const std::filesystem::path tmpPath = hdDir / (session->userId + ".png.tmp");
+      {
+        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char *>(hdBytes.data()),
+                  static_cast<std::streamsize>(hdBytes.size()));
+        if (!out.good()) {
+          throw std::runtime_error("avatar_hd_write_failed");
+        }
+      }
+      if (std::filesystem::exists(finalPath)) {
+        std::filesystem::remove(finalPath);
+      }
+      std::filesystem::rename(tmpPath, finalPath);
+      std::filesystem::permissions(
+          finalPath,
+          std::filesystem::perms::owner_read |
+              std::filesystem::perms::owner_write,
+          std::filesystem::perm_options::replace);
+    } catch (const std::exception &ex) {
+      std::cerr << "[AVATAR_BODY_TEMPLATE] hd: " << ex.what() << std::endl;
+    }
+  }
+
+  std::string storeErr;
+  bool stored = false;
+  if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+    stored = updateUserAvatarBodyTemplatePg(cfg.gDatabaseUrl, session->userId,
+                                            slug, recomposed.imageBase64,
+                                            storeErr);
+#else
+    storeErr = "postgres_not_linked";
+#endif
+  } else {
+    stored = updateUserAvatarBodyTemplateFile(dataRoot, session->userId, slug,
+                                              recomposed.imageBase64);
+  }
+  if (!stored) {
+    return makeJsonResponse(
+        http::status::internal_server_error,
+        json::object{{"error", "avatar_body_template_store_failed"},
+                     {"detail", storeErr}});
+  }
+
+  return makeJsonResponse(
+      http::status::ok,
+      json::object{{"status", "ok"},
+                   {"avatar_body_template_slug", slug},
+                   {"avatar_cartoon_base64", recomposed.imageBase64}});
+}
+
+/** POST /api/auth/avatar/re-enroll  body: {"image_base64": "..."}
+ * "Actualizar mi foto de avatar": permite a una cuenta YA registrada volver a
+ * generar su avatar caricaturizado a partir de una foto nueva, sin pasar por
+ * todo el registro de nuevo. Pedido real del usuario (2026-09-20): tras el
+ * rediseño de avatar (ADR-203, recorte de cabeza + plantilla de cuerpo), TODA
+ * cuenta creada antes de ese cambio quedó sin recorte de cabeza persistido
+ * (/data/auth/avatar_heads/{userId}.png nunca existió para ellas) porque solo
+ * el registro corre /cartoon_avatar -- el selector de "cambiar vestimenta"
+ * les devuelve 409 avatar_head_not_available para siempre si no hay una vía
+ * para regenerar. Solo pide una foto (getUserMedia + captura simple, sin el
+ * reto de vivacidad del login/registro): esto es puramente cosmético, no
+ * reemplaza ni reverifica la identidad biométrica de la cuenta, así que no
+ * necesita el mismo rigor anti-spoofing que login/registro.
+ * Reusa fetchCartoonAvatarBestEffort (misma función que el registro) y el
+ * mismo patrón tmp+rename para avatars_hd/avatar_heads que main.cpp. */
+static http::response<http::string_body> handleReEnrollAvatar(
+    const http::request<http::string_body> &req,
+    const std::unordered_map<std::string, std::string> &query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) {
+    return makeJsonResponse(http::status::unauthorized,
+                            json::object{{"error", "unauthorized"}});
+  }
+  if (!isSafeAvatarUserId(session->userId)) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_user_id"}});
+  }
+
+  std::string imagePayload;
+  try {
+    auto payload = json::parse(req.body());
+    if (payload.is_object()) {
+      const auto &obj = payload.as_object();
+      if (obj.if_contains("image_base64") && obj.at("image_base64").is_string()) {
+        imagePayload = biometric::stripDataUrlBase64(
+            json::value_to<std::string>(obj.at("image_base64")));
+      }
+    }
+  } catch (...) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_json"}});
+  }
+  std::vector<unsigned char> imageBytes;
+  if (imagePayload.empty() ||
+      !biometric::decodeBase64(imagePayload, imageBytes) ||
+      imageBytes.empty()) {
+    return makeJsonResponse(http::status::bad_request,
+                            json::object{{"error", "invalid_image"}});
+  }
+
+  auto &cfg = AppConfig::instance();
+  const std::string dataRoot =
+      config::getenvOr("BEEMETRY_MAPAS_DATA_ROOT", "/data");
+  const bool avatarForceClassic = !cfg.isAvatarDiffusionQaUser(session->username);
+
+  std::scoped_lock lk(gAvatarHdMutex);
+
+  auto cartoon = biometric::fetchCartoonAvatarBestEffort(imageBytes, avatarForceClassic, "fast");
+  if (!cartoon.ok()) {
+    return makeJsonResponse(
+        http::status::service_unavailable,
+        json::object{{"error", "avatar_generation_failed"},
+                     {"detail", cartoon.error}});
+  }
+
+  if (!cartoon.imageHdBase64.empty()) {
+    std::vector<unsigned char> hdBytes;
+    if (biometric::decodeBase64(cartoon.imageHdBase64, hdBytes) && !hdBytes.empty()) {
+      try {
+        const std::filesystem::path hdDir =
+            std::filesystem::path(dataRoot) / "auth" / "avatars_hd";
+        std::filesystem::create_directories(hdDir);
+        const std::filesystem::path finalPath = hdDir / (session->userId + ".png");
+        const std::filesystem::path tmpPath = hdDir / (session->userId + ".png.tmp");
+        {
+          std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+          out.write(reinterpret_cast<const char *>(hdBytes.data()),
+                    static_cast<std::streamsize>(hdBytes.size()));
+          if (!out.good()) {
+            throw std::runtime_error("avatar_hd_write_failed");
+          }
+        }
+        if (std::filesystem::exists(finalPath)) {
+          std::filesystem::remove(finalPath);
+        }
+        std::filesystem::rename(tmpPath, finalPath);
+        std::filesystem::permissions(
+            finalPath,
+            std::filesystem::perms::owner_read |
+                std::filesystem::perms::owner_write,
+            std::filesystem::perm_options::replace);
+      } catch (const std::exception &ex) {
+        std::cerr << "[AVATAR_RE_ENROLL] hd: " << ex.what() << std::endl;
+      }
+    }
+  }
+
+  if (!cartoon.headCutoutBase64.empty()) {
+    std::vector<unsigned char> headBytes;
+    if (biometric::decodeBase64(cartoon.headCutoutBase64, headBytes) && !headBytes.empty()) {
+      try {
+        const std::filesystem::path headDir =
+            std::filesystem::path(dataRoot) / "auth" / "avatar_heads";
+        std::filesystem::create_directories(headDir);
+        const std::filesystem::path finalPath = headDir / (session->userId + ".png");
+        const std::filesystem::path tmpPath = headDir / (session->userId + ".png.tmp");
+        {
+          std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+          out.write(reinterpret_cast<const char *>(headBytes.data()),
+                    static_cast<std::streamsize>(headBytes.size()));
+          if (!out.good()) {
+            throw std::runtime_error("avatar_head_write_failed");
+          }
+        }
+        if (std::filesystem::exists(finalPath)) {
+          std::filesystem::remove(finalPath);
+        }
+        std::filesystem::rename(tmpPath, finalPath);
+        std::filesystem::permissions(
+            finalPath,
+            std::filesystem::perms::owner_read |
+                std::filesystem::perms::owner_write,
+            std::filesystem::perm_options::replace);
+      } catch (const std::exception &ex) {
+        std::cerr << "[AVATAR_RE_ENROLL] head: " << ex.what() << std::endl;
+      }
+    }
+  }
+
+  std::string storeErr;
+  bool stored = false;
+  if (cfg.gAuthStorageMode == AuthStorageMode::Postgres) {
+#if HAS_LIBPQ
+    stored = updateUserAvatarCartoonPg(cfg.gDatabaseUrl, session->userId,
+                                       cartoon.imageBase64, session->username,
+                                       session->company, session->token,
+                                       storeErr);
+#else
+    storeErr = "postgres_not_linked";
+#endif
+  } else {
+    stored = updateUserAvatarCartoonFile(dataRoot, session->userId,
+                                         cartoon.imageBase64);
+  }
+  if (!stored) {
+    return makeJsonResponse(
+        http::status::internal_server_error,
+        json::object{{"error", "avatar_store_failed"}, {"detail", storeErr}});
+  }
+
+  return makeJsonResponse(
+      http::status::ok,
+      json::object{{"status", "ok"}, {"avatar_cartoon_base64", cartoon.imageBase64}});
 }
 
 // ── Avatar ANIMADO (ADR-150, integración a producto) ───────────────────────
@@ -1785,6 +2154,12 @@ void registerRoutes(router::Router &r) {
               result["registry"] = "confirmed";
               result["registry_razon_social"] = lookup.razonSocial;
               if (!lookup.estado.empty()) result["registry_estado"] = lookup.estado;
+              if (!lookup.condicion.empty()) result["registry_condicion"] = lookup.condicion;
+              // ADR-190: expone el domicilio fiscal ya traído por
+              // lookupPeruRuc (antes se descartaba) -- lo necesita
+              // "Administración de empresas" para llenar domicilio_fiscal
+              // con el dato real de SUNAT en vez de texto libre inventado.
+              if (!lookup.domicilioFiscal.empty()) result["registry_domicilio_fiscal"] = lookup.domicilioFiscal;
             }
           }
           const std::string trimmedCompany = trimAuthParam(company);
@@ -1910,6 +2285,11 @@ void registerRoutes(router::Router &r) {
   // sin reautenticar (ver handlers arriba, antes de registerRoutes).
   r.get("/api/auth/avatar/hd", handleMyAvatarHd);
   r.get("/api/auth/avatar/thumb", handleMyAvatarThumb);
+  // Rediseño de avatar (2026-09-20, ADR-203): catálogo y selección de
+  // cuerpo/vestimenta pre-hechos.
+  r.get("/api/avatar/body-templates", handleListAvatarBodyTemplates);
+  r.post("/api/auth/avatar/body-template", handleUpdateAvatarBodyTemplate);
+  r.post("/api/auth/avatar/re-enroll", handleReEnrollAvatar);
   r.post("/api/auth/avatar/animation", handleCreateAvatarAnimation);
   r.get("/api/auth/avatar/animation/", handleGetAvatarAnimation);  // prefix match for /{jobId}[/download]
   r.get("/api/auth/tenants", handleListMyTenants);

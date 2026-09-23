@@ -34,6 +34,21 @@ _MODEL_SPECS: list[tuple[str, str, str, str, bool]] = [
         "selfie_segmenter/float16/latest/selfie_segmenter.tflite",
         False,
     ),
+    (
+        # Segmentador MULTICLASE (fondo/pelo/piel-cuerpo/piel-cara/ropa/otros),
+        # distinto del binario persona/fondo de arriba -- necesario para
+        # recortar SOLO la cabeza (pelo+orejas+piel de cara) sin depender de
+        # detectar hombros/ropa reales (rediseño de avatar, cuerpo/vestimenta
+        # ahora vienen de una plantilla pre-hecha, ver avatar_body_templates.py).
+        # Mismo criterio "no obligatorio": si falla la descarga, el motor cae
+        # al recorte por óvalo+dilatación ya existente en vez de no arrancar.
+        "selfie_multiclass",
+        "SELFIE_MULTICLASS_MODEL",
+        "selfie_multiclass_256x256.tflite",
+        "https://storage.googleapis.com/mediapipe-models/image_segmenter/"
+        "selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite",
+        False,
+    ),
 ]
 
 _MIN_BYTES_FACE = 50_000
@@ -55,6 +70,12 @@ def get_face_model_path() -> str:
 
 def get_selfie_model_path() -> str:
     return _resolve_model_path("SELFIE_SEGMENTER_MODEL", "selfie_segmenter.tflite")
+
+
+def get_selfie_multiclass_model_path() -> str:
+    return _resolve_model_path(
+        "SELFIE_MULTICLASS_MODEL", "selfie_multiclass_256x256.tflite"
+    )
 
 
 def _min_size_for(name: str) -> int:

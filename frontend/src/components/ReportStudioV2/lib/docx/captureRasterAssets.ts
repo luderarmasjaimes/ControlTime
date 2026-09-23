@@ -9,8 +9,15 @@ import type { ReportDocument } from '../../store/useEditorStore';
  * `cover` (gradientes/patrones CSS) -- los únicos que este módulo necesita
  * capturar como imagen. El resto del documento (texto/tabla/imagen/kpi/
  * sensor/seismic-report/header/footer/toc) se construye directamente desde
- * el JSON en `buildReportDocx.ts`, sin pasar por el DOM. */
-const RASTER_ONLY_TYPES = new Set(['chart', 'sensor_multi_chart', 'cover']);
+ * el JSON en `buildReportDocx.ts`, sin pasar por el DOM. `shape`
+ * (ShapeBlock.tsx, diagramas de bloque) se agregó 2026-09-23: no tenía
+ * ningún `case` en `buildReportDocx.ts` y se perdía en silencio -- mismo
+ * criterio que `reportDocxBuilder.js`/`rasterCapturePipeline.js` del lado
+ * servidor (docx/pptxgenjs no ofrecen una API de formas lo bastante fiel al
+ * abanico real de `shapeType`, se captura como PNG igual que un gráfico).
+ * `wordart` (texto decorativo, relleno degradado/contorno/sombra, nuevo
+ * 2026-09-23) mismo criterio: `docx` no expone esos efectos por `TextRun`. */
+const RASTER_ONLY_TYPES = new Set(['chart', 'sensor_multi_chart', 'cover', 'shape', 'wordart']);
 
 const CAPTURE_TIMEOUT_MS = 20000;
 /** Techo por captura individual de `html2canvas` -- sin esto, UN solo nodo
@@ -180,6 +187,7 @@ function dataUrlToUint8Array(dataUrl: string): Uint8Array {
  */
 interface CaptureTarget {
   id: string;
+  pageNumber: number;
   timeoutMs: number;
 }
 
@@ -202,7 +210,11 @@ export async function captureRasterAssets(doc: ReportDocument, reportMeta: Recor
   const targets: CaptureTarget[] = [];
   doc.pages.forEach((page) => page.elements.forEach((el) => {
     if (!RASTER_ONLY_TYPES.has(el.type)) return;
-    targets.push({ id: el.id, timeoutMs: isFragileChartElement(el) ? FRAGILE_CAPTURE_TIMEOUT_MS : HTML2CANVAS_TIMEOUT_MS });
+    targets.push({
+      id: el.id,
+      pageNumber: page.page_number,
+      timeoutMs: isFragileChartElement(el) ? FRAGILE_CAPTURE_TIMEOUT_MS : HTML2CANVAS_TIMEOUT_MS,
+    });
   }));
   const result = new Map<string, Uint8Array>();
   if (targets.length === 0) return result;
@@ -289,7 +301,31 @@ export async function captureRasterAssets(doc: ReportDocument, reportMeta: Recor
     console.log(`[DOCX_CAPTURE] iniciando ${targets.length} capturas en lotes de ${CAPTURE_BATCH_SIZE}…`);
 
     const html2canvas = (await import('html2canvas')).default;
-    await runInBatches(targets, CAPTURE_BATCH_SIZE, async ({ id, timeoutMs }) => {
+    // Documentos grandes (>EXPORT_VIRTUALIZATION_PAGE_THRESHOLD páginas,
+    // ver ReadOnlyViewer.tsx) activan la MISMA virtualización que usa el
+    // sidecar de PDF/PPTX -- solo la página "activa" ±ventana tiene sus
+    // elementos montados. El sidecar (Puppeteer) avanza esa página activa
+    // vía `window.__setExportActivePage__(n)` según captura cada una; este
+    // pipeline cliente nunca lo hacía, así que para cualquier documento con
+    // más páginas que el umbral, todo lo que quedaba fuera de la ventana
+    // inicial (páginas 1-7) nunca llegaba a montarse -- `node` siempre daba
+    // `null` y esos bloques quedaban sin imagen en el DOCX exportado, en
+    // silencio (encontrado en vivo con un informe de 144 páginas: capturas
+    // exitosas hasta la página 7, "node not found" en cadena de ahí en
+    // adelante). Fix: avanzar la página activa nosotros mismos, en el mismo
+    // orden en que se recorrieron `targets` (ya viene en orden de página),
+    // y esperar a que esa página termine de montar/pintar antes de leerla.
+    let lastActivePage: number | null = null;
+    await runInBatches(targets, CAPTURE_BATCH_SIZE, async ({ id, pageNumber, timeoutMs }) => {
+      if (pageNumber !== lastActivePage) {
+        lastActivePage = pageNumber;
+        (window as any).__setExportActivePage__?.(pageNumber);
+        try {
+          await waitForRenderReady(container);
+        } catch (err) {
+          console.log(`[DOCX_CAPTURE] pagina ${pageNumber}: readiness incompleta @ ${dt()} (${String(err)}) -- se continua de todos modos`);
+        }
+      }
       const node = container.querySelector<HTMLElement>(`[data-element-id="${CSS.escape(id)}"]`);
       if (!node) { console.log(`[DOCX_CAPTURE] ${id}: node not found @ ${dt()}`); return; }
       // Red de seguridad: si `waitForRenderReady` agotó su timeout (widget

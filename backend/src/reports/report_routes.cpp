@@ -6,6 +6,7 @@
 #include "report_portable.hpp"
 #include "report_share_links.hpp"
 #include "offline_template_data.hpp"
+#include "pdf_ocr_client.hpp"
 #include "../config/app_config.hpp"
 #include "../http/http_utils.hpp"
 #include "../auth/auth_session.hpp"
@@ -255,12 +256,47 @@ handleGetReportById(const http::request<http::string_body>& req,
     auto revisions = listReportRevisionsPg(gDatabaseUrl, reportId, targetTenant, error);
     return makeJsonResponse(http::status::ok, json::object{{"revisions", revisions}});
   }
+  // ── GET /api/reports/{id}/pdf-share-recipients — lista de correos
+  // adicionales a quienes se envía el PDF exportado (ADR-204). Gateado por
+  // `informes.share` -- mismo permiso que el POST /share existente (ADR-137):
+  // ambos son "a quién comparto este informe", solo cambia el mecanismo de
+  // entrega. ──────────────────────────────────────────────────────────────
+  static const std::string kPdfShareRecipientsSuffix = "/pdf-share-recipients";
+  if (rest.size() > kPdfShareRecipientsSuffix.size() &&
+      rest.compare(rest.size() - kPdfShareRecipientsSuffix.size(),
+                   kPdfShareRecipientsSuffix.size(), kPdfShareRecipientsSuffix) == 0) {
+    if (!hasPermission(session->userId, targetTenant, session->role, "informes.share")) {
+      return makeJsonResponse(http::status::forbidden,
+                              json::object{{"error", "forbidden"}, {"need", "informes.share"}});
+    }
+    const std::string reportId =
+        rest.substr(0, rest.size() - kPdfShareRecipientsSuffix.size());
+    const auto recipients = resolvePdfShareRecipients(gDatabaseUrl, reportId);
+    json::array arr;
+    for (const auto &e : recipients) arr.push_back(json::value(e));
+    return makeJsonResponse(http::status::ok, json::object{{"recipients", arr}});
+  }
   // ── GET /api/reports/{id}/export/pdf — export PDF server-side (ADR-016) ──
   static const std::string kExportPdfSuffix = "/export/pdf";
   if (rest.size() > kExportPdfSuffix.size() &&
       rest.compare(rest.size() - kExportPdfSuffix.size(), kExportPdfSuffix.size(),
                    kExportPdfSuffix) == 0) {
     const std::string reportId = rest.substr(0, rest.size() - kExportPdfSuffix.size());
+    // `?no_watermark=1` (ADR-204) -- mismo criterio que `unprotected` en el
+    // job async: un query param crudo, gateado por permission code ANTES de
+    // tocar el sidecar (nunca se pasa a exportReportPdf sin verificar).
+    bool noWatermark = false;
+    {
+      const auto it = query.find("no_watermark");
+      noWatermark = it != query.end() && (it->second == "1" || it->second == "true");
+    }
+    if (noWatermark &&
+        !hasPermission(session->userId, targetTenant, session->role,
+                       "informes.export_sin_marca_agua")) {
+      return makeJsonResponse(
+          http::status::forbidden,
+          json::object{{"error", "forbidden"}, {"need", "informes.export_sin_marca_agua"}});
+    }
     // Verifica tenant/existencia ANTES de pedirle al sidecar que renderice
     // (evita gastar un ciclo de Chromium en un id ajeno o inexistente).
     std::string error;
@@ -277,7 +313,8 @@ handleGetReportById(const http::request<http::string_body>& req,
     // antes de pedirle al sidecar que renderice — el sidecar solo dibuja.
     const std::string watermarkText =
         resolveWatermarkText(gDatabaseUrl, reportId, targetTenant, session->username);
-    auto pdfResult = exportReportPdf(reportId, sessionToken, watermarkText);
+    auto pdfResult = exportReportPdf(reportId, sessionToken, watermarkText, /*encrypt=*/true,
+                                     noWatermark);
     if (!pdfResult.ok) {
       return makeJsonResponse(http::status::bad_gateway,
                               json::object{{"error", pdfResult.error}});
@@ -303,6 +340,25 @@ handleGetReportById(const http::request<http::string_body>& req,
       }
     }
 #endif
+    // ADR-204: mismo envío automático por correo que el pipeline async
+    // (runPdfExportJob) -- lanzado en su PROPIO hilo detached para no sumar
+    // latencia al request síncrono ya medido (ADR-183/184/185). Los bytes
+    // del PDF ya están en memoria acá (`pdfResult.pdfBytes`), a diferencia
+    // del job async que los relee de disco -- se copian antes de mover
+    // `pdfBytes` al response de abajo.
+    {
+      std::string ownerEmail;
+      if (const auto ownerUser = findUserByIdPg(gDatabaseUrl, session->userId)) {
+        ownerEmail = ownerUser->email;
+      }
+      const auto extraRecipients = resolvePdfShareRecipients(gDatabaseUrl, reportId);
+      if (!ownerEmail.empty() || !extraRecipients.empty()) {
+        std::thread(sendPdfExportEmails, r.title, session->username, pdfResult.pdfBytes,
+                   /*unprotected=*/false, noWatermark, pdfResult.userPassword, ownerEmail,
+                   extraRecipients)
+            .detach();
+      }
+    }
     return makePdfResponse(safeName + ".pdf", std::move(pdfResult.pdfBytes), pdfResult.userPassword);
   }
   // ── GET /api/reports/{id}/export/portable — .mreport cifrado (traslado
@@ -496,12 +552,19 @@ handleCreateReport(const http::request<http::string_body>& req,
       r.createdBy = session->username;
       r.company = session->company;
       r.tenantId = session->tenantId;
+      // ADR-022, cierre CA-3 de SPEC-014: presente solo cuando este POST es
+      // un "guardar como informe nuevo" tras un conflicto offline (ver
+      // App.tsx handleSaveReport) -- ver comentario de createReportPg.
+      const std::string conflictResolution =
+          obj.contains("conflict_resolution") && !obj.at("conflict_resolution").is_null()
+              ? json::value_to<std::string>(obj.at("conflict_resolution"))
+              : std::string();
 
       std::string error;
       std::string newId;
       int versionNumber = 0;
       if (createReportPg(gDatabaseUrl, r, newId, error, session->username, session->company,
-                         authTokReports, versionNumber)) {
+                         authTokReports, versionNumber, conflictResolution)) {
         return makeJsonResponse(http::status::created,
                                 json::object{{"status", "created"}, {"id", newId},
                                              {"version_number", versionNumber}});
@@ -566,6 +629,145 @@ handleImportPortableReport(const http::request<http::string_body>& req,
                    {"redacted", importResult.redacted}});
 }
 
+// ── POST /api/reports/import/pdf-ocr ─────────────────────────────────
+// Cuerpo crudo = el PDF (application/octet-stream), filename por query
+// (?filename=...) -- mismo patrón que handleSubmitWebCv (support_routes.cpp)
+// para uploads server-side, en vez de parsear multipart acá. El trabajo
+// pesado (texto digital vs OCR real vía PaddleOCR PP-StructureV2) ocurre en
+// ai_engine/ocr_engine -- ver pdf_ocr_client.hpp y ADR-199.
+static json::value pdfOcrResultToJson(const reports::PdfOcrImportResult &result) {
+  json::array pagesJson;
+  for (const auto &page : result.pages) {
+    json::array blocksJson;
+    for (const auto &block : page.blocks) {
+      json::object blockObj{{"type", block.type}};
+      if (block.type == "paragraph") {
+        blockObj["text"] = block.text;
+        if (!block.spans.empty()) {
+          json::array spansJson;
+          for (const auto &span : block.spans) {
+            json::object spanObj{{"start", span.start}, {"end", span.end}};
+            if (span.bold.has_value()) spanObj["bold"] = *span.bold;
+            if (span.italic.has_value()) spanObj["italic"] = *span.italic;
+            if (span.underline.has_value()) spanObj["underline"] = *span.underline;
+            if (!span.color.empty()) spanObj["color"] = span.color;
+            if (span.fontSize.has_value()) spanObj["fontSize"] = *span.fontSize;
+            if (!span.fontFamily.empty()) spanObj["fontFamily"] = span.fontFamily;
+            if (!span.headingStyle.empty()) spanObj["headingStyle"] = span.headingStyle;
+            if (!span.textAlign.empty()) spanObj["textAlign"] = span.textAlign;
+            spansJson.push_back(std::move(spanObj));
+          }
+          blockObj["spans"] = std::move(spansJson);
+        }
+      } else if (block.type == "table") {
+        json::array rowsJson;
+        for (const auto &row : block.tableRows) {
+          json::array rowJson;
+          for (const auto &cell : row) rowJson.push_back(json::value(cell));
+          rowsJson.push_back(std::move(rowJson));
+        }
+        blockObj["rows"] = std::move(rowsJson);
+      } else if (block.type == "figure") {
+        blockObj["image_base64"] = block.imageBase64;
+        blockObj["mime"] = block.imageMime;
+      }
+      if (block.bbox.has_value()) {
+        const auto &box = *block.bbox;
+        blockObj["bbox"] = json::array{box.x0, box.y0, box.x1, box.y1};
+      }
+      if (block.layout.has_value()) {
+        const auto &l = *block.layout;
+        blockObj["layout"] = json::object{{"baseline_pt", l.baselinePt},
+                                          {"pitch_pt", l.pitchPt},
+                                          {"font_size_pt", l.fontSizePt},
+                                          {"line_count", l.lineCount}};
+      }
+      blocksJson.push_back(std::move(blockObj));
+    }
+    json::object pageObj{
+        {"page_number", page.pageNumber},
+        {"source", page.source},
+        {"blocks", std::move(blocksJson)},
+    };
+    pageObj["confidence"] = page.confidence.has_value() ? json::value(*page.confidence)
+                                                         : json::value(nullptr);
+    if (page.geometry.has_value()) {
+      const auto &g = *page.geometry;
+      pageObj["page_geometry"] = json::object{
+          {"width_pt", g.widthPt},
+          {"height_pt", g.heightPt},
+          {"paper_size", g.paperSize},
+          {"orientation", g.orientation},
+          {"margin_left_pt", g.marginLeftPt},
+          {"margin_top_pt", g.marginTopPt},
+          {"margin_right_pt", g.marginRightPt},
+          {"margin_bottom_pt", g.marginBottomPt},
+      };
+    }
+    if (!page.layout.empty()) pageObj["layout"] = page.layout;
+    if (!page.backgroundBase64.empty()) {
+      pageObj["background"] = json::object{{"image_base64", page.backgroundBase64},
+                                           {"mime", page.backgroundMime}};
+    }
+    if (!page.error.empty()) pageObj["error"] = page.error;
+    pagesJson.push_back(std::move(pageObj));
+  }
+  return json::object{{"page_count", result.pageCount}, {"pages", std::move(pagesJson)}};
+}
+
+static http::response<http::string_body>
+handleImportPdfOcr(const http::request<http::string_body>& req,
+                   const std::unordered_map<std::string, std::string>& query) {
+  const auto session = resolveAuthSession(req, query);
+  if (!session) return makeJsonResponse(http::status::unauthorized, json::object{{"error", "unauthorized"}});
+  // Misma autorización que crear/importar un informe (ver handleImportPortableReport).
+  if (!hasPermission(session->userId, session->tenantId, session->role, "informes.edit")) {
+    return makeJsonResponse(http::status::forbidden,
+                            json::object{{"error", "forbidden"}, {"need", "informes.edit"}});
+  }
+
+  auto qv = [&](const char *key) -> std::string {
+    auto it = query.find(key);
+    return it != query.end() ? it->second : "";
+  };
+  const std::string filename = qv("filename");
+
+  // 60MB: un informe técnico completo con fotos incrustadas, no un CV --
+  // mismo techo que PDF_OCR_IMPORT_MAX_BYTES en ai_engine/eye_analyzer.py y
+  // OCR_ENGINE_MAX_PDF_BYTES en ocr_engine/server.py (las 3 capas coinciden
+  // a propósito, para dar el mismo error temprano en vez de uno más tarde).
+  constexpr std::size_t kMaxPdfOcrBytes = 60 * 1024 * 1024;
+  if (req.body().empty() || req.body().size() > kMaxPdfOcrBytes) {
+    return makeJsonResponse(
+        http::status::bad_request,
+        json::object{{"error", "invalid_size"}, {"max_bytes", static_cast<int64_t>(kMaxPdfOcrBytes)}});
+  }
+  // Firma real del archivo antes de gastar tiempo de OCR en él -- ahora se
+  // admite PDF o imagen raster (PNG/JPG/JPEG/BMP) para el mismo flujo OCR.
+  const auto &body = req.body();
+  const bool isPdf = body.size() >= 5 && body.compare(0, 5, "%PDF-") == 0;
+  const bool isPng = body.size() >= 8 &&
+      static_cast<unsigned char>(body[0]) == 0x89 && body.compare(1, 3, "PNG") == 0;
+  const bool isJpeg = body.size() >= 3 &&
+      static_cast<unsigned char>(body[0]) == 0xFF && static_cast<unsigned char>(body[1]) == 0xD8 && static_cast<unsigned char>(body[2]) == 0xFF;
+  const bool isBmp = body.size() >= 2 && body[0] == 'B' && body[1] == 'M';
+  if (!isPdf && !isPng && !isJpeg && !isBmp) {
+    return makeJsonResponse(http::status::bad_request, json::object{{"error", "unsupported_file_type"}});
+  }
+
+  const std::vector<unsigned char> fileBytes(req.body().begin(), req.body().end());
+  const auto result = reports::importPdfWithOcr(fileBytes, filename);
+  if (!result.ok) {
+    json::object errObj{{"error", result.error.empty() ? "pdf_ocr_import_failed" : result.error}};
+    if (result.error == "too_many_scanned_pages") {
+      errObj["scanned_pages"] = result.scannedPages;
+      errObj["limit"] = result.scannedPagesLimit;
+    }
+    return makeJsonResponse(http::status::unprocessable_entity, errObj);
+  }
+  return makeJsonResponse(http::status::ok, pdfOcrResultToJson(result));
+}
+
 // ── PUT /api/reports/{id} ────────────────────────────────────────────
 static http::response<http::string_body>
 handleUpdateReport(const http::request<http::string_body>& req,
@@ -606,12 +808,20 @@ handleUpdateReport(const http::request<http::string_body>& req,
           obj.contains("expected_version") && !obj.at("expected_version").is_null()
               ? json::value_to<std::string>(obj.at("expected_version"))
               : std::string();
+      // ADR-022, cierre CA-3 de SPEC-014: presente solo cuando este PUT
+      // sobrescribe deliberadamente la versión del servidor tras un
+      // conflicto offline (ver App.tsx handleSaveReport, rama "Sobrescribir")
+      // -- ver comentario de updateReportPg.
+      const std::string conflictResolution =
+          obj.contains("conflict_resolution") && !obj.at("conflict_resolution").is_null()
+              ? json::value_to<std::string>(obj.at("conflict_resolution"))
+              : std::string();
 
       std::string error;
       int versionNumber = 0;
       if (updateReportPg(gDatabaseUrl, id, session->tenantId, r, error, session->username,
                          session->company, authTokReportPut, versionNumber, session->userId,
-                         session->role, workflowComment, expectedVersion)) {
+                         session->role, workflowComment, expectedVersion, conflictResolution)) {
           return makeJsonResponse(http::status::ok,
                                   json::object{{"status", "updated"},
                                                {"version_number", versionNumber}});
@@ -823,6 +1033,49 @@ handlePostReportSubAction(const http::request<http::string_body>& req,
 #endif
   }
 
+  // ── POST /api/reports/{id}/pdf-share-recipients — reemplaza por completo
+  // la lista de correos adicionales a quienes se envía el PDF exportado
+  // (ADR-204). Va por POST y no PUT -- este router solo tiene un PUT de
+  // recurso completo (`r.put("/api/reports/", handleUpdateReport)`), y el
+  // resto de sub-acciones de informe (`/share`, `/export/*`) ya son POST por
+  // convención de este archivo. Mismo permiso `informes.share` que el GET
+  // (arriba, `handleGetReportById`) y que `/share`. ──────────────────────
+  static const std::string kPdfShareRecipientsSuffix = "/pdf-share-recipients";
+  if (rest.size() > kPdfShareRecipientsSuffix.size() &&
+      rest.compare(rest.size() - kPdfShareRecipientsSuffix.size(),
+                   kPdfShareRecipientsSuffix.size(), kPdfShareRecipientsSuffix) == 0) {
+    if (!hasPermission(session->userId, session->tenantId, session->role, "informes.share")) {
+      return makeJsonResponse(http::status::forbidden,
+                              json::object{{"error", "forbidden"}, {"need", "informes.share"}});
+    }
+    const std::string reportId =
+        rest.substr(0, rest.size() - kPdfShareRecipientsSuffix.size());
+    std::string error;
+    Report r;
+    if (!getReportByIdPg(gDatabaseUrl, reportId, session->tenantId, r, error)) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+    }
+    std::vector<std::string> emails;
+    try {
+      const auto val = json::parse(req.body());
+      const auto &obj = val.as_object();
+      if (obj.contains("recipients") && obj.at("recipients").is_array()) {
+        for (const auto &item : obj.at("recipients").as_array()) {
+          if (item.is_string()) emails.emplace_back(item.as_string().c_str());
+        }
+      }
+    } catch (const std::exception &ex) {
+      return makeJsonResponse(http::status::bad_request, json::object{{"error", ex.what()}});
+    }
+    if (!savePdfShareRecipients(gDatabaseUrl, reportId, emails, error)) {
+      return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
+    }
+    const auto saved = resolvePdfShareRecipients(gDatabaseUrl, reportId);
+    json::array arr;
+    for (const auto &e : saved) arr.push_back(json::value(e));
+    return makeJsonResponse(http::status::ok, json::object{{"recipients", arr}});
+  }
+
   // ── POST /api/reports/{id}/share-link — enlace de acceso directo a PDF
   // (ADR-138): a diferencia de /export/pdf (ADR-080, PDF cifrado con una
   // contraseña que el usuario tiene que pegar a mano) esto genera un token
@@ -950,17 +1203,72 @@ handlePostReportSubAction(const http::request<http::string_body>& req,
                               json::object{{"error", "layout_mode_not_document"}});
     }
 
+    // `docxLayout`: NO confundir con `layoutMode` de arriba (modo del
+    // lienzo, documento vs. presentación) -- esto elige la estrategia de
+    // mapeo a OOXML dentro del pipeline DOCX. 'absolute' (default, ADR-139):
+    // cada bloque anclado a su x/y/w/h exacto (`w:framePr`), máxima
+    // fidelidad de layout pero como cuadros de texto independientes.
+    // 'flow' (pedido explícito 2026-09-18): reflowa como documento Word
+    // tradicional, con el texto fluyendo en orden de lectura normal -- ver
+    // `reportDocxBuilder.js::buildPageSection`.
+    std::string docxLayout = "absolute";
+    try {
+      if (!req.body().empty()) {
+        auto val = json::parse(req.body());
+        if (val.is_object() && val.as_object().if_contains("layout") &&
+            val.as_object().at("layout").is_string()) {
+          const auto requested = json::value_to<std::string>(val.as_object().at("layout"));
+          if (requested == "flow") docxLayout = "flow";
+        }
+      }
+    } catch (...) {
+      // Body inválido -> se usa el default 'absolute' (mismo criterio
+      // permisivo que el resto de opciones opcionales de este archivo).
+    }
+
     // Token dedicado de vida larga para el sidecar (ver
     // auth::issueExportAccessToken) -- no el access token normal del
     // usuario (15 min), que puede expirar a mitad de un export grande.
     const std::string sessionToken = auth::issueExportAccessToken(
         session->userId, session->username, session->company, session->role, session->tenantId);
     std::string jobId;
-    if (!createExportJobPg(gDatabaseUrl, reportId, session->tenantId, "docx", json::object{},
+    if (!createExportJobPg(gDatabaseUrl, reportId, session->tenantId, "docx",
+                           json::object{{"layout", docxLayout}}, session->userId,
+                           /*contentRevisionId=*/"", jobId, error)) {
+      return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
+    }
+    std::thread(runDocxExportJob, jobId, reportId, sessionToken, docxLayout).detach();
+    return makeJsonResponse(http::status::accepted,
+                            json::object{{"job_id", jobId}, {"status", "queued"}});
+  }
+
+  // ── POST /api/reports/{id}/export/xlsx ─────────────────────────────
+  // Mismo patrón asíncrono que /export/pptx y /export/docx arriba. Sin
+  // restricción de `layoutMode` (a diferencia de DOCX) -- el export XLSX
+  // solo toca los bloques `table` del informe (reportXlsxBuilder.js), que
+  // existen igual en modo documento o presentación.
+  static const std::string kExportXlsxSuffix = "/export/xlsx";
+  if (rest.size() > kExportXlsxSuffix.size() &&
+      rest.compare(rest.size() - kExportXlsxSuffix.size(), kExportXlsxSuffix.size(),
+                  kExportXlsxSuffix) == 0) {
+    const std::string reportId = rest.substr(0, rest.size() - kExportXlsxSuffix.size());
+    if (AppConfig::instance().gPdfExportUrl.empty()) {
+      return makeJsonResponse(http::status::service_unavailable,
+                              json::object{{"error", "xlsx_export_disabled"}});
+    }
+    std::string error;
+    Report r;
+    if (!getReportByIdPg(gDatabaseUrl, reportId, session->tenantId, r, error)) {
+      return makeJsonResponse(http::status::not_found, json::object{{"error", error}});
+    }
+    const std::string sessionToken = auth::issueExportAccessToken(
+        session->userId, session->username, session->company, session->role, session->tenantId);
+    std::string jobId;
+    if (!createExportJobPg(gDatabaseUrl, reportId, session->tenantId, "xlsx", json::object{},
                            session->userId, /*contentRevisionId=*/"", jobId, error)) {
       return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
     }
-    std::thread(runDocxExportJob, jobId, reportId, sessionToken).detach();
+    std::thread(runXlsxExportJob, jobId, reportId, sessionToken).detach();
     return makeJsonResponse(http::status::accepted,
                             json::object{{"job_id", jobId}, {"status", "queued"}});
   }
@@ -975,9 +1283,15 @@ handlePostReportSubAction(const http::request<http::string_body>& req,
   // `runPdfExportJob` (llama al sidecar en `/render-pdf`, NO `/render`) y
   // se consulta/descarga vía el mismo `GET /export/jobs/{jobId}[/download]`
   // que ya usan PPTX/DOCX. Watermark (ADR-080) resuelto server-side igual
-  // que el GET síncrono -- el cifrado queda siempre activo, la contraseña
-  // vuelve en `report_export_job.options` (ver `runPdfExportJob`) y el
-  // download la expone vía el mismo header `X-Pdf-User-Password` de siempre.
+  // que el GET síncrono. El cifrado es el default -- `unprotected: true` en
+  // el body lo desactiva, pero solo si el rol tiene
+  // `informes.export_sin_clave` (perfiles avanzados, db_scripts/112): un
+  // `true` de un rol sin ese permiso se rechaza con 403 ANTES de tocar el
+  // sidecar, nunca se pasa como si fuera `false` en silencio. Igual criterio
+  // para `no_watermark: true` (ADR-204) con `informes.export_sin_marca_agua`
+  // (db_scripts/115). Cuando cifra, la contraseña vuelve en
+  // `report_export_job.options` (ver `runPdfExportJob`) y el download la
+  // expone vía el mismo header `X-Pdf-User-Password` de siempre.
   static const std::string kExportPdfJobSuffix = "/export/pdf";
   if (rest.size() > kExportPdfJobSuffix.size() &&
       rest.compare(rest.size() - kExportPdfJobSuffix.size(), kExportPdfJobSuffix.size(),
@@ -986,6 +1300,40 @@ handlePostReportSubAction(const http::request<http::string_body>& req,
     if (AppConfig::instance().gPdfExportUrl.empty()) {
       return makeJsonResponse(http::status::service_unavailable,
                               json::object{{"error", "pdf_export_disabled"}});
+    }
+    bool unprotected = false;
+    bool noWatermark = false;
+    try {
+      if (!req.body().empty()) {
+        auto val = json::parse(req.body());
+        if (val.is_object()) {
+          const auto &obj = val.as_object();
+          if (obj.if_contains("unprotected") && obj.at("unprotected").is_bool()) {
+            unprotected = obj.at("unprotected").as_bool();
+          }
+          if (obj.if_contains("no_watermark") && obj.at("no_watermark").is_bool()) {
+            noWatermark = obj.at("no_watermark").as_bool();
+          }
+        }
+      }
+    } catch (...) {
+      // Body inválido -> se ignora, ambos flags se quedan en `false`
+      // (mismo criterio permisivo que `docxLayout` arriba: un body raro
+      // nunca debe tumbar el request, solo perder la opción pedida).
+    }
+    if (unprotected &&
+        !hasPermission(session->userId, session->tenantId, session->role,
+                       "informes.export_sin_clave")) {
+      return makeJsonResponse(
+          http::status::forbidden,
+          json::object{{"error", "forbidden"}, {"need", "informes.export_sin_clave"}});
+    }
+    if (noWatermark &&
+        !hasPermission(session->userId, session->tenantId, session->role,
+                       "informes.export_sin_marca_agua")) {
+      return makeJsonResponse(
+          http::status::forbidden,
+          json::object{{"error", "forbidden"}, {"need", "informes.export_sin_marca_agua"}});
     }
     std::string error;
     Report r;
@@ -996,18 +1344,31 @@ handlePostReportSubAction(const http::request<http::string_body>& req,
         session->userId, session->username, session->company, session->role, session->tenantId);
     const std::string watermarkText =
         resolveWatermarkText(gDatabaseUrl, reportId, session->tenantId, session->username);
+    // ADR-204: resueltos ACÁ (con la `session`/conexión a mano) y pasados
+    // por valor al hilo detached -- mismo criterio que `watermarkText`, para
+    // no reabrir Postgres desde dentro del worker.
+    std::string ownerEmail;
+    if (const auto ownerUser = findUserByIdPg(gDatabaseUrl, session->userId)) {
+      ownerEmail = ownerUser->email;
+    }
+    const auto extraRecipients = resolvePdfShareRecipients(gDatabaseUrl, reportId);
     std::string jobId;
     if (!createExportJobPg(gDatabaseUrl, reportId, session->tenantId, "pdf", json::object{},
                            session->userId, /*contentRevisionId=*/"", jobId, error)) {
       return makeJsonResponse(http::status::internal_server_error, json::object{{"error", error}});
     }
-    std::thread(runPdfExportJob, jobId, reportId, sessionToken, watermarkText).detach();
+    std::thread(runPdfExportJob, jobId, reportId, sessionToken, watermarkText, unprotected,
+               noWatermark, ownerEmail, extraRecipients, r.title, session->username)
+        .detach();
 #if HAS_LIBPQ
     {
       auto lease = storage::PgPool::instance().acquire(gDatabaseUrl);
       if (PQstatus(lease.get()) == CONNECTION_OK) {
         auth::appendAuthAuditLogPg(lease.get(), "report.export.pdf.job.create", session->company,
-                                   session->username, true, "report_id=" + reportId);
+                                   session->username, true,
+                                   "report_id=" + reportId +
+                                       (unprotected ? " unprotected=true" : "") +
+                                       (noWatermark ? " no_watermark=true" : ""));
       }
     }
 #endif
@@ -1220,6 +1581,7 @@ void registerRoutes(router::Router& r) {
   r.get("/api/reports/", handleGetReportById);       // prefix match for /api/reports/{id}
   r.post("/api/reports", handleCreateReport);
   r.post("/api/reports/import/portable", handleImportPortableReport);
+  r.post("/api/reports/import/pdf-ocr", handleImportPdfOcr);
   r.get("/api/reports/offline-template", handleGetOfflineTemplate);
   r.put("/api/reports/", handleUpdateReport);         // prefix match for /api/reports/{id}
   r.del("/api/reports/", handleDeleteReport);         // prefix match for /api/reports/{id}
