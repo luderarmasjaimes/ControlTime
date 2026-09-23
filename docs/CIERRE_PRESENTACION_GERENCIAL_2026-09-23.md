@@ -2,14 +2,14 @@
 
 **Fecha de corte:** 2026-09-23  
 **Rama:** `2026-08-21`  
-**Commit auditado:** `2d7b439`  
+**Referencia auditada:** etiqueta `corte-2026-09-23-gerencia` sobre commit `f6334a8`  
 **Estado Git:** limpio y sincronizado con `origin/2026-08-21`.
 
 ## Observaciones cerradas
 
 | Observacion | Estado | Evidencia |
 |---|---|---|
-| Cambios sin commit / sin subir al repositorio | **Cerrada** | Commit global `2d7b439`, push aceptado por GitHub |
+| Cambios sin commit / sin subir al repositorio | **Cerrada** | Commit global `2d7b439`, cierre ejecutivo `f6334a8`, push aceptado por GitHub |
 | Fuentes y metricas desalineadas | **Cerrada** | `scripts/project-status-metrics.ps1` publica `Official`, `AuditedStrict` y `ProductionExitBacklog` |
 | SPEC-027 fuera de la metrica auditada | **Cerrada** | SPEC-027 incluida como 14/22 en `AuditedStrict` |
 | Riesgo por archivo local grande no versionable | **Mitigado** | `backend_image.tar` excluido por `.gitignore`; pesa 519.69 MB y supera el limite de GitHub |
@@ -43,8 +43,9 @@ El go-live debe mantenerse como **condicionado**, no como declarado. Los bloquea
 
 ## Cierres adicionales recomendados antes de la reunion
 
-1. Crear etiqueta Git de corte: `corte-2026-09-23-gerencia`.
+1. **Cerrado:** etiqueta Git de corte creada y subida: `corte-2026-09-23-gerencia`.
 2. Presentar una sola cifra principal: **73.3% auditado**, con nota de comparabilidad 72.5% oficial.
 3. Mostrar el backlog fino como 47 tareas, no como una lista dispersa.
 4. Enfatizar que los riesgos restantes no son de construccion base, sino de certificacion, continuidad y aceptacion operativa.
 5. Llevar acta para que Gerencia firme G-1, G-2, G-4, G-7, G-13 y G-14.
+

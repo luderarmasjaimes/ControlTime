@@ -1,12 +1,28 @@
 # BACKLOG DE SPECS · Plataforma Minera Beemetry
 
+> **ACTUALIZACION GERENCIAL FINAL 2026-09-23.** Repositorio limpio y sincronizado con
+> `origin/2026-08-21`; commits de cierre `2d7b439` (versionado integral) y `f6334a8`
+> (cierre ejecutivo), etiqueta remota `corte-2026-09-23-gerencia` publicada. La
+> observacion de cambios sin commit / sin subir queda **cerrada**. `backend_image.tar`
+> queda fuera por limite tecnico de GitHub (519.69 MB) y fue ignorado en `.gitignore`.
+> Fuente ejecutable vigente: `scripts/project-status-metrics.ps1`.
+>
+> | Lectura | Valor vigente | Uso |
+> |---|---:|---|
+> | Oficial historica | **148/204 = 72,5%** | Comparabilidad con cortes anteriores |
+> | Auditada estricta | **162/221 = 73,3%** | Cifra recomendada para Gerencia |
+> | Backlog fino salida a produccion | **47 tareas** | Bloqueantes reales de go-live |
+> | Releases | R2 100% · R3 97,1% · R4 90,3% · R5 45,2% | Producto construido; hardening y certificacion pendientes |
+>
+> Para presentacion: no usar cifras historicas posteriores de este archivo como estado vigente
+> si contradicen esta cabecera. Las secciones antiguas quedan como bitacora para trazabilidad.
 > **CORTE VIGENTE 2026-09-23 (ADR-210/212).** La tabla de abajo es el corte histórico
 > 2026-09-12/13; se conserva sin reescribir. Estado actual por SPEC con avance material
 > posterior o abierto:
 >
 > | SPEC | Estado 2026-09-23 | Pendiente |
 > |---|---|---|
-> | 027 Sensores | **14/22 (63,6%)** — el script lo lee 0/5 por formato de tabla | T6, T9, T15 (parcial), T16, T18, T20, T21, T22 |
+> | 027 Sensores | **14/22 (63,6%)** — corregido en `project-status-metrics.ps1` como override auditado | T6, T9, T15 (parcial), T16, T18, T20, T21, T22 |
 > | 015 DR | 0/14 detalladas (0/11 normalizadas) | Todo; simulacro en S12 |
 > | 003 / 004 | 7/13 · 8/13 | T2, T9, T10, T12, T16-T18 · T8, T14-T16 |
 > | 023 | 6/11 | T7-T11 |
@@ -15,9 +31,9 @@
 > | 014 | 7/9 | T13, T15 (manual) |
 > | 017 / 018 | 0/5 · 0/7 (20 y 21 tareas detalladas) | Etapa 2 (G-16) |
 >
-> **Métrica:** oficial 72,5% (148/204) · auditada estricta 73,3% (162/221) · backlog fino
-> ≈47 tareas. R2 100% · R3 97,1% · R4 90,3% · R5 45,2% (≈54% si 017/018 se confirman como
-> Etapa 2). Sprint vigente: **S9 (2026-09-21 → 10-02, R5)**. Plan por sprint y registro de
+> **Métrica vigente:** oficial 72,5% (148/204) · auditada estricta 73,3% (162/221) · backlog fino
+> 47 tareas. R2 100% · R3 97,1% · R4 90,3% · R5 45,2% (la hipótesis ≈54% depende de G-16 y no es cifra vigente)
+> Sprint vigente: **S9 (2026-09-21 -> 10-02, R5)**. Plan por sprint y registro de
 > decisiones: `docs/PLAN_MAESTRO_2026-09-23.md` y ADR-212.
 
 > Corte auditado: **2026-09-12** (anterior: 2026-08-18, ver histórico abajo). Dentro de este mismo corte se dio de alta `tasks.md` de SPEC-024/GEOCATMIN (antes solo tenía `spec.md`) y se excluyó SPEC-022/Operaciones de Campo del seguimiento de este proyecto (ver [ADR-178](../docs/decisions/178-operaciones-campo-fuera-de-alcance-implementacion-futura-independiente.md)) — recalculado con el script.
@@ -55,7 +71,7 @@
 | 023 | Portabilidad/restore/CI-CD | R5-R6 | 6/11 · 54.5% | = | Utilidad; restore y despliegue no aceptados |
 | 024 | GEOCATMIN/INGEMMET | R3 | 8/12 · 66.7% | **nuevo, antes N/A** | Código real verificado (suite nativa + ArcGIS en vivo); parcial: falta búsqueda por Cuadrícula IGN/coordenadas (T6) y test automatizado de búsqueda/superposición/identify (T15-T17); catálogo declara 134 servicios, tiene 38 reales (T18, ver nota) |
 | 025 | Soporte/WhatsApp | Sin sprint asignado | Sin tasks.md · N/A | — | Aprobado al alcance contractual (2026-09-11, ADR-168) — 9 ADR ya implementados (112-118, 122, 129); canal SMS pendiente de cuenta Twilio comercial, WABA de Meta pendiente para el bot |
-| 027 | Integración sensores directo+gateway | Sin sprint asignado | 3/22 · 13,6% | **nuevo, alta 2026-09-16** | ADR-192: auditoría con datos reales de `sensors_db` (no solo lectura de código) — de 78,780 filas en `sensors`, solo **3** tienen credencial real (el resto es carga sintética ADR-108 o semilla/demo); 0 fuentes Modbus/OPC-UA configuradas pese a los 3 adaptadores activos; 1 sola regla de alarma en todo el sistema; 1/27 plantillas de ADR-189 verificada contra dato real. T1-T3 (inventario base) cerradas en la misma sesión que dio de alta la spec. Fuera del bucket de release del script (spec nueva, sin sprint asignado) — no está incluida en la Métrica consolidada de abajo todavía |
+| 027 | Integración sensores directo+gateway | Sin sprint asignado | **14/22 · 63,6% vigente** (3/22 fue el alta inicial 2026-09-16) | **actualizado por ADR-212 / script 2026-09-23** | ADR-192: auditoría con datos reales de `sensors_db` (no solo lectura de código) — de 78,780 filas en `sensors`, solo **3** tienen credencial real (el resto es carga sintética ADR-108 o semilla/demo); 0 fuentes Modbus/OPC-UA configuradas pese a los 3 adaptadores activos; 1 sola regla de alarma en todo el sistema; 1/27 plantillas de ADR-189 verificada contra dato real. T1-T3 (inventario base) cerradas en la misma sesión que dio de alta la spec. Incluida en la métrica auditada vigente por override de `project-status-metrics.ps1`; sigue fuera de un bucket de release histórico |
 
 > **SPEC-022 (Operaciones de Campo) removida de esta tabla el 2026-09-12** —
 > fuera de alcance de este proyecto por decisión de Gerencia, ver
@@ -66,9 +82,9 @@
 
 ## Métrica consolidada
 
-- **Tareas normalizadas:** 148 completadas de 199 = **74,4%** (+0,5pp vs. 73,9% de esta misma pasada: SPEC-014 cierra su cobertura de test automatizado (antes 0%) con `offlineSqlite.integration.test.ts`, 13 tests reales contra el motor sql.js/WASM sin mockear + un mock fiel de la Cache API — ver detalle en la fila de SPEC-014 y actualización de ADR-022; de paso, al intentar cerrar la demo en vivo de SPEC-016 se encontró y corrigió un bug real de rendimiento en 3 endpoints (`evaluateRulesOnce`, `/api/mining/telemetry/summary`, `simulation_status_routes.cpp`) — ver [ADR-186](../docs/decisions/186-bug-real-timescaledb-chunk-scan-sin-cota-tiempo.md); anterior +2,5pp vs. 71,4%: cierre real de R4 a pedido explícito de Gerencia — SPEC-013 T9-T10 implementados (auto-refresh + indicador offline con timestamp en `VideoDiagram.tsx`), SPEC-016 cerrado T1-T12/Constitución (Art. 5 tenía un gap real: el motor de alarmas no exponía métricas, corregido con `beemetry_alarm_engine_*` en `/api/metrics`), SPEC-014 CA-2/CA-3 cerrados (equivalencia de CA-2 documentada, bug real de trazabilidad de CA-3 corregido — ver actualización de ADR-022); anterior +0,5pp vs. 70,9%: SPEC-007 T15 cerrado 2026-09-13 por decisión de negocio — ver ADR-185 — se acepta el tiempo de export medido/optimizado (ADR-184) dado que el proceso es asíncrono y no bloquea al usuario; anterior +1,1pp vs. 69,8%: SPEC-005 T17 y T19 cerrados 2026-09-13 con pruebas reales contra el stack completo — caída de réplica y carga de 200 conexiones SSE, ambas PASS, ver ADR-181; anterior +0,5pp vs. 69,3%: SPEC-021 T9 cerrado con PDF/PPTX real de los 20 tipos de gráfico y 2 bugs reales corregidos, ver ADR-182; anterior +10,1pp vs. 58,7%: +12 tareas por dar de alta `tasks.md` de SPEC-024/GEOCATMIN; SPEC-014/Offline recalculado de 0/10 a 4/9; implementación real de SPEC-005/007/009/021 con test automatizado nuevo en cada caso; y -14 tareas por excluir SPEC-022/Operaciones de Campo, fuera de alcance de este proyecto (ADR-178)).
-- Por release: **R2 100% (11/11) · R3 97,1% (68/70) · R4 90,3% (56/62) · R5 45,2% (33/73)** — R4 sube de 88,7% a **90,3%** (+1,6pp) en esta pasada, +9,7pp en el día (80,6%→90,3%). De las **6 tareas** que faltan para el 100% de R4, **4 no son trabajo de desarrollo pendiente**: SPEC-012 T14-T15 y SPEC-013 T15 (Etapa 2 por diseño, desde el plan original), SPEC-019 CA-4 (Odoo productivo, reprogramado a Etapa 2 el 2026-09-12, decisión ya tomada), y las 2 notas de divergencia permanentes de SPEC-014 (`plan.md`/`spec.md`, documentan un hecho histórico, no una tarea). **Genuinamente pendiente: 1 sola** — SPEC-016 demo en vivo de gate R5, y con un bloqueo ya preciso: la sesión disponible tiene rol `viewer` (RBAC correcto, `403 alarmas.manage`), no falta código ni mecanismo — de paso se encontró y corrigió un bug real de rendimiento que afectaba tanto a esta demo como a un endpoint de dashboard general (`/api/mining/telemetry/summary`, 45s+ → 1179ms, ver ADR-186). R3 sube de 95,7% a **97,1%** (+1,4pp) tras el cierre de SPEC-007 T15/O3 por decisión de negocio (ADR-185). SPEC-024 sigue sin bucket de release en el script (ajuste de mantenimiento futuro); SPEC-022 nunca estuvo en ningún bucket. Mismo cálculo que la diapositiva de metodología de la presentación gerencial (`scripts/generate_clickup_import.py::SPRINTS`).
-- Sprint vigente al corte: **S8 (07–18 sep, MES4, R4)** — "Print preview, templates, i18n, offline".
+- **Corte vigente 2026-09-23:** `scripts/project-status-metrics.ps1` devuelve 24 SPEC canónicas medibles, **162/221 = 73,3%** en lectura auditada estricta. La lectura oficial histórica se conserva como **148/204 = 72,5%** para comparabilidad. El backlog fino de salida a producción es **47 tareas**.
+- Por release: **R2 100% (11/11) · R3 97,1% (68/70) · R4 90,3% (56/62) · R5 45,2% (33/73)**. R5 permanece como foco de hardening, DR, restore, pentest, campo real y UAT.
+- Sprint vigente al corte: **S9 (2026-09-21 -> 10-02, R5)** — "Congelar, sanear y contratar".
 - La cifra mide ejecución documentada, no aceptación productiva ni horas.
 - SPEC-019 y SPEC-020 usan tablas; sus estados se normalizaron en el conteo.
 - Una tarea solo se considera completa cuando `tasks.md` aporta estado/evidencia.
@@ -224,15 +240,15 @@ cerrado; el 2,9% restante son 2 tareas de SPEC-009/SPEC-011 ya
 identificadas como "Etapa 2" y correctamente fuera de alcance de R3 (ver
 "Correctamente fuera de alcance de R3" más arriba), no un pendiente real.
 
-## Prioridad de cierre
+## Prioridad de cierre vigente para Gerencia
 
-1. ~~R3 al 97,1% (ver sección de arriba)~~ — **cerrado 2026-09-13**: SPEC-007 T15/O3 resuelto por decisión de negocio (ADR-185); el 2,9% restante de R3 son 2 tareas "Etapa 2" ya fuera de alcance por diseño, no bloquean el cierre.
-2. ~~R4: cerrar alertas (016, ya en 40%), regresión/export de 013/021~~ — **R4 sube a 88,7% (55/62) el 2026-09-13**: SPEC-016 cerrado (T1-T12 + Constitución, con un gap real de Art. 5 corregido), SPEC-013 T9-T10 cerrados, SPEC-021 ya estaba 100% desde el corte anterior. **Restan solo 2 ítems genuinamente pendientes de todo R4**: SPEC-014 cobertura de test automatizado (requiere mockear sql.js/WASM + Cache API, esfuerzo dedicado) y SPEC-016 demo en vivo de gate R5 (requiere sesión autenticada real, no ejecutable por una sesión de IA sin credenciales) — las otras 5 tareas del 11,3% restante (SPEC-012 T14-T15, SPEC-013 T15, SPEC-019 CA-4) son decisiones de alcance ya tomadas ("Etapa 2"), no trabajo pendiente.
-3. Integraciones: contrato AWS real. Integración con Odoo (ventana CA-4, SPEC-019) reprogramada a Etapa 2, posterior a reportabilidad (SPEC-007) — ya no es prioridad de cierre de R4.
-4. R5: DR/failover/restore (003/004/015), pentest externo (ADR-169, sin proveedor) y hardening.
-5. ~~Campo: aprobar ADR-110, reprogramar SPEC-022~~ — superado 2026-09-12: Operaciones de Campo queda fuera de alcance de este proyecto (ADR-178), ya no es un ítem de prioridad de cierre.
-6. IA crítica: calibración biométrica **estadística formal** (FMR/FNMR, muestra representativa) — la verificación funcional con cámara real ya se hizo (ADR-119/162, 2026-09-12); EPP continúa deferred hasta decisión.
-7. **Nuevo**: dar de alta un `tasks.md` para la elaboración de SPEC-007 posterior a T1-T18 (motor de tablas ADR-172, importación Word ADR-173, capacidades de editor ADR-174) — hoy es código real y ADR vigente sin tarea canónica que lo mida, mismo patrón de deuda de trazabilidad que ya se cerró para el resto del frontend.
+1. **Cerrado 2026-09-23: repositorio y trazabilidad Git.** Todo lo versionable fue commiteado y subido a `origin/2026-08-21`; etiqueta `corte-2026-09-23-gerencia` publicada. Observacion de cambios sin commit/sin push retirada.
+2. **Cerrado 2026-09-23: fuentes y metrica gerencial.** `project-status-metrics.ps1` publica `Official`, `AuditedStrict` y `ProductionExitBacklog`; SPEC-027 incluida como 14/22.
+3. **Cerrar P0 operativo:** pentest externo (G-1), DR cronometrado (G-2/SPEC-015), restore en host limpio (SPEC-023 T9), rollback y migraciones verificadas (ADR-211).
+4. **Cerrar aceptacion:** UAT y marcha blanca con acta (G-4), go/no-go con fecha base o contingencia (G-14).
+5. **Cerrar campo real:** inventario de sensores, credenciales, reglas minimas por tenant y decision de cadenas de alarma legado (G-7, SPEC-027).
+6. **Cerrar riesgo tecnico puntual:** `linear_settlement_cell` corregida o excluida por escrito antes de uso productivo (G-8).
+7. **Mantener Etapa 2 separada:** EPP/STT, Odoo productivo, PostGIS, GDAL persistente, fine-tuning LLM y Operaciones de Campo no deben mezclarse con el go-live condicionado actual salvo decision explicita.
 
 ## Nota sobre avance
 
@@ -240,3 +256,6 @@ No se usa «número de ADR escritos» como avance. Los ADR miden cobertura y
 coherencia de decisiones; el porcentaje se obtiene de tareas y se acompaña de
 readiness por evidencia en el informe de estado del 2026-09-12 (histórico:
 2026-08-18).
+
+
+

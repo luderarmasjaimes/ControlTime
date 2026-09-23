@@ -1,0 +1,1422 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glosario Gerencial | Plataforma Minera Beemetry</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --ink: #1b2430;
+      --muted: #667085;
+      --line: #d8dee8;
+      --brand: #115e59;
+      --brand-2: #2563eb;
+      --accent: #b45309;
+      --danger: #b42318;
+      --ok: #067647;
+      --chip: #eef2f7;
+      --shadow: 0 10px 28px rgba(15, 23, 42, .09);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.45;
+    }
+
+    header {
+      background: #102027;
+      color: white;
+      border-bottom: 4px solid var(--brand);
+    }
+
+    .hero {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 34px 22px 28px;
+    }
+
+    .eyebrow {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: #a7f3d0;
+      margin-bottom: 10px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 34px;
+      line-height: 1.1;
+      letter-spacing: 0;
+      max-width: 920px;
+    }
+
+    .subtitle {
+      margin: 14px 0 0;
+      max-width: 920px;
+      color: #d7dee7;
+      font-size: 16px;
+    }
+
+    .shell {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 22px;
+    }
+
+    .toolbar {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .search-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .searchbox {
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      min-height: 46px;
+      overflow: hidden;
+    }
+
+    .searchbox span {
+      text-align: center;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    input[type="search"] {
+      border: 0;
+      outline: 0;
+      width: 100%;
+      height: 44px;
+      font-size: 15px;
+      color: var(--ink);
+      padding: 0 12px 0 0;
+      background: transparent;
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: var(--radius);
+      min-height: 44px;
+      padding: 0 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn:hover { border-color: var(--brand); color: var(--brand); }
+
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 10px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    select {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      color: var(--ink);
+      padding: 0 10px;
+      font-size: 14px;
+    }
+
+    .quick {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .quick button {
+      border: 1px solid var(--line);
+      background: var(--chip);
+      color: #344054;
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .quick button.active {
+      background: var(--brand);
+      border-color: var(--brand);
+      color: white;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin: 18px 0;
+    }
+
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1;
+      color: var(--brand);
+    }
+
+    .stat span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    aside {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      position: sticky;
+      top: 168px;
+    }
+
+    aside h2 {
+      font-size: 15px;
+      margin: 0 0 10px;
+    }
+
+    .toc {
+      display: grid;
+      gap: 6px;
+    }
+
+    .toc button {
+      text-align: left;
+      border: 0;
+      background: transparent;
+      color: #344054;
+      padding: 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .toc button:hover,
+    .toc button.active {
+      background: #ecfdf3;
+      color: var(--brand);
+      font-weight: 700;
+    }
+
+    main {
+      display: grid;
+      gap: 14px;
+    }
+
+    .notice {
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      color: #7c2d12;
+      font-size: 14px;
+    }
+
+    .term {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, .05);
+    }
+
+    .term-header {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 12px;
+      margin-bottom: 12px;
+    }
+
+    .term h2 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--chip);
+      color: #344054;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .tag.sigla { background: #dbeafe; color: #1d4ed8; }
+    .tag.critico { background: #fee2e2; color: var(--danger); }
+    .tag.gerencial { background: #dcfce7; color: var(--ok); }
+
+    .term-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .block {
+      border-left: 3px solid var(--line);
+      padding-left: 12px;
+    }
+
+    .block.full { grid-column: 1 / -1; }
+
+    .block h3 {
+      margin: 0 0 5px;
+      font-size: 13px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .block p {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    mark {
+      background: #fef08a;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+
+    .empty {
+      background: var(--panel);
+      border: 1px dashed var(--line);
+      border-radius: var(--radius);
+      padding: 28px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    .print-note {
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 920px) {
+      .filters { grid-template-columns: 1fr 1fr; }
+      .stats { grid-template-columns: 1fr 1fr; }
+      .layout { grid-template-columns: 1fr; }
+      aside { position: static; }
+      .term-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 620px) {
+      h1 { font-size: 26px; }
+      .shell, .hero { padding-left: 14px; padding-right: 14px; }
+      .search-row { grid-template-columns: 1fr; }
+      .filters { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr; }
+      .term-header { display: grid; }
+    }
+
+    @media print {
+      body { background: white; }
+      header { color: black; background: white; border-bottom: 1px solid #999; }
+      .toolbar, aside, .stats, .notice { display: none; }
+      .shell { max-width: none; padding: 0; }
+      .layout { display: block; }
+      .term { break-inside: avoid; box-shadow: none; margin-bottom: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <div class="eyebrow">Plataforma Minera Beemetry</div>
+      <h1>Glosario gerencial de términos, siglas y conceptos clave</h1>
+      <p class="subtitle">Material de apoyo para sustentar la presentación ante gerencia con lenguaje claro, foco operativo y búsqueda avanzada por categoría, sigla, criticidad y valor ejecutivo.</p>
+    </div>
+  </header>
+
+  <div class="shell">
+    <section class="toolbar" aria-label="Búsqueda avanzada">
+      <div class="search-row">
+        <div class="searchbox">
+          <span aria-hidden="true">⌕</span>
+          <input id="search" type="search" placeholder="Buscar: RAG, ADR, tenant, alertas offline, SCADA, mantenimiento predictivo..." autocomplete="off">
+        </div>
+        <button class="btn" id="clearBtn" type="button">Limpiar filtros</button>
+      </div>
+
+      <div class="filters">
+        <label>
+          Categoría
+          <select id="categoryFilter">
+            <option value="">Todas</option>
+          </select>
+        </label>
+        <label>
+          Tipo
+          <select id="typeFilter">
+            <option value="">Todos</option>
+            <option value="sigla">Solo siglas</option>
+            <option value="termino">Términos generales</option>
+          </select>
+        </label>
+        <label>
+          Relevancia gerencial
+          <select id="relevanceFilter">
+            <option value="">Todas</option>
+            <option value="alta">Alta</option>
+            <option value="media">Media</option>
+          </select>
+        </label>
+        <label>
+          Orden
+          <select id="sortFilter">
+            <option value="az">A-Z</option>
+            <option value="category">Por categoría</option>
+            <option value="relevance">Mayor relevancia</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="quick" aria-label="Filtros rápidos">
+        <button type="button" data-quick="">Todo</button>
+        <button type="button" data-quick="IA">IA y agentes</button>
+        <button type="button" data-quick="Gobierno">Gobierno</button>
+        <button type="button" data-quick="Minería">Minería</button>
+        <button type="button" data-quick="Integraciones">IT/OT</button>
+        <button type="button" data-quick="Datos">Datos</button>
+      </div>
+    </section>
+
+    <section class="stats" aria-label="Indicadores del glosario">
+      <div class="stat"><strong id="visibleCount">0</strong><span>Términos visibles</span></div>
+      <div class="stat"><strong id="siglaCount">0</strong><span>Siglas documentadas</span></div>
+      <div class="stat"><strong id="criticalCount">0</strong><span>Alta relevancia gerencial</span></div>
+      <div class="stat"><strong id="categoryCount">0</strong><span>Categorías</span></div>
+    </section>
+
+    <div class="layout">
+      <aside>
+        <h2>Categorías</h2>
+        <nav class="toc" id="toc"></nav>
+      </aside>
+
+      <main id="results">
+        <div class="notice">
+          Este glosario está diseñado para exposición ejecutiva: cada término responde qué significa, cómo explicarlo a gerencia y por qué importa para la plataforma minera.
+        </div>
+      </main>
+    </div>
+
+    <p class="print-note">Sugerencia: usa Ctrl+F para búsqueda del navegador o el buscador avanzado superior para filtrar por intención gerencial. Puedes imprimir esta página como PDF desde el navegador.</p>
+  </div>
+
+  <script>
+    const terms = [
+      {
+        term: "Beemetry",
+        category: "Plataforma",
+        type: "termino",
+        relevance: "alta",
+        definition: "Nombre actual de la plataforma minera. Representa el sistema integral que apoya procesos mineros mediante datos, automatización, inteligencia artificial y trazabilidad.",
+        explain: "Beemetry centraliza información operativa y técnica para convertirla en decisiones, alertas y acciones más rápidas.",
+        value: "Permite pasar de una gestión reactiva a una gestión preventiva, medible y apoyada por datos.",
+        example: "Uso ejecutivo: seguimiento de indicadores, alertas, trazabilidad documental y soporte a decisiones operativas."
+      },
+      {
+        term: "AURIXA",
+        category: "Plataforma",
+        type: "termino",
+        relevance: "media",
+        definition: "Nombre anterior del proyecto, usado como antecedente histórico de Beemetry.",
+        explain: "AURIXA fue la denominación previa; Beemetry es la evolución actual de la plataforma.",
+        value: "Ayuda a interpretar referencias antiguas en documentación, variables técnicas o flujos previos.",
+        example: "Si aparece AURIXA en código o documentación, debe entenderse como referencia heredada del proyecto."
+      },
+      {
+        term: "Plataforma minera",
+        category: "Plataforma",
+        type: "termino",
+        relevance: "alta",
+        definition: "Ecosistema de módulos tecnológicos orientados a producción, mantenimiento, seguridad, activos, alertas, reportes y análisis.",
+        explain: "No es una aplicación aislada; es una base integrada para conectar procesos, usuarios e información minera.",
+        value: "Permite escalar funcionalidades, integrar áreas y mantener trazabilidad de decisiones.",
+        example: "Unifica datos de faena, reportes, alertas y analítica en una sola experiencia de gestión."
+      },
+      {
+        term: "ADR",
+        meaning: "Architecture Decision Record",
+        category: "Gobierno",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Documento que registra una decisión de arquitectura importante, sus alternativas, razones y consecuencias.",
+        explain: "Es la evidencia formal de por qué se eligió una tecnología, diseño o enfoque técnico.",
+        value: "Reduce riesgos, evita decisiones informales y permite auditar la evolución tecnológica.",
+        example: "Decidir si la IA será local, cloud o híbrida debe quedar respaldado por un ADR."
+      },
+      {
+        term: "SPEC",
+        meaning: "Specification",
+        category: "Gobierno",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Documento que describe una funcionalidad, necesidad o requerimiento que debe implementar la plataforma.",
+        explain: "Define qué se debe construir, para quién, con qué reglas y con qué criterios de aceptación.",
+        value: "Asegura que el desarrollo responda a una necesidad clara del negocio.",
+        example: "Una SPEC puede describir alertas offline, control de usuarios o reportes de producción."
+      },
+      {
+        term: "Constitución del proyecto",
+        category: "Gobierno",
+        type: "termino",
+        relevance: "alta",
+        definition: "Documento rector que establece reglas obligatorias de gobierno, calidad, trazabilidad y aprobación.",
+        explain: "Funciona como política interna del proyecto: define qué se permite y bajo qué condiciones se puede avanzar.",
+        value: "Evita desarrollos sin sustento, sin SPEC o sin control de calidad.",
+        example: "La regla de no hacer merge sin SPEC referenciado fortalece el gobierno del proyecto."
+      },
+      {
+        term: "Trazabilidad ADR-SPEC",
+        category: "Gobierno",
+        type: "termino",
+        relevance: "alta",
+        definition: "Relación documentada entre decisiones de arquitectura y funcionalidades específicas.",
+        explain: "Permite saber qué decisión técnica respalda cada funcionalidad de negocio.",
+        value: "Facilita auditoría, continuidad y control de impacto ante cambios.",
+        example: "Si cambia una funcionalidad crítica, se revisa qué ADR la justifica."
+      },
+      {
+        term: "REGISTRY",
+        category: "Gobierno",
+        type: "termino",
+        relevance: "media",
+        definition: "Registro central que vincula ADRs, SPECs y otros elementos de gobierno.",
+        explain: "Es el índice maestro de trazabilidad del proyecto.",
+        value: "Facilita auditoría, control documental y continuidad del conocimiento.",
+        example: "Permite ubicar rápidamente qué documentos justifican una capacidad de la plataforma."
+      },
+      {
+        term: "Pipeline",
+        category: "Automatización",
+        type: "termino",
+        relevance: "alta",
+        definition: "Secuencia automatizada de pasos para analizar, generar, revisar o validar cambios.",
+        explain: "Es una línea de producción digital para transformar una necesidad en una entrega controlada.",
+        value: "Estandariza el proceso y reduce errores humanos.",
+        example: "Pipeline decide -> generate -> review para construir y revisar una mejora."
+      },
+      {
+        term: "IA",
+        meaning: "Inteligencia Artificial",
+        category: "IA y agentes",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Tecnología que permite a un sistema interpretar información, detectar patrones, generar contenido o apoyar decisiones.",
+        explain: "Es la capacidad de la plataforma para asistir análisis y automatizar tareas complejas.",
+        value: "Mejora velocidad de análisis, priorización y generación de respuestas.",
+        example: "Apoyo para revisar especificaciones, generar código, explicar alertas o resumir documentación."
+      },
+      {
+        term: "IA multi-agente",
+        category: "IA y agentes",
+        type: "termino",
+        relevance: "alta",
+        definition: "Enfoque donde varios agentes especializados colaboran, cada uno con un rol concreto.",
+        explain: "En vez de una IA genérica, la plataforma usa especialistas: analista, arquitecto, planificador, revisor y generador.",
+        value: "Mejora calidad, control y consistencia de resultados.",
+        example: "Un agente define la SPEC, otro revisa arquitectura y otro valida cumplimiento."
+      },
+      {
+        term: "Agente",
+        category: "IA y agentes",
+        type: "termino",
+        relevance: "alta",
+        definition: "Componente de IA configurado para cumplir una función específica dentro del flujo de trabajo.",
+        explain: "Es un asistente especializado que participa en una etapa del proceso.",
+        value: "Distribuye responsabilidades y permite controlar mejor la calidad.",
+        example: "functional_analyst, architect, planner, reviewer."
+      },
+      {
+        term: "LLM",
+        meaning: "Large Language Model",
+        category: "IA y agentes",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Modelo de lenguaje entrenado con grandes volúmenes de texto, capaz de comprender, resumir, generar y razonar.",
+        explain: "Es el motor de IA que entiende instrucciones, documentos y contexto.",
+        value: "Habilita análisis documental, generación de código, revisión técnica y apoyo a decisiones.",
+        example: "Modelos tipo GPT, Claude o modelos locales ejecutados con Ollama."
+      },
+      {
+        term: "RAG",
+        meaning: "Retrieval-Augmented Generation",
+        category: "IA y agentes",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Técnica donde la IA busca información en documentos internos antes de generar una respuesta.",
+        explain: "La IA no responde solo con conocimiento general; consulta documentación del proyecto antes de contestar.",
+        value: "Reduce respuestas inventadas y mejora alineación con la realidad del proyecto.",
+        example: "Consultar documentación sobre tenant_id antes de explicar segregación de datos."
+      },
+      {
+        term: "Prompt",
+        category: "IA y agentes",
+        type: "termino",
+        relevance: "media",
+        definition: "Instrucción entregada a un modelo de IA para guiar su respuesta.",
+        explain: "Es la forma de pedirle trabajo a la IA indicando rol, contexto, tarea y formato esperado.",
+        value: "La calidad del prompt influye directamente en la calidad de la respuesta.",
+        example: "Un prompt de arquitecto debe evaluar riesgos, decisiones y trade-offs."
+      },
+      {
+        term: "Modelo cloud",
+        category: "IA y agentes",
+        type: "termino",
+        relevance: "alta",
+        definition: "Modelo de IA ejecutado en servicios externos en la nube.",
+        explain: "La capacidad de IA se consume desde un proveedor externo mediante internet y credenciales.",
+        value: "Ofrece potencia y actualización constante, pero exige revisar costos, conectividad y privacidad.",
+        example: "Usar un modelo cloud para análisis avanzado cuando no hay restricción de datos sensibles."
+      },
+      {
+        term: "Modelo local",
+        category: "IA y agentes",
+        type: "termino",
+        relevance: "alta",
+        definition: "Modelo de IA ejecutado en infraestructura propia o cercana a la operación.",
+        explain: "La IA puede operar dentro del entorno controlado de la empresa.",
+        value: "Da mayor control de datos y puede ayudar en escenarios de conectividad limitada.",
+        example: "Ejecutar IA local en una faena con restricciones de conectividad."
+      },
+      {
+        term: "Ollama",
+        category: "IA y agentes",
+        type: "termino",
+        relevance: "media",
+        definition: "Herramienta para ejecutar modelos de lenguaje localmente.",
+        explain: "Permite tener IA funcionando en servidores o equipos propios.",
+        value: "Es útil cuando se prioriza control de datos o funcionamiento local.",
+        example: "Configurar OLLAMA_URL para conectar la plataforma a un modelo local."
+      },
+      {
+        term: "Modo mock",
+        category: "IA y agentes",
+        type: "termino",
+        relevance: "media",
+        definition: "Modo de simulación donde el sistema responde sin llamar a servicios reales de IA.",
+        explain: "Permite probar el flujo sin gastar tokens, depender de internet o exponer datos.",
+        value: "Útil para pruebas automáticas, CI y validaciones controladas.",
+        example: "AURIXA_LLM_MODE=mock para ejecutar pruebas sin APIs externas."
+      },
+      {
+        term: "Backend",
+        category: "Arquitectura",
+        type: "termino",
+        relevance: "alta",
+        definition: "Parte interna del sistema que procesa reglas, datos, seguridad, integraciones y lógica de negocio.",
+        explain: "Es el motor operativo de la plataforma.",
+        value: "Sostiene cálculos, validaciones, integraciones y reglas críticas.",
+        example: "Procesar alertas, consultar indicadores o validar permisos."
+      },
+      {
+        term: "Frontend",
+        category: "Arquitectura",
+        type: "termino",
+        relevance: "alta",
+        definition: "Interfaz visible para usuarios: pantallas, formularios, tableros, reportes y controles.",
+        explain: "Es la cara de la plataforma para gerentes, supervisores, operadores y analistas.",
+        value: "Determina adopción, claridad y eficiencia en el uso diario.",
+        example: "Dashboard gerencial de producción y alertas."
+      },
+      {
+        term: "API",
+        meaning: "Application Programming Interface",
+        category: "Arquitectura",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Mecanismo para que sistemas distintos se comuniquen entre sí.",
+        explain: "Es un contrato de intercambio de información entre aplicaciones.",
+        value: "Permite integración y evita duplicidad manual de datos.",
+        example: "Conectar Beemetry con ERP, CMMS, sensores o reportes externos."
+      },
+      {
+        term: "Orquestador",
+        category: "Arquitectura",
+        type: "termino",
+        relevance: "alta",
+        definition: "Componente que coordina la ejecución de varios pasos, agentes o servicios.",
+        explain: "Actúa como director del flujo: decide qué componente participa, en qué orden y con qué información.",
+        value: "Permite automatizar procesos completos con control.",
+        example: "Coordinar análisis, generación, revisión y validación en un pipeline."
+      },
+      {
+        term: "Router IA",
+        category: "Arquitectura",
+        type: "termino",
+        relevance: "alta",
+        definition: "Componente que decide qué agente o modelo debe atender una solicitud.",
+        explain: "Deriva cada tarea al especialista adecuado.",
+        value: "Mejora eficiencia, calidad y asignación de recursos de IA.",
+        example: "Enviar tareas de arquitectura al agente architect y revisiones al reviewer."
+      },
+      {
+        term: "CI",
+        meaning: "Continuous Integration",
+        category: "Automatización",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Práctica que ejecuta validaciones automáticas cada vez que se agregan cambios al proyecto.",
+        explain: "Verifica que los cambios no rompan reglas, pruebas o documentación.",
+        value: "Reduce errores antes de pasar a producción.",
+        example: "Validar ADR, SPEC, RAG y router smoke en GitHub Actions."
+      },
+      {
+        term: "CD",
+        meaning: "Continuous Delivery / Deployment",
+        category: "Automatización",
+        type: "sigla",
+        relevance: "media",
+        definition: "Práctica para preparar o desplegar cambios de software de forma automatizada.",
+        explain: "Permite entregar nuevas funcionalidades de manera más rápida y controlada.",
+        value: "Mejora velocidad de entrega y reduce riesgo operativo.",
+        example: "Automatizar publicación de una nueva versión validada."
+      },
+      {
+        term: "CI/CD",
+        meaning: "Continuous Integration / Continuous Delivery",
+        category: "Automatización",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Combinación de integración continua y entrega o despliegue continuo.",
+        explain: "Es una fábrica automatizada de validación y publicación de software.",
+        value: "Permite entregar cambios con controles repetibles y medibles.",
+        example: "Ejecutar pruebas, validaciones y despliegues con cada Pull Request."
+      },
+      {
+        term: "Pull Request",
+        category: "Automatización",
+        type: "termino",
+        relevance: "alta",
+        definition: "Solicitud para revisar e integrar cambios al código principal.",
+        explain: "Es una puerta de control antes de aceptar cambios en la plataforma.",
+        value: "Facilita revisión, trazabilidad y aprobación.",
+        example: "Un cambio de alertas debe pasar por PR antes de integrarse."
+      },
+      {
+        term: "Branch",
+        category: "Automatización",
+        type: "termino",
+        relevance: "media",
+        definition: "Rama de trabajo independiente dentro del repositorio de código.",
+        explain: "Permite desarrollar una funcionalidad sin afectar la versión principal.",
+        value: "Reduce riesgo y ordena el trabajo por iniciativas.",
+        example: "feature/alertas-offline para una mejora específica."
+      },
+      {
+        term: "Tenant",
+        category: "Datos y seguridad",
+        type: "termino",
+        relevance: "alta",
+        definition: "Cliente, unidad de negocio, faena o entorno lógico separado dentro de una plataforma compartida.",
+        explain: "Permite que varias unidades usen la misma plataforma sin mezclar información.",
+        value: "Es clave para escalabilidad, seguridad y operación multi-unidad.",
+        example: "Separar datos por faena, contratista, operación o país."
+      },
+      {
+        term: "tenant_id",
+        category: "Datos y seguridad",
+        type: "termino",
+        relevance: "alta",
+        definition: "Identificador único de un tenant.",
+        explain: "Etiqueta técnica que indica a qué cliente, faena o unidad pertenece cada dato.",
+        value: "Clave para seguridad, privacidad, reportes y segregación de información.",
+        example: "Toda alerta o registro operativo puede asociarse a un tenant_id."
+      },
+      {
+        term: "Multi-tenant",
+        category: "Datos y seguridad",
+        type: "termino",
+        relevance: "alta",
+        definition: "Arquitectura donde una plataforma atiende a varios tenants manteniendo separación lógica.",
+        explain: "Permite escalar a varias operaciones sin instalar una plataforma distinta para cada una.",
+        value: "Optimiza costos, mantenimiento y expansión.",
+        example: "Una misma plataforma para varias faenas, con datos separados."
+      },
+      {
+        term: "RBAC",
+        meaning: "Role-Based Access Control",
+        category: "Datos y seguridad",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Control de acceso basado en roles.",
+        explain: "Cada usuario ve o hace solo lo que corresponde a su rol.",
+        value: "Protege información y reduce riesgo de acciones no autorizadas.",
+        example: "Gerencia ve indicadores globales; supervisores gestionan alertas de su área."
+      },
+      {
+        term: "SLA",
+        meaning: "Service Level Agreement",
+        category: "Datos y seguridad",
+        type: "sigla",
+        relevance: "media",
+        definition: "Acuerdo de nivel de servicio sobre disponibilidad, tiempos de respuesta o recuperación.",
+        explain: "Define el estándar esperado de funcionamiento del servicio.",
+        value: "Permite exigir y medir desempeño del sistema.",
+        example: "Disponibilidad mensual o tiempo máximo de atención ante incidentes."
+      },
+      {
+        term: "Trazabilidad",
+        category: "Datos y seguridad",
+        type: "termino",
+        relevance: "alta",
+        definition: "Capacidad de seguir el origen, cambios y destino de una decisión, dato, alerta o funcionalidad.",
+        explain: "Permite responder quién hizo qué, cuándo, por qué y con base en qué información.",
+        value: "Fundamental para auditoría, seguridad, cumplimiento y mejora continua.",
+        example: "Reconstruir la historia de una alerta crítica desde su origen hasta su cierre."
+      },
+      {
+        term: "Faena",
+        category: "Minería",
+        type: "termino",
+        relevance: "alta",
+        definition: "Sitio o unidad donde se desarrolla la operación minera.",
+        explain: "Es una operación específica con equipos, procesos, personal y datos propios.",
+        value: "Suele ser unidad natural para segmentar información, usuarios y reportes.",
+        example: "Una mina o planta específica dentro del portafolio de operaciones."
+      },
+      {
+        term: "Activo",
+        category: "Minería",
+        type: "termino",
+        relevance: "alta",
+        definition: "Equipo, instalación o recurso relevante para la operación.",
+        explain: "Son elementos que generan valor y requieren control, mantenimiento y seguimiento.",
+        value: "Permite organizar mantenimiento, desempeño, costos y disponibilidad.",
+        example: "Camiones, palas, chancadoras, fajas, sensores o sistemas eléctricos."
+      },
+      {
+        term: "KPI",
+        meaning: "Key Performance Indicator",
+        category: "Minería",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Indicador clave de desempeño.",
+        explain: "Resume si una operación, proceso o equipo está funcionando según lo esperado.",
+        value: "Permite seguimiento ejecutivo y toma de decisiones basada en desempeño.",
+        example: "Disponibilidad, utilización, toneladas movidas, cumplimiento de plan e incidentes."
+      },
+      {
+        term: "Disponibilidad mecánica",
+        category: "Minería",
+        type: "termino",
+        relevance: "alta",
+        definition: "Porcentaje de tiempo en que un equipo está técnicamente disponible para operar.",
+        explain: "Mide qué tanto los equipos están listos para trabajar.",
+        value: "Impacta directamente producción y cumplimiento del plan.",
+        example: "Un camión disponible puede entrar en operación cuando se requiera."
+      },
+      {
+        term: "Utilización",
+        category: "Minería",
+        type: "termino",
+        relevance: "alta",
+        definition: "Porcentaje de tiempo en que un equipo disponible realmente se usa.",
+        explain: "Un equipo puede estar disponible, pero no necesariamente utilizado.",
+        value: "Ayuda a detectar ineficiencias operativas.",
+        example: "Baja utilización puede indicar espera, mala asignación o restricciones de operación."
+      },
+      {
+        term: "Mantenimiento preventivo",
+        category: "Minería",
+        type: "termino",
+        relevance: "media",
+        definition: "Mantenimiento programado para evitar fallas futuras.",
+        explain: "Busca intervenir antes de que el equipo falle.",
+        value: "Reduce paradas no planificadas y mejora continuidad.",
+        example: "Cambio programado de componentes según horas de uso."
+      },
+      {
+        term: "Mantenimiento predictivo",
+        category: "Minería",
+        type: "termino",
+        relevance: "alta",
+        definition: "Mantenimiento basado en datos, patrones o modelos que anticipan posibles fallas.",
+        explain: "Usa datos para predecir cuándo un equipo podría fallar.",
+        value: "Reduce costos, mejora disponibilidad y evita fallas críticas.",
+        example: "Detectar vibración anómala antes de una falla mayor."
+      },
+      {
+        term: "Alerta",
+        category: "Minería",
+        type: "termino",
+        relevance: "alta",
+        definition: "Notificación generada cuando ocurre una condición relevante o anómala.",
+        explain: "Permite reaccionar rápido ante riesgos, desviaciones o eventos importantes.",
+        value: "Mejora oportunidad de respuesta y control operativo.",
+        example: "Equipo detenido, sensor fuera de rango o incumplimiento de producción."
+      },
+      {
+        term: "Alertas offline",
+        category: "Minería",
+        type: "termino",
+        relevance: "alta",
+        definition: "Alertas que pueden generarse, conservarse o gestionarse incluso con conectividad limitada.",
+        explain: "Si la operación pierde internet, la plataforma puede seguir registrando eventos críticos.",
+        value: "Clave en faenas con conectividad intermitente.",
+        example: "Registrar una alerta en terreno y sincronizarla cuando vuelva la conexión."
+      },
+      {
+        term: "Umbral",
+        category: "Minería",
+        type: "termino",
+        relevance: "media",
+        definition: "Valor límite que activa una acción o alerta.",
+        explain: "Define cuándo una condición se considera relevante.",
+        value: "Permite convertir datos en reglas operativas accionables.",
+        example: "Temperatura mayor al límite permitido o producción bajo el plan."
+      },
+      {
+        term: "OT",
+        meaning: "Operational Technology",
+        category: "Integraciones IT/OT",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Tecnología usada para controlar procesos físicos e industriales.",
+        explain: "Es la tecnología cercana a equipos, sensores, controladores y procesos de planta o mina.",
+        value: "Conecta el mundo físico de la operación con datos y control.",
+        example: "PLC, SCADA, sensores industriales y controladores de terreno."
+      },
+      {
+        term: "IT",
+        meaning: "Information Technology",
+        category: "Integraciones IT/OT",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Tecnología orientada a sistemas de información, aplicaciones, redes corporativas y datos.",
+        explain: "Administra sistemas empresariales, aplicaciones, usuarios y datos.",
+        value: "Sostiene la capa digital corporativa de la plataforma.",
+        example: "Servidores, bases de datos, redes, seguridad, aplicaciones y usuarios."
+      },
+      {
+        term: "IT/OT",
+        category: "Integraciones IT/OT",
+        type: "termino",
+        relevance: "alta",
+        definition: "Integración entre sistemas corporativos de información y sistemas operacionales industriales.",
+        explain: "Conecta la operación física con la gestión digital.",
+        value: "Convierte señales operativas en indicadores, alertas y decisiones.",
+        example: "Tomar datos de sensores de planta y mostrarlos en un dashboard ejecutivo."
+      },
+      {
+        term: "SCADA",
+        meaning: "Supervisory Control and Data Acquisition",
+        category: "Integraciones IT/OT",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Sistema usado para supervisar y controlar procesos industriales.",
+        explain: "Permite observar variables de operación en tiempo real y controlar procesos.",
+        value: "Fuente crítica de datos industriales para análisis y alertas.",
+        example: "Variables de presión, caudal, estado de equipos o alarmas de planta."
+      },
+      {
+        term: "PLC",
+        meaning: "Programmable Logic Controller",
+        category: "Integraciones IT/OT",
+        type: "sigla",
+        relevance: "media",
+        definition: "Controlador industrial que automatiza equipos o procesos.",
+        explain: "Dispositivo que ejecuta reglas de control en terreno.",
+        value: "Permite automatizar procesos físicos de forma confiable.",
+        example: "Controlar una faja, bomba, válvula o sistema de chancado."
+      },
+      {
+        term: "IoT",
+        meaning: "Internet of Things",
+        category: "Integraciones IT/OT",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Red de dispositivos conectados que capturan y transmiten datos.",
+        explain: "Sensores y equipos conectados que envían información para monitoreo y análisis.",
+        value: "Aumenta visibilidad de condiciones operativas, ambientales y de activos.",
+        example: "Sensores de vibración, temperatura, ubicación o consumo energético."
+      },
+      {
+        term: "Edge computing",
+        category: "Integraciones IT/OT",
+        type: "termino",
+        relevance: "alta",
+        definition: "Procesamiento de datos cerca del lugar donde se generan.",
+        explain: "Permite procesar información en la faena o cerca de los equipos.",
+        value: "Reduce dependencia de conectividad y mejora tiempos de respuesta.",
+        example: "Procesar alertas localmente cuando la conexión con la nube es limitada."
+      },
+      {
+        term: "ERP",
+        meaning: "Enterprise Resource Planning",
+        category: "Integraciones IT/OT",
+        type: "sigla",
+        relevance: "media",
+        definition: "Sistema empresarial que integra finanzas, compras, inventario, contratos y recursos.",
+        explain: "Es el sistema administrativo central de una empresa.",
+        value: "Permite cruzar datos operativos con costos y gestión empresarial.",
+        example: "Relacionar órdenes de trabajo, costos o inventario con eventos operativos."
+      },
+      {
+        term: "CMMS",
+        meaning: "Computerized Maintenance Management System",
+        category: "Integraciones IT/OT",
+        type: "sigla",
+        relevance: "alta",
+        definition: "Sistema para gestionar mantenimiento, órdenes de trabajo, activos y repuestos.",
+        explain: "Administra las actividades de mantenimiento de equipos e instalaciones.",
+        value: "Conecta alertas operativas con acciones de mantenimiento.",
+        example: "Crear una orden de trabajo a partir de una alerta predictiva."
+      },
+      {
+        term: "Dashboard",
+        category: "Datos y analítica",
+        type: "termino",
+        relevance: "alta",
+        definition: "Tablero visual que muestra indicadores, estados y tendencias.",
+        explain: "Es una pantalla de control para ver rápidamente cómo está la operación.",
+        value: "Facilita seguimiento ejecutivo y operativo.",
+        example: "Vista de producción, alertas, disponibilidad y cumplimiento de plan."
+      },
+      {
+        term: "Analítica",
+        category: "Datos y analítica",
+        type: "termino",
+        relevance: "alta",
+        definition: "Uso de datos para encontrar patrones, tendencias, explicaciones o recomendaciones.",
+        explain: "Permite convertir información operacional en decisiones.",
+        value: "Mejora planeamiento, control y prevención.",
+        example: "Analizar tendencias de detención por equipo o por turno."
+      },
+      {
+        term: "Tiempo real",
+        category: "Datos y analítica",
+        type: "termino",
+        relevance: "alta",
+        definition: "Capacidad de recibir o procesar información casi al mismo momento en que ocurre.",
+        explain: "Permite reaccionar rápido ante eventos de operación.",
+        value: "Aumenta oportunidad de respuesta ante desviaciones.",
+        example: "Visualizar estado de equipos con baja latencia."
+      },
+      {
+        term: "Batch",
+        category: "Datos y analítica",
+        type: "termino",
+        relevance: "media",
+        definition: "Procesamiento por lotes, ejecutado en intervalos o grupos de datos.",
+        explain: "En vez de procesar dato por dato al instante, procesa conjuntos periódicamente.",
+        value: "Útil para reportes diarios, cargas históricas y consolidaciones.",
+        example: "Actualizar un reporte gerencial cada noche."
+      },
+      {
+        term: "Data lake",
+        category: "Datos y analítica",
+        type: "termino",
+        relevance: "media",
+        definition: "Repositorio amplio donde se almacenan datos en distintos formatos.",
+        explain: "Es un gran depósito de datos para análisis futuros.",
+        value: "Conserva información operacional, documental e histórica.",
+        example: "Guardar logs, sensores, documentos y eventos en bruto."
+      },
+      {
+        term: "Data warehouse",
+        category: "Datos y analítica",
+        type: "termino",
+        relevance: "media",
+        definition: "Repositorio estructurado para análisis, reportes e indicadores.",
+        explain: "Es una base preparada para consultar indicadores confiables.",
+        value: "Mejora consistencia y velocidad de reportes gerenciales.",
+        example: "Consultar KPIs consolidados por mes, faena y área."
+      },
+      {
+        term: "Deuda técnica",
+        category: "Riesgos y controles",
+        type: "termino",
+        relevance: "alta",
+        definition: "Acumulación de decisiones técnicas que permiten avanzar rápido, pero generan costos futuros si no se corrigen.",
+        explain: "Es como una deuda financiera, pero en software.",
+        value: "Gestionarla evita que el sistema se vuelva caro, frágil o lento de evolucionar.",
+        example: "Código sin pruebas o integraciones improvisadas que luego dificultan cambios."
+      },
+      {
+        term: "Criterios de aceptación",
+        category: "Riesgos y controles",
+        type: "termino",
+        relevance: "alta",
+        definition: "Condiciones que debe cumplir una funcionalidad para considerarse terminada.",
+        explain: "Son las reglas que determinan si el entregable satisface la necesidad del negocio.",
+        value: "Evitan ambigüedad y entregas incompletas.",
+        example: "Una alerta offline debe registrarse, conservarse y sincronizarse al recuperar conexión."
+      },
+      {
+        term: "Continuidad operativa",
+        category: "Riesgos y controles",
+        type: "termino",
+        relevance: "alta",
+        definition: "Capacidad de mantener operaciones críticas funcionando a pesar de fallas o interrupciones.",
+        explain: "La plataforma debe apoyar que la operación no se detenga innecesariamente.",
+        value: "Reduce impacto de fallas, conectividad limitada o incidentes tecnológicos.",
+        example: "Mantener captura de eventos en terreno aunque falle temporalmente internet."
+      },
+      {
+        term: "Escalabilidad",
+        category: "Riesgos y controles",
+        type: "termino",
+        relevance: "alta",
+        definition: "Capacidad de crecer en usuarios, datos, operaciones o módulos sin rediseñar todo el sistema.",
+        explain: "Permite que la plataforma acompañe el crecimiento del negocio.",
+        value: "Protege la inversión tecnológica a mediano y largo plazo.",
+        example: "Agregar nuevas faenas o módulos sin rehacer la arquitectura base."
+      },
+      {
+        term: "Interoperabilidad",
+        category: "Riesgos y controles",
+        type: "termino",
+        relevance: "alta",
+        definition: "Capacidad de integrarse y trabajar con otros sistemas.",
+        explain: "Evita islas de información y permite conectar sistemas existentes.",
+        value: "Aumenta valor porque la plataforma no queda aislada.",
+        example: "Integrar Beemetry con SCADA, CMMS, ERP o APIs de terceros."
+      }
+    ];
+
+    const state = {
+      query: "",
+      category: "",
+      type: "",
+      relevance: "",
+      sort: "az"
+    };
+
+    const el = {
+      search: document.getElementById("search"),
+      category: document.getElementById("categoryFilter"),
+      type: document.getElementById("typeFilter"),
+      relevance: document.getElementById("relevanceFilter"),
+      sort: document.getElementById("sortFilter"),
+      results: document.getElementById("results"),
+      toc: document.getElementById("toc"),
+      visibleCount: document.getElementById("visibleCount"),
+      siglaCount: document.getElementById("siglaCount"),
+      criticalCount: document.getElementById("criticalCount"),
+      categoryCount: document.getElementById("categoryCount"),
+      clearBtn: document.getElementById("clearBtn")
+    };
+
+    const categories = [...new Set(terms.map(item => item.category))].sort((a, b) => a.localeCompare(b, "es"));
+
+    function init() {
+      categories.forEach(category => {
+        const opt = document.createElement("option");
+        opt.value = category;
+        opt.textContent = category;
+        el.category.appendChild(opt);
+      });
+
+      renderToc();
+      bindEvents();
+      render();
+    }
+
+    function bindEvents() {
+      el.search.addEventListener("input", event => {
+        state.query = event.target.value.trim();
+        render();
+      });
+      el.category.addEventListener("change", event => {
+        state.category = event.target.value;
+        setQuickActive(state.category);
+        render();
+      });
+      el.type.addEventListener("change", event => {
+        state.type = event.target.value;
+        render();
+      });
+      el.relevance.addEventListener("change", event => {
+        state.relevance = event.target.value;
+        render();
+      });
+      el.sort.addEventListener("change", event => {
+        state.sort = event.target.value;
+        render();
+      });
+      el.clearBtn.addEventListener("click", clearFilters);
+
+      document.querySelectorAll("[data-quick]").forEach(button => {
+        button.addEventListener("click", () => {
+          const value = button.getAttribute("data-quick");
+          state.category = value;
+          el.category.value = value;
+          setQuickActive(value);
+          render();
+        });
+      });
+    }
+
+    function renderToc() {
+      el.toc.innerHTML = "";
+      const all = document.createElement("button");
+      all.type = "button";
+      all.textContent = "Todos los términos";
+      all.addEventListener("click", () => {
+        state.category = "";
+        el.category.value = "";
+        setQuickActive("");
+        render();
+      });
+      el.toc.appendChild(all);
+
+      categories.forEach(category => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = category;
+        button.addEventListener("click", () => {
+          state.category = category;
+          el.category.value = category;
+          setQuickActive(category);
+          render();
+        });
+        el.toc.appendChild(button);
+      });
+    }
+
+    function setQuickActive(value) {
+      document.querySelectorAll("[data-quick]").forEach(button => {
+        button.classList.toggle("active", button.getAttribute("data-quick") === value);
+      });
+      [...el.toc.querySelectorAll("button")].forEach(button => {
+        const isAll = button.textContent === "Todos los términos" && value === "";
+        button.classList.toggle("active", isAll || button.textContent === value);
+      });
+    }
+
+    function clearFilters() {
+      state.query = "";
+      state.category = "";
+      state.type = "";
+      state.relevance = "";
+      state.sort = "az";
+      el.search.value = "";
+      el.category.value = "";
+      el.type.value = "";
+      el.relevance.value = "";
+      el.sort.value = "az";
+      setQuickActive("");
+      render();
+    }
+
+    function normalize(text) {
+      return String(text || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+    }
+
+    function matchesQuery(item) {
+      if (!state.query) return true;
+      const haystack = normalize([
+        item.term,
+        item.meaning,
+        item.category,
+        item.definition,
+        item.explain,
+        item.value,
+        item.example
+      ].join(" "));
+
+      return normalize(state.query)
+        .split(/\s+/)
+        .filter(Boolean)
+        .every(token => haystack.includes(token));
+    }
+
+    function getFiltered() {
+      let filtered = terms.filter(item => {
+        return matchesQuery(item)
+          && (!state.category || item.category === state.category)
+          && (!state.type || item.type === state.type)
+          && (!state.relevance || item.relevance === state.relevance);
+      });
+
+      filtered.sort((a, b) => {
+        if (state.sort === "category") {
+          return a.category.localeCompare(b.category, "es") || a.term.localeCompare(b.term, "es");
+        }
+        if (state.sort === "relevance") {
+          const rank = { alta: 0, media: 1 };
+          return rank[a.relevance] - rank[b.relevance] || a.term.localeCompare(b.term, "es");
+        }
+        return a.term.localeCompare(b.term, "es");
+      });
+
+      return filtered;
+    }
+
+    function highlight(text) {
+      const raw = String(text || "");
+      if (!state.query) return escapeHtml(raw);
+
+      const tokens = normalize(state.query).split(/\s+/).filter(Boolean);
+      if (!tokens.length) return escapeHtml(raw);
+
+      const words = raw.split(/(\s+)/);
+      return words.map(word => {
+        const clean = normalize(word);
+        const hit = tokens.some(token => clean.includes(token));
+        return hit ? `<mark>${escapeHtml(word)}</mark>` : escapeHtml(word);
+      }).join("");
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function render() {
+      const filtered = getFiltered();
+      const visibleSiglas = filtered.filter(item => item.type === "sigla").length;
+      const visibleCritical = filtered.filter(item => item.relevance === "alta").length;
+      const visibleCategories = new Set(filtered.map(item => item.category)).size;
+
+      el.visibleCount.textContent = filtered.length;
+      el.siglaCount.textContent = visibleSiglas;
+      el.criticalCount.textContent = visibleCritical;
+      el.categoryCount.textContent = visibleCategories;
+
+      const notice = `
+        <div class="notice">
+          Este glosario está diseñado para exposición ejecutiva: cada término responde qué significa, cómo explicarlo a gerencia y por qué importa para la plataforma minera.
+        </div>
+      `;
+
+      if (!filtered.length) {
+        el.results.innerHTML = notice + `
+          <div class="empty">
+            No se encontraron términos con los filtros actuales. Prueba con una palabra más general o limpia los filtros.
+          </div>
+        `;
+        return;
+      }
+
+      el.results.innerHTML = notice + filtered.map(item => renderTerm(item)).join("");
+      setQuickActive(state.category);
+    }
+
+    function renderTerm(item) {
+      const meaning = item.meaning ? `<span class="tag sigla">${highlight(item.meaning)}</span>` : "";
+      const typeLabel = item.type === "sigla" ? "Sigla" : "Término";
+      const relevanceLabel = item.relevance === "alta" ? "Alta relevancia" : "Relevancia media";
+
+      return `
+        <article class="term" data-category="${escapeHtml(item.category)}">
+          <div class="term-header">
+            <div>
+              <h2>${highlight(item.term)}</h2>
+              <div class="meta">
+                <span class="tag">${escapeHtml(item.category)}</span>
+                <span class="tag ${item.type === "sigla" ? "sigla" : ""}">${typeLabel}</span>
+                <span class="tag ${item.relevance === "alta" ? "critico" : "gerencial"}">${relevanceLabel}</span>
+                ${meaning}
+              </div>
+            </div>
+          </div>
+          <div class="term-grid">
+            <section class="block full">
+              <h3>Definición clara</h3>
+              <p>${highlight(item.definition)}</p>
+            </section>
+            <section class="block">
+              <h3>Cómo explicarlo a gerencia</h3>
+              <p>${highlight(item.explain)}</p>
+            </section>
+            <section class="block">
+              <h3>Por qué importa</h3>
+              <p>${highlight(item.value)}</p>
+            </section>
+            <section class="block full">
+              <h3>Ejemplo o uso en la presentación</h3>
+              <p>${highlight(item.example)}</p>
+            </section>
+          </div>
+        </article>
+      `;
+    }
+
+    init();
+  </script>
+</body>
+</html>
